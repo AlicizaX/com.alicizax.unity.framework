@@ -94,6 +94,7 @@ MonoBehaviour:
   m_ShowFullWindow: 0
   m_WindowOpacity: 0.8
   m_EnableFloatingToggleSnap: 1
+  m_PanelSettings: {fileID: 11400000, guid: 66471f1a850eadc4eb6821c730bfce50, type: 2}
   m_ConsoleWindow:
     m_LockScroll: 1
     m_MaxLine: 100

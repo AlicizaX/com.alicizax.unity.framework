@@ -17,6 +17,7 @@ namespace AlicizaX.Debugger.Editor
         private SerializedProperty _activeWindowProperty;
         private SerializedProperty _enableFloatingToggleSnapProperty;
         private SerializedProperty _windowOpacityProperty;
+        private SerializedProperty _panelSettingsProperty;
         private GUIStyle _panelStyle;
         private GUIStyle _fieldRowStyle;
         private GUIStyle _fieldLabelStyle;
@@ -27,6 +28,7 @@ namespace AlicizaX.Debugger.Editor
             _activeWindowProperty = serializedObject.FindProperty("m_ActiveWindow");
             _enableFloatingToggleSnapProperty = serializedObject.FindProperty("m_EnableFloatingToggleSnap");
             _windowOpacityProperty = serializedObject.FindProperty("m_WindowOpacity");
+            _panelSettingsProperty = serializedObject.FindProperty("m_PanelSettings");
             _activeWindowOptions = _activeWindowProperty.enumDisplayNames;
         }
 
@@ -60,6 +62,7 @@ namespace AlicizaX.Debugger.Editor
             DrawToolbar("Debugger Component");
 
             DrawActiveWindowRow();
+            DrawPanelSettingsRow();
             DrawToggleRow("Enable Snap", _enableFloatingToggleSnapProperty);
             DrawOpacityRow();
 
@@ -86,6 +89,14 @@ namespace AlicizaX.Debugger.Editor
                 _activeWindowProperty.enumValueIndex,
                 _activeWindowOptions);
 
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawPanelSettingsRow()
+        {
+            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
+            EditorGUILayout.LabelField("Panel Settings", _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
+            EditorGUILayout.PropertyField(_panelSettingsProperty, GUIContent.none);
             EditorGUILayout.EndHorizontal();
         }
 

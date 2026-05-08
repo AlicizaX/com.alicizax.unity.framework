@@ -16,6 +16,7 @@ namespace AlicizaX.Debugger.Runtime
         private const string RootWindowTitle = "ALICIZAX DEBUGGER";
         private const string DebuggerRootName = "alicizax-debugger-root";
         private const string SettingsPanelName = "Debugger Runtime Panel Settings";
+        private const string DefaultPanelSettingsResourcePath = "DebuggerPanelSettings";
         private const string SettingsEventSystemName = "Debugger Runtime EventSystem";
         private const int DefaultPanelSortingOrder = short.MaxValue - 64;
         private const float MinWindowWidth = 420f;
@@ -49,6 +50,7 @@ namespace AlicizaX.Debugger.Runtime
         [SerializeField] private bool m_ShowFullWindow;
         [SerializeField, Range(0.2f, 1f)] private float m_WindowOpacity = 1f;
         [SerializeField] private bool m_EnableFloatingToggleSnap = true;
+        [SerializeField] private PanelSettings m_PanelSettings;
         [SerializeField] private ConsoleWindow m_ConsoleWindow = new ConsoleWindow();
 
         private readonly List<DebuggerMenuNode> _menuRoots = new List<DebuggerMenuNode>(16);
@@ -530,26 +532,49 @@ namespace AlicizaX.Debugger.Runtime
         {
             EnsureEventSystem();
 
-            _panelSettings = ScriptableObject.CreateInstance<PanelSettings>();
-            _panelSettings.name = SettingsPanelName;
-            InitializePanelSettingsDefaults(_panelSettings);
-            _panelSettings.sortingOrder = DefaultPanelSortingOrder;
-            _panelSettings.scaleMode = PanelScaleMode.ConstantPixelSize;
-            _panelSettings.scale = 1f;
-            _panelSettings.referenceDpi = 96f;
-            _panelSettings.fallbackDpi = 96f;
-            _panelSettings.clearColor = false;
-            _panelSettings.targetTexture = null;
+            _panelSettings = CreateRuntimePanelSettings();
+            ApplyRuntimePanelSettings(_panelSettings);
 
-            _uiDocument = gameObject.GetComponent<UIDocument>();
-            if (_uiDocument == null)
-            {
-                _uiDocument = gameObject.AddComponent<UIDocument>();
-            }
+            _uiDocument = gameObject.GetOrAddComponent<UIDocument>();
 
             _uiDocument.panelSettings = _panelSettings;
             _uiDocument.sortingOrder = DefaultPanelSortingOrder;
             BuildRootVisualTree();
+        }
+
+        private PanelSettings CreateRuntimePanelSettings()
+        {
+            PanelSettings source = m_PanelSettings != null
+                ? m_PanelSettings
+                : Resources.Load<PanelSettings>(DefaultPanelSettingsResourcePath);
+
+            if (source != null)
+            {
+                PanelSettings instance = Instantiate(source);
+                instance.name = SettingsPanelName;
+                return instance;
+            }
+
+            PanelSettings fallback = ScriptableObject.CreateInstance<PanelSettings>();
+            fallback.name = SettingsPanelName;
+            InitializePanelSettingsDefaults(fallback);
+            return fallback;
+        }
+
+        private static void ApplyRuntimePanelSettings(PanelSettings panelSettings)
+        {
+            if (panelSettings == null)
+            {
+                return;
+            }
+
+            panelSettings.sortingOrder = DefaultPanelSortingOrder;
+            panelSettings.scaleMode = PanelScaleMode.ConstantPixelSize;
+            panelSettings.scale = 1f;
+            panelSettings.referenceDpi = 96f;
+            panelSettings.fallbackDpi = 96f;
+            panelSettings.clearColor = false;
+            panelSettings.targetTexture = null;
         }
 
         private void EnsureEventSystem()
