@@ -1,0 +1,19 @@
+
+
+using AlicizaX;
+
+namespace Unity.Startup.Procedure
+{
+    /// <summary>
+    /// 启动热更新游戏
+    /// </summary>
+    public sealed class ProcedureUpdateFinishState : ProcedureBase
+    {
+        protected override void OnEnter()
+        {
+            base.OnEnter();
+            UpdateProgressUtils.Dispose();
+            ProcedureBuilder.DestroyProcedure();
+        }
+    }
+}
