@@ -1,0 +1,22 @@
+{
+  "name": "com.alicizax.unity.framework",
+  "displayName": "Aliciza X Framework",
+  "category": "Aliciza X",
+  "description": "Aliciza X Core Framework",
+  "version": "1.0.1",
+  "unity": "2025.1",
+  "keywords": [
+    "Aliciza X"
+  ],
+  "repository": {
+    "name": "com.alicizax.unity.framework",
+    "url": "http://101.34.252.46:3000/AlicizaX/",
+    "type": "git"
+  },
+  "author": {
+    "name": "Yuliuren",
+    "email": "yuliuren00@gmail.com"
+  },
+  "dependencies": {
+  }
+}

@@ -1,0 +1,3 @@
+<linker>
+	<assembly fullname="AlicizaX.Framework.Runtime" preserve="all" />
+</linker>
