@@ -1,0 +1,80 @@
+namespace AlicizaX.UI.Runtime
+{
+
+    internal static class UIStateMachine
+    {
+        private static readonly ushort[] ValidTransitionMasks =
+        {
+            Mask(UIState.CreatedUI),
+            Mask(UIState.Loaded, UIState.Destroying),
+            Mask(UIState.Initialized, UIState.Destroying),
+            Mask(UIState.Opening, UIState.Destroying),
+            Mask(UIState.Opened, UIState.Closing, UIState.Destroying),
+            Mask(UIState.Closing, UIState.Destroying),
+            Mask(UIState.Opening, UIState.Closed, UIState.Destroying),
+            Mask(UIState.Opening, UIState.Destroying),
+            Mask(UIState.Destroyed),
+            0,
+        };
+
+        public static bool IsValidTransition(UIState from, UIState to)
+        {
+            int fromIndex = (int)from;
+            return (uint)fromIndex < (uint)ValidTransitionMasks.Length && (ValidTransitionMasks[fromIndex] & Mask(to)) != 0;
+        }
+
+        public static bool ValidateTransition(string uiName, UIState from, UIState to)
+        {
+            if (IsValidTransition(from, to))
+                return true;
+
+            Log.Error(Cysharp.Text.ZString.Format("[UI] Invalid state transition for {0}: {1} -> {2}", uiName, from, to));
+            return false;
+        }
+
+
+        public static ushort GetValidNextStateMask(UIState currentState)
+        {
+            int stateIndex = (int)currentState;
+            return (uint)stateIndex < (uint)ValidTransitionMasks.Length ? ValidTransitionMasks[stateIndex] : (ushort)0;
+        }
+
+        public static string GetStateDescription(UIState state)
+        {
+            return state switch
+            {
+                UIState.Uninitialized => "Not yet created",
+                UIState.CreatedUI => "UI logic created, awaiting resource load",
+                UIState.Loaded => "Resources loaded, awaiting initialization",
+                UIState.Initialized => "Initialized, ready to open",
+                UIState.Opening => "Opening transition is running",
+                UIState.Opened => "Currently visible and active",
+                UIState.Closing => "Closing transition is running",
+                UIState.Closed => "Hidden but cached",
+                UIState.Destroying => "Being destroyed",
+                UIState.Destroyed => "Fully destroyed",
+                _ => "Unknown state"
+            };
+        }
+
+        public static bool IsDisplayActive(UIState state)
+        {
+            return state == UIState.Opening || state == UIState.Opened || state == UIState.Closing;
+        }
+
+        private static ushort Mask(UIState state)
+        {
+            return (ushort)(1 << (int)state);
+        }
+
+        private static ushort Mask(UIState stateA, UIState stateB)
+        {
+            return (ushort)(Mask(stateA) | Mask(stateB));
+        }
+
+        private static ushort Mask(UIState stateA, UIState stateB, UIState stateC)
+        {
+            return (ushort)(Mask(stateA) | Mask(stateB) | Mask(stateC));
+        }
+    }
+}
