@@ -12,7 +12,7 @@ namespace AlicizaX
         [SerializeField] private ResourceComponent resourceComponent;
         [SerializeField] private DebuggerComponent debuggerComponent;
         [SerializeField] private LocalizationComponent localizationComponent;
-        private ModuleDynamicBindInfo _dynamicBindInfo;
+        private ServiceDynamicBindInfo _dynamicBindInfo;
 
         private void OnValidate()
         {
@@ -24,24 +24,15 @@ namespace AlicizaX
         private void Awake()
         {
             if (Application.isEditor) return;
-            TextAsset text = null;
-            if (AppServices.TryGet<IResourceService>(out var resourceService))
-            {
-                text = resourceService.LoadAsset<TextAsset>("ModuleDynamicBindInfo");
-            }
+            TextAsset text = Resources.Load<TextAsset>("ServiceDynamicBindInfo");
 
             if (text == null)
             {
-                text = Resources.Load<TextAsset>("ModuleDynamicBindInfo");
-            }
-
-            if (text == null)
-            {
-                Log.Warning("ModuleDynamicBindInfo not found.");
+                Log.Warning("ServiceDynamicBindInfo not found.");
                 return;
             }
 
-            _dynamicBindInfo = Utility.Json.ToObject<ModuleDynamicBindInfo>(text.text);
+            _dynamicBindInfo = Utility.Json.ToObject<ServiceDynamicBindInfo>(text.text);
 
             if (resourceComponent != null)
             {
@@ -61,7 +52,7 @@ namespace AlicizaX
         }
     }
 
-    public struct ModuleDynamicBindInfo
+    public struct ServiceDynamicBindInfo
     {
         public DebuggerActiveWindowType DebuggerActiveWindowType;
         public int ResMode;
