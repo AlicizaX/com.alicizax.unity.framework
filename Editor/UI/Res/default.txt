@@ -1,0 +1,86 @@
+[
+  {
+    "uiElementRegex": "Rect",
+    "componentType": "UnityEngine.RectTransform"
+  },
+  {
+    "uiElementRegex": "Obj",
+    "componentType": "GameObject"
+  },
+  {
+    "uiElementRegex": "Tf",
+    "componentType": "UnityEngine.Transform"
+  },
+  {
+    "uiElementRegex": "Btn",
+    "componentType": "UnityEngine.UI.UXButton"
+  },
+  {
+    "uiElementRegex": "Slider",
+    "componentType": "UnityEngine.UI.Slider"
+  },
+  {
+    "uiElementRegex": "Img",
+    "componentType": "UnityEngine.UI.Image"
+  },
+  {
+    "uiElementRegex": "RImg",
+    "componentType": "UnityEngine.UI.RawImage"
+  },
+  {
+    "uiElementRegex": "Scrollbar",
+    "componentType": "UnityEngine.UI.Scrollbar"
+  },
+  {
+    "uiElementRegex": "ScrollRect",
+    "componentType": "UnityEngine.UI.ScrollRect"
+  },
+  {
+    "uiElementRegex": "GLayout",
+    "componentType": "UnityEngine.UI.GridLayoutGroup"
+  },
+  {
+    "uiElementRegex": "HLayout",
+    "componentType": "UnityEngine.UI.HorizontalLayoutGroup"
+  },
+  {
+    "uiElementRegex": "VLayout",
+    "componentType": "UnityEngine.UI.VerticalLayoutGroup"
+  },
+  {
+    "uiElementRegex": "Text",
+    "componentType": "TMPro.TextMeshProUGUI"
+  },
+  {
+    "uiElementRegex": "TogGroup",
+    "componentType": "UnityEngine.UI.UXGroup"
+  },
+  {
+    "uiElementRegex": "Mask2D",
+    "componentType": "UnityEngine.UI.RectMask2D"
+  },
+  {
+    "uiElementRegex": "Video",
+    "componentType": "UnityEngine.Video.VideoPlayer"
+  },
+  {
+    "uiElementRegex": "Input",
+    "componentType": "TMPro.TMP_InputField"
+  },
+  {
+    "uiElementRegex": "CanvasGroup",
+    "componentType": "UnityEngine.CanvasGroup"
+  },
+  {
+    "uiElementRegex": "ScrollView",
+    "componentType": "AlicizaX.UI.RecyclerView"
+  },
+  {
+    "uiElementRegex": "Drag",
+    "componentType": "UnityEngine.UI.UXDraggable"
+  },
+  {
+    "uiElementRegex": "Img",
+    "componentType": "UnityEngine.UI.Image"
+  }
+]
