@@ -84,12 +84,14 @@ namespace AlicizaX.Editor
         private void OnEnable()
         {
             RefreshKnownEventTypes();
+            EventDebugRegistry.BeginDetailedHistory();
             EditorApplication.update += HandleEditorUpdate;
         }
 
         private void OnDisable()
         {
             EditorApplication.update -= HandleEditorUpdate;
+            EventDebugRegistry.EndDetailedHistory();
         }
 
         private void OnFocus()
@@ -170,7 +172,7 @@ namespace AlicizaX.Editor
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.HelpBox(
-                "这是仅编辑器可用的事件监视器。事件派发期间如果发生订阅、取消订阅、清空或扩容操作，会抛出 InvalidOperationException，Player 中也同样生效。",
+                "这是仅编辑器可用的事件监视器。窗口打开时会记录完整操作历史；窗口关闭时仅保留统计和异常类历史。事件派发期间如果发生订阅、取消订阅、清空或扩容操作，会抛出 InvalidOperationException，Player 中也同样生效。",
                 MessageType.Info);
 
             if (_snapshotEntries.Count > 0)

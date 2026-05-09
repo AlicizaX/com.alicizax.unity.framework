@@ -167,8 +167,26 @@ namespace AlicizaX
         private static readonly Dictionary<Type, State> _states = new();
         private static readonly List<Type> _registrationOrder = new();
         private static readonly EventDebugOperationRecord[] _history = new EventDebugOperationRecord[HistoryCapacity];
+        private static int _detailedHistoryRequestCount;
         private static int _historyWriteIndex;
         private static int _historyCount;
+
+        internal static bool BackgroundFullHistoryEnabled { get; set; }
+
+        internal static bool DetailedHistoryEnabled => _detailedHistoryRequestCount > 0 || BackgroundFullHistoryEnabled;
+
+        internal static void BeginDetailedHistory()
+        {
+            _detailedHistoryRequestCount++;
+        }
+
+        internal static void EndDetailedHistory()
+        {
+            if (_detailedHistoryRequestCount > 0)
+            {
+                _detailedHistoryRequestCount--;
+            }
+        }
 
         internal static void RegisterContainer<T>(
             Func<int> subscriberCountProvider,
@@ -199,42 +217,45 @@ namespace AlicizaX
             State state = GetState<T>();
             state.SubscribeCount++;
             state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCount);
-            MarkOperation(state, EventDebugOperationKind.Subscribe, subscriberCount, capacity);
+            MarkOperation(state, EventDebugOperationKind.Subscribe, subscriberCount, capacity, DetailedHistoryEnabled);
         }
 
         internal static void RecordUnsubscribe<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
         {
             State state = GetState<T>();
             state.UnsubscribeCount++;
-            MarkOperation(state, EventDebugOperationKind.Unsubscribe, subscriberCount, capacity);
+            MarkOperation(state, EventDebugOperationKind.Unsubscribe, subscriberCount, capacity, DetailedHistoryEnabled);
         }
 
         internal static void RecordPublish<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
         {
             State state = GetState<T>();
             state.PublishCount++;
-            MarkOperation(state, EventDebugOperationKind.Publish, subscriberCount, capacity);
+            if (DetailedHistoryEnabled)
+            {
+                MarkOperation(state, EventDebugOperationKind.Publish, subscriberCount, capacity, true);
+            }
         }
 
         internal static void RecordResize<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
         {
             State state = GetState<T>();
             state.ResizeCount++;
-            MarkOperation(state, EventDebugOperationKind.Resize, subscriberCount, capacity);
+            MarkOperation(state, EventDebugOperationKind.Resize, subscriberCount, capacity, true);
         }
 
         internal static void RecordClear<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
         {
             State state = GetState<T>();
             state.ClearCount++;
-            MarkOperation(state, EventDebugOperationKind.Clear, subscriberCount, capacity);
+            MarkOperation(state, EventDebugOperationKind.Clear, subscriberCount, capacity, true);
         }
 
         internal static void RecordMutationRejected<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
         {
             State state = GetState<T>();
             state.MutationRejectedCount++;
-            MarkOperation(state, EventDebugOperationKind.MutationRejected, subscriberCount, capacity);
+            MarkOperation(state, EventDebugOperationKind.MutationRejected, subscriberCount, capacity, true);
         }
 
         internal static EventDebugSummary[] GetSummaries()
@@ -331,13 +352,18 @@ namespace AlicizaX
                 state.LastOperationTicksUtc);
         }
 
-        private static void MarkOperation(State state, EventDebugOperationKind kind, int subscriberCount, int capacity)
+        private static void MarkOperation(State state, EventDebugOperationKind kind, int subscriberCount, int capacity, bool recordHistory)
         {
             int frame = Time.frameCount;
             long ticksUtc = DateTime.UtcNow.Ticks;
 
             state.LastOperationFrame = frame;
             state.LastOperationTicksUtc = ticksUtc;
+
+            if (!recordHistory)
+            {
+                return;
+            }
 
             _history[_historyWriteIndex] = new EventDebugOperationRecord(
                 state.EventType,
