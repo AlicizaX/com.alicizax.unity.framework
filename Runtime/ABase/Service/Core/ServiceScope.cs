@@ -198,8 +198,8 @@ namespace AlicizaX
             }
 
             ValidateContracts(contracts);
-            lifecycle.Initialize(World, this);
             AddEntry(service, contracts);
+            lifecycle.Initialize(World, this);
             return service;
         }
 
@@ -414,6 +414,7 @@ namespace AlicizaX
                         ((IServiceLifecycle)change.Service).Initialize(World, this);
                         AddEntry(change.Service, change.Contracts);
                     }
+
                     continue;
                 }
 
