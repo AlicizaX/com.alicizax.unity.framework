@@ -80,7 +80,11 @@ namespace AlicizaX
 
         private static bool TryGetResourceService(out IResourceService resourceService)
         {
-            return AppServices.TryGet(out resourceService);
+            if (AppServices.HasWorld)
+                return AppServices.App.TryGet(out resourceService);
+
+            resourceService = null;
+            return false;
         }
     }
 
@@ -94,7 +98,7 @@ namespace AlicizaX
             {
                 if (_resourceService == null)
                 {
-                    _resourceService = AppServices.Require<IResourceService>();
+                    _resourceService = AppServices.App.Require<IResourceService>();
                 }
 
                 return _resourceService;

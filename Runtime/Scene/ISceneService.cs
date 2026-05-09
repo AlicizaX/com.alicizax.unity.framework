@@ -32,13 +32,4 @@ namespace AlicizaX.Scene.Runtime
 
         public bool IsContainScene(string location);
     }
-
-    public interface ISceneStateService : IService
-    {
-        public string CurrentMainSceneName { get; }
-
-        public bool IsContainScene(string location);
-
-        public bool IsMainScene(string location);
-    }
 }

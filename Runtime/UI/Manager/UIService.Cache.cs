@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using AlicizaX;
 using AlicizaX.Timer.Runtime;
 using Cysharp.Text;
@@ -169,7 +169,7 @@ namespace AlicizaX.UI.Runtime
                 return _timerService;
             }
 
-            _timerService = AppServices.Require<ITimerService>();
+            _timerService = AppServices.App.Require<ITimerService>();
             return _timerService;
         }
     }

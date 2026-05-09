@@ -10,7 +10,7 @@ namespace AlicizaX.UI.Runtime
 {
     public static class UIHolderFactory
     {
-        private static IResourceService ResourceService => AppServices.Require<IResourceService>();
+        private static IResourceService ResourceService => AppServices.App.Require<IResourceService>();
 
         public static async UniTask<T> CreateUIHolderAsync<T>(Transform parent) where T : UIHolderObjectBase
         {

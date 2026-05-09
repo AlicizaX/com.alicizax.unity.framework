@@ -13,7 +13,7 @@ namespace AlicizaX.UI.Runtime
 
         static UIMetadataFactory()
         {
-            m_UIMetadataPool = AppServices.Require<IObjectPoolService>().CreatePool<UIMetadataObject>(
+            m_UIMetadataPool = AppServices.App.Require<IObjectPoolService>().CreatePool<UIMetadataObject>(
                 new ObjectPoolCreateOptions(
                     name: "UI Metadata Pool",
                     allowMultiSpawn: false,

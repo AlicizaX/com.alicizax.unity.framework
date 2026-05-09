@@ -29,7 +29,7 @@ namespace AlicizaX.Audio.Runtime
             }
 
             _audioService.Initialize(m_AudioGroupConfigs, m_AudioListener, transform, m_AudioMixer);
-            AppServices.RegisterApp<IAudioService>(_audioService);
+            AppServices.App.Register<IAudioService>(_audioService);
         }
 
 

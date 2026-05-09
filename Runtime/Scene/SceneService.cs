@@ -9,21 +9,24 @@ namespace AlicizaX.Scene.Runtime
 {
     internal class SceneService : ServiceBase, ISceneService
     {
-        public string CurrentMainSceneName => EnsureSceneState().CurrentMainSceneName;
+        private readonly SceneDomainState _sceneState = new();
+
+        public string CurrentMainSceneName => _sceneState.CurrentMainSceneName;
 
         protected override void OnInitialize()
         {
             var activeScene = SceneManager.GetActiveScene();
-            EnsureSceneState().SetBootScene(activeScene.name);
+            _sceneState.SetBootScene(activeScene.name);
         }
 
         protected override void OnDestroyService()
         {
+            _sceneState.Destroy();
         }
 
         public async UniTask<UnityEngine.SceneManagement.Scene> LoadSceneAsync(string location, LoadSceneMode sceneMode = LoadSceneMode.Single, bool suspendLoad = false, uint priority = 100, bool gcCollect = true, Action<float> progressCallBack = null)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             if (!sceneState.TryBeginHandling(location))
             {
                 Log.Error($"Could not load scene while loading. Scene: {location}");
@@ -79,7 +82,7 @@ namespace AlicizaX.Scene.Runtime
             }
 
             sceneState.SetMainScene(location, mainSceneHandle);
-            Context.Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
+            Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
             sceneState.EndHandling(location);
             return mainSceneHandle.SceneObject;
         }
@@ -88,7 +91,7 @@ namespace AlicizaX.Scene.Runtime
             Action<UnityEngine.SceneManagement.Scene> callBack = null,
             bool gcCollect = true, Action<float> progressCallBack = null)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             if (!sceneState.TryBeginHandling(location))
             {
                 Log.Error($"Could not load scene while loading. Scene: {location}");
@@ -139,12 +142,12 @@ namespace AlicizaX.Scene.Runtime
                 InvokeSceneProgress(mainSceneHandle, progressCallBack).Forget();
             }
 
-            Context.Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
+            Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
         }
 
         public bool ActivateScene(string location)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             if (sceneState.CurrentMainSceneName.Equals(location))
             {
                 return sceneState.CurrentMainSceneHandle != null && sceneState.CurrentMainSceneHandle.ActivateScene();
@@ -162,7 +165,7 @@ namespace AlicizaX.Scene.Runtime
 
         public bool UnSuspend(string location)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             if (sceneState.CurrentMainSceneName.Equals(location))
             {
                 return sceneState.CurrentMainSceneHandle != null && sceneState.CurrentMainSceneHandle.UnSuspend();
@@ -179,7 +182,7 @@ namespace AlicizaX.Scene.Runtime
 
         public bool IsMainScene(string location)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             var currentScene = SceneManager.GetActiveScene();
 
             if (sceneState.CurrentMainSceneName.Equals(location))
@@ -208,7 +211,7 @@ namespace AlicizaX.Scene.Runtime
 
         public async UniTask<bool> UnloadAsync(string location, Action<float> progressCallBack = null)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             if (sceneState.TryGetSubScene(location, out var subScene) && subScene != null)
             {
                 if (subScene.SceneObject == default)
@@ -248,7 +251,7 @@ namespace AlicizaX.Scene.Runtime
 
         public void Unload(string location, Action callBack = null, Action<float> progressCallBack = null)
         {
-            var sceneState = EnsureSceneState();
+            var sceneState = _sceneState;
             if (sceneState.TryGetSubScene(location, out var subScene) && subScene != null)
             {
                 if (subScene.SceneObject == default)
@@ -284,26 +287,13 @@ namespace AlicizaX.Scene.Runtime
 
         public bool IsContainScene(string location)
         {
-            return EnsureSceneState().IsContainScene(location);
+            return _sceneState.IsContainScene(location);
         }
 
-        private SceneDomainStateService EnsureSceneState()
+        private SceneDomainState PrepareSceneStateForMainSceneLoad(string location)
         {
-            var sceneScope = Context.EnsureScene();
-            if (!sceneScope.TryGet<SceneDomainStateService>(out var sceneState))
-            {
-                sceneState = (SceneDomainStateService)sceneScope.Register<ISceneStateService>(new SceneDomainStateService());
-            }
-
-            return sceneState;
-        }
-
-        private SceneDomainStateService PrepareSceneStateForMainSceneLoad(string location)
-        {
-            var sceneScope = Context.ResetScene();
-            var sceneState = (SceneDomainStateService)sceneScope.Register<ISceneStateService>(new SceneDomainStateService());
-            sceneState.MarkMainSceneLoading(location);
-            return sceneState;
+            _sceneState.MarkMainSceneLoading(location);
+            return _sceneState;
         }
 
         private async UniTaskVoid InvokeSceneProgress(YooAsset.SceneHandle sceneHandle, Action<float> progress)
@@ -335,7 +325,7 @@ namespace AlicizaX.Scene.Runtime
         }
     }
 
-    internal sealed class SceneDomainStateService : ServiceBase, ISceneStateService
+    internal sealed class SceneDomainState
     {
         private readonly Dictionary<string,YooAsset.SceneHandle> _subScenes = new ();
         private readonly HashSet<string> _handlingScenes = new HashSet<string>();
@@ -344,11 +334,7 @@ namespace AlicizaX.Scene.Runtime
 
         public YooAsset.SceneHandle CurrentMainSceneHandle { get; private set; }
 
-        protected override void OnInitialize()
-        {
-        }
-
-        protected override void OnDestroyService()
+        public void Destroy()
         {
             foreach (var subScene in _subScenes.Values)
             {
@@ -373,6 +359,12 @@ namespace AlicizaX.Scene.Runtime
         {
             CurrentMainSceneName = sceneName ?? string.Empty;
             CurrentMainSceneHandle = null;
+            foreach (var subScene in _subScenes.Values)
+            {
+                subScene?.UnloadAsync();
+            }
+
+            _subScenes.Clear();
             _handlingScenes.Clear();
             TryBeginHandling(sceneName);
         }

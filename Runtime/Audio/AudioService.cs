@@ -155,8 +155,8 @@ namespace AlicizaX.Audio.Runtime
 
         private void InitializeObjectPools()
         {
-            _resourceService = AppServices.Require<IResourceService>();
-            IObjectPoolService objectPoolService = AppServices.Require<IObjectPoolService>();
+            _resourceService = AppServices.App.Require<IResourceService>();
+            IObjectPoolService objectPoolService = AppServices.App.Require<IObjectPoolService>();
             _sourcePool = objectPoolService.HasObjectPool<AudioSourceObject>(SourcePoolName)
                 ? objectPoolService.GetObjectPool<AudioSourceObject>(SourcePoolName)
                 : objectPoolService.CreatePool<AudioSourceObject>(new ObjectPoolCreateOptions(SourcePoolName, false, 10f, int.MaxValue, float.MaxValue, 10));

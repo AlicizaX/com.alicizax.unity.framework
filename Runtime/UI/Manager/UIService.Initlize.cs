@@ -1,4 +1,4 @@
-﻿using Cysharp.Text;
+using Cysharp.Text;
 using System.Collections.Generic;
 using AlicizaX.Timer.Runtime;
 using UnityEngine;
@@ -50,7 +50,7 @@ namespace AlicizaX.UI.Runtime
 
             AddLayer((int)UILayer.All);
             InitUIBlock();
-            _timerService = AppServices.Require<ITimerService>();
+            _timerService = AppServices.App.Require<ITimerService>();
         }
 
         public RectTransform GetLayer(UILayer layer)

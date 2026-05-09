@@ -929,7 +929,7 @@ namespace AlicizaX.Localization.Editor
             AppendGeneratedLine(sb, classDepth + 1, "{");
             AppendGeneratedLine(sb, classDepth + 2, "if (_localizationService == null)");
             AppendGeneratedLine(sb, classDepth + 2, "{");
-            AppendGeneratedLine(sb, classDepth + 3, "_localizationService = AppServices.RequireApp<ILocalizationService>();");
+            AppendGeneratedLine(sb, classDepth + 3, "_localizationService = AppServices.App.Require<ILocalizationService>();");
             AppendGeneratedLine(sb, classDepth + 2, "}");
             AppendGeneratedLine(sb);
             AppendGeneratedLine(sb, classDepth + 2, "return _localizationService;");

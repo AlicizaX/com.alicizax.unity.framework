@@ -144,7 +144,7 @@ namespace AlicizaX.Audio.Runtime
 
         private bool TryBindService()
         {
-            if (AppServices.TryGet(out _audioService))
+            if (AppServices.HasWorld && AppServices.App.TryGet(out _audioService))
             {
                 return true;
             }

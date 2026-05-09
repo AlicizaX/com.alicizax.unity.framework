@@ -1,4 +1,4 @@
-﻿using AlicizaX.Audio.Runtime;
+using AlicizaX.Audio.Runtime;
 using AlicizaX.Editor;
 using UnityEditor;
 using UnityEngine;
@@ -555,7 +555,7 @@ namespace AlicizaX.Audio.Editor
                     return;
                 }
 
-                if (!AppServices.TryGet<IAudioService>(out IAudioService audioService) || audioService is not IAudioDebugService debugService)
+                if (!AppServices.HasWorld || !AppServices.App.TryGet<IAudioService>(out IAudioService audioService) || audioService is not IAudioDebugService debugService)
                 {
                     EditorUtils.TrHelpIconText("Audio service is not initialized.", MessageType.Info);
                     return;

@@ -3,18 +3,20 @@ using UnityEngine;
 
 namespace AlicizaX
 {
-    public abstract class MonoServiceBehaviour : MonoBehaviour, IMonoService, IServiceLifecycle
+    public abstract class MonoServiceBehaviour : MonoBehaviour, IService, IServiceLifecycle
     {
-        protected ServiceContext Context { get; private set; }
+        private ServiceWorld _world;
+        private ServiceScope _scope;
 
         protected bool IsInitialized { get; private set; }
 
-        void IServiceLifecycle.Initialize(ServiceContext context)
+        void IServiceLifecycle.Initialize(ServiceWorld world, ServiceScope scope)
         {
             if (IsInitialized)
                 throw new System.InvalidOperationException(ZString.Format("{0} is already initialized.", GetType().FullName));
 
-            Context = context;
+            _world = world;
+            _scope = scope;
             IsInitialized = true;
             OnInitialize();
         }
@@ -25,8 +27,24 @@ namespace AlicizaX
 
             OnDestroyService();
             IsInitialized = false;
-            Context = default;
+            _world = null;
+            _scope = null;
         }
+
+        protected T Require<T>() where T : class, IService
+            => _world.Require<T>(_scope);
+
+        protected bool TryGet<T>(out T service) where T : class, IService
+            => _world.TryGet(_scope, out service);
+
+        protected T RequireApp<T>() where T : class, IService
+            => _world.App.Require<T>();
+
+        protected T RequireScene<T>() where T : class, IService
+            => _world.Scene.Require<T>();
+
+        protected T RequireGameplay<T>() where T : class, IService
+            => _world.Gameplay.Require<T>();
 
         protected virtual void OnInitialize() { }
 
@@ -71,9 +89,9 @@ namespace AlicizaX
         private static ServiceScope ResolveOrCreateScope()
         {
             var kind = ScopeKindCache<TScope>.Kind;
-            if (kind == ServiceScopeKind.App) return AppServices.RequireWorld().App;
-            if (kind == ServiceScopeKind.Scene) return AppServices.EnsureScene();
-            return AppServices.EnsureGameplay();
+            if (kind == ServiceScopeKind.App) return AppServices.App;
+            if (kind == ServiceScopeKind.Scene) return AppServices.Scene;
+            return AppServices.Gameplay;
         }
 
         private static bool TryResolveScope(out ServiceScope scope)
@@ -81,14 +99,18 @@ namespace AlicizaX
             var kind = ScopeKindCache<TScope>.Kind;
             if (kind == ServiceScopeKind.App)
             {
-                scope = AppServices.RequireWorld().App;
+                scope = AppServices.App;
                 return true;
             }
 
             if (kind == ServiceScopeKind.Scene)
-                return AppServices.TryGetScene(out scope);
+            {
+                scope = AppServices.Scene;
+                return true;
+            }
 
-            return AppServices.TryGetGameplay(out scope);
+            scope = AppServices.Gameplay;
+            return true;
         }
 
         protected virtual void OnAwake() { }

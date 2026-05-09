@@ -174,7 +174,7 @@ namespace AlicizaX.UI.Editor
                 return;
             }
 
-            if (!AppServices.TryGet<IUIService>(out IUIService uiService) || uiService is not IUIDebugService debugService)
+            if (!AppServices.HasWorld || !AppServices.App.TryGet<IUIService>(out IUIService uiService) || uiService is not IUIDebugService debugService)
             {
                 EditorUtils.TrHelpIconText("UI service is not initialized.", MessageType.Warning);
                 EditorGUILayout.EndVertical();

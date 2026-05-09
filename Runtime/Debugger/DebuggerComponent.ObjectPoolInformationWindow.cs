@@ -15,7 +15,7 @@ namespace AlicizaX.Debugger.Runtime
 
             public override void Initialize(params object[] args)
             {
-                m_ObjectPoolService = AppServices.Require<IObjectPoolService>();
+                m_ObjectPoolService = AppServices.App.Require<IObjectPoolService>();
                 m_ObjectPoolServiceImpl = m_ObjectPoolService as ObjectPoolService;
             }
 

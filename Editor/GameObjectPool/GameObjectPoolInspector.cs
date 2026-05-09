@@ -54,7 +54,8 @@ namespace AlicizaX
                 return;
             }
 
-            if (!AppServices.TryGet<IGameObjectPoolService>(out IGameObjectPoolService gameObjectPoolService) ||
+            if (!AppServices.HasWorld ||
+                !AppServices.App.TryGet<IGameObjectPoolService>(out IGameObjectPoolService gameObjectPoolService) ||
                 !TryResolveDebugMethods(gameObjectPoolService))
             {
                 EditorUtils.TrHelpIconText("GameObject pool service is not initialized.", MessageType.Info);
@@ -71,7 +72,7 @@ namespace AlicizaX
 
         public override bool RequiresConstantRepaint()
         {
-            return EditorApplication.isPlaying && AppServices.TryGet<IGameObjectPoolService>(out _);
+            return EditorApplication.isPlaying && AppServices.HasWorld && AppServices.App.TryGet<IGameObjectPoolService>(out _);
         }
 
         private void EnsureStyles()

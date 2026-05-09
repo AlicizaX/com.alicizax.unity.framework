@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR
+#if UNITY_EDITOR
 using System;
 using System.Diagnostics;
 using Cysharp.Text;
@@ -149,7 +149,7 @@ namespace AlicizaX.ObjectPool
             if (m_Service != null)
                 return;
 
-            if (AppServices.TryGet(out m_Service))
+            if (AppServices.HasWorld && AppServices.App.TryGet(out m_Service))
                 return;
 
             if (!AppServices.HasWorld && GetComponent<AppServiceRoot>() == null)
@@ -158,7 +158,7 @@ namespace AlicizaX.ObjectPool
             if (GetComponent<ObjectPoolComponent>() == null)
                 gameObject.AddComponent<ObjectPoolComponent>();
 
-            if (!AppServices.TryGet(out m_Service))
+            if (!AppServices.HasWorld || !AppServices.App.TryGet(out m_Service))
                 Debug.LogError("ObjectPoolBenchmark requires ObjectPoolComponent registration.");
         }
 

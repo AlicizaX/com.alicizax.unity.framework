@@ -24,7 +24,7 @@ public static partial class GameApp
         {
             if (_audio == null)
             {
-                _audio = AppServices.RequireApp<IAudioService>();
+                _audio = AppServices.App.Require<IAudioService>();
             }
 
             return _audio;
@@ -43,7 +43,7 @@ public static partial class GameApp
         {
             if (_localization == null)
             {
-                _localization = AppServices.RequireApp<ILocalizationService>();
+                _localization = AppServices.App.Require<ILocalizationService>();
             }
 
             return _localization;
@@ -61,7 +61,7 @@ public static partial class GameApp
         {
             if (_objectPool == null)
             {
-                _objectPool = AppServices.RequireApp<IObjectPoolService>();
+                _objectPool = AppServices.App.Require<IObjectPoolService>();
             }
 
             return _objectPool;
@@ -80,7 +80,7 @@ public static partial class GameApp
         {
             if (_resource == null)
             {
-                _resource = AppServices.RequireApp<IResourceService>();
+                _resource = AppServices.App.Require<IResourceService>();
             }
 
             return _resource;
@@ -98,7 +98,7 @@ public static partial class GameApp
         {
             if (_scene == null)
             {
-                _scene = AppServices.RequireApp<ISceneService>();
+                _scene = AppServices.App.Require<ISceneService>();
             }
 
             return _scene;
@@ -116,7 +116,7 @@ public static partial class GameApp
         {
             if (_timer == null)
             {
-                _timer = AppServices.RequireApp<ITimerService>();
+                _timer = AppServices.App.Require<ITimerService>();
             }
 
             return _timer;
@@ -135,7 +135,7 @@ public static partial class GameApp
         {
             if (_ui == null)
             {
-                _ui = AppServices.RequireApp<IUIService>();
+                _ui = AppServices.App.Require<IUIService>();
             }
 
             return _ui;
@@ -153,7 +153,7 @@ public static partial class GameApp
         {
             if (_gameObjectPool == null)
             {
-                _gameObjectPool = AppServices.RequireApp<IGameObjectPoolService>();
+                _gameObjectPool = AppServices.App.Require<IGameObjectPoolService>();
             }
 
             return _gameObjectPool;

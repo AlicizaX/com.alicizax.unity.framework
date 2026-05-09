@@ -27,11 +27,11 @@ namespace AlicizaX
                 DontDestroyOnLoad(gameObject);
 
             var createdWorld = !AppServices.HasWorld;
-            var world = AppServices.EnsureWorld(_appScopeOrder);
+            AppServices.EnsureWorld(_appScopeOrder);
             _ownsWorld = createdWorld;
 
             if (createdWorld)
-                RegisterAppServices(world.App);
+                RegisterAppServices();
         }
 
         protected virtual void Update()
@@ -63,9 +63,8 @@ namespace AlicizaX
             {
                 AppServices.Shutdown();
             }
-
         }
 
-        protected virtual void RegisterAppServices(IServiceRegistry appServices) { }
+        protected virtual void RegisterAppServices() { }
     }
 }

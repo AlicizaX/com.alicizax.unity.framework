@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -39,7 +39,7 @@ namespace AlicizaX.Resource.Runtime
                 return true;
             }
 
-            _resourceService = AppServices.Require<IResourceService>();
+            _resourceService = AppServices.App.Require<IResourceService>();
             return _resourceService != null;
         }
 

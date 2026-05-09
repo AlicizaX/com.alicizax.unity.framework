@@ -17,12 +17,12 @@ namespace AlicizaX.Timer.Runtime
 
         private void Awake()
         {
-            if (AppServices.TryGet<ITimerService>(out _))
+            if (AppServices.App.TryGet<ITimerService>(out _))
             {
                 return;
             }
 
-            AppServices.RegisterApp<ITimerService>(new TimerService(_initialCapacity));
+            AppServices.App.Register<ITimerService>(new TimerService(_initialCapacity));
         }
 
         private void OnValidate()

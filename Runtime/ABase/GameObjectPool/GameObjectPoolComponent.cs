@@ -10,7 +10,7 @@ namespace AlicizaX
     {
         private void Awake()
         {
-            AppServices.RegisterApp<IGameObjectPoolService, IGameObjectPoolDebugService>(new GameObjectPoolService(transform));
+            AppServices.App.Register<IGameObjectPoolService, IGameObjectPoolDebugService>(new GameObjectPoolService(transform));
         }
     }
 }

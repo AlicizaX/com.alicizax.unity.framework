@@ -9,12 +9,10 @@ namespace AlicizaX.Scene.Runtime
     {
         private void Awake()
         {
-            if (!AppServices.TryGetApp<ISceneService>(out _))
+            if (!AppServices.App.TryGet<ISceneService>(out _))
             {
-            AppServices.RegisterApp<ISceneService>(new SceneService());
+                AppServices.App.Register<ISceneService>(new SceneService());
             }
-
-            AppServices.EnsureScene();
         }
     }
 }

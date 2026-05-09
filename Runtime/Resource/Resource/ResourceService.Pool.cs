@@ -61,7 +61,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="objectPoolModule">对象池管理器。</param>
         public void CreateAssetPool( )
         {
-            _assetPool = Context.Require<IObjectPoolService>().CreatePool<AssetObject>(
+            _assetPool = Require<IObjectPoolService>().CreatePool<AssetObject>(
                 ObjectPoolCreateOptions.Multi("Asset Pool"));
         }
     }

@@ -42,7 +42,7 @@ namespace AlicizaX.Resource.Runtime
             enabled = false;
             Application.lowMemory += OnLowMemory;
             yield return new WaitForEndOfFrame();
-            IObjectPoolService objectPoolComponent = AppServices.Require<IObjectPoolService>();
+            IObjectPoolService objectPoolComponent = AppServices.App.Require<IObjectPoolService>();
             _assetItemPool = objectPoolComponent.CreatePool<AssetItemObject>(
                 new ObjectPoolCreateOptions(
                     name: "SetAssetPool",

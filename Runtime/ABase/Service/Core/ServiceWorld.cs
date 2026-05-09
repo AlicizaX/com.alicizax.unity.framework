@@ -58,15 +58,6 @@ namespace AlicizaX
             return scope != null;
         }
 
-        internal ServiceScope ResetScene(int order = ServiceDomainOrder.Scene)
-        {
-            DestroyScene();
-            return EnsureScene(order);
-        }
-
-        internal bool DestroyScene()
-            => DestroyScope(ServiceScopeKind.Scene);
-
         internal ServiceScope EnsureGameplay(int order = ServiceDomainOrder.Gameplay)
             => IsAlive(ServiceScopeKind.Gameplay)
                 ? _scopesByKind[(int)ServiceScopeKind.Gameplay]
@@ -77,9 +68,6 @@ namespace AlicizaX
             scope = IsAlive(ServiceScopeKind.Gameplay) ? _scopesByKind[(int)ServiceScopeKind.Gameplay] : null;
             return scope != null;
         }
-
-        internal bool DestroyGameplay()
-            => DestroyScope(ServiceScopeKind.Gameplay);
 
         internal bool TryGet<T>(out T service) where T : class, IService
             => TryGet(null, out service);
@@ -174,17 +162,6 @@ namespace AlicizaX
             return scope != null && !scope.IsDisposed;
         }
 
-        private bool DestroyScope(ServiceScopeKind kind)
-        {
-            if (!IsAlive(kind)) return false;
-
-            var scope = _scopesByKind[(int)kind];
-            _scopesByKind[(int)kind] = null;
-            RemoveActiveScope(scope);
-            scope.Dispose();
-            return true;
-        }
-
         private ServiceScope CreateScopeInternal(ServiceScopeKind kind, string scopeName, int order)
         {
             if (IsAlive(kind))
@@ -195,20 +172,6 @@ namespace AlicizaX
             _activeScopes[_activeScopeCount++] = scope;
             _scopesDirty = true;
             return scope;
-        }
-
-        private void RemoveActiveScope(ServiceScope scope)
-        {
-            for (var i = 0; i < _activeScopeCount; i++)
-            {
-                if (!ReferenceEquals(_activeScopes[i], scope)) continue;
-
-                _activeScopeCount--;
-                _activeScopes[i] = _activeScopes[_activeScopeCount];
-                _activeScopes[_activeScopeCount] = null;
-                _scopesDirty = true;
-                return;
-            }
         }
 
         private void SortScopesIfDirty()

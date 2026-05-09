@@ -414,7 +414,7 @@ namespace AlicizaX
             ReleaseRulePoolMaps();
             _catalog.Dispose();
 
-            IResourceService resourceService = AppServices.Require<IResourceService>();
+            IResourceService resourceService = AppServices.App.Require<IResourceService>();
             PoolConfigScriptableObject configAsset = resourceService.LoadAsset<PoolConfigScriptableObject>(poolConfigPath);
             _catalog = configAsset == null ? PoolCompiledCatalog.Empty() : configAsset.BuildCatalog();
             if (configAsset != null)
@@ -797,7 +797,7 @@ namespace AlicizaX
         private bool TryResolveAssetBundleAssetPath(string location, out string assetPath)
         {
             assetPath = null;
-            if (!AppServices.TryGet(out IResourceService resourceService))
+            if (!AppServices.HasWorld || !AppServices.App.TryGet(out IResourceService resourceService))
             {
                 return false;
             }

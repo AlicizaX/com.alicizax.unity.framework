@@ -179,7 +179,7 @@ namespace AlicizaX
         {
             Log.Warning("Low memory reported...");
 
-            IObjectPoolService objectPoolModule = AppServices.Require<IObjectPoolService>();
+            IObjectPoolService objectPoolModule = AppServices.App.Require<IObjectPoolService>();
             if (objectPoolModule != null)
             {
                 objectPoolModule.ReleaseAllUnused();

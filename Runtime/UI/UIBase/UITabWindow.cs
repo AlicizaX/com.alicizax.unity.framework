@@ -31,7 +31,7 @@ namespace AlicizaX.UI.Runtime
 
         protected void CloseSelf(bool forceClose = false)
         {
-            AppServices.Require<IUIService>().CloseUI(RuntimeTypeHandler, forceClose);
+            AppServices.App.Require<IUIService>().CloseUI(RuntimeTypeHandler, forceClose);
         }
 
         internal sealed override void BindUIHolder(UIHolderObjectBase holder, UIBase owner)

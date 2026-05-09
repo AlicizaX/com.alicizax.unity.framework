@@ -26,7 +26,7 @@ namespace AlicizaX.UI.Runtime
 
         private void Awake()
         {
-            _uiService = AppServices.RegisterApp<IUIService>(new UIService());
+            _uiService = AppServices.App.Register<IUIService>(new UIService());
             if (uiRoot == null)
             {
                 throw new GameFrameworkException("UIRoot Prefab is invalid.");

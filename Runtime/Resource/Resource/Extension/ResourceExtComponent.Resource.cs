@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Threading;
 using Cysharp.Text;
 using Cysharp.Threading.Tasks;
@@ -37,7 +37,7 @@ namespace AlicizaX.Resource.Runtime
 
         private void InitializedResources()
         {
-            _resourceService = AppServices.Require<IResourceService>();
+            _resourceService = AppServices.App.Require<IResourceService>();
         }
 
         private void OnLoadAssetSuccess(string assetName, object asset, float duration, object userdata)

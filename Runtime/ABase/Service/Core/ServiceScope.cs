@@ -4,7 +4,7 @@ using Cysharp.Text;
 
 namespace AlicizaX
 {
-    internal sealed class ServiceScope : IDisposable, IServiceRegistry
+    public sealed class ServiceScope : IDisposable
     {
         private const int MissingIndex = -1;
 
@@ -198,7 +198,7 @@ namespace AlicizaX
             }
 
             ValidateContracts(contracts);
-            lifecycle.Initialize(new ServiceContext(World, this));
+            lifecycle.Initialize(World, this);
             AddEntry(service, contracts);
             return service;
         }
@@ -282,7 +282,7 @@ namespace AlicizaX
 
         private static void ValidateService(IService service)
         {
-            if (service is IMonoService &&
+            if (service is MonoServiceBehaviour &&
                 (service is IServiceTickable ||
                  service is IServiceLateTickable ||
                  service is IServiceFixedTickable ||
@@ -411,7 +411,7 @@ namespace AlicizaX
                 {
                     if (!_entriesByService.ContainsKey(change.Service))
                     {
-                        ((IServiceLifecycle)change.Service).Initialize(new ServiceContext(World, this));
+                        ((IServiceLifecycle)change.Service).Initialize(World, this);
                         AddEntry(change.Service, change.Contracts);
                     }
                     continue;

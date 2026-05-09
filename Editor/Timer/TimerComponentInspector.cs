@@ -1,4 +1,4 @@
-﻿using AlicizaX.Editor;
+using AlicizaX.Editor;
 using AlicizaX.Timer.Runtime;
 using UnityEditor;
 using UnityEngine;
@@ -103,7 +103,7 @@ namespace AlicizaX.Timer.Editor
                 return;
             }
 
-            if (!AppServices.TryGet<ITimerService>(out ITimerService timerService))
+            if (!AppServices.HasWorld || !AppServices.App.TryGet<ITimerService>(out ITimerService timerService))
             {
                 EditorUtils.TrHelpIconText("Timer service is not initialized.", MessageType.Info);
                 return;

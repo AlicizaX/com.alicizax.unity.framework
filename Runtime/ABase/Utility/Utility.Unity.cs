@@ -280,13 +280,13 @@ namespace AlicizaX
                     return;
                 }
 
-                if (AppServices.TryGet(out UtilityLoopService service))
+                if (AppServices.App.TryGet(out UtilityLoopService service))
                 {
                     _loopService = service;
                     return;
                 }
 
-                _loopService = AppServices.RegisterAppSelf(new UtilityLoopService());
+                _loopService = AppServices.App.RegisterSelf(new UtilityLoopService());
             }
 
             private static UtilityLoopService EnsureLoopService()

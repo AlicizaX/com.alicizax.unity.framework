@@ -15,7 +15,7 @@ namespace AlicizaX
 
         private void Awake()
         {
-            _mObjectPoolService = AppServices.RegisterApp<IObjectPoolService>(new ObjectPoolService());
+            _mObjectPoolService = AppServices.App.Register<IObjectPoolService>(new ObjectPoolService());
             Application.lowMemory += OnLowMemory;
         }
 

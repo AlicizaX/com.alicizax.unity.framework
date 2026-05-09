@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Cysharp.Text;
 using AlicizaX;
 using UnityEngine;
@@ -159,7 +159,7 @@ namespace AlicizaX.Resource.Runtime
 
         private void Awake()
         {
-            _resourceService = AppServices.RegisterApp<IResourceService>(new ResourceService());
+            _resourceService = AppServices.App.Register<IResourceService>(new ResourceService());
 
             Application.lowMemory += OnLowMemory;
 #if UNITY_EDITOR
@@ -186,7 +186,7 @@ namespace AlicizaX.Resource.Runtime
             Application.lowMemory -= OnLowMemory;
         }
 
-        #region 閲婃斁璧勬簮
+        #region 释放资源
 
         public void ForceUnloadUnusedAssets(bool performGCCollect)
         {

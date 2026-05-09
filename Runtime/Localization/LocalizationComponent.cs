@@ -1,4 +1,4 @@
-﻿using AlicizaX.Resource.Runtime;
+using AlicizaX.Resource.Runtime;
 using UnityEngine;
 
 namespace AlicizaX.Localization.Runtime
@@ -50,9 +50,9 @@ namespace AlicizaX.Localization.Runtime
 
         private void Awake()
         {
-            if (!AppServices.TryGetApp<ILocalizationService>(out _mLocalizationService))
+            if (!AppServices.App.TryGet<ILocalizationService>(out _mLocalizationService))
             {
-                _mLocalizationService = AppServices.RegisterApp<ILocalizationService>(new LocalizationService());
+                _mLocalizationService = AppServices.App.Register<ILocalizationService>(new LocalizationService());
             }
 
             if (_mLocalizationService == null)

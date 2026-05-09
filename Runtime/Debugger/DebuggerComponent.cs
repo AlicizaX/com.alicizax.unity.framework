@@ -263,9 +263,9 @@ namespace AlicizaX.Debugger.Runtime
         {
             _instance = this;
 
-            if (!AppServices.TryGetApp<IDebuggerService>(out _mDebuggerService))
+            if (!AppServices.App.TryGet<IDebuggerService>(out _mDebuggerService))
             {
-            _mDebuggerService = AppServices.RegisterApp<IDebuggerService>(new DebuggerService());
+            _mDebuggerService = AppServices.App.Register<IDebuggerService>(new DebuggerService());
             }
 
             if (_mDebuggerService == null)

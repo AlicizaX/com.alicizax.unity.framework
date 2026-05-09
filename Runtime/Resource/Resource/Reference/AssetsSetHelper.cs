@@ -1,4 +1,4 @@
-﻿using AlicizaX;
+using AlicizaX;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
@@ -147,7 +147,7 @@ namespace AlicizaX.Resource.Runtime
         {
             if (_resourceService == null)
             {
-                _resourceService = AppServices.Require<IResourceService>();
+                _resourceService = AppServices.App.Require<IResourceService>();
             }
         }
 
