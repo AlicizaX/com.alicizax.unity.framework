@@ -8,7 +8,7 @@ namespace AlicizaX.UI.Editor
 {
     public static class UIGenerateQuick
     {
-        [MenuItem("GameObject/UI生成绑定", priority = 10)]
+        [MenuItem("GameObject/UI生成/绑定", priority = -1000)]
         public static void UIGenerateBind()
         {
             GameObject selectedObject = Selection.gameObjects.FirstOrDefault();
@@ -37,7 +37,7 @@ namespace AlicizaX.UI.Editor
             Debug.Log("没有找到符合规则路径的生成配置 请检查!");
         }
 
-        [MenuItem("GameObject/UI生成绑定 仅复制属性", priority = 11)]
+        [MenuItem("GameObject/UI生成/仅复制属性", priority = -1000)]
         public static void UICopyBindVariableContent()
         {
             GameObject selectedObject = Selection.gameObjects.FirstOrDefault();

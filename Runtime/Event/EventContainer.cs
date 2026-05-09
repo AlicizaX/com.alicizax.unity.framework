@@ -52,7 +52,7 @@ namespace AlicizaX
 #if UNITY_EDITOR
             _activeValueHandlers = new System.Collections.Generic.HashSet<Action<TPayload>>();
             _activeInHandlers = new System.Collections.Generic.HashSet<InEventHandler<TPayload>>();
-            EventDebugRegistry.RegisterContainer<TPayload>(
+            EventDebugRegistry.RegisterPayloadContainer<TPayload>(
                 GetDebugSubscriberCount,
                 GetDebugCapacity,
                 GetDebugValueSubscriberCount,
@@ -69,13 +69,16 @@ namespace AlicizaX
             ThrowIfMutatingDuringPublish("subscribe");
 
 #if UNITY_EDITOR
-            if (_activeValueHandlers.Contains(callback))
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode && _activeValueHandlers.Contains(callback))
             {
                 Log.Warning($"重复订阅事件处理程序: {callback.Method.Name}");
                 return default;
             }
 
-            _activeValueHandlers.Add(callback);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                _activeValueHandlers.Add(callback);
+            }
 #endif
 
             return SubscribeCore(callback, null);
@@ -89,13 +92,16 @@ namespace AlicizaX
             ThrowIfMutatingDuringPublish("subscribe");
 
 #if UNITY_EDITOR
-            if (_activeInHandlers.Contains(callback))
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode && _activeInHandlers.Contains(callback))
             {
                 Log.Warning($"重复订阅事件处理程序: {callback.Method.Name}");
                 return default;
             }
 
-            _activeInHandlers.Add(callback);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                _activeInHandlers.Add(callback);
+            }
 #endif
 
             return SubscribeCore(null, callback);
@@ -126,7 +132,10 @@ namespace AlicizaX
             }
 
 #if UNITY_EDITOR
-            EventDebugRegistry.RecordSubscribe<TPayload>(_activeCount, _valueCallbacks.Length);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                EventDebugRegistry.RecordSubscribe<TPayload>(_activeCount, _valueCallbacks.Length);
+            }
 #endif
 
             return new EventRuntimeHandle(TypeId, handlerIndex, version);
@@ -167,7 +176,10 @@ namespace AlicizaX
             }
 
 #if UNITY_EDITOR
-            EventDebugRegistry.RecordResize<TPayload>(_activeCount, _valueCallbacks.Length);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                EventDebugRegistry.RecordResize<TPayload>(_activeCount, _valueCallbacks.Length);
+            }
 #endif
 
             return _freeSlots[--_freeCount];
@@ -192,7 +204,10 @@ namespace AlicizaX
             }
 
 #if UNITY_EDITOR
-            RemoveActiveHandler(handlerIndex);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                RemoveActiveHandler(handlerIndex);
+            }
 #endif
 
             if (_inCallbacks[handlerIndex] != null)
@@ -212,56 +227,153 @@ namespace AlicizaX
             _freeSlots[_freeCount++] = handlerIndex;
 
 #if UNITY_EDITOR
-            EventDebugRegistry.RecordUnsubscribe<TPayload>(_activeCount, _valueCallbacks.Length);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                EventDebugRegistry.RecordUnsubscribe<TPayload>(_activeCount, _valueCallbacks.Length);
+            }
 #endif
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Publish(in TPayload payload)
         {
+#if UNITY_EDITOR
+            if (EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                PublishCore(in payload);
+                return;
+            }
+#endif
+
             _publishDepth++;
             try
             {
-                int count = _activeCount;
 #if UNITY_EDITOR
-                EventDebugRegistry.RecordPublish<TPayload>(count, _valueCallbacks.Length);
+                EventDebugRegistry.RecordPublish<TPayload>(_activeCount, _valueCallbacks.Length);
 #endif
-                if (count == 0) return;
-
-                int[] indices = _activeIndices;
-                Action<TPayload>[] valueCallbacks = _valueCallbacks;
-                InEventHandler<TPayload>[] inCallbacks = _inCallbacks;
-
-                int i = 0;
-                int unrolled = count & ~3;
-
-                for (; i < unrolled; i += 4)
-                {
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 2], in payload);
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 3], in payload);
-                }
-
-                switch (count - i)
-                {
-                    case 3:
-                        InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                        InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
-                        InvokeHandler(valueCallbacks, inCallbacks, indices[i + 2], in payload);
-                        break;
-                    case 2:
-                        InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                        InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
-                        break;
-                    case 1:
-                        InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                        break;
-                }
+                PublishCore(in payload);
             }
             finally
             {
                 _publishDepth--;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void PublishCore(in TPayload payload)
+        {
+            int count = _activeCount;
+            if (count == 0) return;
+
+            int[] indices = _activeIndices;
+            Action<TPayload>[] valueCallbacks = _valueCallbacks;
+            InEventHandler<TPayload>[] inCallbacks = _inCallbacks;
+
+            if (_inSubscriberCount == 0)
+            {
+                PublishValueOnly(valueCallbacks, indices, count, in payload);
+                return;
+            }
+
+            if (_valueSubscriberCount == 0)
+            {
+                PublishInOnly(inCallbacks, indices, count, in payload);
+                return;
+            }
+
+            PublishMixed(valueCallbacks, inCallbacks, indices, count, in payload);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void PublishValueOnly(Action<TPayload>[] valueCallbacks, int[] indices, int count, in TPayload payload)
+        {
+            int i = 0;
+            int unrolled = count & ~3;
+
+            for (; i < unrolled; i += 4)
+            {
+                valueCallbacks[indices[i]](payload);
+                valueCallbacks[indices[i + 1]](payload);
+                valueCallbacks[indices[i + 2]](payload);
+                valueCallbacks[indices[i + 3]](payload);
+            }
+
+            switch (count - i)
+            {
+                case 3:
+                    valueCallbacks[indices[i]](payload);
+                    valueCallbacks[indices[i + 1]](payload);
+                    valueCallbacks[indices[i + 2]](payload);
+                    break;
+                case 2:
+                    valueCallbacks[indices[i]](payload);
+                    valueCallbacks[indices[i + 1]](payload);
+                    break;
+                case 1:
+                    valueCallbacks[indices[i]](payload);
+                    break;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void PublishInOnly(InEventHandler<TPayload>[] inCallbacks, int[] indices, int count, in TPayload payload)
+        {
+            int i = 0;
+            int unrolled = count & ~3;
+
+            for (; i < unrolled; i += 4)
+            {
+                inCallbacks[indices[i]](in payload);
+                inCallbacks[indices[i + 1]](in payload);
+                inCallbacks[indices[i + 2]](in payload);
+                inCallbacks[indices[i + 3]](in payload);
+            }
+
+            switch (count - i)
+            {
+                case 3:
+                    inCallbacks[indices[i]](in payload);
+                    inCallbacks[indices[i + 1]](in payload);
+                    inCallbacks[indices[i + 2]](in payload);
+                    break;
+                case 2:
+                    inCallbacks[indices[i]](in payload);
+                    inCallbacks[indices[i + 1]](in payload);
+                    break;
+                case 1:
+                    inCallbacks[indices[i]](in payload);
+                    break;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void PublishMixed(Action<TPayload>[] valueCallbacks, InEventHandler<TPayload>[] inCallbacks, int[] indices, int count, in TPayload payload)
+        {
+            int i = 0;
+            int unrolled = count & ~3;
+
+            for (; i < unrolled; i += 4)
+            {
+                InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
+                InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
+                InvokeHandler(valueCallbacks, inCallbacks, indices[i + 2], in payload);
+                InvokeHandler(valueCallbacks, inCallbacks, indices[i + 3], in payload);
+            }
+
+            switch (count - i)
+            {
+                case 3:
+                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
+                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
+                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 2], in payload);
+                    break;
+                case 2:
+                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
+                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
+                    break;
+                case 1:
+                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
+                    break;
             }
         }
 
@@ -306,7 +418,10 @@ namespace AlicizaX
             }
 
 #if UNITY_EDITOR
-            EventDebugRegistry.RecordResize<TPayload>(_activeCount, _valueCallbacks.Length);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                EventDebugRegistry.RecordResize<TPayload>(_activeCount, _valueCallbacks.Length);
+            }
 #endif
         }
 
@@ -319,7 +434,10 @@ namespace AlicizaX
                 int idx = _activeIndices[i];
 
 #if UNITY_EDITOR
-                RemoveActiveHandler(idx);
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    RemoveActiveHandler(idx);
+                }
 #endif
 
                 _valueCallbacks[idx] = null;
@@ -335,7 +453,10 @@ namespace AlicizaX
             _inSubscriberCount = 0;
 
 #if UNITY_EDITOR
-            EventDebugRegistry.RecordClear<TPayload>(_activeCount, _valueCallbacks.Length);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                EventDebugRegistry.RecordClear<TPayload>(_activeCount, _valueCallbacks.Length);
+            }
             _activeValueHandlers.Clear();
             _activeInHandlers.Clear();
 #endif
@@ -347,7 +468,10 @@ namespace AlicizaX
             if (_publishDepth <= 0) return;
 
 #if UNITY_EDITOR
-            EventDebugRegistry.RecordMutationRejected<TPayload>(_activeCount, _valueCallbacks.Length);
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                EventDebugRegistry.RecordMutationRejected<TPayload>(_activeCount, _valueCallbacks.Length);
+            }
 #endif
             throw new InvalidOperationException(
                 $"EventContainer<{typeof(TPayload).Name}> cannot {operation} while publishing. " +
@@ -422,6 +546,7 @@ namespace AlicizaX
                     unityTarget,
                     isStatic,
                     isUnityObjectDestroyed,
+                    false,
                     usesInParameter,
                     isCompilerGeneratedTarget,
                     isCompilerGeneratedMethod);

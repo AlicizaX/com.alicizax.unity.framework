@@ -9,7 +9,7 @@ namespace AlicizaX.Editor
 {
     internal sealed class EventMonitorWindow : EditorWindow
     {
-        private const string MenuPath = "AlicizaX/Event 监视器";
+        private const string MenuPath = "AlicizaX/Event Monitor";
         private const double RepaintIntervalSeconds = 0.25d;
         private const float DefaultLeftPanelWidth = 360f;
         private const float MinLeftPanelWidth = 260f;
@@ -271,7 +271,7 @@ namespace AlicizaX.Editor
             string capacityText = row.Initialized ? row.Summary.Capacity.ToString() : row.InitialCapacity.ToString();
             string status = row.Initialized ? "已初始化" : "未初始化";
             EditorGUILayout.LabelField(
-                $"订阅 {row.Summary.SubscriberCount} | in {row.Summary.InSubscriberCount} / 值 {row.Summary.ValueSubscriberCount} | 容量 {capacityText} | 发布 {row.Summary.PublishCount}",
+                $"订阅 {row.Summary.SubscriberCount} | 无参 {row.Summary.EmptySubscriberCount} / in {row.Summary.InSubscriberCount} / 值 {row.Summary.ValueSubscriberCount} | 容量 {capacityText} | 发布 {row.Summary.PublishCount}",
                 EditorStyles.miniLabel);
             EditorGUILayout.LabelField($"{status} | 初始容量 {row.InitialCapacity}", EditorStyles.miniLabel);
 
@@ -318,7 +318,7 @@ namespace AlicizaX.Editor
             GUILayout.Label("摘要", EditorStyles.boldLabel);
             EditorGUILayout.LabelField("初始容量", initialCapacity.ToString());
             EditorGUILayout.LabelField("当前订阅数", summary.SubscriberCount.ToString());
-            EditorGUILayout.LabelField("当前派发模式", $"in {summary.InSubscriberCount} | 值 {summary.ValueSubscriberCount}");
+            EditorGUILayout.LabelField("当前派发模式", $"无参 {summary.EmptySubscriberCount} | in {summary.InSubscriberCount} | 值 {summary.ValueSubscriberCount}");
             EditorGUILayout.LabelField("峰值订阅数", summary.PeakSubscriberCount.ToString());
             EditorGUILayout.LabelField("当前容量", summary.Capacity.ToString());
             EditorGUILayout.LabelField("容量利用率", FormatRatio(summary.SubscriberCount, summary.Capacity));
@@ -371,12 +371,14 @@ namespace AlicizaX.Editor
             long unsubscribeDelta = currentSummary.UnsubscribeCount - snapshot.Summary.UnsubscribeCount;
             int resizeDelta = currentSummary.ResizeCount - snapshot.Summary.ResizeCount;
             int capacityDelta = currentSummary.Capacity - snapshot.Summary.Capacity;
+            int emptySubscriberDelta = currentSummary.EmptySubscriberCount - snapshot.Summary.EmptySubscriberCount;
             int valueSubscriberDelta = currentSummary.ValueSubscriberCount - snapshot.Summary.ValueSubscriberCount;
             int inSubscriberDelta = currentSummary.InSubscriberCount - snapshot.Summary.InSubscriberCount;
             long mutationRejectedDelta = currentSummary.MutationRejectedCount - snapshot.Summary.MutationRejectedCount;
 
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             EditorGUILayout.LabelField("订阅数变化", FormatSigned(subscriberDelta));
+            EditorGUILayout.LabelField("无参订阅变化", FormatSigned(emptySubscriberDelta));
             EditorGUILayout.LabelField("in 订阅变化", FormatSigned(inSubscriberDelta));
             EditorGUILayout.LabelField("值传参订阅变化", FormatSigned(valueSubscriberDelta));
             EditorGUILayout.LabelField("发布次数变化", FormatSigned(publishDelta));
@@ -456,6 +458,7 @@ namespace AlicizaX.Editor
                 }
 
                 if (summary.SubscriberCount != snapshot.Summary.SubscriberCount ||
+                    summary.EmptySubscriberCount != snapshot.Summary.EmptySubscriberCount ||
                     summary.ValueSubscriberCount != snapshot.Summary.ValueSubscriberCount ||
                     summary.InSubscriberCount != snapshot.Summary.InSubscriberCount ||
                     summary.PublishCount != snapshot.Summary.PublishCount ||
@@ -480,7 +483,7 @@ namespace AlicizaX.Editor
             EditorGUILayout.LabelField("版本", subscriber.Version.ToString());
             EditorGUILayout.LabelField("目标", subscriber.TargetTypeName);
             EditorGUILayout.LabelField("类型", subscriber.IsStatic ? "静态方法" : "实例方法");
-            EditorGUILayout.LabelField("派发方式", subscriber.UsesInParameter ? "in" : "按值复制");
+            EditorGUILayout.LabelField("派发方式", GetSubscriberDispatchModeText(subscriber));
 
             if (subscriber.IsUnityObjectDestroyed)
             {
@@ -552,7 +555,7 @@ namespace AlicizaX.Editor
                 bool initialized = summaries.TryGetValue(eventType, out EventDebugSummary summary);
                 EventDebugSummary rowSummary = initialized
                     ? summary
-                    : new EventDebugSummary(eventType, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                    : new EventDebugSummary(eventType, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
                 EventRow row = new EventRow(eventType, initialized, rowSummary, GetInitialCapacity(eventType));
                 if (MatchesFilter(row))
@@ -822,9 +825,26 @@ namespace AlicizaX.Editor
             {
                 builder.Append(" [static]");
             }
-            builder.Append(subscriber.UsesInParameter ? " [in]" : " [value]");
+            if (subscriber.IsParameterless)
+            {
+                builder.Append(" [empty]");
+            }
+            else
+            {
+                builder.Append(subscriber.UsesInParameter ? " [in]" : " [value]");
+            }
 
             return builder.ToString();
+        }
+
+        private static string GetSubscriberDispatchModeText(EventDebugSubscriberInfo subscriber)
+        {
+            if (subscriber.IsParameterless)
+            {
+                return "无参";
+            }
+
+            return subscriber.UsesInParameter ? "in" : "按值复制";
         }
 
         private static string GetOperationKindText(EventDebugOperationKind kind)

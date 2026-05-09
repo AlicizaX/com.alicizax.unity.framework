@@ -22,6 +22,7 @@ namespace AlicizaX
         internal readonly int SubscriberCount;
         internal readonly int PeakSubscriberCount;
         internal readonly int Capacity;
+        internal readonly int EmptySubscriberCount;
         internal readonly int ValueSubscriberCount;
         internal readonly int InSubscriberCount;
         internal readonly long PublishCount;
@@ -39,6 +40,7 @@ namespace AlicizaX
             int subscriberCount,
             int peakSubscriberCount,
             int capacity,
+            int emptySubscriberCount,
             int valueSubscriberCount,
             int inSubscriberCount,
             long publishCount,
@@ -55,6 +57,7 @@ namespace AlicizaX
             SubscriberCount = subscriberCount;
             PeakSubscriberCount = peakSubscriberCount;
             Capacity = capacity;
+            EmptySubscriberCount = emptySubscriberCount;
             ValueSubscriberCount = valueSubscriberCount;
             InSubscriberCount = inSubscriberCount;
             PublishCount = publishCount;
@@ -78,6 +81,7 @@ namespace AlicizaX
         internal readonly UnityEngine.Object UnityTarget;
         internal readonly bool IsStatic;
         internal readonly bool IsUnityObjectDestroyed;
+        internal readonly bool IsParameterless;
         internal readonly bool UsesInParameter;
         internal readonly bool IsCompilerGeneratedTarget;
         internal readonly bool IsCompilerGeneratedMethod;
@@ -91,6 +95,7 @@ namespace AlicizaX
             UnityEngine.Object unityTarget,
             bool isStatic,
             bool isUnityObjectDestroyed,
+            bool isParameterless,
             bool usesInParameter,
             bool isCompilerGeneratedTarget,
             bool isCompilerGeneratedMethod)
@@ -103,6 +108,7 @@ namespace AlicizaX
             UnityTarget = unityTarget;
             IsStatic = isStatic;
             IsUnityObjectDestroyed = isUnityObjectDestroyed;
+            IsParameterless = isParameterless;
             UsesInParameter = usesInParameter;
             IsCompilerGeneratedTarget = isCompilerGeneratedTarget;
             IsCompilerGeneratedMethod = isCompilerGeneratedMethod;
@@ -142,11 +148,14 @@ namespace AlicizaX
         private sealed class State
         {
             internal readonly Type EventType;
-            internal Func<int> SubscriberCountProvider;
-            internal Func<int> CapacityProvider;
+            internal Func<int> PayloadSubscriberCountProvider;
+            internal Func<int> PayloadCapacityProvider;
             internal Func<int> ValueSubscriberCountProvider;
             internal Func<int> InSubscriberCountProvider;
-            internal Func<EventDebugSubscriberInfo[]> SubscribersProvider;
+            internal Func<EventDebugSubscriberInfo[]> PayloadSubscribersProvider;
+            internal Func<int> EmptySubscriberCountProvider;
+            internal Func<int> EmptyCapacityProvider;
+            internal Func<EventDebugSubscriberInfo[]> EmptySubscribersProvider;
 
             internal int PeakSubscriberCount;
             internal long PublishCount;
@@ -173,6 +182,8 @@ namespace AlicizaX
 
         internal static bool BackgroundFullHistoryEnabled { get; set; }
 
+        internal static bool BenchmarkReleaseLikeMode { get; set; }
+
         internal static bool DetailedHistoryEnabled => _detailedHistoryRequestCount > 0 || BackgroundFullHistoryEnabled;
 
         internal static void BeginDetailedHistory()
@@ -188,7 +199,7 @@ namespace AlicizaX
             }
         }
 
-        internal static void RegisterContainer<T>(
+        internal static void RegisterPayloadContainer<T>(
             Func<int> subscriberCountProvider,
             Func<int> capacityProvider,
             Func<int> valueSubscriberCountProvider,
@@ -196,19 +207,25 @@ namespace AlicizaX
             Func<EventDebugSubscriberInfo[]> subscribersProvider)
             where T : struct, IEventArgs
         {
-            Type eventType = typeof(T);
-            if (!_states.TryGetValue(eventType, out State state))
-            {
-                state = new State(eventType);
-                _states.Add(eventType, state);
-                _registrationOrder.Add(eventType);
-            }
-
-            state.SubscriberCountProvider = subscriberCountProvider;
-            state.CapacityProvider = capacityProvider;
+            State state = GetOrCreateState(typeof(T));
+            state.PayloadSubscriberCountProvider = subscriberCountProvider;
+            state.PayloadCapacityProvider = capacityProvider;
             state.ValueSubscriberCountProvider = valueSubscriberCountProvider;
             state.InSubscriberCountProvider = inSubscriberCountProvider;
-            state.SubscribersProvider = subscribersProvider;
+            state.PayloadSubscribersProvider = subscribersProvider;
+            state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCountProvider());
+        }
+
+        internal static void RegisterEmptyContainer<T>(
+            Func<int> subscriberCountProvider,
+            Func<int> capacityProvider,
+            Func<EventDebugSubscriberInfo[]> subscribersProvider)
+            where T : struct, IEventArgs
+        {
+            State state = GetOrCreateState(typeof(T));
+            state.EmptySubscriberCountProvider = subscriberCountProvider;
+            state.EmptyCapacityProvider = capacityProvider;
+            state.EmptySubscribersProvider = subscribersProvider;
             state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCountProvider());
         }
 
@@ -275,7 +292,7 @@ namespace AlicizaX
             if (_states.TryGetValue(eventType, out State state))
             {
                 summary = BuildSummary(state);
-                subscribers = state.SubscribersProvider?.Invoke() ?? Array.Empty<EventDebugSubscriberInfo>();
+                subscribers = BuildSubscribers(state);
                 return true;
             }
 
@@ -301,7 +318,7 @@ namespace AlicizaX
             foreach (Type eventType in _registrationOrder)
             {
                 State state = _states[eventType];
-                state.PeakSubscriberCount = state.SubscriberCountProvider?.Invoke() ?? 0;
+                state.PeakSubscriberCount = GetSubscriberCount(state);
                 state.PublishCount = 0;
                 state.SubscribeCount = 0;
                 state.UnsubscribeCount = 0;
@@ -327,19 +344,33 @@ namespace AlicizaX
             throw new InvalidOperationException($"Event debug state is not registered for {eventType.FullName}.");
         }
 
+        private static State GetOrCreateState(Type eventType)
+        {
+            if (!_states.TryGetValue(eventType, out State state))
+            {
+                state = new State(eventType);
+                _states.Add(eventType, state);
+                _registrationOrder.Add(eventType);
+            }
+
+            return state;
+        }
+
         private static EventDebugSummary BuildSummary(State state)
         {
-            int subscriberCount = state.SubscriberCountProvider?.Invoke() ?? 0;
-            int capacity = state.CapacityProvider?.Invoke() ?? 0;
+            int subscriberCount = GetSubscriberCount(state);
+            int capacity = GetCapacity(state);
+            int emptySubscriberCount = state.EmptySubscriberCountProvider?.Invoke() ?? 0;
             int valueSubscriberCount = state.ValueSubscriberCountProvider?.Invoke() ?? 0;
             int inSubscriberCount = state.InSubscriberCountProvider?.Invoke() ?? 0;
 
             return new EventDebugSummary(
                 state.EventType,
-                state.SubscriberCountProvider != null,
+                state.PayloadSubscriberCountProvider != null || state.EmptySubscriberCountProvider != null,
                 subscriberCount,
                 state.PeakSubscriberCount,
                 capacity,
+                emptySubscriberCount,
                 valueSubscriberCount,
                 inSubscriberCount,
                 state.PublishCount,
@@ -350,6 +381,39 @@ namespace AlicizaX
                 state.MutationRejectedCount,
                 state.LastOperationFrame,
                 state.LastOperationTicksUtc);
+        }
+
+        private static int GetSubscriberCount(State state)
+        {
+            return (state.PayloadSubscriberCountProvider?.Invoke() ?? 0) +
+                   (state.EmptySubscriberCountProvider?.Invoke() ?? 0);
+        }
+
+        private static int GetCapacity(State state)
+        {
+            return (state.PayloadCapacityProvider?.Invoke() ?? 0) +
+                   (state.EmptyCapacityProvider?.Invoke() ?? 0);
+        }
+
+        private static EventDebugSubscriberInfo[] BuildSubscribers(State state)
+        {
+            EventDebugSubscriberInfo[] payloadSubscribers = state.PayloadSubscribersProvider?.Invoke() ?? Array.Empty<EventDebugSubscriberInfo>();
+            EventDebugSubscriberInfo[] emptySubscribers = state.EmptySubscribersProvider?.Invoke() ?? Array.Empty<EventDebugSubscriberInfo>();
+
+            if (payloadSubscribers.Length == 0)
+            {
+                return emptySubscribers;
+            }
+
+            if (emptySubscribers.Length == 0)
+            {
+                return payloadSubscribers;
+            }
+
+            EventDebugSubscriberInfo[] subscribers = new EventDebugSubscriberInfo[payloadSubscribers.Length + emptySubscribers.Length];
+            Array.Copy(payloadSubscribers, 0, subscribers, 0, payloadSubscribers.Length);
+            Array.Copy(emptySubscribers, 0, subscribers, payloadSubscribers.Length, emptySubscribers.Length);
+            return subscribers;
         }
 
         private static void MarkOperation(State state, EventDebugOperationKind kind, int subscriberCount, int capacity, bool recordHistory)
