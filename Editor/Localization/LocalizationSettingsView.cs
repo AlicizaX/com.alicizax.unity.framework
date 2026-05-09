@@ -317,6 +317,7 @@ namespace AlicizaX.Localization.Editor
                 sb.AppendLine($"{memberIndent}public const string {languageName} = \"{languageName}\";");
             }
 
+
             sb.AppendLine();
             sb.AppendLine($"{memberIndent}public static readonly IReadOnlyList<string> Languages = new List<string>");
             sb.AppendLine($"{memberIndent}{{");
@@ -332,7 +333,29 @@ namespace AlicizaX.Localization.Editor
             }
 
             sb.AppendLine($"{memberIndent}}};");
+            sb.AppendLine();
+            sb.AppendLine($"{memberIndent}public static string IndexToString(int index)");
+            sb.AppendLine($"{memberIndent}{{");
+            sb.AppendLine($"{memberIndent}    if (index < 0 || index >= Languages.Count) return \"Unknown\";");
+            sb.AppendLine($"{memberIndent}    return Languages[index];");
+            sb.AppendLine($"{memberIndent}}}");
+            sb.AppendLine();
+            sb.AppendLine($"{memberIndent}public static int StringToIndex(string s)");
+            sb.AppendLine($"{memberIndent}{{");
+            sb.AppendLine($"{memberIndent}    int index = -1;");
+            sb.AppendLine($"{memberIndent}    for (int i = 0; i < Languages.Count; i++)");
+            sb.AppendLine($"{memberIndent}    {{");
+            sb.AppendLine($"{memberIndent}        if (Languages[i] == s)");
+            sb.AppendLine($"{memberIndent}        {{");
+            sb.AppendLine($"{memberIndent}            index = i;");
+            sb.AppendLine($"{memberIndent}            break;");
+            sb.AppendLine($"{memberIndent}        }}");
+            sb.AppendLine($"{memberIndent}    }}");
+            sb.AppendLine();
+            sb.AppendLine($"{memberIndent}    return index;");
+            sb.AppendLine($"{memberIndent}}}");
             sb.AppendLine($"{indent}}}");
+
 
             if (!string.IsNullOrWhiteSpace(namespaceName))
             {
