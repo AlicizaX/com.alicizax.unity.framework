@@ -92,6 +92,7 @@ namespace AlicizaX.Localization.Editor
             _languageTypesClassName = _serializedObject.FindProperty("generateLanguageTypesClassName");
             _commentLanguage = _serializedObject.FindProperty("generateScriptCodeFirstConfig");
             _generateLanguageTypesNamespace = _serializedObject.FindProperty("generateLanguageTypesNamespace");
+            EnsureSelectedLanguages();
             RefreshLanguagePopupOptions();
         }
 
@@ -126,6 +127,24 @@ namespace AlicizaX.Localization.Editor
             _serializedObject.ApplyModifiedProperties();
         }
 
+        private void EnsureSelectedLanguages()
+        {
+            LanguageType selectedLanguageTypes = (LanguageType)_selectedLanguageTypes.intValue & LanguageType.All;
+            if (selectedLanguageTypes == LanguageType.None)
+            {
+                selectedLanguageTypes = LanguageTypeUtility.Default;
+            }
+
+            if (_selectedLanguageTypes.intValue == (int)selectedLanguageTypes)
+            {
+                return;
+            }
+
+            _selectedLanguageTypes.intValue = (int)selectedLanguageTypes;
+            _serializedObject.ApplyModifiedProperties();
+            LocalizationConfiguration.Save();
+        }
+
         private void RefreshLocalizationTables()
         {
             _localizationTables.Clear();
@@ -149,7 +168,14 @@ namespace AlicizaX.Localization.Editor
                 LanguageType selectedLanguages = (LanguageType)EditorGUILayout.EnumFlagsField("Enabled Languages", (LanguageType)_selectedLanguageTypes.intValue);
                 if (EditorGUI.EndChangeCheck())
                 {
-                    _selectedLanguageTypes.intValue = (int)(selectedLanguages & LanguageType.All);
+                    selectedLanguages &= LanguageType.All;
+                    if (selectedLanguages == LanguageType.None)
+                    {
+                        EditorUtility.DisplayDialog("Invalid Language Selection", "At least one language must be enabled.", "OK");
+                        return;
+                    }
+
+                    _selectedLanguageTypes.intValue = (int)selectedLanguages;
                     _serializedObject.ApplyModifiedProperties();
                     SanitizeCommentLanguage();
                     LocalizationConfiguration.Save();
