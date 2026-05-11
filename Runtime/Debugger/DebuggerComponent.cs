@@ -21,7 +21,6 @@ namespace AlicizaX.Debugger.Runtime
         private const int DefaultPanelSortingOrder = short.MaxValue - 64;
         private const float MinWindowWidth = 420f;
         private const float MinWindowHeight = 320f;
-        private const float MaxWindowScale = 4f;
         private const float MinWindowScale = 0.5f;
         private const float ToggleClickMoveThreshold = 10f;
         private const float ToggleClickSuppressAfterDrag = 0.35f;
@@ -111,6 +110,7 @@ namespace AlicizaX.Debugger.Runtime
         private Label _headerTitle;
         private VisualElement _toggleButton;
         private Label _toggleFpsLabel;
+        private Button _resetLayoutButton;
         private Button _closeButton;
         private VisualElement _resizeHandle;
         private IDebuggerWindow _activeWindow;
@@ -247,7 +247,7 @@ namespace AlicizaX.Debugger.Runtime
             get => m_WindowScale;
             set
             {
-                float clampedValue = Mathf.Clamp(value, MinWindowScale, MaxWindowScale);
+                float clampedValue = Mathf.Max(value, MinWindowScale);
                 if (Mathf.Approximately(m_WindowScale, clampedValue))
                 {
                     return;
@@ -282,7 +282,7 @@ namespace AlicizaX.Debugger.Runtime
         private void OnValidate()
         {
             m_WindowOpacity = Mathf.Clamp(m_WindowOpacity, 0.2f, 1f);
-            m_WindowScale = Mathf.Clamp(m_WindowScale, MinWindowScale, MaxWindowScale);
+            m_WindowScale = Mathf.Max(m_WindowScale, MinWindowScale);
 
             if (!Application.isPlaying)
             {
@@ -795,7 +795,10 @@ namespace AlicizaX.Debugger.Runtime
 
             VisualElement headerActions = new VisualElement();
             headerActions.style.flexDirection = FlexDirection.Row;
+            _resetLayoutButton = CreateIconChromeButton("R", "Reset Layout", ResetLayout, DebuggerTheme.ButtonSurface);
+            _resetLayoutButton.style.marginRight = 8f * scale;
             _closeButton = CreateIconChromeButton("-", "Close", CloseToFloatingEntry, DebuggerTheme.Danger);
+            headerActions.Add(_resetLayoutButton);
             headerActions.Add(_closeButton);
 
             header.Add(headerLeft);
@@ -1636,10 +1639,8 @@ namespace AlicizaX.Debugger.Runtime
             float uiScale = GetUiScale();
             float screenW = Screen.width;
             float screenH = Screen.height;
-            float maxW = Mathf.Max(MinWindowWidth, screenW / Mathf.Max(0.001f, uiScale));
-            float maxH = Mathf.Max(MinWindowHeight, screenH / Mathf.Max(0.001f, uiScale));
-            rect.width = Mathf.Clamp(rect.width, MinWindowWidth, maxW);
-            rect.height = Mathf.Clamp(rect.height, MinWindowHeight, maxH);
+            rect.width = Mathf.Max(rect.width, MinWindowWidth);
+            rect.height = Mathf.Max(rect.height, MinWindowHeight);
 
             float scaledWidth = rect.width * uiScale;
             float scaledHeight = rect.height * uiScale;
