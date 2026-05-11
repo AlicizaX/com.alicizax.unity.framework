@@ -72,7 +72,7 @@ namespace AlicizaX.Editor
             }
         }
 
-        [MenuItem(MenuPath, priority = 310)]
+        [MenuItem(MenuPath, priority = 50)]
         private static void Open()
         {
             EventMonitorWindow window = GetWindow<EventMonitorWindow>();

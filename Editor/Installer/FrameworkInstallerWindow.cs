@@ -54,7 +54,7 @@ namespace AlicizaX.Editor
             HybridTemplate
         }
 
-        [MenuItem(MenuPath, false, -1000)]
+        [MenuItem(MenuPath, false, -3000)]
         private static void OpenWindow()
         {
             FrameworkInstallerWindow window = GetWindow<FrameworkInstallerWindow>();

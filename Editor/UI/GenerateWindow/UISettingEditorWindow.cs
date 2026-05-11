@@ -16,7 +16,7 @@ namespace AlicizaX.UI.Editor
 
         private static List<string> cacheFilterType;
 
-        [MenuItem("AlicizaX/UISetting Window")]
+        [MenuItem("AlicizaX/UISetting Window", false, 211)]
         private static void OpenWindow()
         {
             var window = GetWindow<UISettingEditorWindow>("UI Setting");
