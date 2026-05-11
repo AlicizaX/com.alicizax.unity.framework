@@ -553,28 +553,49 @@ namespace AlicizaX.Editor
 
         public static class Styles
         {
-            public static readonly GUIStyle Panel = new GUIStyle(EditorStyles.helpBox)
+            private static GUIStyle _panel;
+            private static GUIStyle _entryBody;
+            private static GUIStyle _fieldRow;
+            private static GUIStyle _toolbarButton;
+            private static GUIStyle _inlineButton;
+            private static GUIStyle _dropdownInput;
+            private static GUIStyle _dropdownLabel;
+            private static GUIStyle _searchTextField;
+            private static GUIStyle _searchPlaceholder;
+            private static GUIStyle _rowLabel;
+            private static GUIStyle _mutedLabel;
+            private static GUIStyle _fieldLabel;
+            private static GUIStyle _mutedMiniLabel;
+            private static GUIStyle _warningLabel;
+            private static GUIStyle _glyph;
+            private static GUIStyle _buttonGlyph;
+            private static GUIStyle _kindBadge;
+            private static GUIStyle _emptyState;
+            private static GUIStyle _pillOn;
+            private static GUIStyle _pillOff;
+
+            public static GUIStyle Panel => _panel ??= new GUIStyle(EditorStyles.helpBox)
             {
                 normal = { background = CreateTexture(Colors.Panel) },
                 padding = new RectOffset(4, 4, 4, 4),
                 margin = new RectOffset(0, 0, 2, 2)
             };
 
-            public static readonly GUIStyle EntryBody = new GUIStyle(EditorStyles.helpBox)
+            public static GUIStyle EntryBody => _entryBody ??= new GUIStyle(EditorStyles.helpBox)
             {
                 normal = { background = CreateTexture(Colors.Body) },
                 padding = new RectOffset(8, 8, 6, 8),
                 margin = new RectOffset(0, 0, 0, 4)
             };
 
-            public static readonly GUIStyle FieldRow = new GUIStyle(EditorStyles.helpBox)
+            public static GUIStyle FieldRow => _fieldRow ??= new GUIStyle(EditorStyles.helpBox)
             {
                 normal = { background = CreateTexture(Colors.FieldRow) },
                 padding = new RectOffset(5, 5, 3, 3),
                 margin = new RectOffset(0, 0, 1, 1)
             };
 
-            public static readonly GUIStyle ToolbarButton = new GUIStyle(EditorStyles.toolbarButton)
+            public static GUIStyle ToolbarButton => _toolbarButton ??= new GUIStyle(EditorStyles.toolbarButton)
             {
                 normal = { background = CreateTexture(new Color(0.18f, 0.18f, 0.19f, 1f)), textColor = Colors.MainText },
                 hover = { background = CreateTexture(new Color(0.25f, 0.25f, 0.26f, 1f)), textColor = Color.white },
@@ -585,7 +606,7 @@ namespace AlicizaX.Editor
                 margin = new RectOffset(0, 0, 0, 0)
             };
 
-            public static readonly GUIStyle InlineButton = new GUIStyle(EditorStyles.toolbarButton)
+            public static GUIStyle InlineButton => _inlineButton ??= new GUIStyle(EditorStyles.toolbarButton)
             {
                 normal = { background = CreateTexture(Colors.Button), textColor = Colors.MainText },
                 hover = { background = CreateTexture(Colors.ButtonHover), textColor = Color.white },
@@ -596,12 +617,12 @@ namespace AlicizaX.Editor
                 margin = new RectOffset(0, 0, 0, 0)
             };
 
-            public static readonly GUIStyle DropdownInput = new GUIStyle(GUIStyle.none)
+            public static GUIStyle DropdownInput => _dropdownInput ??= new GUIStyle(GUIStyle.none)
             {
                 fixedHeight = DefaultControlHeight
             };
 
-            public static readonly GUIStyle DropdownLabel = new GUIStyle(EditorStyles.label)
+            public static GUIStyle DropdownLabel => _dropdownLabel ??= new GUIStyle(EditorStyles.label)
             {
                 normal = { textColor = Colors.MainText },
                 alignment = TextAnchor.MiddleLeft,
@@ -611,7 +632,7 @@ namespace AlicizaX.Editor
                 margin = new RectOffset(0, 0, 0, 0)
             };
 
-            public static readonly GUIStyle SearchTextField = new GUIStyle(EditorStyles.textField)
+            public static GUIStyle SearchTextField => _searchTextField ??= new GUIStyle(EditorStyles.textField)
             {
                 normal = { background = CreateTexture(new Color(0.11f, 0.11f, 0.12f, 1f)), textColor = Colors.MainText },
                 focused = { background = CreateTexture(new Color(0.12f, 0.12f, 0.13f, 1f)), textColor = Colors.MainText },
@@ -621,56 +642,56 @@ namespace AlicizaX.Editor
                 fixedHeight = 22f
             };
 
-            public static readonly GUIStyle SearchPlaceholder = new GUIStyle(EditorStyles.label)
+            public static GUIStyle SearchPlaceholder => _searchPlaceholder ??= new GUIStyle(EditorStyles.label)
             {
                 normal = { textColor = Colors.MutedText },
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle RowLabel = new GUIStyle(EditorStyles.label)
+            public static GUIStyle RowLabel => _rowLabel ??= new GUIStyle(EditorStyles.label)
             {
                 normal = { textColor = Colors.MainText },
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle MutedLabel = new GUIStyle(EditorStyles.label)
+            public static GUIStyle MutedLabel => _mutedLabel ??= new GUIStyle(EditorStyles.label)
             {
                 normal = { textColor = Colors.MutedText },
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle FieldLabel = new GUIStyle(EditorStyles.miniLabel)
+            public static GUIStyle FieldLabel => _fieldLabel ??= new GUIStyle(EditorStyles.miniLabel)
             {
                 normal = { textColor = Colors.MutedText },
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle MutedMiniLabel = new GUIStyle(EditorStyles.miniLabel)
+            public static GUIStyle MutedMiniLabel => _mutedMiniLabel ??= new GUIStyle(EditorStyles.miniLabel)
             {
                 normal = { textColor = Colors.MutedText },
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle WarningLabel = new GUIStyle(EditorStyles.label)
+            public static GUIStyle WarningLabel => _warningLabel ??= new GUIStyle(EditorStyles.label)
             {
                 normal = { textColor = Colors.WarningText },
                 alignment = TextAnchor.MiddleLeft,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle Glyph = new GUIStyle(EditorStyles.miniLabel)
+            public static GUIStyle Glyph => _glyph ??= new GUIStyle(EditorStyles.miniLabel)
             {
                 normal = { textColor = Colors.MutedText },
                 alignment = TextAnchor.MiddleCenter,
                 fontStyle = FontStyle.Bold
             };
 
-            public static readonly GUIStyle ButtonGlyph = new GUIStyle(EditorStyles.miniLabel)
+            public static GUIStyle ButtonGlyph => _buttonGlyph ??= new GUIStyle(EditorStyles.miniLabel)
             {
                 normal = { textColor = Colors.ButtonText },
                 hover = { textColor = Color.white },
@@ -678,20 +699,20 @@ namespace AlicizaX.Editor
                 fontStyle = FontStyle.Bold
             };
 
-            public static readonly GUIStyle KindBadge = new GUIStyle(EditorStyles.miniBoldLabel)
+            public static GUIStyle KindBadge => _kindBadge ??= new GUIStyle(EditorStyles.miniBoldLabel)
             {
                 normal = { textColor = Colors.KindText },
                 alignment = TextAnchor.MiddleCenter,
                 clipping = TextClipping.Clip
             };
 
-            public static readonly GUIStyle EmptyState = new GUIStyle(EditorStyles.centeredGreyMiniLabel)
+            public static GUIStyle EmptyState => _emptyState ??= new GUIStyle(EditorStyles.centeredGreyMiniLabel)
             {
                 normal = { textColor = Colors.MutedText },
                 alignment = TextAnchor.MiddleCenter
             };
 
-            public static readonly GUIStyle PillOn = new GUIStyle(EditorStyles.miniButton)
+            public static GUIStyle PillOn => _pillOn ??= new GUIStyle(EditorStyles.miniButton)
             {
                 normal = { background = CreateTexture(new Color(0.20f, 0.36f, 0.53f, 1f)), textColor = Color.white },
                 hover = { background = CreateTexture(new Color(0.24f, 0.42f, 0.62f, 1f)), textColor = Color.white },
@@ -701,7 +722,7 @@ namespace AlicizaX.Editor
                 padding = new RectOffset(2, 2, 1, 1)
             };
 
-            public static readonly GUIStyle PillOff = new GUIStyle(EditorStyles.miniButton)
+            public static GUIStyle PillOff => _pillOff ??= new GUIStyle(EditorStyles.miniButton)
             {
                 normal = { background = CreateTexture(new Color(0.30f, 0.30f, 0.31f, 1f)), textColor = Colors.MainText },
                 hover = { background = CreateTexture(new Color(0.36f, 0.36f, 0.37f, 1f)), textColor = Color.white },
