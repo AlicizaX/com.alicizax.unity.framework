@@ -91,6 +91,7 @@ namespace AlicizaX.UI.Editor
         private const string GenerateTypeNameKey = "AlicizaX.UI.Generate.TypeName";
         private const string GenerateInstanceIdKey = "AlicizaX.UI.Generate.InstanceId";
         private const string GenerateAssetPathKey = "AlicizaX.UI.Generate.AssetPath";
+        private const string GenerateHierarchyPathKey = "AlicizaX.UI.Generate.HierarchyPath";
         private static UIGenerateConfiguration _uiGenerateConfiguration;
         private static IUIIdentifierFormatter _identifierFormatter;
         private static IUIResourcePathResolver _resourcePathResolver;
@@ -645,6 +646,8 @@ namespace AlicizaX.UI.Editor
                 EditorPrefs.SetString(GenerateAssetPathKey, assetPath);
             }
 
+            EditorPrefs.SetString(GenerateHierarchyPathKey, GetHierarchyPath(targetObject.transform, GetGenerationRootTransform(targetObject)));
+
             ResetCollectedBindData();
         }
 
@@ -789,7 +792,115 @@ namespace AlicizaX.UI.Editor
             }
 
             var assetPath = EditorPrefs.GetString(GenerateAssetPathKey, string.Empty);
-            return string.IsNullOrEmpty(assetPath) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+            if (!string.IsNullOrEmpty(assetPath))
+            {
+                var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
+                if (prefabStage != null &&
+                    !string.IsNullOrEmpty(prefabStage.assetPath) &&
+                    string.Equals(prefabStage.assetPath, assetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    var stageTarget = ResolveTargetByHierarchyPath(prefabStage.prefabContentsRoot?.transform);
+                    if (stageTarget != null)
+                    {
+                        return stageTarget.gameObject;
+                    }
+
+                    return prefabStage.prefabContentsRoot;
+                }
+            }
+
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                return null;
+            }
+
+            var assetTarget = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+            if (assetTarget == null)
+            {
+                return null;
+            }
+
+            var resolvedAssetTarget = ResolveTargetByHierarchyPath(assetTarget.transform);
+            return resolvedAssetTarget != null ? resolvedAssetTarget.gameObject : assetTarget;
+        }
+
+        private static Transform GetGenerationRootTransform(GameObject targetObject)
+        {
+            if (targetObject == null)
+            {
+                return null;
+            }
+
+            var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
+            if (prefabStage != null && prefabStage.IsPartOfPrefabContents(targetObject))
+            {
+                return prefabStage.prefabContentsRoot?.transform;
+            }
+
+            var prefabInstanceRoot = PrefabUtility.GetNearestPrefabInstanceRoot(targetObject);
+            return prefabInstanceRoot != null ? prefabInstanceRoot.transform : targetObject.transform.root;
+        }
+
+        private static string GetHierarchyPath(Transform targetTransform, Transform rootTransform)
+        {
+            if (targetTransform == null)
+            {
+                return string.Empty;
+            }
+
+            if (rootTransform == null)
+            {
+                rootTransform = targetTransform.root;
+            }
+
+            var pathParts = new List<int>();
+            var current = targetTransform;
+            while (current != null && current != rootTransform)
+            {
+                pathParts.Add(current.GetSiblingIndex());
+                current = current.parent;
+            }
+
+            if (current != rootTransform)
+            {
+                return string.Empty;
+            }
+
+            pathParts.Reverse();
+            return string.Join("/", pathParts);
+        }
+
+        private static Transform ResolveTargetByHierarchyPath(Transform rootTransform)
+        {
+            if (rootTransform == null)
+            {
+                return null;
+            }
+
+            var hierarchyPath = EditorPrefs.GetString(GenerateHierarchyPathKey, string.Empty);
+            if (string.IsNullOrEmpty(hierarchyPath))
+            {
+                return rootTransform;
+            }
+
+            var current = rootTransform;
+            var pathParts = hierarchyPath.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var pathPart in pathParts)
+            {
+                if (!int.TryParse(pathPart, out var childIndex))
+                {
+                    return null;
+                }
+
+                if (childIndex < 0 || childIndex >= current.childCount)
+                {
+                    return null;
+                }
+
+                current = current.GetChild(childIndex);
+            }
+
+            return current;
         }
 
         private static void CleanupContext()
@@ -797,6 +908,7 @@ namespace AlicizaX.UI.Editor
             EditorPrefs.DeleteKey(GenerateTypeNameKey);
             EditorPrefs.DeleteKey(GenerateInstanceIdKey);
             EditorPrefs.DeleteKey(GenerateAssetPathKey);
+            EditorPrefs.DeleteKey(GenerateHierarchyPathKey);
             ResetCollectedBindData();
         }
 
@@ -825,18 +937,45 @@ namespace AlicizaX.UI.Editor
 
         private static Type FindScriptType(string scriptTypeName)
         {
-            var resolvedType = AlicizaX.Utility.Assembly.GetType(scriptTypeName);
-            if (resolvedType != null)
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                return resolvedType;
+                if (assembly.IsDynamic)
+                {
+                    continue;
+                }
+
+                var assemblyName = assembly.GetName().Name;
+                if (assemblyName.EndsWith(".Editor", StringComparison.Ordinal) ||
+                    assemblyName.Equals("UnityEditor", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                foreach (var type in GetLoadableTypes(assembly))
+                {
+                    if (type != null &&
+                        type.IsClass &&
+                        !type.IsAbstract &&
+                        type.FullName.Equals(scriptTypeName, StringComparison.Ordinal))
+                    {
+                        return type;
+                    }
+                }
             }
 
-            return AppDomain.CurrentDomain.GetAssemblies()
-                .Where(assembly => !assembly.GetName().Name.EndsWith(".Editor", StringComparison.Ordinal) &&
-                                   !assembly.GetName().Name.Equals("UnityEditor", StringComparison.Ordinal))
-                .SelectMany(assembly => assembly.GetTypes())
-                .FirstOrDefault(type => type.IsClass && !type.IsAbstract &&
-                                        type.FullName.Equals(scriptTypeName, StringComparison.Ordinal));
+            return null;
+        }
+
+        private static IEnumerable<Type> GetLoadableTypes(System.Reflection.Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException exception)
+            {
+                return exception.Types.Where(type => type != null);
+            }
         }
 
         private static bool BindFieldsToComponents(Component targetHolder, Type scriptType)
