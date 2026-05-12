@@ -259,7 +259,8 @@ namespace AlicizaX.Localization.Editor
             return value
                 .Replace("&", "&amp;")
                 .Replace("<", "&lt;")
-                .Replace(">", "&gt;");
+                .Replace(">", "&gt;")
+                .Replace("\r","");
         }
 
         public static bool TryGetFormatPlaceholderSequence(string value, List<int> placeholders, out string error)
@@ -987,7 +988,7 @@ namespace AlicizaX.Localization.Editor
                         AppendGeneratedLine(sb);
                     }
 
-                    AppendGeneratedXmlSummary(sb, sectionDepth, EscapeXmlDocText(generatedKey.Comment));
+                    AppendGeneratedXmlSummary(sb, sectionDepth, generatedKey.Comment);
                     if (generatedKey.ArgumentCount <= 0)
                     {
                         AppendGeneratedLine(sb, sectionDepth, $"public static string {varibleName} => LocalizationService.GetString(\"{EscapeCodeString(combineKey)}\");");
@@ -1020,7 +1021,13 @@ namespace AlicizaX.Localization.Editor
         private static void AppendGeneratedXmlSummary(StringBuilder sb, int depth, string summary)
         {
             AppendGeneratedLine(sb, depth, "/// <summary>");
-            AppendGeneratedLine(sb, depth, $"/// {summary}");
+            string escapedSummary = EscapeXmlDocText(summary);
+            string[] summaryLines = escapedSummary.Split('\n');
+            for (int i = 0; i < summaryLines.Length; i++)
+            {
+                AppendGeneratedLine(sb, depth, $"/// {summaryLines[i]}");
+            }
+
             AppendGeneratedLine(sb, depth, "/// </summary>");
         }
 
