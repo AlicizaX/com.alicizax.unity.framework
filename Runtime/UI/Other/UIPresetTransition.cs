@@ -162,12 +162,16 @@ namespace AlicizaX.UI.Runtime
 
             if (applyClosedState)
             {
-                UITransitionPreset initialPreset = openPreset != UITransitionPreset.None ? openPreset : closePreset;
-                if (initialPreset != UITransitionPreset.None)
+                UITransitionPreset preset = closePreset != UITransitionPreset.None ? closePreset : openPreset;
+                if (preset != UITransitionPreset.None)
                 {
-                    ApplyVisualState(BuildClosedState(initialPreset));
+                    ApplyVisualState(BuildClosedState(preset));
                     RestoreInteractionState(false);
                 }
+            }
+            else
+            {
+                RestoreInteractionState(true);
             }
         }
 
