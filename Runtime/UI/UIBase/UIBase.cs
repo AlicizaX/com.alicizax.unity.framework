@@ -295,8 +295,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return false;
 
-            _state = UIState.Opened;
-            Holder.OnWindowAfterShowEvent?.Invoke();
+            FireAndForgetOpenTransition(lifecycleVersion);
             return true;
         }
 
@@ -345,9 +344,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
                 return false;
 
-            Visible = false;
-            _state = UIState.Closed;
-            Holder.OnWindowAfterClosedEvent?.Invoke();
+            FireAndForgetCloseTransition(lifecycleVersion);
             return true;
         }
 
@@ -419,6 +416,27 @@ namespace AlicizaX.UI.Runtime
 
             Visible = false;
             _state = UIState.Initialized;
+        }
+
+        private async UniTaskVoid FireAndForgetOpenTransition(int lifecycleVersion)
+        {
+            bool canceled = await Holder.PlayOpenTransitionAsync().SuppressCancellationThrow();
+            if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+                return;
+
+            _state = UIState.Opened;
+            Holder.OnWindowAfterShowEvent?.Invoke();
+        }
+
+        private async UniTaskVoid FireAndForgetCloseTransition(int lifecycleVersion)
+        {
+            bool canceled = await Holder.PlayCloseTransitionAsync().SuppressCancellationThrow();
+            if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+                return;
+
+            Visible = false;
+            _state = UIState.Closed;
+            Holder.OnWindowAfterClosedEvent?.Invoke();
         }
 
         #endregion
