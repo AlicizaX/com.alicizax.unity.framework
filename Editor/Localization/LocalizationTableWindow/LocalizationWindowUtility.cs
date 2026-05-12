@@ -260,7 +260,7 @@ namespace AlicizaX.Localization.Editor
                 .Replace("&", "&amp;")
                 .Replace("<", "&lt;")
                 .Replace(">", "&gt;")
-                .Replace("\r","");
+                .Replace("\r", "");
         }
 
         public static bool TryGetFormatPlaceholderSequence(string value, List<int> placeholders, out string error)
@@ -992,6 +992,7 @@ namespace AlicizaX.Localization.Editor
                     if (generatedKey.ArgumentCount <= 0)
                     {
                         AppendGeneratedLine(sb, sectionDepth, $"public static string {varibleName} => LocalizationService.GetString(\"{EscapeCodeString(combineKey)}\");");
+                        AppendGeneratedLine(sb, sectionDepth, $"public static string {varibleName}_Raw => \"{EscapeCodeString(combineKey)}\";");
                     }
                     else
                     {
@@ -999,6 +1000,7 @@ namespace AlicizaX.Localization.Editor
                         AppendGeneratedLine(sb, sectionDepth, "{");
                         AppendGeneratedLine(sb, sectionDepth + 1, $"return LocalizationService.GetString(\"{EscapeCodeString(combineKey)}\", {BuildMethodArguments(generatedKey.ArgumentCount)});");
                         AppendGeneratedLine(sb, sectionDepth, "}");
+                        AppendGeneratedLine(sb, sectionDepth, $"public static string {varibleName}_Raw => \"{EscapeCodeString(combineKey)}\";");
                     }
 
                     wroteItem = true;
