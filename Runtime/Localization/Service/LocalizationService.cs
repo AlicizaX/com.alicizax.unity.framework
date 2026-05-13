@@ -22,6 +22,7 @@ namespace AlicizaX.Localization.Runtime
         /// 记录已被服务跟踪的本地化配置表。
         /// </summary>
         private readonly List<GameLocaizationTable> _trackedTables = new();
+
         private readonly HashSet<GameLocaizationTable> _trackedTableSet = new();
 
         /// <summary>
@@ -43,33 +44,28 @@ namespace AlicizaX.Localization.Runtime
         }
 
         /// <summary>
-        /// 请求切换当前语言。
-        /// </summary>
-        /// <param name="language">要设置或切换到的语言标识。</param>
-        public void ChangedLanguage(string language)
-        {
-            SwitchLanguageAsync(language).Forget();
-        }
-
-        /// <summary>
         /// 异步切换当前语言并刷新已跟踪的本地化数据。
         /// </summary>
-        /// <param name="language">要设置或切换到的语言标识。</param>
-        /// <param name="cancellationToken">用于取消异步切换操作的令牌。</param>
-        /// <returns>表示语言切换流程的异步任务。</returns>
-        public UniTask SwitchLanguageAsync(string language, CancellationToken cancellationToken = default)
+        /// <param name="language">目标语言</param>
+        public void SwitchLanguage(string language)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrEmpty(language) || _language == language)
             {
-                return UniTask.CompletedTask;
+                Log.Info("Can Not Switch Language If Language Not Specified");
+                return;
             }
 
             _language = language;
-            RebuildTrackedTables();
             LocalizationComponent.SaveLanguagePreference(language);
+        }
+
+        /// <summary>
+        /// 应用语言 调用该则广播事件
+        /// </summary>
+        public void ApplyLanguage()
+        {
+            RebuildTrackedTables();
             LocalizationChangeEvent.Publisher(_language);
-            return UniTask.CompletedTask;
         }
 
         /// <summary>
@@ -643,7 +639,9 @@ namespace AlicizaX.Localization.Runtime
         /// <summary>
         /// 初始化本地化服务并设置当前语言。
         /// </summary>
-        protected override void OnInitialize() { }
+        protected override void OnInitialize()
+        {
+        }
 
         /// <summary>
         /// 销毁服务时清理已缓存的本地化数据。

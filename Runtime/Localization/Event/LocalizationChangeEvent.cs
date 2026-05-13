@@ -1,7 +1,7 @@
 
 namespace AlicizaX.Localization
 {
-    [Prewarm(4)]
+    [Prewarm(256)]
     public readonly struct LocalizationChangeEvent : IEventArgs
     {
         public readonly string ChangedLanguage;

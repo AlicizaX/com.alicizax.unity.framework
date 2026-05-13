@@ -55,18 +55,15 @@ namespace AlicizaX.Localization.Runtime
         void ReloadLocalizationConfig(GameLocaizationTable table);
 
         /// <summary>
-        /// 请求切换当前语言。
-        /// </summary>
-        /// <param name="language">要设置或切换到的语言标识。</param>
-        void ChangedLanguage(string language);
-
-        /// <summary>
         /// 异步切换当前语言并刷新已跟踪的本地化数据。
         /// </summary>
-        /// <param name="language">要设置或切换到的语言标识。</param>
-        /// <param name="cancellationToken">用于取消异步切换操作的令牌。</param>
-        /// <returns>表示语言切换流程的异步任务。</returns>
-        UniTask SwitchLanguageAsync(string language, CancellationToken cancellationToken = default);
+        /// <param name="language">目标语言</param>
+        void SwitchLanguage(string language);
+
+        /// <summary>
+        /// 应用语言 调用该则广播事件
+        /// </summary>
+        void ApplyLanguage();
 
         /// <summary>
         /// 按键获取并格式化本地化字符串。
