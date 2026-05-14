@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using AlicizaX.Editor;
 using AlicizaX.Localization.Runtime;
 using UnityEditor;
@@ -19,13 +20,12 @@ namespace AlicizaX.Localization.Editor
         private GUIStyle _fieldRowStyle;
         private GUIStyle _fieldLabelStyle;
         private GUIStyle _rowLabelStyle;
-        private LanguageType _cachedSelectedLanguageTypes;
-        private bool _languageOptionsDirty = true;
+        private string _cachedSelectedLanguageTypes;
 
         private void OnEnable()
         {
             _language = serializedObject.FindProperty("_language");
-            _languageOptionsDirty = true;
+            RefreshLanguageOptionsIfNeeded();
         }
 
         public override void OnInspectorGUI()
@@ -33,7 +33,6 @@ namespace AlicizaX.Localization.Editor
             base.OnInspectorGUI();
             serializedObject.Update();
             EnsureStyles();
-            RefreshLanguageOptionsIfNeeded();
 
             DrawComponentPanel();
 
@@ -113,38 +112,7 @@ namespace AlicizaX.Localization.Editor
 
         private void RefreshLanguageOptionsIfNeeded()
         {
-            LanguageType selectedLanguageTypes = LocalizationConfiguration.Instance.SelectedLanguageTypes;
-            if (!_languageOptionsDirty && selectedLanguageTypes == _cachedSelectedLanguageTypes)
-            {
-                return;
-            }
-
-            _languageOptionsDirty = false;
-            _cachedSelectedLanguageTypes = selectedLanguageTypes;
-
-            int count = 0;
-            for (int i = 0; i < LocalizationConfiguration.AllLanguageTypes.Length; i++)
-            {
-                if ((selectedLanguageTypes & LocalizationConfiguration.AllLanguageTypes[i]) != 0)
-                {
-                    count++;
-                }
-            }
-
-            _languageNames = new string[count];
-
-            int writeIndex = 0;
-            for (int i = 0; i < LocalizationConfiguration.AllLanguageTypes.Length; i++)
-            {
-                LanguageType languageType = LocalizationConfiguration.AllLanguageTypes[i];
-                if ((selectedLanguageTypes & languageType) == 0)
-                {
-                    continue;
-                }
-
-                _languageNames[writeIndex] = LanguageTypeUtility.ToName(languageType);
-                writeIndex++;
-            }
+            _languageNames = LanguageTypes.Languages.ToArray();
 
             if (_languageNames.Length > 0)
             {

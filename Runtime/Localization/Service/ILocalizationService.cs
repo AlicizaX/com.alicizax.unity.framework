@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Collections.Generic;
 using AlicizaX;
 using Cysharp.Threading.Tasks;
 
@@ -28,31 +29,14 @@ namespace AlicizaX.Localization.Runtime
         /// <returns>如果找到对应键则返回 `true`；否则返回 `false`。</returns>
         bool TryGetRawString(string key, out string value);
 
+        void ReplaceRawStrings(IEnumerable<KeyValuePair<string, string>> strings);
+
         /// <summary>
         /// 按键获取本地化字符串。
         /// </summary>
         /// <param name="key">本地化字符串的键。</param>
         /// <returns>返回本地化结果；若键不存在则返回缺失标记字符串。</returns>
         string GetString(string key);
-
-
-        /// <summary>
-        /// 以增量方式添加本地化配置表内容。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        void IncreAddLocalizationConfig(GameLocaizationTable table);
-
-        /// <summary>
-        /// 清空当前数据后，用指定配置表覆盖本地化内容。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        void CoverAddLocalizationConfig(GameLocaizationTable table);
-
-        /// <summary>
-        /// 重新加载指定配置表在当前语言下的内容。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        void ReloadLocalizationConfig(GameLocaizationTable table);
 
         /// <summary>
         /// 异步切换当前语言并刷新已跟踪的本地化数据。

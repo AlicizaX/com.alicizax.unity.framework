@@ -19,18 +19,6 @@ namespace AlicizaX.Localization.Runtime
         private readonly Dictionary<string, string> Dic = new();
 
         /// <summary>
-        /// 记录已被服务跟踪的本地化配置表。
-        /// </summary>
-        private readonly List<GameLocaizationTable> _trackedTables = new();
-
-        private readonly HashSet<GameLocaizationTable> _trackedTableSet = new();
-
-        /// <summary>
-        /// 记录每个配置表当前写入到缓存中的键集合，便于重载时移除旧数据。
-        /// </summary>
-        private readonly Dictionary<GameLocaizationTable, List<string>> _trackedTableKeys = new();
-
-        /// <summary>
         /// 保存当前启用的语言标识。
         /// </summary>
         private string _language;
@@ -64,7 +52,6 @@ namespace AlicizaX.Localization.Runtime
         /// </summary>
         public void ApplyLanguage()
         {
-            RebuildTrackedTables();
             LocalizationChangeEvent.Publisher(_language);
         }
 
@@ -88,6 +75,23 @@ namespace AlicizaX.Localization.Runtime
         public bool TryGetRawString(string key, out string value)
         {
             return Dic.TryGetValue(key, out value);
+        }
+
+        public void ReplaceRawStrings(IEnumerable<KeyValuePair<string, string>> strings)
+        {
+            Dic.Clear();
+            if (strings == null)
+            {
+                return;
+            }
+
+            foreach (var pair in strings)
+            {
+                if (!string.IsNullOrEmpty(pair.Key))
+                {
+                    Dic[pair.Key] = pair.Value ?? string.Empty;
+                }
+            }
         }
 
         /// <summary>
@@ -603,151 +607,12 @@ namespace AlicizaX.Localization.Runtime
 
 
         /// <summary>
-        /// 以增量方式添加本地化配置表内容。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        public void IncreAddLocalizationConfig(GameLocaizationTable table)
-        {
-            TrackTable(table);
-            ReapplyTrackedTable(table);
-        }
-
-        /// <summary>
-        /// 清空当前数据后，用指定配置表覆盖本地化内容。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        public void CoverAddLocalizationConfig(GameLocaizationTable table)
-        {
-            Dic.Clear();
-            _trackedTables.Clear();
-            _trackedTableSet.Clear();
-            _trackedTableKeys.Clear();
-            TrackTable(table);
-            ReapplyTrackedTable(table);
-        }
-
-        /// <summary>
-        /// 重新加载指定配置表在当前语言下的内容。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        public void ReloadLocalizationConfig(GameLocaizationTable table)
-        {
-            TrackTable(table);
-            ReapplyTrackedTable(table);
-        }
-
-        /// <summary>
-        /// 初始化本地化服务并设置当前语言。
-        /// </summary>
-        protected override void OnInitialize()
-        {
-        }
-
-        /// <summary>
         /// 销毁服务时清理已缓存的本地化数据。
         /// </summary>
         protected override void OnDestroyService()
         {
             Dic.Clear();
-            _trackedTables.Clear();
-            _trackedTableSet.Clear();
-            _trackedTableKeys.Clear();
         }
 
-        /// <summary>
-        /// 将配置表加入跟踪列表，便于后续语言切换时重新应用。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        private void TrackTable(GameLocaizationTable table)
-        {
-            if (table == null)
-            {
-                return;
-            }
-
-            table.PrewarmLanguageLookup();
-            if (_trackedTableSet.Add(table))
-            {
-                _trackedTables.Add(table);
-            }
-        }
-
-        /// <summary>
-        /// 按当前语言重新构建所有已跟踪配置表的缓存内容。
-        /// </summary>
-        private void RebuildTrackedTables()
-        {
-            Dic.Clear();
-
-            for (int i = 0; i < _trackedTables.Count; i++)
-            {
-                ReapplyTrackedTable(_trackedTables[i]);
-            }
-        }
-
-        /// <summary>
-        /// 重新将指定配置表在当前语言下的内容写入缓存。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        private void ReapplyTrackedTable(GameLocaizationTable table)
-        {
-            if (table == null)
-            {
-                return;
-            }
-
-            RemoveTrackedTableEntries(table);
-
-            LocalizationLanguage localizationLanguage = table.GetLanguage(_language);
-            if (localizationLanguage == null)
-            {
-                Log.Warning(ZString.Format("Can not Find {0} Strins ", _language));
-                if (_trackedTableKeys.TryGetValue(table, out List<string> missingKeys))
-                {
-                    missingKeys.Clear();
-                }
-
-                return;
-            }
-
-            Dic.EnsureCapacity(Dic.Count + localizationLanguage.Strings.Count);
-            if (!_trackedTableKeys.TryGetValue(table, out List<string> keys))
-            {
-                keys = new List<string>(localizationLanguage.Strings.Count);
-                _trackedTableKeys.Add(table, keys);
-            }
-            else
-            {
-                keys.Clear();
-                if (keys.Capacity < localizationLanguage.Strings.Count)
-                {
-                    keys.Capacity = localizationLanguage.Strings.Count;
-                }
-            }
-
-            for (int i = 0; i < localizationLanguage.Strings.Count; i++)
-            {
-                LocalizationLanguage.LocalizationString item = localizationLanguage.Strings[i];
-                Dic[item.Key] = item.Value;
-                keys.Add(item.Key);
-            }
-        }
-
-        /// <summary>
-        /// 从缓存中移除指定配置表此前写入的所有键值。
-        /// </summary>
-        /// <param name="table">要处理的本地化配置表。</param>
-        private void RemoveTrackedTableEntries(GameLocaizationTable table)
-        {
-            if (!_trackedTableKeys.TryGetValue(table, out List<string> keys))
-            {
-                return;
-            }
-
-            for (int i = 0; i < keys.Count; i++)
-            {
-                Dic.Remove(keys[i]);
-            }
-        }
     }
 }

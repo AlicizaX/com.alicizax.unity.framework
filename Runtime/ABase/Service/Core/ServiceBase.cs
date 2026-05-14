@@ -51,8 +51,14 @@ namespace AlicizaX
         protected T RequireGameplay<T>() where T : class, IService
             => _world.Gameplay.Require<T>();
 
-        protected abstract void OnInitialize();
+        protected virtual void OnInitialize()
+        {
 
-        protected abstract void OnDestroyService();
+        }
+
+        protected virtual void OnDestroyService()
+        {
+
+        }
     }
 }
