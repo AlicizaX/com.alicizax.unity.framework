@@ -17,11 +17,25 @@ namespace AlicizaX.UI.Runtime
         public Action OnWindowDestroyEvent;
 
         private GameObject _target;
+        [SerializeField, HideInInspector] private Component _transitionPlayerComponent;
         private IUITransitionPlayer _transitionPlayer;
         public GameObject Target => _target ??= gameObject;
 
         private RectTransform _rectTransform;
         public RectTransform RectTransform => _rectTransform ??= Target.transform as RectTransform;
+
+        private IUITransitionPlayer TransitionPlayer
+        {
+            get
+            {
+                if (_transitionPlayerComponent == null)
+                {
+                    return null;
+                }
+
+                return _transitionPlayer ??= _transitionPlayerComponent as IUITransitionPlayer;
+            }
+        }
 
         public bool Visible
         {
@@ -32,6 +46,7 @@ namespace AlicizaX.UI.Runtime
         public virtual void Awake()
         {
             _target = gameObject;
+            _transitionPlayer = _transitionPlayerComponent as IUITransitionPlayer;
         }
 
         private bool _isAlive = true;
@@ -43,43 +58,42 @@ namespace AlicizaX.UI.Runtime
 
         internal UniTask PlayOpenTransitionAsync(CancellationToken cancellationToken = default)
         {
-            return TryGetTransitionPlayer(out IUITransitionPlayer transitionPlayer)
+            if (!_isAlive || this == null)
+            {
+                return UniTask.CompletedTask;
+            }
+
+            IUITransitionPlayer transitionPlayer = TransitionPlayer;
+            return transitionPlayer != null
                 ? transitionPlayer.PlayOpenAsync(cancellationToken)
                 : UniTask.CompletedTask;
         }
 
         internal UniTask PlayCloseTransitionAsync(CancellationToken cancellationToken = default)
         {
-            return TryGetTransitionPlayer(out IUITransitionPlayer transitionPlayer)
+            if (!_isAlive || this == null)
+            {
+                return UniTask.CompletedTask;
+            }
+
+            IUITransitionPlayer transitionPlayer = TransitionPlayer;
+            return transitionPlayer != null
                 ? transitionPlayer.PlayCloseAsync(cancellationToken)
                 : UniTask.CompletedTask;
         }
 
         internal void StopTransition()
         {
-            if (TryGetTransitionPlayer(out IUITransitionPlayer transitionPlayer))
+            if (!_isAlive || this == null)
+            {
+                return;
+            }
+
+            IUITransitionPlayer transitionPlayer = TransitionPlayer;
+            if (transitionPlayer != null)
             {
                 transitionPlayer.Stop();
             }
-        }
-
-        private bool TryGetTransitionPlayer(out IUITransitionPlayer transitionPlayer)
-        {
-            if (_transitionPlayer is Behaviour cachedBehaviour && cachedBehaviour.isActiveAndEnabled)
-            {
-                transitionPlayer = _transitionPlayer;
-                return true;
-            }
-
-            if (!_isAlive || this == null)
-            {
-                transitionPlayer = null;
-                return false;
-            }
-
-            _transitionPlayer = GetComponent<IUITransitionPlayer>();
-            transitionPlayer = _transitionPlayer;
-            return transitionPlayer != null;
         }
 
         private void OnDestroy()
@@ -87,5 +101,89 @@ namespace AlicizaX.UI.Runtime
             _isAlive = false;
             _transitionPlayer = null;
         }
+
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+            RefreshTransitionPlayerCacheInEditor();
+        }
+
+        internal void RefreshTransitionPlayerCacheInEditor()
+        {
+            if (Application.isPlaying)
+            {
+                return;
+            }
+
+            Component transitionPlayer = FindTransitionPlayerInEditor();
+            if (_transitionPlayerComponent == transitionPlayer)
+            {
+                return;
+            }
+
+            _transitionPlayerComponent = transitionPlayer;
+            _transitionPlayer = transitionPlayer as IUITransitionPlayer;
+        }
+
+        internal Component FindTransitionPlayerInEditor()
+        {
+            Transform root = transform;
+            Component transitionPlayer = FindTransitionPlayerOnObjectInEditor(root);
+            if (transitionPlayer != null)
+            {
+                return transitionPlayer;
+            }
+
+            for (int i = 0; i < root.childCount; i++)
+            {
+                transitionPlayer = FindTransitionPlayerInChildScopeInEditor(root.GetChild(i));
+                if (transitionPlayer != null)
+                {
+                    return transitionPlayer;
+                }
+            }
+
+            return null;
+        }
+
+        private static Component FindTransitionPlayerInChildScopeInEditor(Transform transform)
+        {
+            if (transform.GetComponent<UIHolderObjectBase>() != null)
+            {
+                return null;
+            }
+
+            Component transitionPlayer = FindTransitionPlayerOnObjectInEditor(transform);
+            if (transitionPlayer != null)
+            {
+                return transitionPlayer;
+            }
+
+            for (int i = 0; i < transform.childCount; i++)
+            {
+                transitionPlayer = FindTransitionPlayerInChildScopeInEditor(transform.GetChild(i));
+                if (transitionPlayer != null)
+                {
+                    return transitionPlayer;
+                }
+            }
+
+            return null;
+        }
+
+        private static Component FindTransitionPlayerOnObjectInEditor(Transform transform)
+        {
+            Component[] components = transform.GetComponents<Component>();
+            for (int i = 0; i < components.Length; i++)
+            {
+                if (components[i] is IUITransitionPlayer)
+                {
+                    return components[i];
+                }
+            }
+
+            return null;
+        }
+#endif
     }
 }

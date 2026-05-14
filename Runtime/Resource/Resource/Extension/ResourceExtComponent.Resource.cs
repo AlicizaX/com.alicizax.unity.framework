@@ -58,7 +58,7 @@ namespace AlicizaX.Resource.Runtime
             if (IsCurrentLocation(setAssetObject.TargetObject, setAssetObject.Location))
             {
                 ClearLoadingState(setAssetObject.TargetObject);
-                SetAsset(setAssetObject, TrackLoadedAsset(setAssetObject.Location, assetObject));
+                SetAsset(setAssetObject, assetObject);
             }
             else
             {
@@ -99,17 +99,10 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            if (_assetItemPool.CanSpawn(location))
+            if (typeof(T) == typeof(UnityEngine.Sprite) && TryUseSpriteKeepAliveAsset(location, out var keepAliveAsset))
             {
                 ClearLoadingState(target);
-
-                var assetObject = (T)_assetItemPool.Spawn(location).Target;
-                SetAsset(setAssetObject, assetObject);
-                return;
-            }
-
-            if (!IsCurrentLocation(target, location))
-            {
+                SetAsset(setAssetObject, keepAliveAsset);
                 return;
             }
 
@@ -150,23 +143,12 @@ namespace AlicizaX.Resource.Runtime
             return _loadingStates.TryGetValue(target, out var state) && state.Location == location;
         }
 
-        private UnityEngine.Object TrackLoadedAsset(string location, UnityEngine.Object assetObject)
-        {
-            if (_assetItemPool.CanSpawn(location))
-            {
-                var cachedAsset = _assetItemPool.Spawn(location).Target as UnityEngine.Object;
-                _resourceService.UnloadAsset(assetObject);
-                return cachedAsset;
-            }
-
-            _assetItemPool.Register(AssetItemObject.Create(location, assetObject), true);
-            return assetObject;
-        }
-
         private void OnDestroy()
         {
+            _isDestroying = true;
             UnityEngine.Application.lowMemory -= OnLowMemory;
             ReleaseTrackedAssets();
+            ReleaseAllSpriteKeepAliveAssets();
 
             var enumerator = _loadingStates.GetEnumerator();
             while (enumerator.MoveNext())

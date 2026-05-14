@@ -295,7 +295,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return false;
 
-            FireAndForgetOpenTransition(lifecycleVersion);
+            FireAndForgetOpenTransition(lifecycleVersion).Forget();
             return true;
         }
 

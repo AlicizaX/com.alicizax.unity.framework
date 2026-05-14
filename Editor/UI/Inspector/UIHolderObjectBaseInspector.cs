@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEditor;
 using UnityEditorInternal;
-using System;
 using System.Collections.Generic;
 using System.Reflection;
 using AlicizaX.UI.Runtime;
@@ -9,11 +8,16 @@ using AlicizaX.UI.Runtime;
 [CustomEditor(typeof(UIHolderObjectBase), true)]
 public class UIHolderObjectBaseEditor : Editor
 {
+    private const string TransitionPlayerComponentPropertyName = "_transitionPlayerComponent";
+
     private SerializedProperty[] serializedProperties;
     private Dictionary<string, ReorderableList> reorderableDic = new Dictionary<string, ReorderableList>();
+    private SerializedProperty transitionPlayerComponentProperty;
 
     private void OnEnable()
     {
+        transitionPlayerComponentProperty = serializedObject.FindProperty(TransitionPlayerComponentPropertyName);
+
         var fields = target.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
         serializedProperties = new SerializedProperty[fields.Length];
 
@@ -22,6 +26,11 @@ public class UIHolderObjectBaseEditor : Editor
             SerializedProperty prop = serializedObject.FindProperty(fields[i].Name);
             if (prop != null)
             {
+                if (prop.propertyPath == TransitionPlayerComponentPropertyName)
+                {
+                    continue;
+                }
+
                 serializedProperties[i] = prop;
 
 
@@ -39,11 +48,24 @@ public class UIHolderObjectBaseEditor : Editor
                 }
             }
         }
+
+        serializedObject.Update();
+        RefreshTransitionPlayerCache(true);
     }
 
     public override void OnInspectorGUI()
     {
         serializedObject.Update();
+
+        RefreshTransitionPlayerCache(false);
+
+        if (transitionPlayerComponentProperty != null)
+        {
+            EditorGUI.BeginDisabledGroup(true);
+            EditorGUILayout.PropertyField(transitionPlayerComponentProperty, new GUIContent("Transition Player"));
+            EditorGUI.EndDisabledGroup();
+        }
+
         EditorGUI.BeginDisabledGroup(true);
 
         for (int i = 0; i < serializedProperties.Length; i++)
@@ -66,6 +88,27 @@ public class UIHolderObjectBaseEditor : Editor
         serializedObject.ApplyModifiedProperties();
     }
 
+    private void RefreshTransitionPlayerCache(bool applyImmediately)
+    {
+        UIHolderObjectBase holder = target as UIHolderObjectBase;
+        if (Application.isPlaying || transitionPlayerComponentProperty == null || holder == null)
+        {
+            return;
+        }
+
+        Component transitionPlayer = holder.FindTransitionPlayerInEditor();
+        if (transitionPlayerComponentProperty.objectReferenceValue == transitionPlayer)
+        {
+            return;
+        }
+
+        transitionPlayerComponentProperty.objectReferenceValue = transitionPlayer;
+
+        if (applyImmediately)
+        {
+            serializedObject.ApplyModifiedPropertiesWithoutUndo();
+        }
+    }
 
     private void DrawElementCallback(Rect rect, int index, SerializedProperty arrayProperty, bool isActive, bool isFocused)
     {

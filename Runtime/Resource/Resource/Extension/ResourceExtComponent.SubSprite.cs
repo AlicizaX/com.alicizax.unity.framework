@@ -15,7 +15,7 @@ namespace AlicizaX.Resource.Runtime
     {
         private readonly Dictionary<string, SubAssetsHandle> _subAssetsHandles = new Dictionary<string, SubAssetsHandle>();
         private readonly Dictionary<string, int> _subSpriteReferences = new Dictionary<string, int>();
-        private readonly Dictionary<string, AutoResetUniTaskCompletionSource<SubAssetsHandle>> _subAssetLoadingOperations = new Dictionary<string, AutoResetUniTaskCompletionSource<SubAssetsHandle>>();
+        private readonly Dictionary<string, SubAssetLoadingOperationState> _subAssetLoadingOperations = new Dictionary<string, SubAssetLoadingOperationState>();
         private readonly Dictionary<SubSpriteKey, Sprite> _subSpriteCache = new Dictionary<SubSpriteKey, Sprite>(SubSpriteKeyComparer.Instance);
 
         private readonly struct SubSpriteKey
@@ -53,6 +53,46 @@ namespace AlicizaX.Resource.Runtime
                     hash = hash * 31 + System.StringComparer.Ordinal.GetHashCode(obj.SpriteName ?? string.Empty);
                     return hash;
                 }
+            }
+        }
+
+        private sealed class SubAssetLoadingOperationState : IMemory
+        {
+            public bool IsDone { get; private set; }
+            public SubAssetsHandle Handle { get; private set; }
+            public int WaiterCount { get; private set; }
+            public bool ReleaseRequested { get; private set; }
+
+            public void AddWaiter()
+            {
+                WaiterCount++;
+            }
+
+            public void RemoveWaiter()
+            {
+                if (WaiterCount > 0)
+                {
+                    WaiterCount--;
+                }
+            }
+
+            public void Complete(SubAssetsHandle handle)
+            {
+                IsDone = true;
+                Handle = handle;
+            }
+
+            public void RequestRelease()
+            {
+                ReleaseRequested = true;
+            }
+
+            public void Clear()
+            {
+                IsDone = false;
+                Handle = default;
+                WaiterCount = 0;
+                ReleaseRequested = false;
             }
         }
 
@@ -181,20 +221,26 @@ namespace AlicizaX.Resource.Runtime
 
                 if (_subAssetLoadingOperations.TryGetValue(location, out var loadingOperation))
                 {
-                    if (cancellationToken.CanBeCanceled)
+                    loadingOperation.AddWaiter();
+                    try
                     {
-                        await loadingOperation.Task.AttachExternalCancellation(cancellationToken);
+                        while (!loadingOperation.IsDone)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            await UniTask.Yield();
+                        }
                     }
-                    else
+                    finally
                     {
-                        await loadingOperation.Task;
+                        loadingOperation.RemoveWaiter();
+                        ReleaseSubAssetLoadingOperationIfReady(loadingOperation);
                     }
 
                     continue;
                 }
 
-                var completionSource = AutoResetUniTaskCompletionSource<SubAssetsHandle>.Create();
-                _subAssetLoadingOperations.Add(location, completionSource);
+                var loadingState = MemoryPool.Acquire<SubAssetLoadingOperationState>();
+                _subAssetLoadingOperations.Add(location, loadingState);
 
                 SubAssetsHandle subAssetsHandle = YooAssets.LoadSubAssetsAsync<Sprite>(location);
                 while (subAssetsHandle is { IsValid: true, IsDone: false })
@@ -202,7 +248,7 @@ namespace AlicizaX.Resource.Runtime
                     if (cancellationToken.IsCancellationRequested)
                     {
                         DisposeSubAssetsHandle(subAssetsHandle);
-                        CompleteSubAssetLoading(location, completionSource, default);
+                        CompleteSubAssetLoading(location, loadingState, default);
                         return default;
                     }
 
@@ -212,20 +258,30 @@ namespace AlicizaX.Resource.Runtime
                 if (!subAssetsHandle.IsValid || subAssetsHandle.Status == EOperationStatus.Failed)
                 {
                     DisposeSubAssetsHandle(subAssetsHandle);
-                    CompleteSubAssetLoading(location, completionSource, default);
+                    CompleteSubAssetLoading(location, loadingState, default);
                     return default;
                 }
 
                 _subAssetsHandles[location] = subAssetsHandle;
-                CompleteSubAssetLoading(location, completionSource, subAssetsHandle);
+                CompleteSubAssetLoading(location, loadingState, subAssetsHandle);
                 return subAssetsHandle;
             }
         }
 
-        private void CompleteSubAssetLoading(string location, AutoResetUniTaskCompletionSource<SubAssetsHandle> completionSource, SubAssetsHandle subAssetsHandle)
+        private void CompleteSubAssetLoading(string location, SubAssetLoadingOperationState loadingState, SubAssetsHandle subAssetsHandle)
         {
             _subAssetLoadingOperations.Remove(location);
-            completionSource.TrySetResult(subAssetsHandle);
+            loadingState.Complete(subAssetsHandle);
+            loadingState.RequestRelease();
+            ReleaseSubAssetLoadingOperationIfReady(loadingState);
+        }
+
+        private static void ReleaseSubAssetLoadingOperationIfReady(SubAssetLoadingOperationState loadingState)
+        {
+            if (loadingState is { ReleaseRequested: true, WaiterCount: 0 })
+            {
+                MemoryPool.Release(loadingState);
+            }
         }
 
         private static void DisposeSubAssetsHandle(SubAssetsHandle subAssetsHandle)

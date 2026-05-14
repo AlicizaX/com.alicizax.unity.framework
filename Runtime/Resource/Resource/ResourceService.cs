@@ -81,7 +81,7 @@ namespace AlicizaX.Resource.Runtime
         /// <summary>
         /// 正在加载的资源任务。
         /// </summary>
-        private readonly Dictionary<string, AutoResetUniTaskCompletionSource<bool>> _assetLoadingOperations = new Dictionary<string, AutoResetUniTaskCompletionSource<bool>>();
+        private readonly Dictionary<string, LoadingOperationState> _assetLoadingOperations = new Dictionary<string, LoadingOperationState>();
 
         private readonly Dictionary<AssetCacheKey, string> _assetObjectKeyMap = new Dictionary<AssetCacheKey, string>(AssetCacheKeyComparer.Instance);
 
@@ -90,6 +90,8 @@ namespace AlicizaX.Resource.Runtime
         private UnloadUnusedAssetsOperation _unloadUnusedAssetsOperation;
 
         private UnloadAllAssetsOperation _unloadAllAssetsOperation;
+
+        private bool _isDestroying;
 
         private readonly struct AssetCacheKey
         {
@@ -130,10 +132,51 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
+        private sealed class LoadingOperationState : IMemory
+        {
+            public bool IsDone { get; private set; }
+            public bool Succeeded { get; private set; }
+            public int WaiterCount { get; private set; }
+            public bool ReleaseRequested { get; private set; }
+
+            public void AddWaiter()
+            {
+                WaiterCount++;
+            }
+
+            public void RemoveWaiter()
+            {
+                if (WaiterCount > 0)
+                {
+                    WaiterCount--;
+                }
+            }
+
+            public void Complete(bool succeeded)
+            {
+                IsDone = true;
+                Succeeded = succeeded;
+            }
+
+            public void RequestRelease()
+            {
+                ReleaseRequested = true;
+            }
+
+            public void Clear()
+            {
+                IsDone = false;
+                Succeeded = false;
+                WaiterCount = 0;
+                ReleaseRequested = false;
+            }
+        }
+
         #endregion
 
         public void Initialize()
         {
+            _isDestroying = false;
             // 初始化资源系。。
             YooAssets.Initialize(new ResourceLogger());
 
@@ -165,9 +208,12 @@ namespace AlicizaX.Resource.Runtime
 
         protected override void OnDestroyService()
         {
+            _isDestroying = true;
             foreach (var loadingOperation in _assetLoadingOperations.Values)
             {
-                loadingOperation.TrySetResult(false);
+                loadingOperation.Complete(false);
+                loadingOperation.RequestRelease();
+                ReleaseLoadingOperationIfReady(loadingOperation);
             }
 
             PackageMap.Clear();
@@ -948,6 +994,11 @@ namespace AlicizaX.Resource.Runtime
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (_isDestroying || _assetPool == null)
+                {
+                    return null;
+                }
+
                 AssetObject cachedAssetObject = _assetPool.Spawn(assetObjectKey);
                 if (cachedAssetObject != null)
                 {
@@ -961,6 +1012,12 @@ namespace AlicizaX.Resource.Runtime
                 }
 
                 AssetHandle handle = GetHandleAsync(location, assetType, packageName: packageName, priority: priority);
+                if (handle == null)
+                {
+                    FailLoading(assetObjectKey, null);
+                    return null;
+                }
+
                 StartProgressTask(location, handle, loadAssetUpdateCallback, userData);
                 while (handle is { IsValid: true, IsDone: false })
                 {
@@ -982,6 +1039,14 @@ namespace AlicizaX.Resource.Runtime
                 }
 
                 var assetObject = AssetObject.Create(assetObjectKey, handle.AssetObject, handle);
+                if (_isDestroying || _assetPool == null)
+                {
+                    assetObject.Release(false);
+                    MemoryPool.Release(assetObject);
+                    FailLoading(assetObjectKey, null);
+                    return null;
+                }
+
                 _assetPool.Register(assetObject, true);
                 CompleteLoading(assetObjectKey);
                 return handle.AssetObject as UnityEngine.Object;
@@ -995,7 +1060,7 @@ namespace AlicizaX.Resource.Runtime
                 return false;
             }
 
-            _assetLoadingOperations.Add(assetObjectKey, AutoResetUniTaskCompletionSource<bool>.Create());
+            _assetLoadingOperations.Add(assetObjectKey, MemoryPool.Acquire<LoadingOperationState>());
             return true;
         }
 
@@ -1006,13 +1071,19 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            if (cancellationToken.CanBeCanceled)
+            loadingOperation.AddWaiter();
+            try
             {
-                await loadingOperation.Task.AttachExternalCancellation(cancellationToken);
+                while (!loadingOperation.IsDone)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await UniTask.Yield();
+                }
             }
-            else
+            finally
             {
-                await loadingOperation.Task;
+                loadingOperation.RemoveWaiter();
+                ReleaseLoadingOperationIfReady(loadingOperation);
             }
         }
 
@@ -1024,7 +1095,9 @@ namespace AlicizaX.Resource.Runtime
             }
 
             _assetLoadingOperations.Remove(assetObjectKey);
-            loadingOperation.TrySetResult(true);
+            loadingOperation.Complete(true);
+            loadingOperation.RequestRelease();
+            ReleaseLoadingOperationIfReady(loadingOperation);
         }
 
         private void FailLoading(string assetObjectKey, Exception exception)
@@ -1036,7 +1109,17 @@ namespace AlicizaX.Resource.Runtime
             }
 
             _assetLoadingOperations.Remove(assetObjectKey);
-            loadingOperation.TrySetResult(false);
+            loadingOperation.Complete(false);
+            loadingOperation.RequestRelease();
+            ReleaseLoadingOperationIfReady(loadingOperation);
+        }
+
+        private static void ReleaseLoadingOperationIfReady(LoadingOperationState loadingOperation)
+        {
+            if (loadingOperation is { ReleaseRequested: true, WaiterCount: 0 })
+            {
+                MemoryPool.Release(loadingOperation);
+            }
         }
 
         private void DisposeHandle(AssetHandle handle)
