@@ -43,9 +43,6 @@ namespace AlicizaX
         private static int s_ConsecutiveMiss;
 
         private const int MIN_KEEP = 4;
-        private const int SHORT_DECAY_START = 300;
-        private const int LONG_DECAY_START = 1800;
-        private const int UNSCHEDULE_IDLE_FRAMES = 3600;
 
         private static int s_AcquireCount;
         private static int s_ReleaseCount;
@@ -161,15 +158,15 @@ namespace AlicizaX
             s_AcquireThisFrame = 0;
             s_ReleaseThisFrame = 0;
 
-            return s_IdleFrames < UNSCHEDULE_IDLE_FRAMES || s_Count > s_TargetReserve;
+            return s_IdleFrames < MemoryPool.UnscheduleIdleFrames || s_Count > s_TargetReserve;
         }
 
         private static void UpdateTargetReserve()
         {
-            if (s_IdleFrames >= SHORT_DECAY_START && s_PeakInUseShort > 0)
+            if (s_IdleFrames >= MemoryPool.ShortDecayStartFrames && s_PeakInUseShort > 0)
                 s_PeakInUseShort -= Math.Max(1, s_PeakInUseShort >> 4);
 
-            if (s_IdleFrames >= LONG_DECAY_START && s_PeakInUseLong > 0)
+            if (s_IdleFrames >= MemoryPool.LongDecayStartFrames && s_PeakInUseLong > 0)
                 s_PeakInUseLong -= Math.Max(1, s_PeakInUseLong >> 6);
 
             int shortReserve = s_PeakInUseShort + (s_PeakInUseShort >> 1);
@@ -212,11 +209,11 @@ namespace AlicizaX
 
         private static void ReleaseExcessBudgeted()
         {
-            if (s_IdleFrames < SHORT_DECAY_START || s_Count <= s_TargetReserve)
+            if (s_IdleFrames < MemoryPool.ShortDecayStartFrames || s_Count <= s_TargetReserve)
                 return;
 
             int excess = s_Count - s_TargetReserve;
-            int budget = s_IdleFrames < LONG_DECAY_START ? 4 : 16;
+            int budget = s_IdleFrames < MemoryPool.LongDecayStartFrames ? 4 : 16;
             int removeCount = Math.Min(excess, budget);
             int newCount = s_Count - removeCount;
             RemoveRangeFromStrictCheckSet(newCount, removeCount);

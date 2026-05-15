@@ -38,6 +38,19 @@ namespace AlicizaX
         [SerializeField]
         private MemoryStrictCheckType m_EnableStrictCheck = MemoryStrictCheckType.OnlyEnableWhenDevelopment;
 
+        [Header("Idle Trim Settings")]
+        [Tooltip("池空闲多少帧后开始缓慢缩容（每tick释放4个）。@60fps: 1800帧≈30秒")]
+        [SerializeField]
+        private int m_ShortDecayStartFrames = 1800;
+
+        [Tooltip("池空闲多少帧后加速缩容（每tick释放16个）。@60fps: 7200帧≈2分钟")]
+        [SerializeField]
+        private int m_LongDecayStartFrames = 7200;
+
+        [Tooltip("池空闲多少帧后停止调度Tick。@60fps: 18000帧≈5分钟")]
+        [SerializeField]
+        private int m_UnscheduleIdleFrames = 18000;
+
         /// <summary>
         /// 获取或设置是否开启强制检查。
         /// </summary>
@@ -56,6 +69,10 @@ namespace AlicizaX
 
         private void Awake()
         {
+            MemoryPool.ShortDecayStartFrames = m_ShortDecayStartFrames;
+            MemoryPool.LongDecayStartFrames = m_LongDecayStartFrames;
+            MemoryPool.UnscheduleIdleFrames = m_UnscheduleIdleFrames;
+
             switch (m_EnableStrictCheck)
             {
                 case MemoryStrictCheckType.AlwaysEnable:
