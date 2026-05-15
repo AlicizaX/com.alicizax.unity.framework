@@ -69,7 +69,8 @@ namespace AlicizaX.UI.Runtime
             rect.anchorMin = Vector2.zero;
             rect.sizeDelta = Vector2.zero;
             rect.localRotation = Quaternion.identity;
-            rect.localPosition = new Vector3(0, 0, layer * (_isOrthographic ? LAYER_DISTANCE : 0));
+            // rect.localPosition = new Vector3(0, 0, layer * (_isOrthographic ? LAYER_DISTANCE : 0));
+            rect.localPosition = Vector3.zero;
             if (layer == (int)UILayer.All)
             {
                 UICacheLayer = rect;
