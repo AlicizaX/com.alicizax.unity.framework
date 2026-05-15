@@ -58,12 +58,14 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
+        private static readonly WaitForEndOfFrame CachedWaitForEndOfFrame = new WaitForEndOfFrame();
+
         private IEnumerator Start()
         {
             Instance = this;
             enabled = false;
             Application.lowMemory += OnLowMemory;
-            yield return new WaitForEndOfFrame();
+            yield return CachedWaitForEndOfFrame;
             _loadAssetObjects = new LoadAssetObject[16];
             _trackedAssetIndices = new Dictionary<Object, int>(16);
             EnsureSpriteKeepAliveCache();

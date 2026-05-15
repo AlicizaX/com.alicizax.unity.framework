@@ -13,10 +13,10 @@ namespace AlicizaX.Resource.Runtime
     /// </summary>
     public partial class ResourceExtComponent
     {
-        private readonly Dictionary<string, SubAssetsHandle> _subAssetsHandles = new Dictionary<string, SubAssetsHandle>();
-        private readonly Dictionary<string, int> _subSpriteReferences = new Dictionary<string, int>();
-        private readonly Dictionary<string, SubAssetLoadingOperationState> _subAssetLoadingOperations = new Dictionary<string, SubAssetLoadingOperationState>();
-        private readonly Dictionary<SubSpriteKey, Sprite> _subSpriteCache = new Dictionary<SubSpriteKey, Sprite>(SubSpriteKeyComparer.Instance);
+        private readonly Dictionary<string, SubAssetsHandle> _subAssetsHandles = new Dictionary<string, SubAssetsHandle>(8);
+        private readonly Dictionary<string, int> _subSpriteReferences = new Dictionary<string, int>(8);
+        private readonly Dictionary<string, SubAssetLoadingOperationState> _subAssetLoadingOperations = new Dictionary<string, SubAssetLoadingOperationState>(4);
+        private readonly Dictionary<SubSpriteKey, Sprite> _subSpriteCache = new Dictionary<SubSpriteKey, Sprite>(32, SubSpriteKeyComparer.Instance);
 
         private readonly struct SubSpriteKey
         {
@@ -104,7 +104,11 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
             var subSprite = await GetSubSpriteImp(location, spriteName, cancellationToken);
 
             if (image == null || cancellationToken.IsCancellationRequested || subSprite == null)
@@ -130,7 +134,11 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
             var subSprite = await GetSubSpriteImp(location, spriteName, cancellationToken);
 
             if (spriteRenderer == null || cancellationToken.IsCancellationRequested || subSprite == null)
@@ -148,7 +156,8 @@ namespace AlicizaX.Resource.Runtime
             var assetInfo = YooAssets.GetAssetInfo(location);
             if (assetInfo.IsInvalid)
             {
-                throw new GameFrameworkException(ZString.Format("Invalid location: {0}", location));
+                Log.Error(ZString.Format("Invalid location: {0}", location));
+                return null;
             }
 
             SubSpriteKey key = new SubSpriteKey(location, spriteName);
@@ -166,7 +175,8 @@ namespace AlicizaX.Resource.Runtime
             var subSprite = subAssetsHandle.GetSubAssetObject<Sprite>(spriteName);
             if (subSprite == null)
             {
-                throw new GameFrameworkException(ZString.Format("Invalid sprite name: {0}", spriteName));
+                Log.Error(ZString.Format("Invalid sprite name: {0} in {1}", spriteName, location));
+                return null;
             }
 
             _subSpriteCache[key] = subSprite;
@@ -226,7 +236,11 @@ namespace AlicizaX.Resource.Runtime
                     {
                         while (!loadingOperation.IsDone)
                         {
-                            cancellationToken.ThrowIfCancellationRequested();
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
+
                             await UniTask.Yield();
                         }
                     }
@@ -234,6 +248,11 @@ namespace AlicizaX.Resource.Runtime
                     {
                         loadingOperation.RemoveWaiter();
                         ReleaseSubAssetLoadingOperationIfReady(loadingOperation);
+                    }
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return default;
                     }
 
                     continue;
@@ -299,7 +318,21 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            _subSpriteCache.Clear();
+            bool found = true;
+            while (found)
+            {
+                found = false;
+                var enumerator = _subSpriteCache.GetEnumerator();
+                while (enumerator.MoveNext())
+                {
+                    if (string.Equals(enumerator.Current.Key.Location, location, System.StringComparison.Ordinal))
+                    {
+                        _subSpriteCache.Remove(enumerator.Current.Key);
+                        found = true;
+                        break;
+                    }
+                }
+            }
         }
 
         private void ReleaseSubAssetsIfUnused(string location)

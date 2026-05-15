@@ -13,27 +13,18 @@ namespace AlicizaX.Resource.Runtime
 
         private class LoadingState : IMemory
         {
-            public CancellationTokenSource Cts { get; set; }
-            public CancellationTokenRegistration Registration { get; set; }
             public string Location { get; set; }
+            public int Version { get; set; }
 
             public void Clear()
             {
-                Registration.Dispose();
-                Registration = default;
-
-                if (Cts != null)
-                {
-                    Cts.Cancel();
-                    Cts.Dispose();
-                    Cts = null;
-                }
-
                 Location = string.Empty;
+                Version = 0;
             }
         }
 
-        private readonly Dictionary<UnityEngine.Object, LoadingState> _loadingStates = new Dictionary<UnityEngine.Object, LoadingState>();
+        private int _loadingVersion;
+        private readonly Dictionary<int, LoadingState> _loadingStates = new Dictionary<int, LoadingState>(16);
 
         private void InitializedResources()
         {
@@ -49,20 +40,31 @@ namespace AlicizaX.Resource.Runtime
             }
 
             UnityEngine.Object assetObject = asset as UnityEngine.Object;
-                if (assetObject == null)
-                {
+            if (assetObject == null)
+            {
                 Log.Error(ZString.Format("Load failure asset type is {0}.", asset?.GetType()));
+                ReleaseSetAssetObject(setAssetObject);
                 return;
             }
 
-            if (IsCurrentLocation(setAssetObject.TargetObject, setAssetObject.Location))
+            var target = setAssetObject.TargetObject;
+            if (target == null)
             {
-                ClearLoadingState(setAssetObject.TargetObject);
+                _resourceService.UnloadAsset(assetObject);
+                ReleaseSetAssetObject(setAssetObject);
+                return;
+            }
+
+            int targetId = target.GetInstanceID();
+            if (IsCurrentLocation(targetId, setAssetObject.Location))
+            {
+                ClearLoadingState(targetId);
                 SetAsset(setAssetObject, assetObject);
             }
             else
             {
                 _resourceService.UnloadAsset(assetObject);
+                ReleaseSetAssetObject(setAssetObject);
             }
         }
 
@@ -73,74 +75,126 @@ namespace AlicizaX.Resource.Runtime
 
             if (target == null)
             {
+                ReleaseSetAssetObject(setAssetObject);
                 return;
             }
 
-            CancelAndCleanupOldRequest(target);
+            int targetId = target.GetInstanceID();
 
-            var loadingState = MemoryPool.Acquire<LoadingState>();
-            CancellationToken loadToken = cancellationToken;
-            if (cancellationToken.CanBeCanceled)
+            if (HasPendingRequest(targetId, location))
             {
-                var linkedTokenSource = new CancellationTokenSource();
-                loadingState.Cts = linkedTokenSource;
-                loadingState.Registration = cancellationToken.Register(static state =>
-                {
-                    ((CancellationTokenSource)state).Cancel();
-                }, linkedTokenSource);
-                loadToken = linkedTokenSource.Token;
+                ReleaseSetAssetObject(setAssetObject);
+                return;
             }
 
-            loadingState.Location = location;
-            _loadingStates[target] = loadingState;
+            CancelAndCleanupOldRequest(targetId);
 
-            if (!IsCurrentLocation(target, location))
+            if (HasCurrentTrackedAsset(target, location))
             {
+                ReleaseSetAssetObject(setAssetObject);
+                return;
+            }
+
+            var loadingState = MemoryPool.Acquire<LoadingState>();
+            loadingState.Location = location;
+            loadingState.Version = ++_loadingVersion;
+            _loadingStates[targetId] = loadingState;
+
+            if (!IsCurrentLoadingState(targetId, loadingState))
+            {
+                ReleaseSetAssetObject(setAssetObject);
                 return;
             }
 
             if (typeof(T) == typeof(UnityEngine.Sprite) && TryUseSpriteKeepAliveAsset(location, out var keepAliveAsset))
             {
-                ClearLoadingState(target);
+                ClearLoadingState(targetId, loadingState);
                 SetAsset(setAssetObject, keepAliveAsset);
                 return;
             }
 
-            var loadResult = await _resourceService.LoadAssetAsync<T>(location, loadToken).SuppressCancellationThrow();
+            var loadResult = await _resourceService.LoadAssetAsync<T>(location, cancellationToken).SuppressCancellationThrow();
             if (loadResult.IsCanceled || loadResult.Result == null)
             {
-                ClearLoadingState(target);
+                ClearLoadingState(targetId, loadingState);
+                ReleaseSetAssetObject(setAssetObject);
                 return;
             }
 
-            OnLoadAssetSuccess(location, loadResult.Result, 0f, setAssetObject);
-        }
-        private void CancelAndCleanupOldRequest(UnityEngine.Object target)
-        {
-            if (_loadingStates.TryGetValue(target, out var oldState))
+            if (!IsCurrentLoadingState(targetId, loadingState))
             {
+                _resourceService.UnloadAsset(loadResult.Result);
+                ReleaseSetAssetObject(setAssetObject);
+                return;
+            }
+
+            ClearLoadingState(targetId, loadingState);
+            SetAsset(setAssetObject, loadResult.Result);
+        }
+
+        private void CancelAndCleanupOldRequest(int targetId)
+        {
+            if (_loadingStates.TryGetValue(targetId, out var oldState))
+            {
+                _loadingStates.Remove(targetId);
                 MemoryPool.Release(oldState);
-                _loadingStates.Remove(target);
             }
         }
 
-        private void ClearLoadingState(UnityEngine.Object target)
+        private void ClearLoadingState(int targetId)
         {
-            if (_loadingStates.TryGetValue(target, out var state))
+            if (_loadingStates.TryGetValue(targetId, out var state))
             {
+                _loadingStates.Remove(targetId);
                 MemoryPool.Release(state);
-                _loadingStates.Remove(target);
             }
         }
 
-        private bool IsCurrentLocation(UnityEngine.Object target, string location)
+        private void ClearLoadingState(int targetId, LoadingState expectedState)
         {
-            if (target == null)
+            if (_loadingStates.TryGetValue(targetId, out var state) && ReferenceEquals(state, expectedState))
+            {
+                _loadingStates.Remove(targetId);
+                MemoryPool.Release(state);
+            }
+        }
+
+        private bool IsCurrentLocation(int targetId, string location)
+        {
+            return _loadingStates.TryGetValue(targetId, out var state) && state.Location == location;
+        }
+
+        private bool IsCurrentLoadingState(int targetId, LoadingState loadingState)
+        {
+            return loadingState != null &&
+                   _loadingStates.TryGetValue(targetId, out var state) &&
+                   ReferenceEquals(state, loadingState);
+        }
+
+        private bool HasPendingRequest(int targetId, string location)
+        {
+            return _loadingStates.TryGetValue(targetId, out var state) &&
+                   state.Location == location;
+        }
+
+        private bool HasCurrentTrackedAsset(UnityEngine.Object target, string location)
+        {
+            if (target == null || _trackedAssetIndices == null || _loadAssetObjects == null)
             {
                 return false;
             }
 
-            return _loadingStates.TryGetValue(target, out var state) && state.Location == location;
+            if (!_trackedAssetIndices.TryGetValue(target, out int index) ||
+                index < 0 ||
+                index >= _loadAssetObjectCount)
+            {
+                return false;
+            }
+
+            LoadAssetObject item = _loadAssetObjects[index];
+            return item?.AssetObject != null &&
+                   item.AssetObject.Location == location &&
+                   !item.AssetObject.IsCanRelease();
         }
 
         private void OnDestroy()
