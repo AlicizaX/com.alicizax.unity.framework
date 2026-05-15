@@ -29,6 +29,9 @@ namespace AlicizaX.Editor
         private MemoryPoolInfo[] m_InfoBuffer = Array.Empty<MemoryPoolInfo>();
 
         private SerializedProperty m_EnableStrictCheck;
+        private SerializedProperty m_ShortDecayStartFrames;
+        private SerializedProperty m_LongDecayStartFrames;
+        private SerializedProperty m_UnscheduleIdleFrames;
         private bool m_ShowFullClassName;
         private GUIStyle _panelStyle;
         private GUIStyle _entryBodyStyle;
@@ -69,6 +72,9 @@ namespace AlicizaX.Editor
         private void OnEnable()
         {
             m_EnableStrictCheck = serializedObject.FindProperty("m_EnableStrictCheck");
+            m_ShortDecayStartFrames = serializedObject.FindProperty("m_ShortDecayStartFrames");
+            m_LongDecayStartFrames = serializedObject.FindProperty("m_LongDecayStartFrames");
+            m_UnscheduleIdleFrames = serializedObject.FindProperty("m_UnscheduleIdleFrames");
         }
 
         private void EnsureStyles()
@@ -102,6 +108,9 @@ namespace AlicizaX.Editor
         private void DrawConfiguration()
         {
             DrawEnumPropertyRow("Strict Check", m_EnableStrictCheck);
+            DrawIntPropertyRow("Short Decay Start", m_ShortDecayStartFrames);
+            DrawIntPropertyRow("Long Decay Start", m_LongDecayStartFrames);
+            DrawIntPropertyRow("Unschedule Idle", m_UnscheduleIdleFrames);
         }
 
         private void DrawRuntimeInspector(MemoryPoolSetting setting)
@@ -115,6 +124,27 @@ namespace AlicizaX.Editor
 
             DrawReadOnlyRow("Memory Pool Count", MemoryPool.Count.ToString(), MemoryPool.Count > 0 ? _rowLabelStyle : _mutedLabelStyle);
             m_ShowFullClassName = DrawBoolValueRow("Show Full Class Name", m_ShowFullClassName);
+            DrawSectionEnd();
+
+            DrawSectionBegin("Idle Trim");
+            int shortDecay = DrawIntValueRow("Short Decay Start", MemoryPool.ShortDecayStartFrames);
+            if (shortDecay != MemoryPool.ShortDecayStartFrames)
+            {
+                MemoryPool.ShortDecayStartFrames = shortDecay;
+            }
+
+            int longDecay = DrawIntValueRow("Long Decay Start", MemoryPool.LongDecayStartFrames);
+            if (longDecay != MemoryPool.LongDecayStartFrames)
+            {
+                MemoryPool.LongDecayStartFrames = longDecay;
+            }
+
+            int unschedule = DrawIntValueRow("Unschedule Idle", MemoryPool.UnscheduleIdleFrames);
+            if (unschedule != MemoryPool.UnscheduleIdleFrames)
+            {
+                MemoryPool.UnscheduleIdleFrames = unschedule;
+            }
+
             DrawSectionEnd();
 
             int infoCount = FetchInfos();
@@ -276,6 +306,23 @@ namespace AlicizaX.Editor
             Rect popupRect = GUILayoutUtility.GetRect(90f, 20f, GUILayout.MinWidth(90f), GUILayout.ExpandWidth(true));
             property.enumValueIndex = AlicizaEditorGUI.DrawStyledPopup(popupRect, property.enumValueIndex, property.enumDisplayNames);
             EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawIntPropertyRow(string label, SerializedProperty property)
+        {
+            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
+            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
+            property.intValue = EditorGUILayout.IntField(property.intValue);
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private int DrawIntValueRow(string label, int value)
+        {
+            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
+            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
+            int result = EditorGUILayout.IntField(value);
+            EditorGUILayout.EndHorizontal();
+            return result;
         }
 
         private bool DrawBoolValueRow(string label, bool value)
