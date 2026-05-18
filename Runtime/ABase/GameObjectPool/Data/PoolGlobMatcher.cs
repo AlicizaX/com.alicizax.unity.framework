@@ -25,6 +25,8 @@ namespace AlicizaX
 
         public bool IsValid => _kinds != null && _segmentCount > 0;
 
+        public bool IsLiteralPattern => _implicitPrefix;
+
         public static PoolGlobMatcher Compile(string pattern)
         {
             if (string.IsNullOrEmpty(pattern))

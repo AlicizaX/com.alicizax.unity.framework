@@ -68,6 +68,8 @@ namespace AlicizaX
             public int poolIndex;
         }
 
+        private const int ResolveCacheCapacityLimit = 4096;
+
         private static readonly Comparison<GameObjectPoolSnapshot> SnapshotComparer = CompareSnapshot;
 
         private readonly IResourceLoader[] _resourceLoaders = new IResourceLoader[2];
@@ -87,6 +89,7 @@ namespace AlicizaX
 
         private MaintenanceNode[] _maintenanceHeap = new MaintenanceNode[8];
         private int _maintenanceCount;
+        private int _pendingAcquireCancellationRequested;
 
         private StringOpenHashMap _resolveCache = new StringOpenHashMap(32);
         private ResolvedAssetRequest[] _resolveCacheEntries = new ResolvedAssetRequest[32];
@@ -123,10 +126,11 @@ namespace AlicizaX
 
         public void Tick(float deltaTime)
         {
-            if (!_enabled) return;
+            if (!_enabled && Volatile.Read(ref _pendingAcquireCancellationRequested) == 0) return;
             float now = Time.time;
+            ProcessPendingAcquireCancellations();
             ProcessDueMaintenance(now);
-            _enabled = _maintenanceCount > 0;
+            _enabled = _maintenanceCount > 0 || Volatile.Read(ref _pendingAcquireCancellationRequested) != 0;
         }
 
         public GameObject GetGameObject(string assetName, Transform parent = null)
@@ -361,6 +365,12 @@ namespace AlicizaX
             heapIndex = -1;
         }
 
+        internal void NotifyPendingAcquireCancellationRequested()
+        {
+            Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 1);
+            _enabled = true;
+        }
+
 
         public void LoadCatalog(string poolConfigPath)
         {
@@ -403,9 +413,15 @@ namespace AlicizaX
 
             ResolvedAssetRequest request = ResolveAssetRequest(normalized);
             int index = _resolveCache.Count;
+            if (index >= ResolveCacheCapacityLimit)
+            {
+                return request;
+            }
+
             if (index >= _resolveCacheEntries.Length)
             {
-                var newEntries = new ResolvedAssetRequest[_resolveCacheEntries.Length << 1];
+                int newCapacity = Mathf.Min(_resolveCacheEntries.Length << 1, ResolveCacheCapacityLimit);
+                var newEntries = new ResolvedAssetRequest[newCapacity];
                 Array.Copy(_resolveCacheEntries, 0, newEntries, 0, _resolveCacheEntries.Length);
                 _resolveCacheEntries = newEntries;
             }
@@ -736,6 +752,30 @@ namespace AlicizaX
                 RemoveMaintenanceAt(0);
                 RuntimeGameObjectPool pool = _pools[node.poolIndex];
                 pool?.ExecuteMaintenance(now, false);
+            }
+        }
+
+        private void ProcessPendingAcquireCancellations()
+        {
+            if (Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 0) == 0)
+            {
+                return;
+            }
+
+            bool hasPendingCancellation = false;
+            for (int i = 0; i < _poolCount; i++)
+            {
+                RuntimeGameObjectPool pool = _pools[i];
+                if (pool != null && pool.ProcessPendingAcquireCancellations())
+                {
+                    hasPendingCancellation = true;
+                }
+            }
+
+            if (hasPendingCancellation)
+            {
+                Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 1);
+                _enabled = true;
             }
         }
 

@@ -32,6 +32,11 @@ namespace AlicizaX
         {
             entryName = string.IsNullOrWhiteSpace(entryName) ? DefaultEntryName : entryName.Trim();
             group = string.IsNullOrWhiteSpace(group) ? DefaultGroup : group.Trim();
+            if (!IsValidLoaderType(loaderType))
+            {
+                loaderType = PoolResourceLoaderType.AssetBundle;
+            }
+
             assetPath = NormalizeConfigAssetPath(assetPath, loaderType);
             softCapacity = Mathf.Max(1, softCapacity);
             hardCapacity = Mathf.Max(softCapacity, hardCapacity);
@@ -94,7 +99,45 @@ namespace AlicizaX
                 return string.Empty;
             }
 
-            return TrimTrailingSeparators(value.Trim().Replace('\\', '/'));
+            int start = 0;
+            int end = value.Length - 1;
+            while (start <= end && char.IsWhiteSpace(value[start]))
+            {
+                start++;
+            }
+
+            while (end >= start && char.IsWhiteSpace(value[end]))
+            {
+                end--;
+            }
+
+            while (end >= start && (value[end] == '/' || value[end] == '\\'))
+            {
+                end--;
+            }
+
+            if (end < start)
+            {
+                return string.Empty;
+            }
+
+            bool hasBackslash = false;
+            for (int i = start; i <= end; i++)
+            {
+                if (value[i] == '\\')
+                {
+                    hasBackslash = true;
+                    break;
+                }
+            }
+
+            if (!hasBackslash && start == 0 && end == value.Length - 1)
+            {
+                return value;
+            }
+
+            string normalized = value.Substring(start, end - start + 1);
+            return hasBackslash ? normalized.Replace('\\', '/') : normalized;
         }
 
         public static string NormalizeConfigAssetPath(string value, PoolResourceLoaderType loaderType)
@@ -130,6 +173,12 @@ namespace AlicizaX
             }
 
             return TrimTrailingSeparators(normalized);
+        }
+
+        public static bool IsValidLoaderType(PoolResourceLoaderType loaderType)
+        {
+            return loaderType == PoolResourceLoaderType.AssetBundle ||
+                   loaderType == PoolResourceLoaderType.Resources;
         }
 
         private static string TrimTrailingSeparators(string value)
@@ -185,6 +234,8 @@ namespace AlicizaX
         public int hardCapacity;
         public int priority;
 
+        public bool IsLiteralPattern => globMatcher.IsValid && globMatcher.IsLiteralPattern;
+
         public static PoolCompiledRule FromEntry(PoolEntry entry, int ruleIndex)
         {
             return new PoolCompiledRule
@@ -209,19 +260,22 @@ namespace AlicizaX
         private PoolCompiledGroup[] _groups;
         private int[][] _globalRuleIndices;
         private int[] _globalRuleCounts;
+        private StringOpenHashMap[] _globalExactRuleMaps;
 
         private PoolCompiledCatalog(
             PoolCompiledRule[] rules,
             StringOpenHashMap groupIndexMap,
             PoolCompiledGroup[] groups,
             int[][] globalRuleIndices,
-            int[] globalRuleCounts)
+            int[] globalRuleCounts,
+            StringOpenHashMap[] globalExactRuleMaps)
         {
             _rules = rules;
             _groupIndexMap = groupIndexMap;
             _groups = groups;
             _globalRuleIndices = globalRuleIndices;
             _globalRuleCounts = globalRuleCounts;
+            _globalExactRuleMaps = globalExactRuleMaps;
         }
 
         public bool IsEmpty => _rules == null || _rules.Length == 0;
@@ -235,7 +289,10 @@ namespace AlicizaX
 
         public int Resolve(string assetPath, PoolResourceLoaderType loaderType, string group)
         {
-            if (string.IsNullOrEmpty(assetPath) || _rules == null || _rules.Length == 0)
+            if (string.IsNullOrEmpty(assetPath) ||
+                _rules == null ||
+                _rules.Length == 0 ||
+                !PoolEntry.IsValidLoaderType(loaderType))
             {
                 return -1;
             }
@@ -251,6 +308,13 @@ namespace AlicizaX
             }
 
             int loaderIndex = (int)loaderType;
+            if (_globalExactRuleMaps[loaderIndex].TryGetValue(assetPath, out int exactRuleIndex) &&
+                _globalRuleCounts[loaderIndex] > 0 &&
+                _globalRuleIndices[loaderIndex][0] == exactRuleIndex)
+            {
+                return exactRuleIndex;
+            }
+
             int count = _globalRuleCounts[loaderIndex];
             int[] indices = _globalRuleIndices[loaderIndex];
             for (int i = 0; i < count; i++)
@@ -267,6 +331,13 @@ namespace AlicizaX
         public void Dispose()
         {
             _groupIndexMap.Dispose();
+            if (_globalExactRuleMaps != null)
+            {
+                for (int i = 0; i < _globalExactRuleMaps.Length; i++)
+                {
+                    _globalExactRuleMaps[i].Dispose();
+                }
+            }
         }
 
         public static PoolCompiledCatalog Empty()
@@ -276,7 +347,8 @@ namespace AlicizaX
                 new StringOpenHashMap(8),
                 Array.Empty<PoolCompiledGroup>(),
                 new[] { Array.Empty<int>(), Array.Empty<int>() },
-                new int[2]);
+                new int[2],
+                new[] { new StringOpenHashMap(8), new StringOpenHashMap(8) });
         }
 
         public static PoolCompiledCatalog Build(PoolEntry[] entries)
@@ -294,7 +366,9 @@ namespace AlicizaX
             for (int i = 0; i < entryCount; i++)
             {
                 PoolEntry entry = entries[i];
-                if (entry == null || string.IsNullOrEmpty(entry.assetPath))
+                if (entry == null ||
+                    string.IsNullOrEmpty(entry.assetPath) ||
+                    !PoolEntry.IsValidLoaderType(entry.loaderType))
                 {
                     continue;
                 }
@@ -316,13 +390,18 @@ namespace AlicizaX
             var rules = new PoolCompiledRule[entryCount];
             var globalRuleIndices = new int[2][];
             var globalRuleCounts = new int[2];
+            var globalExactRuleMaps = new StringOpenHashMap[2];
             globalRuleIndices[0] = new int[entryCount];
             globalRuleIndices[1] = new int[entryCount];
+            globalExactRuleMaps[0] = new StringOpenHashMap(entryCount);
+            globalExactRuleMaps[1] = new StringOpenHashMap(entryCount);
 
             for (int i = 0; i < entryCount; i++)
             {
                 PoolEntry entry = entries[i];
-                if (entry == null || string.IsNullOrEmpty(entry.assetPath))
+                if (entry == null ||
+                    string.IsNullOrEmpty(entry.assetPath) ||
+                    !PoolEntry.IsValidLoaderType(entry.loaderType))
                 {
                     continue;
                 }
@@ -335,9 +414,13 @@ namespace AlicizaX
 
                 int loaderIndex = (int)rule.loaderType;
                 globalRuleIndices[loaderIndex][globalRuleCounts[loaderIndex]++] = i;
+                if (rule.IsLiteralPattern)
+                {
+                    globalExactRuleMaps[loaderIndex].AddOrUpdate(rule.assetPath, i);
+                }
             }
 
-            return new PoolCompiledCatalog(rules, groupIndexMap, groups, globalRuleIndices, globalRuleCounts);
+            return new PoolCompiledCatalog(rules, groupIndexMap, groups, globalRuleIndices, globalRuleCounts, globalExactRuleMaps);
         }
     }
 
@@ -358,6 +441,11 @@ namespace AlicizaX
 
         public void Register(in PoolCompiledRule rule)
         {
+            if (!PoolEntry.IsValidLoaderType(rule.loaderType))
+            {
+                return;
+            }
+
             int loaderIndex = (int)rule.loaderType;
             int count = _ruleCounts[loaderIndex];
             if (count >= _ruleIndices[loaderIndex].Length)
@@ -374,6 +462,11 @@ namespace AlicizaX
 
         public int Resolve(string assetPath, PoolResourceLoaderType loaderType, PoolCompiledRule[] rules)
         {
+            if (!PoolEntry.IsValidLoaderType(loaderType))
+            {
+                return -1;
+            }
+
             int loaderIndex = (int)loaderType;
             int count = _ruleCounts[loaderIndex];
             int[] indices = _ruleIndices[loaderIndex];

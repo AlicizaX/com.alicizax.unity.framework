@@ -152,6 +152,7 @@ namespace AlicizaX
         public RuntimeGameObjectPool pool;
         public int requestId;
         public CancellationToken cancellationToken;
+        public int cancelRequested;
 
         public static PendingAcquireCancelState Create(
             RuntimeGameObjectPool pool,
@@ -162,6 +163,7 @@ namespace AlicizaX
             state.pool = pool;
             state.requestId = requestId;
             state.cancellationToken = cancellationToken;
+            state.cancelRequested = 0;
             return state;
         }
 
@@ -170,6 +172,7 @@ namespace AlicizaX
             pool = null;
             requestId = 0;
             cancellationToken = default;
+            cancelRequested = 0;
         }
     }
 
@@ -628,6 +631,7 @@ namespace AlicizaX
             public Transform transform;
             public GameObjectPoolHandle handle;
             public IGameObjectPoolable[] poolables;
+            public int poolableCount;
             public float spawnTime;
             public float lastReleaseTime;
             public int prevInactive;
@@ -739,6 +743,7 @@ namespace AlicizaX
         private int _pendingAcquireFreeTop;
         private int _pendingAcquireSlotCount;
         private int _pendingAcquireRequestId;
+        private int _pendingAcquireCancellationRequested;
         private IntOpenHashMap _pendingAcquireIndexMap;
         private PoolableTransformBinding[] _poolableBindings;
         private Transform[] _transformBuildBuffer;
@@ -924,6 +929,31 @@ namespace AlicizaX
         public void SetMaintenanceHeapIndex(int heapIndex)
         {
             _maintenanceHeapIndex = heapIndex;
+        }
+
+        public bool ProcessPendingAcquireCancellations()
+        {
+            if (Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 0) == 0)
+            {
+                return false;
+            }
+
+            int pendingIndex = _pendingAcquireHead;
+            while (pendingIndex >= 0)
+            {
+                int nextIndex = _pendingAcquires[pendingIndex].next;
+                ref PendingAcquire pendingAcquire = ref _pendingAcquires[pendingIndex];
+                if (pendingAcquire.active &&
+                    pendingAcquire.cancellationState != null &&
+                    Volatile.Read(ref pendingAcquire.cancellationState.cancelRequested) != 0)
+                {
+                    CancelPendingAcquire(pendingAcquire.requestId, pendingAcquire.cancellationToken);
+                }
+
+                pendingIndex = nextIndex;
+            }
+
+            return Volatile.Read(ref _pendingAcquireCancellationRequested) != 0;
         }
 
         public void ExecuteMaintenance(float now, bool lowMemory)
@@ -1137,6 +1167,7 @@ namespace AlicizaX
             _pendingAcquireFreeTop = 0;
             _pendingAcquireSlotCount = 0;
             _pendingAcquireRequestId = 0;
+            _pendingAcquireCancellationRequested = 0;
             _transformBuildBuffer = null;
         }
 
@@ -1338,7 +1369,15 @@ namespace AlicizaX
         private static void CancelPendingAcquireCallback(object state)
         {
             PendingAcquireCancelState data = (PendingAcquireCancelState)state;
-            data.pool?.CancelPendingAcquire(data.requestId, data.cancellationToken);
+            RuntimeGameObjectPool pool = data.pool;
+            if (pool == null)
+            {
+                return;
+            }
+
+            Volatile.Write(ref data.cancelRequested, 1);
+            Interlocked.Exchange(ref pool._pendingAcquireCancellationRequested, 1);
+            pool._service?.NotifyPendingAcquireCancellationRequested();
         }
 
         private void CancelPendingAcquire(int requestId, CancellationToken cancellationToken)
@@ -1988,7 +2027,7 @@ namespace AlicizaX
                 return;
             }
 
-            _poolableBindings = new PoolableTransformBinding[_poolableBindingCount];
+            _poolableBindings = SlotArrayPool<PoolableTransformBinding>.Rent(_poolableBindingCount);
             for (int i = 0; i < _poolableBindingCount; i++)
             {
                 _poolableBindings[i] = _bindingBuildBuffer[i];
@@ -2036,6 +2075,7 @@ namespace AlicizaX
             if (_poolableCount <= 0)
             {
                 slot.poolables = null;
+                slot.poolableCount = 0;
                 return;
             }
 
@@ -2066,6 +2106,7 @@ namespace AlicizaX
             }
 
             slot.poolables = poolables;
+            slot.poolableCount = _poolableCount;
             _instanceTransformBuffer.Clear();
         }
 
@@ -2092,7 +2133,7 @@ namespace AlicizaX
                 return;
             }
 
-            for (int i = 0; i < slot.poolables.Length; i++)
+            for (int i = 0; i < slot.poolableCount; i++)
             {
                 slot.poolables[i]?.OnPoolGet(context);
             }
@@ -2105,7 +2146,7 @@ namespace AlicizaX
                 return;
             }
 
-            for (int i = 0; i < slot.poolables.Length; i++)
+            for (int i = 0; i < slot.poolableCount; i++)
             {
                 slot.poolables[i]?.OnPoolRelease();
             }
@@ -2118,7 +2159,7 @@ namespace AlicizaX
                 return;
             }
 
-            for (int i = 0; i < slot.poolables.Length; i++)
+            for (int i = 0; i < slot.poolableCount; i++)
             {
                 slot.poolables[i]?.OnPoolDestroy();
             }
@@ -2135,6 +2176,7 @@ namespace AlicizaX
             slot.transform = null;
             slot.handle = null;
             slot.poolables = null;
+            slot.poolableCount = 0;
             slot.spawnTime = 0f;
             slot.lastReleaseTime = 0f;
             slot.generation++;
@@ -2441,7 +2483,8 @@ namespace AlicizaX
                 _pageFreeStacks[page] = null;
                 _pageFreeTops[page] = 0;
                 _pageAliveCounts[page] = 0;
-                _pageFlags[page] = 0;
+                _pageFlags[page] = PageInEmptyStack;
+                _emptyPageStack[_emptyPageTop++] = page;
                 budget--;
             }
         }
@@ -2559,6 +2602,7 @@ namespace AlicizaX
                 }
             }
 
+            SlotArrayPool<PoolableTransformBinding>.Return(_poolableBindings, true);
             _poolableBindings = null;
             if (_transformBuildBuffer != null)
             {
