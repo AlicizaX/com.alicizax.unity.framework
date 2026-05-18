@@ -24,7 +24,7 @@ namespace AlicizaX
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static void Invoke(int id, int index, int version)
         {
-            _handlers[id]?.Invoke(index, version);
+            _handlers[id](index, version);
         }
     }
 }

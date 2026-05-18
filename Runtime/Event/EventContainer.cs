@@ -16,14 +16,17 @@ namespace AlicizaX
         private static Action<TPayload>[] _valueCallbacks;
         private static InEventHandler<TPayload>[] _inCallbacks;
         private static int[] _versions;
-        private static int[] _activeSlots;
         private static int[] _freeSlots;
-        private static int[] _activeIndices;
+        private static int[] _packedIndices;
+
+        private static Action<TPayload>[] _packedValueCallbacks;
+        private static int[] _packedValueSlots;
+        private static int _packedValueCount;
+        private static InEventHandler<TPayload>[] _packedInCallbacks;
+        private static int[] _packedInSlots;
+        private static int _packedInCount;
 
         private static int _freeCount;
-        private static int _activeCount;
-        private static int _valueSubscriberCount;
-        private static int _inSubscriberCount;
         private static int _version;
         private static int _publishDepth;
 
@@ -39,10 +42,14 @@ namespace AlicizaX
             _valueCallbacks = new Action<TPayload>[InitialSize];
             _inCallbacks = new InEventHandler<TPayload>[InitialSize];
             _versions = new int[InitialSize];
-            _activeSlots = new int[InitialSize];
+            _packedIndices = new int[InitialSize];
             _freeSlots = new int[InitialSize];
-            _activeIndices = new int[InitialSize];
             _freeCount = InitialSize;
+
+            _packedValueCallbacks = new Action<TPayload>[InitialSize];
+            _packedValueSlots = new int[InitialSize];
+            _packedInCallbacks = new InEventHandler<TPayload>[InitialSize];
+            _packedInSlots = new int[InitialSize];
 
             for (int i = 0; i < InitialSize; i++)
             {
@@ -111,30 +118,33 @@ namespace AlicizaX
         private static EventRuntimeHandle SubscribeCore(Action<TPayload> valueCallback, InEventHandler<TPayload> inCallback)
         {
             int handlerIndex = GetFreeSlot();
-            EnsureActiveIndicesCapacity();
-
-            int activeIndex = _activeCount++;
-            _activeIndices[activeIndex] = handlerIndex;
 
             int version = ++_version;
             _valueCallbacks[handlerIndex] = valueCallback;
             _inCallbacks[handlerIndex] = inCallback;
             _versions[handlerIndex] = version;
-            _activeSlots[handlerIndex] = activeIndex;
 
             if (inCallback != null)
             {
-                _inSubscriberCount++;
+                int packedIdx = _packedInCount++;
+                EnsurePackedInCapacity();
+                _packedInCallbacks[packedIdx] = inCallback;
+                _packedInSlots[packedIdx] = handlerIndex;
+                _packedIndices[handlerIndex] = packedIdx;
             }
             else
             {
-                _valueSubscriberCount++;
+                int packedIdx = _packedValueCount++;
+                EnsurePackedValueCapacity();
+                _packedValueCallbacks[packedIdx] = valueCallback;
+                _packedValueSlots[packedIdx] = handlerIndex;
+                _packedIndices[handlerIndex] = packedIdx;
             }
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordSubscribe<TPayload>(_activeCount, _valueCallbacks.Length);
+                EventDebugRegistry.RecordSubscribe<TPayload>(SubscriberCount, _valueCallbacks.Length);
             }
 #endif
 
@@ -142,15 +152,37 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void EnsureActiveIndicesCapacity()
+        private static void EnsurePackedValueCapacity()
         {
-            if (_activeCount < _activeIndices.Length)
-            {
-                return;
-            }
+            if (_packedValueCount <= _packedValueCallbacks.Length) return;
 
-            int newSize = _activeIndices.Length == 0 ? 64 : _activeIndices.Length << 1;
-            Array.Resize(ref _activeIndices, newSize);
+            int newSize = _packedValueCallbacks.Length == 0 ? 64 : _packedValueCallbacks.Length << 1;
+            Array.Resize(ref _packedValueCallbacks, newSize);
+            Array.Resize(ref _packedValueSlots, newSize);
+
+#if UNITY_EDITOR
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                Log.Warning($"EventContainer<{typeof(TPayload).Name}> PackedValue 进行了扩容到 {newSize} 容量");
+            }
+#endif
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void EnsurePackedInCapacity()
+        {
+            if (_packedInCount <= _packedInCallbacks.Length) return;
+
+            int newSize = _packedInCallbacks.Length == 0 ? 64 : _packedInCallbacks.Length << 1;
+            Array.Resize(ref _packedInCallbacks, newSize);
+            Array.Resize(ref _packedInSlots, newSize);
+
+#if UNITY_EDITOR
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                Log.Warning($"EventContainer<{typeof(TPayload).Name}> PackedIn 进行了扩容到 {newSize} 容量");
+            }
+#endif
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -167,7 +199,7 @@ namespace AlicizaX
             Array.Resize(ref _valueCallbacks, newSize);
             Array.Resize(ref _inCallbacks, newSize);
             Array.Resize(ref _versions, newSize);
-            Array.Resize(ref _activeSlots, newSize);
+            Array.Resize(ref _packedIndices, newSize);
             Array.Resize(ref _freeSlots, newSize);
 
             for (int i = newSize - 1; i >= oldLen; i--)
@@ -178,7 +210,8 @@ namespace AlicizaX
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordResize<TPayload>(_activeCount, _valueCallbacks.Length);
+                Log.Warning($"EventContainer<{typeof(TPayload).Name}> Slot 进行了扩容到 {newSize} 容量");
+                EventDebugRegistry.RecordResize<TPayload>(SubscriberCount, _valueCallbacks.Length);
             }
 #endif
 
@@ -193,15 +226,7 @@ namespace AlicizaX
             if ((uint)handlerIndex >= (uint)_versions.Length) return;
             if (_versions[handlerIndex] != version) return;
 
-            int currentActiveIndex = _activeSlots[handlerIndex];
-            int lastActiveIndex = --_activeCount;
-
-            if (currentActiveIndex != lastActiveIndex)
-            {
-                int lastHandlerIndex = _activeIndices[lastActiveIndex];
-                _activeIndices[currentActiveIndex] = lastHandlerIndex;
-                _activeSlots[lastHandlerIndex] = currentActiveIndex;
-            }
+            int packedIdx = _packedIndices[handlerIndex];
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
@@ -212,24 +237,41 @@ namespace AlicizaX
 
             if (_inCallbacks[handlerIndex] != null)
             {
-                _inSubscriberCount--;
+                int lastIdx = --_packedInCount;
+                if (packedIdx != lastIdx)
+                {
+                    _packedInCallbacks[packedIdx] = _packedInCallbacks[lastIdx];
+                    int movedSlot = _packedInSlots[lastIdx];
+                    _packedInSlots[packedIdx] = movedSlot;
+                    _packedIndices[movedSlot] = packedIdx;
+                }
+                _packedInCallbacks[lastIdx] = null;
+                _packedInSlots[lastIdx] = 0;
             }
             else
             {
-                _valueSubscriberCount--;
+                int lastIdx = --_packedValueCount;
+                if (packedIdx != lastIdx)
+                {
+                    _packedValueCallbacks[packedIdx] = _packedValueCallbacks[lastIdx];
+                    int movedSlot = _packedValueSlots[lastIdx];
+                    _packedValueSlots[packedIdx] = movedSlot;
+                    _packedIndices[movedSlot] = packedIdx;
+                }
+                _packedValueCallbacks[lastIdx] = null;
+                _packedValueSlots[lastIdx] = 0;
             }
 
             _valueCallbacks[handlerIndex] = null;
             _inCallbacks[handlerIndex] = null;
             _versions[handlerIndex] = 0;
-            _activeSlots[handlerIndex] = 0;
-            _activeIndices[lastActiveIndex] = 0;
+            _packedIndices[handlerIndex] = 0;
             _freeSlots[_freeCount++] = handlerIndex;
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordUnsubscribe<TPayload>(_activeCount, _valueCallbacks.Length);
+                EventDebugRegistry.RecordUnsubscribe<TPayload>(SubscriberCount, _valueCallbacks.Length);
             }
 #endif
         }
@@ -243,157 +285,98 @@ namespace AlicizaX
                 PublishCore(in payload);
                 return;
             }
-#endif
 
             _publishDepth++;
             try
             {
-#if UNITY_EDITOR
-                EventDebugRegistry.RecordPublish<TPayload>(_activeCount, _valueCallbacks.Length);
-#endif
+                EventDebugRegistry.RecordPublish<TPayload>(SubscriberCount, _valueCallbacks.Length);
                 PublishCore(in payload);
             }
             finally
             {
                 _publishDepth--;
             }
+#else
+            _publishDepth++;
+            PublishCore(in payload);
+            _publishDepth--;
+#endif
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void PublishCore(in TPayload payload)
         {
-            int count = _activeCount;
-            if (count == 0) return;
+            int vc = _packedValueCount;
+            int ic = _packedInCount;
+            if ((vc | ic) == 0) return;
 
-            int[] indices = _activeIndices;
-            Action<TPayload>[] valueCallbacks = _valueCallbacks;
-            InEventHandler<TPayload>[] inCallbacks = _inCallbacks;
-
-            if (_inSubscriberCount == 0)
+            if (vc > 0)
             {
-                PublishValueOnly(valueCallbacks, indices, count, in payload);
-                return;
+                Action<TPayload>[] arr = _packedValueCallbacks;
+                int i = 0;
+                int unrolled = vc & ~3;
+
+                for (; i < unrolled; i += 4)
+                {
+                    arr[i](payload);
+                    arr[i + 1](payload);
+                    arr[i + 2](payload);
+                    arr[i + 3](payload);
+                }
+
+                switch (vc - i)
+                {
+                    case 3:
+                        arr[i](payload);
+                        arr[i + 1](payload);
+                        arr[i + 2](payload);
+                        break;
+                    case 2:
+                        arr[i](payload);
+                        arr[i + 1](payload);
+                        break;
+                    case 1:
+                        arr[i](payload);
+                        break;
+                }
             }
 
-            if (_valueSubscriberCount == 0)
+            if (ic > 0)
             {
-                PublishInOnly(inCallbacks, indices, count, in payload);
-                return;
+                InEventHandler<TPayload>[] arr = _packedInCallbacks;
+                int i = 0;
+                int unrolled = ic & ~3;
+
+                for (; i < unrolled; i += 4)
+                {
+                    arr[i](in payload);
+                    arr[i + 1](in payload);
+                    arr[i + 2](in payload);
+                    arr[i + 3](in payload);
+                }
+
+                switch (ic - i)
+                {
+                    case 3:
+                        arr[i](in payload);
+                        arr[i + 1](in payload);
+                        arr[i + 2](in payload);
+                        break;
+                    case 2:
+                        arr[i](in payload);
+                        arr[i + 1](in payload);
+                        break;
+                    case 1:
+                        arr[i](in payload);
+                        break;
+                }
             }
-
-            PublishMixed(valueCallbacks, inCallbacks, indices, count, in payload);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void PublishValueOnly(Action<TPayload>[] valueCallbacks, int[] indices, int count, in TPayload payload)
-        {
-            int i = 0;
-            int unrolled = count & ~3;
-
-            for (; i < unrolled; i += 4)
-            {
-                valueCallbacks[indices[i]](payload);
-                valueCallbacks[indices[i + 1]](payload);
-                valueCallbacks[indices[i + 2]](payload);
-                valueCallbacks[indices[i + 3]](payload);
-            }
-
-            switch (count - i)
-            {
-                case 3:
-                    valueCallbacks[indices[i]](payload);
-                    valueCallbacks[indices[i + 1]](payload);
-                    valueCallbacks[indices[i + 2]](payload);
-                    break;
-                case 2:
-                    valueCallbacks[indices[i]](payload);
-                    valueCallbacks[indices[i + 1]](payload);
-                    break;
-                case 1:
-                    valueCallbacks[indices[i]](payload);
-                    break;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void PublishInOnly(InEventHandler<TPayload>[] inCallbacks, int[] indices, int count, in TPayload payload)
-        {
-            int i = 0;
-            int unrolled = count & ~3;
-
-            for (; i < unrolled; i += 4)
-            {
-                inCallbacks[indices[i]](in payload);
-                inCallbacks[indices[i + 1]](in payload);
-                inCallbacks[indices[i + 2]](in payload);
-                inCallbacks[indices[i + 3]](in payload);
-            }
-
-            switch (count - i)
-            {
-                case 3:
-                    inCallbacks[indices[i]](in payload);
-                    inCallbacks[indices[i + 1]](in payload);
-                    inCallbacks[indices[i + 2]](in payload);
-                    break;
-                case 2:
-                    inCallbacks[indices[i]](in payload);
-                    inCallbacks[indices[i + 1]](in payload);
-                    break;
-                case 1:
-                    inCallbacks[indices[i]](in payload);
-                    break;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void PublishMixed(Action<TPayload>[] valueCallbacks, InEventHandler<TPayload>[] inCallbacks, int[] indices, int count, in TPayload payload)
-        {
-            int i = 0;
-            int unrolled = count & ~3;
-
-            for (; i < unrolled; i += 4)
-            {
-                InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
-                InvokeHandler(valueCallbacks, inCallbacks, indices[i + 2], in payload);
-                InvokeHandler(valueCallbacks, inCallbacks, indices[i + 3], in payload);
-            }
-
-            switch (count - i)
-            {
-                case 3:
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 2], in payload);
-                    break;
-                case 2:
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i + 1], in payload);
-                    break;
-                case 1:
-                    InvokeHandler(valueCallbacks, inCallbacks, indices[i], in payload);
-                    break;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void InvokeHandler(Action<TPayload>[] valueCallbacks, InEventHandler<TPayload>[] inCallbacks, int handlerIndex, in TPayload payload)
-        {
-            InEventHandler<TPayload> inCallback = inCallbacks[handlerIndex];
-            if (inCallback != null)
-            {
-                inCallback(in payload);
-                return;
-            }
-
-            valueCallbacks[handlerIndex](payload);
         }
 
         public static int SubscriberCount
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _activeCount;
+            get => _packedValueCount + _packedInCount;
         }
 
         public static void EnsureCapacity(int capacity)
@@ -402,25 +385,65 @@ namespace AlicizaX
 
             ThrowIfMutatingDuringPublish("ensure capacity");
 
-            if (_valueCallbacks.Length >= capacity) return;
-
-            int oldLen = _valueCallbacks.Length;
-            Array.Resize(ref _valueCallbacks, capacity);
-            Array.Resize(ref _inCallbacks, capacity);
-            Array.Resize(ref _versions, capacity);
-            Array.Resize(ref _activeSlots, capacity);
-            Array.Resize(ref _freeSlots, capacity);
-            Array.Resize(ref _activeIndices, capacity);
-
-            for (int i = capacity - 1; i >= oldLen; i--)
+            if (_valueCallbacks.Length >= capacity
+                && _packedValueCallbacks.Length >= capacity
+                && _packedInCallbacks.Length >= capacity)
             {
-                _freeSlots[_freeCount++] = i;
+                return;
+            }
+
+            if (_valueCallbacks.Length < capacity)
+            {
+                int oldLen = _valueCallbacks.Length;
+                Array.Resize(ref _valueCallbacks, capacity);
+                Array.Resize(ref _inCallbacks, capacity);
+                Array.Resize(ref _versions, capacity);
+                Array.Resize(ref _packedIndices, capacity);
+                Array.Resize(ref _freeSlots, capacity);
+
+                for (int i = capacity - 1; i >= oldLen; i--)
+                {
+                    _freeSlots[_freeCount++] = i;
+                }
+
+#if UNITY_EDITOR
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    Log.Warning($"EventContainer<{typeof(TPayload).Name}> Slot 进行了扩容到 {capacity} 容量");
+                }
+#endif
+            }
+
+            if (_packedValueCallbacks.Length < capacity)
+            {
+                Array.Resize(ref _packedValueCallbacks, capacity);
+                Array.Resize(ref _packedValueSlots, capacity);
+
+#if UNITY_EDITOR
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    Log.Warning($"EventContainer<{typeof(TPayload).Name}> PackedValue 进行了扩容到 {capacity} 容量");
+                }
+#endif
+            }
+
+            if (_packedInCallbacks.Length < capacity)
+            {
+                Array.Resize(ref _packedInCallbacks, capacity);
+                Array.Resize(ref _packedInSlots, capacity);
+
+#if UNITY_EDITOR
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    Log.Warning($"EventContainer<{typeof(TPayload).Name}> PackedIn 进行了扩容到 {capacity} 容量");
+                }
+#endif
             }
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordResize<TPayload>(_activeCount, _valueCallbacks.Length);
+                EventDebugRegistry.RecordResize<TPayload>(SubscriberCount, _valueCallbacks.Length);
             }
 #endif
         }
@@ -429,33 +452,53 @@ namespace AlicizaX
         {
             ThrowIfMutatingDuringPublish("clear");
 
-            for (int i = 0; i < _activeCount; i++)
+            for (int i = 0; i < _packedValueCount; i++)
             {
-                int idx = _activeIndices[i];
+                int slotIdx = _packedValueSlots[i];
 
 #if UNITY_EDITOR
                 if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
                 {
-                    RemoveActiveHandler(idx);
+                    RemoveActiveHandler(slotIdx);
                 }
 #endif
 
-                _valueCallbacks[idx] = null;
-                _inCallbacks[idx] = null;
-                _versions[idx] = 0;
-                _activeSlots[idx] = 0;
-                _freeSlots[_freeCount++] = idx;
-                _activeIndices[i] = 0;
+                _valueCallbacks[slotIdx] = null;
+                _inCallbacks[slotIdx] = null;
+                _versions[slotIdx] = 0;
+                _packedIndices[slotIdx] = 0;
+                _freeSlots[_freeCount++] = slotIdx;
+                _packedValueCallbacks[i] = null;
+                _packedValueSlots[i] = 0;
             }
 
-            _activeCount = 0;
-            _valueSubscriberCount = 0;
-            _inSubscriberCount = 0;
+            for (int i = 0; i < _packedInCount; i++)
+            {
+                int slotIdx = _packedInSlots[i];
+
+#if UNITY_EDITOR
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    RemoveActiveHandler(slotIdx);
+                }
+#endif
+
+                _valueCallbacks[slotIdx] = null;
+                _inCallbacks[slotIdx] = null;
+                _versions[slotIdx] = 0;
+                _packedIndices[slotIdx] = 0;
+                _freeSlots[_freeCount++] = slotIdx;
+                _packedInCallbacks[i] = null;
+                _packedInSlots[i] = 0;
+            }
+
+            _packedValueCount = 0;
+            _packedInCount = 0;
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordClear<TPayload>(_activeCount, _valueCallbacks.Length);
+                EventDebugRegistry.RecordClear<TPayload>(SubscriberCount, _valueCallbacks.Length);
             }
             _activeValueHandlers.Clear();
             _activeInHandlers.Clear();
@@ -470,7 +513,7 @@ namespace AlicizaX
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordMutationRejected<TPayload>(_activeCount, _valueCallbacks.Length);
+                EventDebugRegistry.RecordMutationRejected<TPayload>(SubscriberCount, _valueCallbacks.Length);
             }
 #endif
             throw new InvalidOperationException(
@@ -497,36 +540,35 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int GetDebugSubscriberCount() => _activeCount;
+        private static int GetDebugSubscriberCount() => _packedValueCount + _packedInCount;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int GetDebugCapacity() => _valueCallbacks.Length;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int GetDebugValueSubscriberCount() => _valueSubscriberCount;
+        private static int GetDebugValueSubscriberCount() => _packedValueCount;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int GetDebugInSubscriberCount() => _inSubscriberCount;
+        private static int GetDebugInSubscriberCount() => _packedInCount;
 
         private static EventDebugSubscriberInfo[] GetDebugSubscribers()
         {
-            int count = _activeCount;
+            int count = _packedValueCount + _packedInCount;
             if (count == 0)
             {
                 return Array.Empty<EventDebugSubscriberInfo>();
             }
 
             EventDebugSubscriberInfo[] subscribers = new EventDebugSubscriberInfo[count];
-            for (int i = 0; i < count; i++)
+            int idx = 0;
+
+            for (int i = 0; i < _packedValueCount; i++)
             {
-                int handlerIndex = _activeIndices[i];
-                Action<TPayload> valueCallback = _valueCallbacks[handlerIndex];
-                InEventHandler<TPayload> inCallback = _inCallbacks[handlerIndex];
-                Delegate callback = (Delegate)inCallback ?? valueCallback;
+                int handlerIndex = _packedValueSlots[i];
+                Action<TPayload> callback = _packedValueCallbacks[i];
                 object target = callback.Target;
                 bool isStatic = target == null;
                 bool isUnityObjectDestroyed = false;
-                bool usesInParameter = inCallback != null;
                 bool isCompilerGeneratedTarget = !isStatic && target.GetType().IsDefined(typeof(CompilerGeneratedAttribute), false);
                 bool isCompilerGeneratedMethod = callback.Method.IsDefined(typeof(CompilerGeneratedAttribute), false);
                 UnityEngine.Object unityTarget = null;
@@ -537,7 +579,7 @@ namespace AlicizaX
                     isUnityObjectDestroyed = engineObject == null;
                 }
 
-                subscribers[i] = new EventDebugSubscriberInfo(
+                subscribers[idx++] = new EventDebugSubscriberInfo(
                     handlerIndex,
                     _versions[handlerIndex],
                     callback.Method.DeclaringType?.FullName ?? "<UnknownType>",
@@ -547,7 +589,39 @@ namespace AlicizaX
                     isStatic,
                     isUnityObjectDestroyed,
                     false,
-                    usesInParameter,
+                    false,
+                    isCompilerGeneratedTarget,
+                    isCompilerGeneratedMethod);
+            }
+
+            for (int i = 0; i < _packedInCount; i++)
+            {
+                int handlerIndex = _packedInSlots[i];
+                Delegate callback = _packedInCallbacks[i];
+                object target = callback.Target;
+                bool isStatic = target == null;
+                bool isUnityObjectDestroyed = false;
+                bool isCompilerGeneratedTarget = !isStatic && target.GetType().IsDefined(typeof(CompilerGeneratedAttribute), false);
+                bool isCompilerGeneratedMethod = callback.Method.IsDefined(typeof(CompilerGeneratedAttribute), false);
+                UnityEngine.Object unityTarget = null;
+
+                if (!isStatic && target is UnityEngine.Object engineObject)
+                {
+                    unityTarget = engineObject;
+                    isUnityObjectDestroyed = engineObject == null;
+                }
+
+                subscribers[idx++] = new EventDebugSubscriberInfo(
+                    handlerIndex,
+                    _versions[handlerIndex],
+                    callback.Method.DeclaringType?.FullName ?? "<UnknownType>",
+                    callback.Method.Name,
+                    target?.GetType().FullName ?? "<Static>",
+                    unityTarget,
+                    isStatic,
+                    isUnityObjectDestroyed,
+                    false,
+                    true,
                     isCompilerGeneratedTarget,
                     isCompilerGeneratedMethod);
             }

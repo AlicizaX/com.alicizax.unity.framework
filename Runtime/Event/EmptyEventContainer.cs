@@ -15,12 +15,14 @@ namespace AlicizaX
 
         private static Action[] _callbacks;
         private static int[] _versions;
-        private static int[] _activeSlots;
         private static int[] _freeSlots;
-        private static int[] _activeIndices;
+        private static int[] _packedIndices;
+
+        private static Action[] _packedCallbacks;
+        private static int[] _packedSlots;
+        private static int _packedCount;
 
         private static int _freeCount;
-        private static int _activeCount;
         private static int _version;
         private static int _publishDepth;
 
@@ -34,10 +36,12 @@ namespace AlicizaX
 
             _callbacks = new Action[InitialSize];
             _versions = new int[InitialSize];
-            _activeSlots = new int[InitialSize];
+            _packedIndices = new int[InitialSize];
             _freeSlots = new int[InitialSize];
-            _activeIndices = new int[InitialSize];
             _freeCount = InitialSize;
+
+            _packedCallbacks = new Action[InitialSize];
+            _packedSlots = new int[InitialSize];
 
             for (int i = 0; i < InitialSize; i++)
             {
@@ -74,20 +78,21 @@ namespace AlicizaX
 #endif
 
             int handlerIndex = GetFreeSlot();
-            EnsureActiveIndicesCapacity();
-
-            int activeIndex = _activeCount++;
-            _activeIndices[activeIndex] = handlerIndex;
 
             int version = ++_version;
             _callbacks[handlerIndex] = callback;
             _versions[handlerIndex] = version;
-            _activeSlots[handlerIndex] = activeIndex;
+
+            int packedIdx = _packedCount++;
+            EnsurePackedCapacity();
+            _packedCallbacks[packedIdx] = callback;
+            _packedSlots[packedIdx] = handlerIndex;
+            _packedIndices[handlerIndex] = packedIdx;
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordSubscribe<TPayload>(_activeCount, _callbacks.Length);
+                EventDebugRegistry.RecordSubscribe<TPayload>(_packedCount, _callbacks.Length);
             }
 #endif
 
@@ -95,15 +100,20 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void EnsureActiveIndicesCapacity()
+        private static void EnsurePackedCapacity()
         {
-            if (_activeCount < _activeIndices.Length)
-            {
-                return;
-            }
+            if (_packedCount <= _packedCallbacks.Length) return;
 
-            int newSize = _activeIndices.Length == 0 ? 64 : _activeIndices.Length << 1;
-            Array.Resize(ref _activeIndices, newSize);
+            int newSize = _packedCallbacks.Length == 0 ? 64 : _packedCallbacks.Length << 1;
+            Array.Resize(ref _packedCallbacks, newSize);
+            Array.Resize(ref _packedSlots, newSize);
+
+#if UNITY_EDITOR
+            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+            {
+                Log.Warning($"EmptyEventContainer<{typeof(TPayload).Name}> Packed 进行了扩容到 {newSize} 容量");
+            }
+#endif
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -119,7 +129,7 @@ namespace AlicizaX
 
             Array.Resize(ref _callbacks, newSize);
             Array.Resize(ref _versions, newSize);
-            Array.Resize(ref _activeSlots, newSize);
+            Array.Resize(ref _packedIndices, newSize);
             Array.Resize(ref _freeSlots, newSize);
 
             for (int i = newSize - 1; i >= oldLen; i--)
@@ -130,7 +140,8 @@ namespace AlicizaX
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordResize<TPayload>(_activeCount, _callbacks.Length);
+                Log.Warning($"EmptyEventContainer<{typeof(TPayload).Name}> Slot 进行了扩容到 {newSize} 容量");
+                EventDebugRegistry.RecordResize<TPayload>(_packedCount, _callbacks.Length);
             }
 #endif
 
@@ -145,15 +156,18 @@ namespace AlicizaX
             if ((uint)handlerIndex >= (uint)_versions.Length) return;
             if (_versions[handlerIndex] != version) return;
 
-            int currentActiveIndex = _activeSlots[handlerIndex];
-            int lastActiveIndex = --_activeCount;
+            int packedIdx = _packedIndices[handlerIndex];
+            int lastIdx = --_packedCount;
 
-            if (currentActiveIndex != lastActiveIndex)
+            if (packedIdx != lastIdx)
             {
-                int lastHandlerIndex = _activeIndices[lastActiveIndex];
-                _activeIndices[currentActiveIndex] = lastHandlerIndex;
-                _activeSlots[lastHandlerIndex] = currentActiveIndex;
+                _packedCallbacks[packedIdx] = _packedCallbacks[lastIdx];
+                int movedSlot = _packedSlots[lastIdx];
+                _packedSlots[packedIdx] = movedSlot;
+                _packedIndices[movedSlot] = packedIdx;
             }
+            _packedCallbacks[lastIdx] = null;
+            _packedSlots[lastIdx] = 0;
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
@@ -164,14 +178,13 @@ namespace AlicizaX
 
             _callbacks[handlerIndex] = null;
             _versions[handlerIndex] = 0;
-            _activeSlots[handlerIndex] = 0;
-            _activeIndices[lastActiveIndex] = 0;
+            _packedIndices[handlerIndex] = 0;
             _freeSlots[_freeCount++] = handlerIndex;
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordUnsubscribe<TPayload>(_activeCount, _callbacks.Length);
+                EventDebugRegistry.RecordUnsubscribe<TPayload>(_packedCount, _callbacks.Length);
             }
 #endif
         }
@@ -185,55 +198,56 @@ namespace AlicizaX
                 PublishCore();
                 return;
             }
-#endif
 
             _publishDepth++;
             try
             {
-#if UNITY_EDITOR
-                EventDebugRegistry.RecordPublish<TPayload>(_activeCount, _callbacks.Length);
-#endif
+                EventDebugRegistry.RecordPublish<TPayload>(_packedCount, _callbacks.Length);
                 PublishCore();
             }
             finally
             {
                 _publishDepth--;
             }
+#else
+            _publishDepth++;
+            PublishCore();
+            _publishDepth--;
+#endif
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void PublishCore()
         {
-            int count = _activeCount;
+            int count = _packedCount;
             if (count == 0) return;
 
-            int[] indices = _activeIndices;
-            Action[] callbacks = _callbacks;
+            Action[] callbacks = _packedCallbacks;
 
             int i = 0;
             int unrolled = count & ~3;
 
             for (; i < unrolled; i += 4)
             {
-                callbacks[indices[i]]();
-                callbacks[indices[i + 1]]();
-                callbacks[indices[i + 2]]();
-                callbacks[indices[i + 3]]();
+                callbacks[i]();
+                callbacks[i + 1]();
+                callbacks[i + 2]();
+                callbacks[i + 3]();
             }
 
             switch (count - i)
             {
                 case 3:
-                    callbacks[indices[i]]();
-                    callbacks[indices[i + 1]]();
-                    callbacks[indices[i + 2]]();
+                    callbacks[i]();
+                    callbacks[i + 1]();
+                    callbacks[i + 2]();
                     break;
                 case 2:
-                    callbacks[indices[i]]();
-                    callbacks[indices[i + 1]]();
+                    callbacks[i]();
+                    callbacks[i + 1]();
                     break;
                 case 1:
-                    callbacks[indices[i]]();
+                    callbacks[i]();
                     break;
             }
         }
@@ -241,7 +255,7 @@ namespace AlicizaX
         public static int SubscriberCount
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _activeCount;
+            get => _packedCount;
         }
 
         public static void EnsureCapacity(int capacity)
@@ -250,24 +264,46 @@ namespace AlicizaX
 
             ThrowIfMutatingDuringPublish("ensure capacity");
 
-            if (_callbacks.Length >= capacity) return;
+            if (_callbacks.Length >= capacity && _packedCallbacks.Length >= capacity) return;
 
-            int oldLen = _callbacks.Length;
-            Array.Resize(ref _callbacks, capacity);
-            Array.Resize(ref _versions, capacity);
-            Array.Resize(ref _activeSlots, capacity);
-            Array.Resize(ref _freeSlots, capacity);
-            Array.Resize(ref _activeIndices, capacity);
-
-            for (int i = capacity - 1; i >= oldLen; i--)
+            if (_callbacks.Length < capacity)
             {
-                _freeSlots[_freeCount++] = i;
+                int oldLen = _callbacks.Length;
+                Array.Resize(ref _callbacks, capacity);
+                Array.Resize(ref _versions, capacity);
+                Array.Resize(ref _packedIndices, capacity);
+                Array.Resize(ref _freeSlots, capacity);
+
+                for (int i = capacity - 1; i >= oldLen; i--)
+                {
+                    _freeSlots[_freeCount++] = i;
+                }
+
+#if UNITY_EDITOR
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    Log.Warning($"EmptyEventContainer<{typeof(TPayload).Name}> Slot 进行了扩容到 {capacity} 容量");
+                }
+#endif
+            }
+
+            if (_packedCallbacks.Length < capacity)
+            {
+                Array.Resize(ref _packedCallbacks, capacity);
+                Array.Resize(ref _packedSlots, capacity);
+
+#if UNITY_EDITOR
+                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
+                {
+                    Log.Warning($"EmptyEventContainer<{typeof(TPayload).Name}> Packed 进行了扩容到 {capacity} 容量");
+                }
+#endif
             }
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordResize<TPayload>(_activeCount, _callbacks.Length);
+                EventDebugRegistry.RecordResize<TPayload>(_packedCount, _callbacks.Length);
             }
 #endif
         }
@@ -276,30 +312,31 @@ namespace AlicizaX
         {
             ThrowIfMutatingDuringPublish("clear");
 
-            for (int i = 0; i < _activeCount; i++)
+            for (int i = 0; i < _packedCount; i++)
             {
-                int idx = _activeIndices[i];
+                int slotIdx = _packedSlots[i];
 
 #if UNITY_EDITOR
                 if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
                 {
-                    RemoveActiveHandler(idx);
+                    RemoveActiveHandler(slotIdx);
                 }
 #endif
 
-                _callbacks[idx] = null;
-                _versions[idx] = 0;
-                _activeSlots[idx] = 0;
-                _freeSlots[_freeCount++] = idx;
-                _activeIndices[i] = 0;
+                _callbacks[slotIdx] = null;
+                _versions[slotIdx] = 0;
+                _packedIndices[slotIdx] = 0;
+                _freeSlots[_freeCount++] = slotIdx;
+                _packedCallbacks[i] = null;
+                _packedSlots[i] = 0;
             }
 
-            _activeCount = 0;
+            _packedCount = 0;
 
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordClear<TPayload>(_activeCount, _callbacks.Length);
+                EventDebugRegistry.RecordClear<TPayload>(_packedCount, _callbacks.Length);
             }
             _activeHandlers.Clear();
 #endif
@@ -313,7 +350,7 @@ namespace AlicizaX
 #if UNITY_EDITOR
             if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
             {
-                EventDebugRegistry.RecordMutationRejected<TPayload>(_activeCount, _callbacks.Length);
+                EventDebugRegistry.RecordMutationRejected<TPayload>(_packedCount, _callbacks.Length);
             }
 #endif
             throw new InvalidOperationException(
@@ -333,14 +370,14 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int GetDebugSubscriberCount() => _activeCount;
+        private static int GetDebugSubscriberCount() => _packedCount;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int GetDebugCapacity() => _callbacks.Length;
 
         private static EventDebugSubscriberInfo[] GetDebugSubscribers()
         {
-            int count = _activeCount;
+            int count = _packedCount;
             if (count == 0)
             {
                 return Array.Empty<EventDebugSubscriberInfo>();
@@ -349,8 +386,8 @@ namespace AlicizaX
             EventDebugSubscriberInfo[] subscribers = new EventDebugSubscriberInfo[count];
             for (int i = 0; i < count; i++)
             {
-                int handlerIndex = _activeIndices[i];
-                Action callback = _callbacks[handlerIndex];
+                int handlerIndex = _packedSlots[i];
+                Action callback = _packedCallbacks[i];
                 object target = callback.Target;
                 bool isStatic = target == null;
                 bool isUnityObjectDestroyed = false;
