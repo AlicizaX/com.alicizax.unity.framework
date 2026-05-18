@@ -35,6 +35,8 @@ namespace AlicizaX
         private bool _hasUnsavedChanges;
         [SerializeField]
         private Vector2 _entryListScrollPosition;
+        [SerializeField]
+        private string _searchFilter = string.Empty;
 
         private ToolbarButton _saveButton;
         private Label _titleLabel;
@@ -45,8 +47,9 @@ namespace AlicizaX
         private Label _detailTitleLabel;
         private VisualElement _detailFieldsContainer;
         private VisualElement _emptyContainer;
+        private HelpBox _duplicateWarningBox;
 
-        private static void OpenForAsset(PoolConfigScriptableObject asset)
+        internal static void OpenForAsset(PoolConfigScriptableObject asset)
         {
             if (asset == null)
             {
@@ -288,10 +291,39 @@ namespace AlicizaX
         {
             _entryIndices.Clear();
             int count = _entriesProperty?.arraySize ?? 0;
+            bool hasFilter = !string.IsNullOrWhiteSpace(_searchFilter);
+            string filter = hasFilter ? _searchFilter.Trim() : null;
+
             for (int i = 0; i < count; i++)
             {
-                _entryIndices.Add(i);
+                if (!hasFilter)
+                {
+                    _entryIndices.Add(i);
+                    continue;
+                }
+
+                SerializedProperty entry = _entriesProperty.GetArrayElementAtIndex(i);
+                string entryName = entry.FindPropertyRelative("entryName").stringValue;
+                string assetPath = entry.FindPropertyRelative("assetPath").stringValue;
+                string group = entry.FindPropertyRelative("group").stringValue;
+
+                if (ContainsIgnoreCase(entryName, filter) ||
+                    ContainsIgnoreCase(assetPath, filter) ||
+                    ContainsIgnoreCase(group, filter))
+                {
+                    _entryIndices.Add(i);
+                }
             }
+        }
+
+        private static bool ContainsIgnoreCase(string source, string value)
+        {
+            if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(value))
+            {
+                return false;
+            }
+
+            return source.IndexOf(value, System.StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void DrawEntryList()
@@ -301,13 +333,78 @@ namespace AlicizaX
                 return;
             }
 
+            EditorGUI.BeginChangeCheck();
+            _searchFilter = EditorGUILayout.TextField(_searchFilter, EditorStyles.toolbarSearchField);
+            if (EditorGUI.EndChangeCheck())
+            {
+                RebuildEntryIndices();
+                ClampSelection();
+                _entryList = null;
+            }
+
+            _serializedObject.Update();
+
+            bool hasFilter = !string.IsNullOrWhiteSpace(_searchFilter);
+            if (hasFilter)
+            {
+                DrawFilteredEntryList();
+            }
+            else
+            {
+                DrawReorderableEntryList();
+            }
+        }
+
+        private void DrawReorderableEntryList()
+        {
             EnsureEntryReorderableList();
             SyncEntryListSelection();
 
-            _serializedObject.Update();
             _entryListScrollPosition = EditorGUILayout.BeginScrollView(_entryListScrollPosition, GUILayout.ExpandHeight(true), GUILayout.ExpandWidth(true));
             Rect listRect = GUILayoutUtility.GetRect(0f, _entryList.GetHeight(), GUILayout.ExpandWidth(true));
             _entryList.DoList(listRect);
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawFilteredEntryList()
+        {
+            if (_entryIndices.Count == 0)
+            {
+                EditorGUILayout.HelpBox("没有匹配的规则。", MessageType.Info);
+                return;
+            }
+
+            _entryListScrollPosition = EditorGUILayout.BeginScrollView(_entryListScrollPosition, GUILayout.ExpandHeight(true), GUILayout.ExpandWidth(true));
+            for (int displayIndex = 0; displayIndex < _entryIndices.Count; displayIndex++)
+            {
+                int actualIndex = _entryIndices[displayIndex];
+                SerializedProperty entry = _entriesProperty.GetArrayElementAtIndex(actualIndex);
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                string label = GetPrimaryLabel(entry);
+                bool isSelected = displayIndex == _selectedIndex;
+
+                Rect rowRect = GUILayoutUtility.GetRect(0f, ListItemHeight + 6f, GUILayout.ExpandWidth(true));
+                if (Event.current.type == EventType.Repaint)
+                {
+                    GUIStyle style = isSelected ? EditorStyles.selectionRect : GUIStyle.none;
+                    style.Draw(rowRect, false, false, isSelected, false);
+                }
+
+                Rect labelRect = new Rect(rowRect.x + 6f, rowRect.y + 5f, rowRect.width - 12f, EditorGUIUtility.singleLineHeight);
+                EditorGUI.LabelField(labelRect, label, isSelected ? EditorStyles.boldLabel : EditorStyles.label);
+
+                if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && rowRect.Contains(Event.current.mousePosition))
+                {
+                    _selectedIndex = displayIndex;
+                    RebuildDetailFields();
+                    Event.current.Use();
+                }
+            }
+
             EditorGUILayout.EndScrollView();
         }
 
@@ -444,7 +541,51 @@ namespace AlicizaX
                 enterChildren = false;
             }
 
+            UpdateDuplicateWarning(selectedProperty);
             _detailFieldsContainer.Bind(_serializedObject);
+        }
+
+        private void UpdateDuplicateWarning(SerializedProperty selectedProperty)
+        {
+            if (_duplicateWarningBox != null)
+            {
+                _detailScrollView.Remove(_duplicateWarningBox);
+                _duplicateWarningBox = null;
+            }
+
+            if (selectedProperty == null || _entriesProperty == null)
+            {
+                return;
+            }
+
+            string selectedPath = selectedProperty.FindPropertyRelative("assetPath").stringValue;
+            if (string.IsNullOrWhiteSpace(selectedPath))
+            {
+                return;
+            }
+
+            int selectedActualIndex = _entryIndices.Count > 0 ? _entryIndices[_selectedIndex] : -1;
+            int count = _entriesProperty.arraySize;
+            for (int i = 0; i < count; i++)
+            {
+                if (i == selectedActualIndex)
+                {
+                    continue;
+                }
+
+                SerializedProperty other = _entriesProperty.GetArrayElementAtIndex(i);
+                string otherPath = other.FindPropertyRelative("assetPath").stringValue;
+                if (string.Equals(selectedPath, otherPath, System.StringComparison.Ordinal))
+                {
+                    _duplicateWarningBox = new HelpBox(
+                        Utility.Text.Format("存在重复的 assetPath \"{0}\"，运行时仅第一条匹配规则生效。", selectedPath),
+                        HelpBoxMessageType.Warning);
+                    _duplicateWarningBox.style.marginTop = 4f;
+                    _duplicateWarningBox.style.marginBottom = 4f;
+                    _detailScrollView.Insert(1, _duplicateWarningBox);
+                    return;
+                }
+            }
         }
 
         private VisualElement CreateDetailField(SerializedProperty property)
@@ -596,7 +737,8 @@ namespace AlicizaX
             }
 
             _serializedObject.Update();
-            _entriesProperty.DeleteArrayElementAtIndex(_selectedIndex);
+            int actualIndex = _entryIndices[_selectedIndex];
+            _entriesProperty.DeleteArrayElementAtIndex(actualIndex);
             RefreshEntryPriorities();
             _serializedObject.ApplyModifiedPropertiesWithoutUndo();
             _asset.Normalize();
@@ -617,7 +759,6 @@ namespace AlicizaX
             property.FindPropertyRelative("group").stringValue = PoolEntry.DefaultGroup;
             property.FindPropertyRelative("assetPath").stringValue = string.Empty;
             property.FindPropertyRelative("loaderType").enumValueIndex = (int)PoolResourceLoaderType.AssetBundle;
-            property.FindPropertyRelative("category").enumValueIndex = (int)PoolCategory.Default;
             property.FindPropertyRelative("softCapacity").intValue = 8;
             property.FindPropertyRelative("hardCapacity").intValue = 16;
             property.FindPropertyRelative("priority").intValue = index;
@@ -691,7 +832,7 @@ namespace AlicizaX
             }
 
             ClampSelection();
-            return GetEntryAt(_selectedIndex);
+            return GetEntryAt(_entryIndices[_selectedIndex]);
         }
 
         private string GetPrimaryLabel(SerializedProperty property)
@@ -722,7 +863,7 @@ namespace AlicizaX
 
         private static bool ShouldDisplayField(string propertyName)
         {
-            return propertyName != "category";
+            return true;
         }
 
         private static bool IsReadOnlyField(string propertyName)
@@ -737,7 +878,6 @@ namespace AlicizaX
                 "entryName" => "规则名称",
                 "group" => "分组",
                 "assetPath" => "资源路径",
-                "matchMode" => "匹配模式",
                 "loaderType" => "加载器类型",
                 "softCapacity" => "软容量",
                 "hardCapacity" => "容量",
@@ -752,8 +892,7 @@ namespace AlicizaX
             {
                 "entryName" => "规则名称就是主定位信息。列表、调试和问题排查都直接看这个名字。",
                 "group" => "用于 GameObjectPoolManager 下的空闲节点归类。不填或空值会自动回落到 DefaultGroup。",
-                "assetPath" => "要匹配的资源路径。精确匹配填完整路径，前缀匹配可填写目录前缀。",
-                "matchMode" => "精确匹配只命中单一路径，前缀匹配适合同目录或同类资源共用规则。",
+                "assetPath" => "要匹配的资源路径。支持 glob 语法：* 匹配单级目录，** 递归匹配，? 匹配单字符。不含通配符时按前缀匹配（向后兼容）。",
                 "loaderType" => "决定 Prefab 从哪个资源通道加载。AssetBundle 走包体资源，Resources 走内置目录。",
                 "softCapacity" => "超过该值后，维护阶段会优先回收空闲实例。",
                 "hardCapacity" => "基础容量。超过这个值会自动扩容并输出警告，后续维护回收会再收回到这个基准。",

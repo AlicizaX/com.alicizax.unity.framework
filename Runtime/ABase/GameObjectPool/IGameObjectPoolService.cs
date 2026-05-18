@@ -6,13 +6,11 @@ namespace AlicizaX
 {
     public interface IGameObjectPoolService : IService
     {
-        bool TryGetPoolAssetId(string assetPath, out PoolAssetId assetId);
+        GameObject GetGameObject(string assetName, Transform parent = null);
 
-        GameObject GetGameObject(PoolAssetId assetId, Transform parent = null);
+        UniTask<GameObject> GetGameObjectAsync(string assetName, Transform parent = null, CancellationToken cancellationToken = default);
 
-        UniTask<GameObject> GetGameObjectAsync(PoolAssetId assetId, Transform parent = null, CancellationToken cancellationToken = default);
-
-        UniTask PreloadAsync(PoolAssetId assetId, int count = 1, CancellationToken cancellationToken = default);
+        UniTask PreloadAsync(string assetName, int count = 1, CancellationToken cancellationToken = default);
 
         void Release(GameObject gameObject);
 

@@ -9,37 +9,6 @@ using UnityEngine;
 
 namespace AlicizaX
 {
-    public readonly struct PoolAssetId
-    {
-        internal readonly int RuleIndex;
-        internal readonly int CatalogVersion;
-        internal readonly string RequestPath;
-        internal readonly string LogicalPath;
-        internal readonly string LoadPath;
-        internal readonly string PoolKey;
-        internal readonly PoolResourceLoaderType LoaderType;
-
-        public bool IsValid => RuleIndex >= 0;
-
-        internal PoolAssetId(
-            int ruleIndex,
-            int catalogVersion,
-            string requestPath,
-            string logicalPath,
-            string loadPath,
-            string poolKey,
-            PoolResourceLoaderType loaderType)
-        {
-            RuleIndex = ruleIndex;
-            CatalogVersion = catalogVersion;
-            RequestPath = requestPath;
-            LogicalPath = logicalPath;
-            LoadPath = loadPath;
-            PoolKey = poolKey;
-            LoaderType = loaderType;
-        }
-    }
-
     internal sealed class GameObjectPoolService : ServiceBase, IServiceTickable, IGameObjectPoolService, IGameObjectPoolDebugService
     {
         public GameObjectPoolService(Transform transform)
@@ -119,6 +88,10 @@ namespace AlicizaX
         private MaintenanceNode[] _maintenanceHeap = new MaintenanceNode[8];
         private int _maintenanceCount;
 
+        private StringOpenHashMap _resolveCache = new StringOpenHashMap(32);
+        private ResolvedAssetRequest[] _resolveCacheEntries = new ResolvedAssetRequest[32];
+        private int _resolveCacheVersion;
+
         internal CancellationToken ShutdownToken => _shutdownTokenSource == null ? default : _shutdownTokenSource.Token;
 
         private Transform _containerRoot;
@@ -142,6 +115,7 @@ namespace AlicizaX
             _catalog = null;
             _directLoadWarnedPaths.Dispose();
             _groupRootMap.Dispose();
+            _resolveCache.Dispose();
 
             _shutdownTokenSource?.Dispose();
             _shutdownTokenSource = null;
@@ -155,61 +129,58 @@ namespace AlicizaX
             _enabled = _maintenanceCount > 0;
         }
 
-        internal GameObject GetGameObject(string assetPath, Transform parent = null)
+        public GameObject GetGameObject(string assetName, Transform parent = null)
         {
-            string normalizedAssetPath = PoolEntry.NormalizeAssetPath(assetPath);
-            PoolSpawnContext context = PoolSpawnContext.Create(normalizedAssetPath, parent);
-            return GetGameObjectInternal(normalizedAssetPath, context);
-        }
-
-        public bool TryGetPoolAssetId(string assetPath, out PoolAssetId assetId)
-        {
-            string normalizedAssetPath = PoolEntry.NormalizeAssetPath(assetPath);
-            ResolvedAssetRequest request = ResolveAssetRequest(normalizedAssetPath);
-            assetId = new PoolAssetId(
-                request.RuleIndex,
-                _catalogVersion,
-                request.RequestPath,
-                request.LogicalPath,
-                request.LoadPath,
-                request.PoolKey,
-                request.LoaderType);
-            return assetId.IsValid;
-        }
-
-        public GameObject GetGameObject(PoolAssetId assetId, Transform parent = null)
-        {
-            if (!IsUsableAssetId(assetId))
+            ResolvedAssetRequest request = ResolveOrCached(assetName);
+            PoolSpawnContext context = PoolSpawnContext.Create(request.LogicalPath, parent);
+            if (request.RuleIndex < 0)
             {
-                return null;
+                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
+                return LoadDirect(request.LoadPath, context.Parent, request.LoaderType);
             }
 
-            PoolSpawnContext context = PoolSpawnContext.Create(assetId.LogicalPath, parent);
-            return GetGameObjectInternal(assetId, context);
-        }
-
-        internal async UniTask<GameObject> GetGameObjectAsync(
-            string assetPath,
-            Transform parent = null,
-            CancellationToken cancellationToken = default)
-        {
-            string normalizedAssetPath = PoolEntry.NormalizeAssetPath(assetPath);
-            PoolSpawnContext context = PoolSpawnContext.Create(normalizedAssetPath, parent);
-            return await GetGameObjectInternalAsync(normalizedAssetPath, context, cancellationToken);
+            ref readonly PoolCompiledRule rule = ref _catalog.GetRule(request.RuleIndex);
+            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
+            return pool == null ? null : pool.Acquire(context.WithGroup(rule.group));
         }
 
         public async UniTask<GameObject> GetGameObjectAsync(
-            PoolAssetId assetId,
+            string assetName,
             Transform parent = null,
             CancellationToken cancellationToken = default)
         {
-            if (!IsUsableAssetId(assetId))
+            ResolvedAssetRequest request = ResolveOrCached(assetName);
+            PoolSpawnContext context = PoolSpawnContext.Create(request.LogicalPath, parent);
+            if (request.RuleIndex < 0)
             {
-                return null;
+                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
+                return await LoadDirectAsync(request.LoadPath, context.Parent, request.LoaderType, cancellationToken);
             }
 
-            PoolSpawnContext context = PoolSpawnContext.Create(assetId.LogicalPath, parent);
-            return await GetGameObjectInternalAsync(assetId, context, cancellationToken);
+            string ruleGroup = _catalog.GetRule(request.RuleIndex).group;
+            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
+            return pool == null ? null : await pool.AcquireAsync(context.WithGroup(ruleGroup), cancellationToken);
+        }
+
+        public async UniTask PreloadAsync(string assetName, int count = 1, CancellationToken cancellationToken = default)
+        {
+            if (count <= 0)
+            {
+                return;
+            }
+
+            ResolvedAssetRequest request = ResolveOrCached(assetName);
+            if (request.RuleIndex < 0)
+            {
+                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
+                return;
+            }
+
+            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
+            if (pool != null)
+            {
+                await pool.WarmupAsync(count, cancellationToken);
+            }
         }
 
         public void Release(GameObject gameObject)
@@ -225,23 +196,6 @@ namespace AlicizaX
             }
 
             DestroyRuntimeObject(gameObject);
-        }
-
-        internal async UniTask PreloadAsync(string assetPath, int count = 1, CancellationToken cancellationToken = default)
-        {
-            await PreloadInternalAsync(PoolEntry.NormalizeAssetPath(assetPath), count, cancellationToken);
-        }
-
-        public async UniTask PreloadAsync(PoolAssetId assetId, int count = 1, CancellationToken cancellationToken = default)
-        {
-            await PreloadInternalAsync(assetId, count, cancellationToken);
-        }
-
-        private bool IsUsableAssetId(in PoolAssetId assetId)
-        {
-            return assetId.IsValid &&
-                   assetId.CatalogVersion == _catalogVersion &&
-                   (uint)assetId.RuleIndex < (uint)_catalog.RuleCount;
         }
 
         public void ForceCleanup()
@@ -432,103 +386,33 @@ namespace AlicizaX
             _enabled = _maintenanceCount > 0;
         }
 
-        private GameObject GetGameObjectInternal(string assetPath, in PoolSpawnContext context)
+        private ResolvedAssetRequest ResolveOrCached(string assetName)
         {
-            ResolvedAssetRequest request = ResolveAssetRequest(assetPath);
-            if (request.RuleIndex < 0)
+            string normalized = PoolEntry.NormalizeAssetPath(assetName);
+            if (_resolveCacheVersion == _catalogVersion &&
+                _resolveCache.TryGetValue(normalized, out int cacheIndex))
             {
-                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
-                return LoadDirect(request.LoadPath, context.Parent, request.LoaderType);
+                return _resolveCacheEntries[cacheIndex];
             }
 
-            ref readonly PoolCompiledRule rule = ref _catalog.GetRule(request.RuleIndex);
-            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
-            return pool == null ? null : pool.Acquire(context.WithGroup(rule.group));
-        }
-
-        private GameObject GetGameObjectInternal(PoolAssetId assetId, in PoolSpawnContext context)
-        {
-            if (!IsUsableAssetId(assetId))
+            if (_resolveCacheVersion != _catalogVersion)
             {
-                return null;
+                _resolveCache.Clear();
+                _resolveCacheVersion = _catalogVersion;
             }
 
-            ref readonly PoolCompiledRule rule = ref _catalog.GetRule(assetId.RuleIndex);
-            RuntimeGameObjectPool pool = GetOrCreatePool(assetId.RuleIndex, assetId.PoolKey, assetId.LoadPath);
-            return pool == null ? null : pool.Acquire(context.WithGroup(rule.group));
-        }
-
-        private async UniTask<GameObject> GetGameObjectInternalAsync(
-            string assetPath,
-            PoolSpawnContext context,
-            CancellationToken cancellationToken)
-        {
-            ResolvedAssetRequest request = ResolveAssetRequest(assetPath);
-            if (request.RuleIndex < 0)
+            ResolvedAssetRequest request = ResolveAssetRequest(normalized);
+            int index = _resolveCache.Count;
+            if (index >= _resolveCacheEntries.Length)
             {
-                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
-                return await LoadDirectAsync(request.LoadPath, context.Parent, request.LoaderType, cancellationToken);
+                var newEntries = new ResolvedAssetRequest[_resolveCacheEntries.Length << 1];
+                Array.Copy(_resolveCacheEntries, 0, newEntries, 0, _resolveCacheEntries.Length);
+                _resolveCacheEntries = newEntries;
             }
 
-            string ruleGroup = _catalog.GetRule(request.RuleIndex).group;
-            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
-            return pool == null ? null : await pool.AcquireAsync(context.WithGroup(ruleGroup), cancellationToken);
-        }
-
-        private async UniTask<GameObject> GetGameObjectInternalAsync(
-            PoolAssetId assetId,
-            PoolSpawnContext context,
-            CancellationToken cancellationToken)
-        {
-            if (!IsUsableAssetId(assetId))
-            {
-                return null;
-            }
-
-            string ruleGroup = _catalog.GetRule(assetId.RuleIndex).group;
-            RuntimeGameObjectPool pool = GetOrCreatePool(assetId.RuleIndex, assetId.PoolKey, assetId.LoadPath);
-            return pool == null ? null : await pool.AcquireAsync(context.WithGroup(ruleGroup), cancellationToken);
-        }
-
-        private async UniTask PreloadInternalAsync(
-            string assetPath,
-            int count,
-            CancellationToken cancellationToken)
-        {
-            if (count <= 0)
-            {
-                return;
-            }
-
-            ResolvedAssetRequest request = ResolveAssetRequest(assetPath);
-            if (request.RuleIndex < 0)
-            {
-                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
-                return;
-            }
-
-            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
-            if (pool != null)
-            {
-                await pool.WarmupAsync(count, cancellationToken);
-            }
-        }
-
-        private async UniTask PreloadInternalAsync(
-            PoolAssetId assetId,
-            int count,
-            CancellationToken cancellationToken)
-        {
-            if (count <= 0 || !IsUsableAssetId(assetId))
-            {
-                return;
-            }
-
-            RuntimeGameObjectPool pool = GetOrCreatePool(assetId.RuleIndex, assetId.PoolKey, assetId.LoadPath);
-            if (pool != null)
-            {
-                await pool.WarmupAsync(count, cancellationToken);
-            }
+            _resolveCacheEntries[index] = request;
+            _resolveCache.AddOrUpdate(normalized, index);
+            return request;
         }
 
         private RuntimeGameObjectPool GetOrCreatePool(int ruleIndex, string poolKey, string loadPath)

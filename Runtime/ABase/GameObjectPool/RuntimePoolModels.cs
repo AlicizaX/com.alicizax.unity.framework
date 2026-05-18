@@ -67,7 +67,6 @@ namespace AlicizaX
     {
         public readonly string Group;
         public readonly string AssetPath;
-        public readonly PoolCategory Category;
         public readonly int ActiveCount;
         public readonly int InactiveCount;
         public readonly int TotalCount;
@@ -90,7 +89,6 @@ namespace AlicizaX
         public PoolRecycleRuntimeContext(
             string group,
             string assetPath,
-            PoolCategory category,
             int activeCount,
             int inactiveCount,
             int totalCount,
@@ -112,7 +110,6 @@ namespace AlicizaX
         {
             Group = group;
             AssetPath = assetPath;
-            Category = category;
             ActiveCount = activeCount;
             InactiveCount = inactiveCount;
             TotalCount = totalCount;
@@ -492,7 +489,6 @@ namespace AlicizaX
         public string entryName;
         public string group;
         public string assetPath;
-        public PoolCategory category;
         public PoolResourceLoaderType loaderType;
         public int minRetained;
         public int retainTarget;
@@ -538,7 +534,6 @@ namespace AlicizaX
             entryName = null;
             group = null;
             assetPath = null;
-            category = default;
             loaderType = default;
             minRetained = 0;
             retainTarget = 0;
@@ -749,11 +744,13 @@ namespace AlicizaX
         private Transform[] _transformBuildBuffer;
         private int _poolableBindingCount;
         private int _poolableCount;
-        private readonly List<MonoBehaviour> _componentBuffer = new List<MonoBehaviour>(8);
-        private readonly List<Transform> _transformBuffer = new List<Transform>(32);
-        private readonly List<Transform> _instanceTransformBuffer = new List<Transform>(32);
-        private readonly List<PoolableTransformBinding> _bindingBuildBuffer = new List<PoolableTransformBinding>(8);
-        private readonly List<int> _bindingIndexBuildBuffer = new List<int>(4);
+        private List<MonoBehaviour> _componentBuffer = new List<MonoBehaviour>(8);
+        private List<Transform> _transformBuffer = new List<Transform>(32);
+        private List<Transform> _instanceTransformBuffer = new List<Transform>(32);
+        private PoolableTransformBinding[] _bindingBuildBuffer;
+        private int _bindingBuildCount;
+        private int[] _bindingIndexBuildBuffer;
+        private int _bindingIndexBuildCount;
 
         public int TotalCount => _totalCount;
         public int ActiveCount => _activeCount;
@@ -1023,7 +1020,6 @@ namespace AlicizaX
             snapshot.entryName = _rule.entryName;
             snapshot.group = _rule.group;
             snapshot.assetPath = _assetPath;
-            snapshot.category = _rule.category;
             snapshot.loaderType = _rule.loaderType;
             snapshot.minRetained = GetMinimumRetained();
             snapshot.retainTarget = _retainTarget;
@@ -1095,6 +1091,8 @@ namespace AlicizaX
             ReturnAllPages();
             ReturnStorageArrays();
             ClearLifecycleBindings();
+            _prefabLoadCompletionSource?.TrySetCanceled(_service == null ? default : _service.ShutdownToken);
+            _prefabLoadCompletionSource = null;
             _service = null;
             _loader = null;
             _rule = default;
@@ -1103,8 +1101,6 @@ namespace AlicizaX
             _loadPath = null;
             _root = null;
             _prefab = null;
-            _prefabLoadCompletionSource?.TrySetCanceled(_service == null ? default : _service.ShutdownToken);
-            _prefabLoadCompletionSource = null;
             _prefabLoading = false;
             _isShuttingDown = false;
             _loadVersion++;
@@ -1640,7 +1636,6 @@ namespace AlicizaX
             var context = new PoolRecycleRuntimeContext(
                 _rule.group,
                 _assetPath,
-                _rule.category,
                 _activeCount,
                 _inactiveCount,
                 _totalCount,
@@ -1928,8 +1923,8 @@ namespace AlicizaX
             }
 
             _componentBuffer.Clear();
-            _bindingBuildBuffer.Clear();
-            _bindingIndexBuildBuffer.Clear();
+            _bindingBuildCount = 0;
+            _bindingIndexBuildCount = 0;
 
             _prefab.GetComponentsInChildren(true, _transformBuffer);
             EnsureTransformBuildBufferCapacity(_transformBuffer.Count);
@@ -1951,16 +1946,17 @@ namespace AlicizaX
                     continue;
                 }
 
-                _bindingIndexBuildBuffer.Clear();
+                _bindingIndexBuildCount = 0;
+                EnsureBindingIndexBuildCapacity(componentCount);
                 for (int componentIndex = 0; componentIndex < componentCount; componentIndex++)
                 {
                     if (_componentBuffer[componentIndex] is IGameObjectPoolable)
                     {
-                        _bindingIndexBuildBuffer.Add(componentIndex);
+                        _bindingIndexBuildBuffer[_bindingIndexBuildCount++] = componentIndex;
                     }
                 }
 
-                int poolableCount = _bindingIndexBuildBuffer.Count;
+                int poolableCount = _bindingIndexBuildCount;
                 if (poolableCount <= 0)
                 {
                     continue;
@@ -1972,18 +1968,19 @@ namespace AlicizaX
                     componentIndices[i] = _bindingIndexBuildBuffer[i];
                 }
 
-                _bindingBuildBuffer.Add(new PoolableTransformBinding
+                EnsureBindingBuildCapacity(_bindingBuildCount + 1);
+                _bindingBuildBuffer[_bindingBuildCount++] = new PoolableTransformBinding
                 {
                     transformIndex = transformIndex,
                     componentIndices = componentIndices,
                     poolableStartIndex = runningPoolableIndex,
                     poolableCount = poolableCount
-                });
+                };
 
                 runningPoolableIndex += poolableCount;
             }
 
-            _poolableBindingCount = _bindingBuildBuffer.Count;
+            _poolableBindingCount = _bindingBuildCount;
             _poolableCount = runningPoolableIndex;
             if (_poolableBindingCount <= 0)
             {
@@ -1996,6 +1993,41 @@ namespace AlicizaX
             {
                 _poolableBindings[i] = _bindingBuildBuffer[i];
             }
+        }
+
+        private void EnsureBindingBuildCapacity(int required)
+        {
+            if (_bindingBuildBuffer != null && _bindingBuildBuffer.Length >= required)
+            {
+                return;
+            }
+
+            int newCapacity = Mathf.Max(required, _bindingBuildBuffer == null ? 8 : _bindingBuildBuffer.Length << 1);
+            var newBuffer = SlotArrayPool<PoolableTransformBinding>.Rent(newCapacity);
+            if (_bindingBuildBuffer != null)
+            {
+                Array.Copy(_bindingBuildBuffer, 0, newBuffer, 0, _bindingBuildCount);
+                SlotArrayPool<PoolableTransformBinding>.Return(_bindingBuildBuffer, true);
+            }
+
+            _bindingBuildBuffer = newBuffer;
+        }
+
+        private void EnsureBindingIndexBuildCapacity(int required)
+        {
+            if (_bindingIndexBuildBuffer != null && _bindingIndexBuildBuffer.Length >= required)
+            {
+                return;
+            }
+
+            int newCapacity = Mathf.Max(required, _bindingIndexBuildBuffer == null ? 8 : _bindingIndexBuildBuffer.Length << 1);
+            var newBuffer = SlotArrayPool<int>.Rent(newCapacity);
+            if (_bindingIndexBuildBuffer != null)
+            {
+                SlotArrayPool<int>.Return(_bindingIndexBuildBuffer, true);
+            }
+
+            _bindingIndexBuildBuffer = newBuffer;
         }
 
         private void BindLifecycleCache(Transform instanceRoot, ref Slot slot)
@@ -2539,8 +2571,22 @@ namespace AlicizaX
             _componentBuffer.Clear();
             _transformBuffer.Clear();
             _instanceTransformBuffer.Clear();
-            _bindingBuildBuffer.Clear();
-            _bindingIndexBuildBuffer.Clear();
+
+            if (_bindingBuildBuffer != null)
+            {
+                SlotArrayPool<PoolableTransformBinding>.Return(_bindingBuildBuffer, true);
+                _bindingBuildBuffer = null;
+            }
+
+            _bindingBuildCount = 0;
+
+            if (_bindingIndexBuildBuffer != null)
+            {
+                SlotArrayPool<int>.Return(_bindingIndexBuildBuffer, true);
+                _bindingIndexBuildBuffer = null;
+            }
+
+            _bindingIndexBuildCount = 0;
         }
 
         private static int CompareInstanceSnapshot(GameObjectPoolInstanceSnapshot left, GameObjectPoolInstanceSnapshot right)

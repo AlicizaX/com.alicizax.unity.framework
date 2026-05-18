@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Reflection;
 using AlicizaX.Editor;
 using UnityEditor;
 using UnityEngine;
@@ -21,10 +19,8 @@ namespace AlicizaX
         private const float InstanceObjectWidth = 140f;
         private const int InitialSnapshotBufferSize = 32;
 
-        private readonly Dictionary<string, bool> _foldoutState = new Dictionary<string, bool>(StringComparer.Ordinal);
+        private readonly Dictionary<string, bool> _foldoutState = new Dictionary<string, bool>(System.StringComparer.Ordinal);
         private GameObjectPoolSnapshot[] _snapshotBuffer = new GameObjectPoolSnapshot[InitialSnapshotBufferSize];
-        private MethodInfo _getDebugSummaryMethod;
-        private MethodInfo _getDebugSnapshotsMethod;
         private GUIStyle _panelStyle;
         private GUIStyle _entryBodyStyle;
         private GUIStyle _fieldRowStyle;
@@ -55,8 +51,7 @@ namespace AlicizaX
             }
 
             if (!AppServices.HasWorld ||
-                !AppServices.App.TryGet<IGameObjectPoolService>(out IGameObjectPoolService gameObjectPoolService) ||
-                !TryResolveDebugMethods(gameObjectPoolService))
+                !AppServices.App.TryGet<IGameObjectPoolDebugService>(out IGameObjectPoolDebugService debugService))
             {
                 EditorUtils.TrHelpIconText("GameObject pool service is not initialized.", MessageType.Info);
                 EditorGUILayout.EndVertical();
@@ -64,7 +59,7 @@ namespace AlicizaX
                 return;
             }
 
-            DrawRuntimeState(gameObjectPoolService);
+            DrawRuntimeState(debugService);
             EditorGUILayout.EndVertical();
             serializedObject.ApplyModifiedProperties();
             Repaint();
@@ -72,7 +67,7 @@ namespace AlicizaX
 
         public override bool RequiresConstantRepaint()
         {
-            return EditorApplication.isPlaying && AppServices.HasWorld && AppServices.App.TryGet<IGameObjectPoolService>(out _);
+            return EditorApplication.isPlaying && AppServices.HasWorld && AppServices.App.TryGet<IGameObjectPoolDebugService>(out _);
         }
 
         private void EnsureStyles()
@@ -103,9 +98,9 @@ namespace AlicizaX
             GUI.Label(labelRect, title, _rowLabelStyle);
         }
 
-        private void DrawRuntimeState(IGameObjectPoolService poolService)
+        private void DrawRuntimeState(IGameObjectPoolDebugService debugService)
         {
-            GameObjectPoolSummarySnapshot summary = (GameObjectPoolSummarySnapshot)_getDebugSummaryMethod.Invoke(poolService, null);
+            GameObjectPoolSummarySnapshot summary = debugService.GetDebugSummary();
             DrawSummary(summary);
 
             if (summary.WaitingForBootstrap)
@@ -120,7 +115,7 @@ namespace AlicizaX
                 return;
             }
 
-            int snapshotCount = GetDebugSnapshots(poolService);
+            int snapshotCount = GetDebugSnapshots(debugService);
             DrawSectionBegin("Pools");
             if (snapshotCount == 0)
             {
@@ -181,7 +176,6 @@ namespace AlicizaX
             DrawReadOnlyRow("Rule", entryLabel);
             DrawReadOnlyRow("Group", string.IsNullOrWhiteSpace(snapshot.group) ? "<None>" : snapshot.group);
             DrawReadOnlyRow("Asset Path", snapshot.assetPath);
-            DrawReadOnlyRow("Category", snapshot.category.ToString());
             DrawReadOnlyRow("Loader", snapshot.loaderType.ToString());
             DrawReadOnlyRow("Min Retained", snapshot.minRetained.ToString());
             DrawReadOnlyRow("Retain Target", snapshot.retainTarget.ToString());
@@ -347,25 +341,11 @@ namespace AlicizaX
             return Utility.Text.Format("{0:F2}s", seconds);
         }
 
-        private bool TryResolveDebugMethods(IGameObjectPoolService poolService)
-        {
-            if (poolService == null)
-            {
-                return false;
-            }
-
-            Type serviceType = poolService.GetType();
-            _getDebugSummaryMethod ??= serviceType.GetMethod("GetDebugSummary", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            _getDebugSnapshotsMethod ??= serviceType.GetMethod("GetDebugSnapshots", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            return _getDebugSummaryMethod != null && _getDebugSnapshotsMethod != null;
-        }
-
-        private int GetDebugSnapshots(IGameObjectPoolService poolService)
+        private int GetDebugSnapshots(IGameObjectPoolDebugService debugService)
         {
             while (true)
             {
-                object[] args = { _snapshotBuffer };
-                int count = (int)_getDebugSnapshotsMethod.Invoke(poolService, args);
+                int count = debugService.GetDebugSnapshots(_snapshotBuffer);
                 if (count < _snapshotBuffer.Length)
                 {
                     return count;
