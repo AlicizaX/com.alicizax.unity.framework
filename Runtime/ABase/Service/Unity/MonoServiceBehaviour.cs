@@ -46,9 +46,13 @@ namespace AlicizaX
         protected T RequireGameplay<T>() where T : class, IService
             => _world.Gameplay.Require<T>();
 
-        protected virtual void OnInitialize() { }
+        protected virtual void OnInitialize()
+        {
+        }
 
-        protected virtual void OnDestroyService() { }
+        protected virtual void OnDestroyService()
+        {
+        }
     }
 
     public abstract class MonoServiceBehaviour<TScope> : MonoServiceBehaviour
@@ -56,12 +60,7 @@ namespace AlicizaX
     {
         [SerializeField] private bool _dontDestroyOnLoad = false;
 
-        private void Awake()
-        {
-            OnAwake();
-        }
-
-        private void Start()
+        protected virtual void Awake()
         {
             var scope = ResolveOrCreateScope();
 
@@ -112,8 +111,6 @@ namespace AlicizaX
             scope = AppServices.Gameplay;
             return true;
         }
-
-        protected virtual void OnAwake() { }
     }
 
     internal static class ScopeKindCache<TScope>
