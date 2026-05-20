@@ -3,14 +3,14 @@
   "displayName": "Aliciza X Framework",
   "category": "Aliciza X",
   "description": "Aliciza X Core Framework",
-  "version": "1.0.1",
-  "unity": "2025.1",
+  "version": "2.0.0",
+  "unity": "2022.3",
   "keywords": [
     "Aliciza X"
   ],
   "repository": {
     "name": "com.alicizax.unity.framework",
-    "url": "http://101.34.252.46:3000/AlicizaX/",
+    "url": "https://github.com/AlicizaX/",
     "type": "git"
   },
   "author": {
