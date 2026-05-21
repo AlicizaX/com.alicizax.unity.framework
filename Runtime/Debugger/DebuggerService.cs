@@ -1,5 +1,4 @@
 ﻿using AlicizaX;
-using UnityEngine;
 
 namespace AlicizaX.Debugger.Runtime
 {
@@ -7,7 +6,7 @@ namespace AlicizaX.Debugger.Runtime
     /// 调试器管理器。
     /// </summary>
     [UnityEngine.Scripting.Preserve]
-    internal sealed partial class DebuggerService : ServiceBase, IDebuggerService, IServiceTickable
+    internal sealed partial class DebuggerService : ServiceBase, IDebuggerService
     {
         private readonly DebuggerWindowGroup m_DebuggerWindowRoot;
         private bool m_ActiveWindow;
@@ -20,11 +19,6 @@ namespace AlicizaX.Debugger.Runtime
         {
             m_DebuggerWindowRoot = new DebuggerWindowGroup();
             m_ActiveWindow = false;
-        }
-
-        public int Priority
-        {
-            get => -1;
         }
 
         /// <summary>
@@ -42,21 +36,6 @@ namespace AlicizaX.Debugger.Runtime
         public IDebuggerWindowGroup DebuggerWindowRoot
         {
             get { return m_DebuggerWindowRoot; }
-        }
-
-        /// <summary>
-        /// 调试器管理器轮询。
-        /// </summary>
-        /// <param name="elapseSeconds">逻辑流逝时间，以秒为单位。</param>
-        /// <param name="realElapseSeconds">真实流逝时间，以秒为单位。</param>
-        void IServiceTickable.Tick(float deltaTime)
-        {
-            if (!m_ActiveWindow)
-            {
-                return;
-            }
-
-            m_DebuggerWindowRoot.OnUpdate(Time.deltaTime,Time.realtimeSinceStartup);
         }
 
         /// <summary>

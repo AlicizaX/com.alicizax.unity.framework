@@ -16,25 +16,17 @@ namespace AlicizaX.Debugger.Runtime
                 card.Add(CreateRow("Screen DPI", Screen.dpi.ToString("F2")));
                 card.Add(CreateRow("Screen Orientation", Screen.orientation.ToString()));
                 card.Add(CreateRow("Is Full Screen", Screen.fullScreen.ToString()));
-#if UNITY_2018_1_OR_NEWER
                 card.Add(CreateRow("Full Screen Mode", Screen.fullScreenMode.ToString()));
-#endif
                 card.Add(CreateRow("Sleep Timeout", GetSleepTimeoutDescription(Screen.sleepTimeout)));
-#if UNITY_2019_2_OR_NEWER
                 card.Add(CreateRow("Brightness", Screen.brightness.ToString("F2")));
-#endif
                 card.Add(CreateRow("Cursor Visible", UnityEngine.Cursor.visible.ToString()));
                 card.Add(CreateRow("Cursor Lock State", UnityEngine.Cursor.lockState.ToString()));
                 card.Add(CreateRow("Auto Landscape Left", Screen.autorotateToLandscapeLeft.ToString()));
                 card.Add(CreateRow("Auto Landscape Right", Screen.autorotateToLandscapeRight.ToString()));
                 card.Add(CreateRow("Auto Portrait", Screen.autorotateToPortrait.ToString()));
                 card.Add(CreateRow("Auto Portrait Upside Down", Screen.autorotateToPortraitUpsideDown.ToString()));
-#if UNITY_2017_2_OR_NEWER && !UNITY_2017_2_0
                 card.Add(CreateRow("Safe Area", Screen.safeArea.ToString()));
-#endif
-#if UNITY_2019_2_OR_NEWER
                 card.Add(CreateRow("Cutouts", GetCutoutsString(Screen.cutouts)));
-#endif
                 card.Add(CreateRow("Support Resolutions", GetResolutionsString(Screen.resolutions)));
                 root.Add(section);
             }
@@ -61,24 +53,38 @@ namespace AlicizaX.Debugger.Runtime
 
             private string GetCutoutsString(Rect[] cutouts)
             {
-                string[] cutoutStrings = new string[cutouts.Length];
-                for (int i = 0; i < cutouts.Length; i++)
+                using (var builder = Cysharp.Text.ZString.CreateStringBuilder())
                 {
-                    cutoutStrings[i] = cutouts[i].ToString();
-                }
+                    for (int i = 0; i < cutouts.Length; i++)
+                    {
+                        if (i > 0)
+                        {
+                            builder.Append("; ");
+                        }
 
-                return string.Join("; ", cutoutStrings);
+                        builder.Append(cutouts[i]);
+                    }
+
+                    return builder.ToString();
+                }
             }
 
             private string GetResolutionsString(Resolution[] resolutions)
             {
-                string[] resolutionStrings = new string[resolutions.Length];
-                for (int i = 0; i < resolutions.Length; i++)
+                using (var builder = Cysharp.Text.ZString.CreateStringBuilder())
                 {
-                    resolutionStrings[i] = GetResolutionString(resolutions[i]);
-                }
+                    for (int i = 0; i < resolutions.Length; i++)
+                    {
+                        if (i > 0)
+                        {
+                            builder.Append("; ");
+                        }
 
-                return string.Join("; ", resolutionStrings);
+                        builder.Append(GetResolutionString(resolutions[i]));
+                    }
+
+                    return builder.ToString();
+                }
             }
         }
     }

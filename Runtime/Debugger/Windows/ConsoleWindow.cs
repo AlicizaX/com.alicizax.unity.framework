@@ -47,6 +47,7 @@ namespace AlicizaX.Debugger.Runtime
             private TextField _stackField;
             private VisualElement _stackSection;
             private LogNode _selectedNode;
+            private bool _viewDirty = true;
 
             public ConsoleWindow()
             {
@@ -56,37 +57,93 @@ namespace AlicizaX.Debugger.Runtime
             public bool LockScroll
             {
                 get => m_LockScroll;
-                set => m_LockScroll = value;
+                set
+                {
+                    if (m_LockScroll == value)
+                    {
+                        return;
+                    }
+
+                    m_LockScroll = value;
+                    _viewDirty = true;
+                }
             }
 
             public int MaxLine
             {
                 get => m_MaxLine;
-                set => m_MaxLine = Mathf.Max(1, value);
+                set
+                {
+                    int clampedValue = Mathf.Max(1, value);
+                    if (m_MaxLine == clampedValue)
+                    {
+                        return;
+                    }
+
+                    m_MaxLine = clampedValue;
+                    TrimLogNodes();
+                    _viewDirty = true;
+                }
             }
 
             public bool InfoFilter
             {
                 get => m_InfoFilter;
-                set => m_InfoFilter = value;
+                set
+                {
+                    if (m_InfoFilter == value)
+                    {
+                        return;
+                    }
+
+                    m_InfoFilter = value;
+                    _viewDirty = true;
+                }
             }
 
             public bool WarningFilter
             {
                 get => m_WarningFilter;
-                set => m_WarningFilter = value;
+                set
+                {
+                    if (m_WarningFilter == value)
+                    {
+                        return;
+                    }
+
+                    m_WarningFilter = value;
+                    _viewDirty = true;
+                }
             }
 
             public bool ErrorFilter
             {
                 get => m_ErrorFilter;
-                set => m_ErrorFilter = value;
+                set
+                {
+                    if (m_ErrorFilter == value)
+                    {
+                        return;
+                    }
+
+                    m_ErrorFilter = value;
+                    _viewDirty = true;
+                }
             }
 
             public bool FatalFilter
             {
                 get => m_FatalFilter;
-                set => m_FatalFilter = value;
+                set
+                {
+                    if (m_FatalFilter == value)
+                    {
+                        return;
+                    }
+
+                    m_FatalFilter = value;
+                    _viewDirty = true;
+                }
             }
 
             public int InfoCount => m_InfoCount;
@@ -100,25 +157,41 @@ namespace AlicizaX.Debugger.Runtime
             public Color32 InfoColor
             {
                 get => m_InfoColor;
-                set => m_InfoColor = value;
+                set
+                {
+                    m_InfoColor = value;
+                    _viewDirty = true;
+                }
             }
 
             public Color32 WarningColor
             {
                 get => m_WarningColor;
-                set => m_WarningColor = value;
+                set
+                {
+                    m_WarningColor = value;
+                    _viewDirty = true;
+                }
             }
 
             public Color32 ErrorColor
             {
                 get => m_ErrorColor;
-                set => m_ErrorColor = value;
+                set
+                {
+                    m_ErrorColor = value;
+                    _viewDirty = true;
+                }
             }
 
             public Color32 FatalColor
             {
                 get => m_FatalColor;
-                set => m_FatalColor = value;
+                set
+                {
+                    m_FatalColor = value;
+                    _viewDirty = true;
+                }
             }
 
             public void Initialize(params object[] args)
@@ -129,6 +202,7 @@ namespace AlicizaX.Debugger.Runtime
                 m_WarningFilter = m_LastWarningFilter = Utility.PlayerPrefsX.GetBool("Debugger.Console.WarningFilter", true);
                 m_ErrorFilter = m_LastErrorFilter = Utility.PlayerPrefsX.GetBool("Debugger.Console.ErrorFilter", true);
                 m_FatalFilter = m_LastFatalFilter = Utility.PlayerPrefsX.GetBool("Debugger.Console.FatalFilter", true);
+                _viewDirty = true;
             }
 
             public void Shutdown()
@@ -139,6 +213,7 @@ namespace AlicizaX.Debugger.Runtime
 
             public void OnEnter()
             {
+                _viewDirty = true;
                 RefreshView();
             }
 
@@ -149,7 +224,10 @@ namespace AlicizaX.Debugger.Runtime
             public void OnUpdate(float elapseSeconds, float realElapseSeconds)
             {
                 PersistSettingsIfNeeded();
-                RefreshView();
+                if (_viewDirty)
+                {
+                    RefreshView();
+                }
             }
 
             public VisualElement CreateView()
@@ -255,13 +333,13 @@ namespace AlicizaX.Debugger.Runtime
                 clearButton.style.minHeight = 30f * scale;
                 clearButton.style.marginRight = 8f * scale;
 
-                _lockScrollToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle("Lock", m_LockScroll, DebuggerTheme.Accent, value => m_LockScroll = value);
+                _lockScrollToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle("Lock", m_LockScroll, DebuggerTheme.Accent, value => LockScroll = value);
                 _lockScrollToggle.style.marginRight = 12f * scale;
 
-                _infoToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_InfoFilter, DebuggerTheme.PrimaryText, value => m_InfoFilter = value);
-                _warningToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_WarningFilter, DebuggerTheme.Warning, value => m_WarningFilter = value);
-                _errorToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_ErrorFilter, DebuggerTheme.Danger, value => m_ErrorFilter = value);
-                _fatalToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_FatalFilter, DebuggerTheme.Fatal, value => m_FatalFilter = value);
+                _infoToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_InfoFilter, DebuggerTheme.PrimaryText, value => InfoFilter = value);
+                _warningToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_WarningFilter, DebuggerTheme.Warning, value => WarningFilter = value);
+                _errorToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_ErrorFilter, DebuggerTheme.Danger, value => ErrorFilter = value);
+                _fatalToggle = ScrollableDebuggerWindowBase.CreateConsoleFilterToggle(string.Empty, m_FatalFilter, DebuggerTheme.Fatal, value => FatalFilter = value);
 
                 toolbar.Add(clearButton);
                 toolbar.Add(_lockScrollToggle);
@@ -318,6 +396,7 @@ namespace AlicizaX.Debugger.Runtime
                 }
 
                 UpdateStackField();
+                _logListView?.Rebuild();
             }
 
             private void UpdateStackField()
@@ -355,13 +434,17 @@ namespace AlicizaX.Debugger.Runtime
 
                 _logNodeCache.Clear();
                 _selectedNode = null;
+                m_InfoCount = 0;
+                m_WarningCount = 0;
+                m_ErrorCount = 0;
+                m_FatalCount = 0;
+                _viewDirty = true;
                 if (_logListView != null)
                 {
-                    _logListView.Rebuild();
+                    RefreshView();
                 }
 
                 UpdateStackField();
-                RefreshCount();
             }
 
             public void RefreshCount()
@@ -473,7 +556,6 @@ namespace AlicizaX.Debugger.Runtime
 
             private void RefreshView()
             {
-                RefreshCount();
                 _logNodeCache.Clear();
                 foreach (LogNode logNode in m_LogNodes)
                 {
@@ -548,6 +630,7 @@ namespace AlicizaX.Debugger.Runtime
                 }
 
                 UpdateStackField();
+                _viewDirty = false;
             }
 
             private bool PassFilter(LogNode logNode)
@@ -574,10 +657,64 @@ namespace AlicizaX.Debugger.Runtime
                     logType = LogType.Error;
                 }
 
-                m_LogNodes.Enqueue(LogNode.Create(logType, logMessage, stackTrace));
+                LogNode logNode = LogNode.Create(logType, logMessage, stackTrace);
+                m_LogNodes.Enqueue(logNode);
+                AddLogCount(logNode.LogType);
+                TrimLogNodes();
+                _viewDirty = true;
+            }
+
+            private void TrimLogNodes()
+            {
                 while (m_LogNodes.Count > m_MaxLine)
                 {
-                    MemoryPool.Release(m_LogNodes.Dequeue());
+                    LogNode removedLogNode = m_LogNodes.Dequeue();
+                    RemoveLogCount(removedLogNode.LogType);
+                    if (ReferenceEquals(_selectedNode, removedLogNode))
+                    {
+                        _selectedNode = null;
+                        UpdateStackField();
+                    }
+
+                    MemoryPool.Release(removedLogNode);
+                }
+            }
+
+            private void AddLogCount(LogType logType)
+            {
+                switch (logType)
+                {
+                    case LogType.Log:
+                        m_InfoCount++;
+                        break;
+                    case LogType.Warning:
+                        m_WarningCount++;
+                        break;
+                    case LogType.Error:
+                        m_ErrorCount++;
+                        break;
+                    case LogType.Exception:
+                        m_FatalCount++;
+                        break;
+                }
+            }
+
+            private void RemoveLogCount(LogType logType)
+            {
+                switch (logType)
+                {
+                    case LogType.Log:
+                        m_InfoCount = Mathf.Max(0, m_InfoCount - 1);
+                        break;
+                    case LogType.Warning:
+                        m_WarningCount = Mathf.Max(0, m_WarningCount - 1);
+                        break;
+                    case LogType.Error:
+                        m_ErrorCount = Mathf.Max(0, m_ErrorCount - 1);
+                        break;
+                    case LogType.Exception:
+                        m_FatalCount = Mathf.Max(0, m_FatalCount - 1);
+                        break;
                 }
             }
 

@@ -40,9 +40,7 @@ namespace AlicizaX.Debugger.Runtime
                 root.Add(renderingSection);
 
                 VisualElement shadowSection = CreateSection("Shadows Information", out VisualElement shadowCard);
-#if UNITY_2017_1_OR_NEWER
                 shadowCard.Add(CreateRow("Shadowmask Mode", QualitySettings.shadowmaskMode.ToString()));
-#endif
                 shadowCard.Add(CreateRow("Shadow Quality", QualitySettings.shadows.ToString()));
                 shadowCard.Add(CreateRow("Shadow Resolution", QualitySettings.shadowResolution.ToString()));
                 shadowCard.Add(CreateRow("Shadow Projection", QualitySettings.shadowProjection.ToString()));
@@ -54,20 +52,14 @@ namespace AlicizaX.Debugger.Runtime
                 root.Add(shadowSection);
 
                 VisualElement otherSection = CreateSection("Other Information", out VisualElement otherCard);
-#if UNITY_2019_1_OR_NEWER
                 otherCard.Add(CreateRow("Skin Weights", QualitySettings.skinWeights.ToString()));
-#else
-                otherCard.Add(CreateRow("Blend Weights", QualitySettings.blendWeights.ToString()));
-#endif
                 otherCard.Add(CreateRow("VSync Count", QualitySettings.vSyncCount.ToString()));
                 otherCard.Add(CreateRow("LOD Bias", QualitySettings.lodBias.ToString()));
                 otherCard.Add(CreateRow("Maximum LOD Level", QualitySettings.maximumLODLevel.ToString()));
                 otherCard.Add(CreateRow("Particle Raycast Budget", QualitySettings.particleRaycastBudget.ToString()));
                 otherCard.Add(CreateRow("Async Upload Time Slice", Utility.Text.Format("{0} ms", QualitySettings.asyncUploadTimeSlice)));
                 otherCard.Add(CreateRow("Async Upload Buffer Size", Utility.Text.Format("{0} MB", QualitySettings.asyncUploadBufferSize)));
-#if UNITY_2018_3_OR_NEWER
                 otherCard.Add(CreateRow("Async Upload Persistent Buffer", QualitySettings.asyncUploadPersistentBuffer.ToString()));
-#endif
                 root.Add(otherSection);
             }
         }

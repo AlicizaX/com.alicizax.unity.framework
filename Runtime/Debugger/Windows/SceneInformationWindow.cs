@@ -15,9 +15,7 @@ namespace AlicizaX.Debugger.Runtime
                 card.Add(CreateRow("Scene Count In Build Settings", SceneManager.sceneCountInBuildSettings.ToString()));
 
                 UnityEngine.SceneManagement.Scene activeScene = SceneManager.GetActiveScene();
-#if UNITY_2018_3_OR_NEWER
                 card.Add(CreateRow("Active Scene Handle", activeScene.handle.ToString()));
-#endif
                 card.Add(CreateRow("Active Scene Name", activeScene.name));
                 card.Add(CreateRow("Active Scene Path", activeScene.path));
                 card.Add(CreateRow("Active Scene Build Index", activeScene.buildIndex.ToString()));
@@ -25,9 +23,7 @@ namespace AlicizaX.Debugger.Runtime
                 card.Add(CreateRow("Active Scene Is Loaded", activeScene.isLoaded.ToString()));
                 card.Add(CreateRow("Active Scene Is Valid", activeScene.IsValid().ToString()));
                 card.Add(CreateRow("Active Scene Root Count", activeScene.rootCount.ToString()));
-#if UNITY_2019_1_OR_NEWER
                 card.Add(CreateRow("Active Scene Is Sub Scene", activeScene.isSubScene.ToString()));
-#endif
                 root.Add(section);
             }
         }

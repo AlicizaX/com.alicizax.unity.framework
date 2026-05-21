@@ -16,29 +16,19 @@ namespace AlicizaX.Debugger.Runtime
                 card.Add(CreateRow("Time", Time.time.ToString()));
                 card.Add(CreateRow("Fixed Time", Time.fixedTime.ToString()));
                 card.Add(CreateRow("Unscaled Time", Time.unscaledTime.ToString()));
-#if UNITY_5_6_OR_NEWER
                 card.Add(CreateRow("Fixed Unscaled Time", Time.fixedUnscaledTime.ToString()));
-#endif
                 card.Add(CreateRow("Delta Time", Time.deltaTime.ToString()));
                 card.Add(CreateRow("Fixed Delta Time", Time.fixedDeltaTime.ToString()));
                 card.Add(CreateRow("Unscaled Delta Time", Time.unscaledDeltaTime.ToString()));
-#if UNITY_5_6_OR_NEWER
                 card.Add(CreateRow("Fixed Unscaled Delta Time", Time.fixedUnscaledDeltaTime.ToString()));
-#endif
                 card.Add(CreateRow("Smooth Delta Time", Time.smoothDeltaTime.ToString()));
                 card.Add(CreateRow("Maximum Delta Time", Time.maximumDeltaTime.ToString()));
-#if UNITY_5_5_OR_NEWER
                 card.Add(CreateRow("Maximum Particle Delta Time", Time.maximumParticleDeltaTime.ToString()));
-#endif
                 card.Add(CreateRow("Frame Count", Time.frameCount.ToString()));
                 card.Add(CreateRow("Rendered Frame Count", Time.renderedFrameCount.ToString()));
                 card.Add(CreateRow("Capture Framerate", Time.captureFramerate.ToString()));
-#if UNITY_2019_2_OR_NEWER
                 card.Add(CreateRow("Capture Delta Time", Time.captureDeltaTime.ToString()));
-#endif
-#if UNITY_5_6_OR_NEWER
                 card.Add(CreateRow("In Fixed Time Step", Time.inFixedTimeStep.ToString()));
-#endif
                 root.Add(section);
             }
 

@@ -1,4 +1,5 @@
 using AlicizaX.Audio.Runtime;
+using Cysharp.Text;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -59,7 +60,7 @@ namespace AlicizaX.Debugger.Runtime
                 card.Add(CreateRow("Instance Root", _serviceInfo.InstanceRoot != null ? _serviceInfo.InstanceRoot.name : "<None>"));
                 card.Add(CreateRow("Active Agents", _serviceInfo.ActiveAgentCount.ToString()));
                 card.Add(CreateRow("Handle Capacity", _serviceInfo.HandleCapacity.ToString()));
-                card.Add(CreateRow("Clip Cache", _serviceInfo.ClipCacheCount + " / " + _serviceInfo.ClipCacheCapacity));
+                card.Add(CreateRow("Clip Cache", ZString.Format("{0} / {1}", _serviceInfo.ClipCacheCount, _serviceInfo.ClipCacheCapacity)));
                 root.Add(section);
             }
 
@@ -75,12 +76,14 @@ namespace AlicizaX.Debugger.Runtime
 
                     card.Add(CreateRow(
                         _categoryInfo.Type.ToString(),
-                        "Enabled " + _categoryInfo.Enabled
-                        + " | Volume " + _categoryInfo.Volume.ToString("F2")
-                        + " | Active " + _categoryInfo.ActiveCount
-                        + " | Free " + _categoryInfo.FreeCount
-                        + " | Heap " + _categoryInfo.HeapCount
-                        + " | Capacity " + _categoryInfo.Capacity));
+                        ZString.Format(
+                            "Enabled {0} | Volume {1:F2} | Active {2} | Free {3} | Heap {4} | Capacity {5}",
+                            _categoryInfo.Enabled,
+                            _categoryInfo.Volume,
+                            _categoryInfo.ActiveCount,
+                            _categoryInfo.FreeCount,
+                            _categoryInfo.HeapCount,
+                            _categoryInfo.Capacity)));
                 }
 
                 root.Add(section);
@@ -106,15 +109,18 @@ namespace AlicizaX.Debugger.Runtime
 
                         hasActive = true;
                         card.Add(CreateRow(
-                            _agentInfo.Type + "[" + _agentInfo.Index + "]",
-                            _agentInfo.State
-                            + " | Handle " + _agentInfo.Handle
-                            + " | Clip " + GetClipName(_agentInfo.Clip)
-                            + " | Source " + GetSourceName()
-                            + " | Volume " + _agentInfo.Volume.ToString("F2")
-                            + " | Spatial " + _agentInfo.Spatial
-                            + " | Occluded " + _agentInfo.Occluded
-                            + " | Range " + _agentInfo.MinDistance.ToString("F1") + "-" + _agentInfo.MaxDistance.ToString("F1")));
+                            ZString.Format("{0}[{1}]", _agentInfo.Type, _agentInfo.Index),
+                            ZString.Format(
+                                "{0} | Handle {1} | Clip {2} | Source {3} | Volume {4:F2} | Spatial {5} | Occluded {6} | Range {7:F1}-{8:F1}",
+                                _agentInfo.State,
+                                _agentInfo.Handle,
+                                GetClipName(_agentInfo.Clip),
+                                GetSourceName(),
+                                _agentInfo.Volume,
+                                _agentInfo.Spatial,
+                                _agentInfo.Occluded,
+                                _agentInfo.MinDistance,
+                                _agentInfo.MaxDistance)));
                     }
                 }
 
@@ -144,13 +150,15 @@ namespace AlicizaX.Debugger.Runtime
                     {
                         card.Add(CreateRow(
                             _clipCacheInfo.Address,
-                            "Ref " + _clipCacheInfo.RefCount
-                            + " | Pending " + _clipCacheInfo.PendingCount
-                            + " | Loaded " + _clipCacheInfo.IsLoaded
-                            + " | Loading " + _clipCacheInfo.Loading
-                            + " | Pinned " + _clipCacheInfo.Pinned
-                            + " | LRU " + _clipCacheInfo.InLru
-                            + " | Last " + (Time.realtimeSinceStartup - _clipCacheInfo.LastUseTime).ToString("F1") + "s"));
+                            ZString.Format(
+                                "Ref {0} | Pending {1} | Loaded {2} | Loading {3} | Pinned {4} | LRU {5} | Last {6:F1}s",
+                                _clipCacheInfo.RefCount,
+                                _clipCacheInfo.PendingCount,
+                                _clipCacheInfo.IsLoaded,
+                                _clipCacheInfo.Loading,
+                                _clipCacheInfo.Pinned,
+                                _clipCacheInfo.InLru,
+                                Time.realtimeSinceStartup - _clipCacheInfo.LastUseTime)));
                     }
 
                     entry = next;

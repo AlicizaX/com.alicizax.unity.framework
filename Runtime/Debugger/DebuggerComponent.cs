@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Cysharp.Text;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UIElements;
@@ -18,6 +19,14 @@ namespace AlicizaX.Debugger.Runtime
         private const string SettingsPanelName = "Debugger Runtime Panel Settings";
         private const string DefaultPanelSettingsResourcePath = "DebuggerPanelSettings";
         private const string SettingsEventSystemName = "Debugger Runtime EventSystem";
+        private const string LayoutIconXKey = "Debugger.Icon.X";
+        private const string LayoutIconYKey = "Debugger.Icon.Y";
+        private const string LayoutIconSnapKey = "Debugger.Icon.Snap";
+        private const string LayoutWindowXKey = "Debugger.Window.X";
+        private const string LayoutWindowYKey = "Debugger.Window.Y";
+        private const string LayoutWindowWidthKey = "Debugger.Window.Width";
+        private const string LayoutWindowHeightKey = "Debugger.Window.Height";
+        private const string LayoutWindowScaleKey = "Debugger.Window.Scale";
         private const int DefaultPanelSortingOrder = short.MaxValue - 64;
         private const float MinWindowWidth = 420f;
         private const float MinWindowHeight = 320f;
@@ -68,18 +77,11 @@ namespace AlicizaX.Debugger.Runtime
         private EnvironmentInformationWindow m_EnvironmentInformationWindow = new EnvironmentInformationWindow();
         private ScreenInformationWindow m_ScreenInformationWindow = new ScreenInformationWindow();
         private GraphicsInformationWindow m_GraphicsInformationWindow = new GraphicsInformationWindow();
-        private InputSummaryInformationWindow m_InputSummaryInformationWindow = new InputSummaryInformationWindow();
-        private InputTouchInformationWindow m_InputTouchInformationWindow = new InputTouchInformationWindow();
-        private InputLocationInformationWindow m_InputLocationInformationWindow = new InputLocationInformationWindow();
-        private InputAccelerationInformationWindow m_InputAccelerationInformationWindow = new InputAccelerationInformationWindow();
-        private InputGyroscopeInformationWindow m_InputGyroscopeInformationWindow = new InputGyroscopeInformationWindow();
-        private InputCompassInformationWindow m_InputCompassInformationWindow = new InputCompassInformationWindow();
-        private PathInformationWindow m_PathInformationWindow = new PathInformationWindow();
+        private InputInformationWindow m_InputInformationWindow = new InputInformationWindow();
         private SceneInformationWindow m_SceneInformationWindow = new SceneInformationWindow();
         private TimeInformationWindow m_TimeInformationWindow = new TimeInformationWindow();
         private QualityInformationWindow m_QualityInformationWindow = new QualityInformationWindow();
         private ProfilerInformationWindow m_ProfilerInformationWindow = new ProfilerInformationWindow();
-        private WebPlayerInformationWindow m_WebPlayerInformationWindow = new WebPlayerInformationWindow();
         private RuntimeMemorySummaryWindow m_RuntimeMemorySummaryWindow = new RuntimeMemorySummaryWindow();
         private RuntimeMemoryInformationWindow<Object> m_RuntimeMemoryAllInformationWindow = new RuntimeMemoryInformationWindow<Object>();
         private RuntimeMemoryInformationWindow<Texture> m_RuntimeMemoryTextureInformationWindow = new RuntimeMemoryInformationWindow<Texture>();
@@ -131,6 +133,14 @@ namespace AlicizaX.Debugger.Runtime
         private Vector2 _lastToggleTapPosition;
         private int _lastScreenWidth;
         private int _lastScreenHeight;
+        private float _lastSavedIconX;
+        private float _lastSavedIconY;
+        private float _lastSavedWindowX;
+        private float _lastSavedWindowY;
+        private float _lastSavedWindowWidth;
+        private float _lastSavedWindowHeight;
+        private float _lastSavedWindowScale;
+        private bool _lastSavedEnableFloatingToggleSnap;
         public static DebuggerComponent Instance
         {
             get
@@ -212,6 +222,7 @@ namespace AlicizaX.Debugger.Runtime
                 if (m_EnableFloatingToggleSnap)
                 {
                     SnapIconToEdge();
+                    SaveFloatingToggleSnapSettings();
                     return;
                 }
 
@@ -219,6 +230,7 @@ namespace AlicizaX.Debugger.Runtime
                 _toggleSnapVelocity = Vector2.zero;
                 ApplyToggleRect();
                 ApplyToggleVisualOffset(Vector2.zero);
+                SaveFloatingToggleSnapSettings();
             }
         }
 
@@ -256,6 +268,7 @@ namespace AlicizaX.Debugger.Runtime
                 m_WindowScale = clampedValue;
                 ApplyWindowScale();
                 RebuildRuntimeVisualTree();
+                SaveLayoutScaleSettings();
             }
         }
 
@@ -276,6 +289,7 @@ namespace AlicizaX.Debugger.Runtime
             }
 
             m_FpsCounter = new FpsCounter(0.5f);
+            LoadLayoutSettings();
             EnsureRuntimePanel();
         }
 
@@ -460,6 +474,112 @@ namespace AlicizaX.Debugger.Runtime
             }
             WindowRect = DefaultWindowRect;
             WindowScale = DefaultWindowScale;
+            SaveLayoutSettings();
+        }
+
+        private void LoadLayoutSettings()
+        {
+            float iconX = Utility.PlayerPrefsX.GetFloat(LayoutIconXKey, DefaultIconRect.x);
+            float iconY = Utility.PlayerPrefsX.GetFloat(LayoutIconYKey, DefaultIconRect.y);
+            float windowX = Utility.PlayerPrefsX.GetFloat(LayoutWindowXKey, DefaultWindowRect.x);
+            float windowY = Utility.PlayerPrefsX.GetFloat(LayoutWindowYKey, DefaultWindowRect.y);
+            float windowWidth = Utility.PlayerPrefsX.GetFloat(LayoutWindowWidthKey, DefaultWindowRect.width);
+            float windowHeight = Utility.PlayerPrefsX.GetFloat(LayoutWindowHeightKey, DefaultWindowRect.height);
+            float windowScale = Utility.PlayerPrefsX.GetFloat(LayoutWindowScaleKey, DefaultWindowScale);
+
+            if (Utility.PlayerPrefsX.HasSetting(LayoutIconSnapKey))
+            {
+                m_EnableFloatingToggleSnap = Utility.PlayerPrefsX.GetBool(LayoutIconSnapKey, m_EnableFloatingToggleSnap);
+            }
+
+            m_WindowScale = Mathf.Max(windowScale, MinWindowScale);
+            m_IconRect = ClampIconRect(new Rect(iconX, iconY, DefaultIconRect.width, DefaultIconRect.height));
+            m_WindowRect = ClampWindowRect(new Rect(windowX, windowY, windowWidth, windowHeight));
+            MarkLayoutSettingsSaved();
+        }
+
+        private void SaveLayoutSettings()
+        {
+            SaveIconLayoutSettings();
+            SaveWindowLayoutSettings();
+            SaveLayoutScaleSettings();
+            SaveFloatingToggleSnapSettings();
+        }
+
+        private void SaveIconLayoutSettings()
+        {
+            if (!Mathf.Approximately(_lastSavedIconX, m_IconRect.x))
+            {
+                _lastSavedIconX = m_IconRect.x;
+                Utility.PlayerPrefsX.SetFloat(LayoutIconXKey, m_IconRect.x);
+            }
+
+            if (!Mathf.Approximately(_lastSavedIconY, m_IconRect.y))
+            {
+                _lastSavedIconY = m_IconRect.y;
+                Utility.PlayerPrefsX.SetFloat(LayoutIconYKey, m_IconRect.y);
+            }
+        }
+
+        private void SaveWindowLayoutSettings()
+        {
+            if (!Mathf.Approximately(_lastSavedWindowX, m_WindowRect.x))
+            {
+                _lastSavedWindowX = m_WindowRect.x;
+                Utility.PlayerPrefsX.SetFloat(LayoutWindowXKey, m_WindowRect.x);
+            }
+
+            if (!Mathf.Approximately(_lastSavedWindowY, m_WindowRect.y))
+            {
+                _lastSavedWindowY = m_WindowRect.y;
+                Utility.PlayerPrefsX.SetFloat(LayoutWindowYKey, m_WindowRect.y);
+            }
+
+            if (!Mathf.Approximately(_lastSavedWindowWidth, m_WindowRect.width))
+            {
+                _lastSavedWindowWidth = m_WindowRect.width;
+                Utility.PlayerPrefsX.SetFloat(LayoutWindowWidthKey, m_WindowRect.width);
+            }
+
+            if (!Mathf.Approximately(_lastSavedWindowHeight, m_WindowRect.height))
+            {
+                _lastSavedWindowHeight = m_WindowRect.height;
+                Utility.PlayerPrefsX.SetFloat(LayoutWindowHeightKey, m_WindowRect.height);
+            }
+        }
+
+        private void SaveLayoutScaleSettings()
+        {
+            if (Mathf.Approximately(_lastSavedWindowScale, m_WindowScale))
+            {
+                return;
+            }
+
+            _lastSavedWindowScale = m_WindowScale;
+            Utility.PlayerPrefsX.SetFloat(LayoutWindowScaleKey, m_WindowScale);
+        }
+
+        private void SaveFloatingToggleSnapSettings()
+        {
+            if (_lastSavedEnableFloatingToggleSnap == m_EnableFloatingToggleSnap)
+            {
+                return;
+            }
+
+            _lastSavedEnableFloatingToggleSnap = m_EnableFloatingToggleSnap;
+            Utility.PlayerPrefsX.SetBool(LayoutIconSnapKey, m_EnableFloatingToggleSnap);
+        }
+
+        private void MarkLayoutSettingsSaved()
+        {
+            _lastSavedIconX = m_IconRect.x;
+            _lastSavedIconY = m_IconRect.y;
+            _lastSavedWindowX = m_WindowRect.x;
+            _lastSavedWindowY = m_WindowRect.y;
+            _lastSavedWindowWidth = m_WindowRect.width;
+            _lastSavedWindowHeight = m_WindowRect.height;
+            _lastSavedWindowScale = m_WindowScale;
+            _lastSavedEnableFloatingToggleSnap = m_EnableFloatingToggleSnap;
         }
 
         public void GetRecentLogs(List<LogNode> results)
@@ -479,17 +599,10 @@ namespace AlicizaX.Debugger.Runtime
             RegisterDebuggerWindow("Information/Environment", m_EnvironmentInformationWindow);
             RegisterDebuggerWindow("Information/Screen", m_ScreenInformationWindow);
             RegisterDebuggerWindow("Information/Graphics", m_GraphicsInformationWindow);
-            RegisterDebuggerWindow("Information/Input/Summary", m_InputSummaryInformationWindow);
-            RegisterDebuggerWindow("Information/Input/Touch", m_InputTouchInformationWindow);
-            RegisterDebuggerWindow("Information/Input/Location", m_InputLocationInformationWindow);
-            RegisterDebuggerWindow("Information/Input/Acceleration", m_InputAccelerationInformationWindow);
-            RegisterDebuggerWindow("Information/Input/Gyroscope", m_InputGyroscopeInformationWindow);
-            RegisterDebuggerWindow("Information/Input/Compass", m_InputCompassInformationWindow);
+            RegisterDebuggerWindow("Information/Input", m_InputInformationWindow);
             RegisterDebuggerWindow("Information/Other/Scene", m_SceneInformationWindow);
-            RegisterDebuggerWindow("Information/Other/Path", m_PathInformationWindow);
             RegisterDebuggerWindow("Information/Other/Time", m_TimeInformationWindow);
             RegisterDebuggerWindow("Information/Other/Quality", m_QualityInformationWindow);
-            RegisterDebuggerWindow("Information/Other/Web Player", m_WebPlayerInformationWindow);
             RegisterDebuggerWindow("Profiler/Summary", m_ProfilerInformationWindow);
             RegisterDebuggerWindow("Profiler/Memory/Summary", m_RuntimeMemorySummaryWindow);
             RegisterDebuggerWindow("Profiler/Memory/All", m_RuntimeMemoryAllInformationWindow);
@@ -1125,7 +1238,7 @@ namespace AlicizaX.Debugger.Runtime
                 return true;
             }
 
-            return _activeNode != null && _activeNode.Path.StartsWith(node.Path + "/", StringComparison.Ordinal);
+            return _activeNode != null && _activeNode.Path.StartsWith(ZString.Concat(node.Path, "/"), StringComparison.Ordinal);
         }
 
         private bool SelectWindowNode(DebuggerMenuNode node)
@@ -1241,7 +1354,6 @@ namespace AlicizaX.Debugger.Runtime
                 return;
             }
 
-            m_ConsoleWindow.RefreshCount();
             Color color = m_ConsoleWindow.FatalCount > 0
                 ? m_ConsoleWindow.GetLogStringColor(LogType.Exception)
                 : m_ConsoleWindow.ErrorCount > 0
@@ -1376,6 +1488,15 @@ namespace AlicizaX.Debugger.Runtime
                 }
 
                 target.ReleasePointer(evt.pointerId);
+                if (moveWindow)
+                {
+                    SaveWindowLayoutSettings();
+                }
+                else
+                {
+                    SaveIconLayoutSettings();
+                }
+
                 evt.StopPropagation();
             });
         }
@@ -1444,6 +1565,7 @@ namespace AlicizaX.Debugger.Runtime
                         _isToggleSnapAnimating = false;
                         _toggleSnapVelocity = Vector2.zero;
                         ApplyToggleRect();
+                        SaveIconLayoutSettings();
                     }
 
                     _toggleOpenSuppressUntil = Time.unscaledTime + ToggleClickSuppressAfterDrag;
@@ -1464,12 +1586,14 @@ namespace AlicizaX.Debugger.Runtime
             {
                 ApplyToggleRect();
                 ApplyToggleVisualOffset(Vector2.zero);
+                SaveIconLayoutSettings();
                 return;
             }
 
             Vector2 targetPosition = GetSnappedIconPosition(new Vector2(m_IconRect.x, m_IconRect.y));
             IconRect = new Rect(targetPosition.x, targetPosition.y, m_IconRect.width, m_IconRect.height);
             ApplyToggleVisualOffset(Vector2.zero);
+            SaveIconLayoutSettings();
         }
 
         private void RegisterResizeManipulator(VisualElement target)
@@ -1509,6 +1633,7 @@ namespace AlicizaX.Debugger.Runtime
 
                 target.ReleasePointer(evt.pointerId);
                 _isResizeActive = false;
+                SaveWindowLayoutSettings();
                 evt.StopPropagation();
             });
         }
@@ -1557,6 +1682,7 @@ namespace AlicizaX.Debugger.Runtime
                 m_IconRect = new Rect(_toggleSnapTargetPosition.x, _toggleSnapTargetPosition.y, m_IconRect.width, m_IconRect.height);
                 ApplyToggleRect();
                 ApplyToggleVisualOffset(Vector2.zero);
+                SaveIconLayoutSettings();
             }
         }
 
@@ -1664,7 +1790,7 @@ namespace AlicizaX.Debugger.Runtime
             for (int i = 0; i < segments.Length; i++)
             {
                 string segment = segments[i];
-                currentPath = string.IsNullOrEmpty(currentPath) ? segment : currentPath + "/" + segment;
+                currentPath = string.IsNullOrEmpty(currentPath) ? segment : ZString.Concat(currentPath, "/", segment);
                 DebuggerMenuNode node = current.Find(item => item.DisplayName == segment);
                 if (node == null)
                 {
