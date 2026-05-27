@@ -1,6 +1,6 @@
 namespace AlicizaX.ObjectPool
 {
-    public abstract class ObjectBase : IMemory
+    public abstract class ObjectBase : MemoryObject
     {
         private string m_Name;
         private object m_Target;
@@ -46,7 +46,7 @@ namespace AlicizaX.ObjectPool
         protected internal virtual void OnUnspawn() { }
         protected internal abstract void Release(bool isShutdown);
 
-        public virtual void Clear()
+        public override void Clear()
         {
             m_Name = null;
             m_Target = null;

@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace AlicizaX.Audio.Runtime
 {
-    internal sealed class AudioAgent : IMemory
+    internal sealed class AudioAgent : MemoryObject
     {
         private const float DefaultFadeOutSeconds = 0.15f;
         private const float MinFadeOutSeconds = 0.0001f;
@@ -224,7 +224,7 @@ namespace AlicizaX.Audio.Runtime
             _category = null;
         }
 
-        public void Clear()
+        public override void Clear()
         {
             _service = null;
             _category = null;

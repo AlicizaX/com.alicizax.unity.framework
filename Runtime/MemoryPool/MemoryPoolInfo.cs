@@ -15,15 +15,15 @@ namespace AlicizaX
         private int _acquireCount;
         private int _releaseCount;
         private int _createCount;
-        private int _highWaterMark;
+        private int _targetFreeReserve;
         private int _maxCapacity;
         private int _idleFrames;
-        private int _poolArrayLength;
+        private int _pageCapacity;
 
         public MemoryPoolInfo(Type type, int unusedCount, int usingCount,
             int acquireCount, int releaseCount, int createCount,
-            int highWaterMark, int maxCapacity,
-            int idleFrames, int poolArrayLength)
+            int targetFreeReserve, int maxCapacity,
+            int idleFrames, int pageCapacity)
         {
             _type = type;
             _unusedCount = unusedCount;
@@ -31,10 +31,10 @@ namespace AlicizaX
             _acquireCount = acquireCount;
             _releaseCount = releaseCount;
             _createCount = createCount;
-            _highWaterMark = highWaterMark;
+            _targetFreeReserve = targetFreeReserve;
             _maxCapacity = maxCapacity;
             _idleFrames = idleFrames;
-            _poolArrayLength = poolArrayLength;
+            _pageCapacity = pageCapacity;
         }
 
         public Type Type => _type;
@@ -49,18 +49,18 @@ namespace AlicizaX
 
         public int CreateCount => _createCount;
 
-        public int HighWaterMark => _highWaterMark;
+        public int TargetFreeReserve => _targetFreeReserve;
 
         public int MaxCapacity => _maxCapacity;
 
         public int IdleFrames => _idleFrames;
 
-        public int PoolArrayLength => _poolArrayLength;
+        public int PageCapacity => _pageCapacity;
 
         internal void Set(Type type, int unusedCount, int usingCount,
             int acquireCount, int releaseCount, int createCount,
-            int highWaterMark, int maxCapacity,
-            int idleFrames, int poolArrayLength)
+            int targetFreeReserve, int maxCapacity,
+            int idleFrames, int pageCapacity)
         {
             _type = type;
             _unusedCount = unusedCount;
@@ -68,10 +68,10 @@ namespace AlicizaX
             _acquireCount = acquireCount;
             _releaseCount = releaseCount;
             _createCount = createCount;
-            _highWaterMark = highWaterMark;
+            _targetFreeReserve = targetFreeReserve;
             _maxCapacity = maxCapacity;
             _idleFrames = idleFrames;
-            _poolArrayLength = poolArrayLength;
+            _pageCapacity = pageCapacity;
         }
     }
 }

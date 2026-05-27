@@ -132,7 +132,7 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private sealed class LoadingOperationState : IMemory
+        private sealed class LoadingOperationState : MemoryObject
         {
             public bool IsDone { get; private set; }
             public bool Succeeded { get; private set; }
@@ -163,7 +163,7 @@ namespace AlicizaX.Resource.Runtime
                 ReleaseRequested = true;
             }
 
-            public void Clear()
+            public override void Clear()
             {
                 IsDone = false;
                 Succeeded = false;

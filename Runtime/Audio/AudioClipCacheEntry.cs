@@ -5,7 +5,7 @@ using YooAsset;
 
 namespace AlicizaX.Audio.Runtime
 {
-    internal sealed class AudioClipCacheEntry : IMemory
+    internal sealed class AudioClipCacheEntry : MemoryObject
     {
         private readonly Action<AssetHandle> _completedCallback;
 
@@ -132,7 +132,7 @@ namespace AlicizaX.Audio.Runtime
             info.LastUseTime = LastUseTime;
         }
 
-        public void Clear()
+        public override void Clear()
         {
             if (Handle != null && Handle.IsValid)
             {

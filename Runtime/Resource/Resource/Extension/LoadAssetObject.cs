@@ -4,7 +4,7 @@ using AlicizaX;
 namespace AlicizaX.Resource.Runtime
 {
     [Serializable]
-    public class LoadAssetObject : IMemory
+public class LoadAssetObject : MemoryObject
     {
         public ISetAssetObject AssetObject { get; private set; }
         public UnityEngine.Object AssetTarget { get; private set; }
@@ -19,7 +19,7 @@ namespace AlicizaX.Resource.Runtime
             return item;
         }
 
-        public void Clear()
+    public override void Clear()
         {
             AssetObject = null;
             AssetTarget = null;

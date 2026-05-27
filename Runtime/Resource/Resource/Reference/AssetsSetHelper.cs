@@ -15,7 +15,7 @@ namespace AlicizaX.Resource.Runtime
             MeshRendererShared,
         }
 
-        private sealed class MaterialSetRequest : IMemory
+    private sealed class MaterialSetRequest : MemoryObject
         {
             public MaterialTargetType TargetType;
             public Image Image;
@@ -114,7 +114,7 @@ namespace AlicizaX.Resource.Runtime
                 MemoryPool.Release(this);
             }
 
-            public void Clear()
+        public override void Clear()
             {
                 TargetType = MaterialTargetType.Image;
                 Image = null;

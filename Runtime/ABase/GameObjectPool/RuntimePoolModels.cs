@@ -147,7 +147,7 @@ namespace AlicizaX
         }
     }
 
-    internal sealed class PendingAcquireCancelState : IMemory
+internal sealed class PendingAcquireCancelState : MemoryObject
     {
         public RuntimeGameObjectPool pool;
         public int requestId;
@@ -167,7 +167,7 @@ namespace AlicizaX
             return state;
         }
 
-        public void Clear()
+    public override void Clear()
         {
             pool = null;
             requestId = 0;
@@ -468,7 +468,7 @@ namespace AlicizaX
     }
 
     [Serializable]
-    public sealed class GameObjectPoolInstanceSnapshot : IMemory
+public sealed class GameObjectPoolInstanceSnapshot : MemoryObject
     {
         public string instanceName;
         public bool isActive;
@@ -476,7 +476,7 @@ namespace AlicizaX
         public float lifeDuration;
         public GameObject gameObject;
 
-        public void Clear()
+    public override void Clear()
         {
             instanceName = null;
             isActive = false;
@@ -487,7 +487,7 @@ namespace AlicizaX
     }
 
     [Serializable]
-    public sealed class GameObjectPoolSnapshot : IMemory
+public sealed class GameObjectPoolSnapshot : MemoryObject
     {
         public string entryName;
         public string group;
@@ -532,7 +532,7 @@ namespace AlicizaX
             return (uint)index < (uint)instances.Count ? instances[index] : null;
         }
 
-        public void Clear()
+    public override void Clear()
         {
             entryName = null;
             group = null;
@@ -616,7 +616,7 @@ namespace AlicizaX
         }
     }
 
-    internal sealed class RuntimeGameObjectPool : IMemory
+internal sealed class RuntimeGameObjectPool : MemoryObject
     {
         private enum SlotState : byte
         {
@@ -1116,7 +1116,7 @@ namespace AlicizaX
             return snapshot;
         }
 
-        public void Clear()
+    public override void Clear()
         {
             ReturnAllPages();
             ReturnStorageArrays();

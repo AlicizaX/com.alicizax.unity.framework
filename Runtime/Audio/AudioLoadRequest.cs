@@ -2,7 +2,7 @@ using AlicizaX;
 
 namespace AlicizaX.Audio.Runtime
 {
-    internal sealed class AudioLoadRequest : IMemory
+    internal sealed class AudioLoadRequest : MemoryObject
     {
         public AudioClipCacheEntry Entry;
         public AudioLoadRequest Prev;
@@ -10,7 +10,7 @@ namespace AlicizaX.Audio.Runtime
         public AudioAgent Agent;
         public int Generation;
 
-        public void Clear()
+        public override void Clear()
         {
             Entry = null;
             Prev = null;

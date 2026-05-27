@@ -10,7 +10,7 @@ namespace AlicizaX.Debugger.Runtime
         /// <summary>
         /// 日志记录结点。
         /// </summary>
-        public sealed class LogNode : IMemory
+    public sealed class LogNode : MemoryObject
         {
             private DateTime m_LogTime;
             private int m_LogFrameCount;
@@ -106,7 +106,7 @@ namespace AlicizaX.Debugger.Runtime
             /// <summary>
             /// 清理日志记录结点。
             /// </summary>
-            public void Clear()
+        public override void Clear()
             {
                 m_LogTime = default(DateTime);
                 m_LogFrameCount = 0;

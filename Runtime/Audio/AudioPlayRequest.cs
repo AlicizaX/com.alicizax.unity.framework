@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace AlicizaX.Audio.Runtime
 {
-    internal sealed class AudioPlayRequest : IMemory
+    internal sealed class AudioPlayRequest : MemoryObject
     {
         public AudioType Type;
         public string Address;
@@ -134,7 +134,7 @@ namespace AlicizaX.Audio.Runtime
             SetSpatialSettings(minDistance, maxDistance, rolloffMode, spatialBlend);
         }
 
-        public void Clear()
+        public override void Clear()
         {
             Reset();
         }

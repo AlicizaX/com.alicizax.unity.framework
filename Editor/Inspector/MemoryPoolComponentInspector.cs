@@ -28,7 +28,6 @@ namespace AlicizaX.Editor
         private readonly HashSet<string> m_OpenedItems = new HashSet<string>();
         private MemoryPoolInfo[] m_InfoBuffer = Array.Empty<MemoryPoolInfo>();
 
-        private SerializedProperty m_EnableStrictCheck;
         private SerializedProperty m_ShortDecayStartFrames;
         private SerializedProperty m_LongDecayStartFrames;
         private SerializedProperty m_UnscheduleIdleFrames;
@@ -71,7 +70,6 @@ namespace AlicizaX.Editor
 
         private void OnEnable()
         {
-            m_EnableStrictCheck = serializedObject.FindProperty("m_EnableStrictCheck");
             m_ShortDecayStartFrames = serializedObject.FindProperty("m_ShortDecayStartFrames");
             m_LongDecayStartFrames = serializedObject.FindProperty("m_LongDecayStartFrames");
             m_UnscheduleIdleFrames = serializedObject.FindProperty("m_UnscheduleIdleFrames");
@@ -107,7 +105,6 @@ namespace AlicizaX.Editor
 
         private void DrawConfiguration()
         {
-            DrawEnumPropertyRow("Strict Check", m_EnableStrictCheck);
             DrawIntPropertyRow("Short Decay Start", m_ShortDecayStartFrames);
             DrawIntPropertyRow("Long Decay Start", m_LongDecayStartFrames);
             DrawIntPropertyRow("Unschedule Idle", m_UnscheduleIdleFrames);
@@ -116,11 +113,6 @@ namespace AlicizaX.Editor
         private void DrawRuntimeInspector(MemoryPoolSetting setting)
         {
             DrawSectionBegin("Configuration");
-            bool enableStrictCheck = DrawBoolValueRow("Enable Strict Check", setting.EnableStrictCheck);
-            if (enableStrictCheck != setting.EnableStrictCheck)
-            {
-                setting.EnableStrictCheck = enableStrictCheck;
-            }
 
             DrawReadOnlyRow("Memory Pool Count", MemoryPool.Count.ToString(), MemoryPool.Count > 0 ? _rowLabelStyle : _mutedLabelStyle);
             m_ShowFullClassName = DrawBoolValueRow("Show Full Class Name", m_ShowFullClassName);
@@ -163,13 +155,13 @@ namespace AlicizaX.Editor
                 ref MemoryPoolInfo info = ref m_InfoBuffer[i];
                 totalUnused += info.UnusedCount;
                 totalUsing += info.UsingCount;
-                totalArrayLen += info.PoolArrayLength;
+                totalArrayLen += info.PageCapacity;
             }
 
             DrawSectionBegin("Overview");
             DrawReadOnlyRow("Total Cached", totalUnused.ToString(), totalUnused > 0 ? _rowLabelStyle : _mutedLabelStyle);
             DrawReadOnlyRow("Total In Use", totalUsing.ToString(), totalUsing > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Total Array Capacity", totalArrayLen.ToString(), totalArrayLen > 0 ? _rowLabelStyle : _mutedLabelStyle);
+            DrawReadOnlyRow("Total Page Capacity", totalArrayLen.ToString(), totalArrayLen > 0 ? _rowLabelStyle : _mutedLabelStyle);
             DrawSectionEnd();
         }
 
@@ -299,15 +291,6 @@ namespace AlicizaX.Editor
             return expanded;
         }
 
-        private void DrawEnumPropertyRow(string label, SerializedProperty property)
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            Rect popupRect = GUILayoutUtility.GetRect(90f, 20f, GUILayout.MinWidth(90f), GUILayout.ExpandWidth(true));
-            property.enumValueIndex = AlicizaEditorGUI.DrawStyledPopup(popupRect, property.enumValueIndex, property.enumDisplayNames);
-            EditorGUILayout.EndHorizontal();
-        }
-
         private void DrawIntPropertyRow(string label, SerializedProperty property)
         {
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
@@ -348,10 +331,10 @@ namespace AlicizaX.Editor
             DrawTableCell("Acquire", _fieldLabelStyle, WideCountColumnWidth);
             DrawTableCell("Release", _fieldLabelStyle, WideCountColumnWidth);
             DrawTableCell("Created", _fieldLabelStyle, WideCountColumnWidth);
-            DrawTableCell("HiWater", _fieldLabelStyle, WideCountColumnWidth);
+            DrawTableCell("Target", _fieldLabelStyle, WideCountColumnWidth);
             DrawTableCell("MaxCap", _fieldLabelStyle, WideCountColumnWidth);
             DrawTableCell("Idle", _fieldLabelStyle, CompactCountColumnWidth);
-            DrawTableCell("ArrLen", _fieldLabelStyle, CountColumnWidth);
+            DrawTableCell("PageCap", _fieldLabelStyle, CountColumnWidth);
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
         }
@@ -368,10 +351,10 @@ namespace AlicizaX.Editor
             DrawTableCell(info.AcquireCount.ToString(), valueStyle, WideCountColumnWidth);
             DrawTableCell(info.ReleaseCount.ToString(), valueStyle, WideCountColumnWidth);
             DrawTableCell(info.CreateCount.ToString(), valueStyle, WideCountColumnWidth);
-            DrawTableCell(info.HighWaterMark.ToString(), valueStyle, WideCountColumnWidth);
+            DrawTableCell(info.TargetFreeReserve.ToString(), valueStyle, WideCountColumnWidth);
             DrawTableCell(info.MaxCapacity.ToString(), valueStyle, WideCountColumnWidth);
             DrawTableCell(info.IdleFrames.ToString(), valueStyle, CompactCountColumnWidth);
-            DrawTableCell(info.PoolArrayLength.ToString(), valueStyle, CountColumnWidth);
+            DrawTableCell(info.PageCapacity.ToString(), valueStyle, CountColumnWidth);
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
         }
@@ -437,7 +420,7 @@ namespace AlicizaX.Editor
             {
                 int index = 0;
                 string[] data = new string[indices.Count + 1];
-                data[index++] = "Class Name,Full Class Name,Unused,Using,Acquire,Release,Created,HighWaterMark,MaxCapacity,IdleFrames,ArrayLength";
+                data[index++] = "Class Name,Full Class Name,Unused,Using,Acquire,Release,Created,TargetFreeReserve,MaxCapacity,IdleFrames,PageCapacity";
                 for (int i = 0; i < indices.Count; i++)
                 {
                     ref MemoryPoolInfo info = ref m_InfoBuffer[indices[i]];
@@ -445,8 +428,8 @@ namespace AlicizaX.Editor
                         info.Type.Name, info.Type.FullName,
                         info.UnusedCount, info.UsingCount,
                         info.AcquireCount, info.ReleaseCount,
-                        info.CreateCount, info.HighWaterMark,
-                        info.MaxCapacity, info.IdleFrames, info.PoolArrayLength);
+                        info.CreateCount, info.TargetFreeReserve,
+                        info.MaxCapacity, info.IdleFrames, info.PageCapacity);
                 }
 
                 File.WriteAllLines(exportFileName, data, Encoding.UTF8);

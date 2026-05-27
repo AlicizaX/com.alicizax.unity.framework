@@ -56,7 +56,7 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private sealed class SubAssetLoadingOperationState : IMemory
+        private sealed class SubAssetLoadingOperationState : MemoryObject
         {
             public bool IsDone { get; private set; }
             public SubAssetsHandle Handle { get; private set; }
@@ -87,7 +87,7 @@ namespace AlicizaX.Resource.Runtime
                 ReleaseRequested = true;
             }
 
-            public void Clear()
+            public override void Clear()
             {
                 IsDone = false;
                 Handle = default;

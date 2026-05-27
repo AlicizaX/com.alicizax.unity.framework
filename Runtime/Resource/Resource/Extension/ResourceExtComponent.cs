@@ -40,7 +40,7 @@ namespace AlicizaX.Resource.Runtime
         private SpriteKeepAliveItem _spriteKeepAliveTail;
         private bool _isDestroying;
 
-        private sealed class SpriteKeepAliveItem : IMemory
+        private sealed class SpriteKeepAliveItem : MemoryObject
         {
             public string Location;
             public Object Asset;
@@ -48,7 +48,7 @@ namespace AlicizaX.Resource.Runtime
             public SpriteKeepAliveItem Prev;
             public SpriteKeepAliveItem Next;
 
-            public void Clear()
+            public override void Clear()
             {
                 Location = null;
                 Asset = null;

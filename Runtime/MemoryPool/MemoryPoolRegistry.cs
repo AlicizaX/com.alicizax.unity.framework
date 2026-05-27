@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace AlicizaX
@@ -12,33 +12,46 @@ namespace AlicizaX
             public delegate void ReleaseHandler(IMemory memory);
             public delegate void ClearHandler();
             public delegate void IntHandler(int value);
+            public delegate void CapacityHandler(int softCapacity, int hardCapacity);
             public delegate bool TickHandler(int value);
             public delegate void GetInfoHandler(ref MemoryPoolInfo info);
 
+            public readonly int PoolId;
+            public readonly Type MemoryType;
             public readonly AcquireHandler Acquire;
             public readonly ReleaseHandler Release;
             public readonly ClearHandler Clear;
-            public readonly IntHandler Prewarm;
+            public readonly ClearHandler ClearNativeMetadata;
+            public readonly IntHandler Add;
+            public readonly CapacityHandler SetCapacity;
             public readonly GetInfoHandler GetInfo;
             public readonly TickHandler Tick;
             public readonly IntHandler Shrink;
             public readonly ClearHandler Compact;
             public int ActiveIndex = -1;
+            public bool ActiveQueueDebt;
 
             public MemoryPoolHandle(
+                Type memoryType,
                 AcquireHandler acquire,
                 ReleaseHandler release,
                 ClearHandler clear,
-                IntHandler prewarm,
+                ClearHandler clearNativeMetadata,
+                IntHandler add,
+                CapacityHandler setCapacity,
                 GetInfoHandler getInfo,
                 TickHandler tick,
                 IntHandler shrink,
                 ClearHandler compact)
             {
+                PoolId = ++s_NextPoolId;
+                MemoryType = memoryType;
                 Acquire = acquire;
                 Release = release;
                 Clear = clear;
-                Prewarm = prewarm;
+                ClearNativeMetadata = clearNativeMetadata;
+                Add = add;
+                SetCapacity = setCapacity;
                 GetInfo = getInfo;
                 Tick = tick;
                 Shrink = shrink;
@@ -46,42 +59,91 @@ namespace AlicizaX
             }
         }
 
-        private static readonly Dictionary<Type, MemoryPoolHandle> s_Handles
-            = new Dictionary<Type, MemoryPoolHandle>(64);
+        private static IntPtr[] s_HandleKeys = new IntPtr[64];
+        private static MemoryPoolHandle[] s_HandleValues = new MemoryPoolHandle[64];
+        private static int s_HandleCount;
 
         private static MemoryPoolHandle[] s_ActivePools = Array.Empty<MemoryPoolHandle>();
         private static int s_ActiveCount;
+        private static int s_NextPoolId;
+        private static MemoryPoolPhase s_Phase = MemoryPoolPhase.Gameplay;
+        private static bool s_HasActiveQueueDebt;
 
-        public static int Count => s_Handles.Count;
+        public static int Count => s_HandleCount;
+
+        internal static int CurrentFrame { get; private set; }
+
+        public static MemoryPoolPhase Phase
+        {
+            get => s_Phase;
+            set => s_Phase = value;
+        }
+
+        internal static int GetGrowthBudget()
+        {
+            switch (s_Phase)
+            {
+                case MemoryPoolPhase.Boot:
+                case MemoryPoolPhase.Loading:
+                    return 32;
+                case MemoryPoolPhase.Background:
+                    return 8;
+                case MemoryPoolPhase.LowMemory:
+                    return 0;
+                default:
+                    return 2;
+            }
+        }
+
+        internal static int GetEvictBudget()
+        {
+            switch (s_Phase)
+            {
+                case MemoryPoolPhase.LowMemory:
+                    return 32;
+                case MemoryPoolPhase.Background:
+                    return 16;
+                case MemoryPoolPhase.Boot:
+                case MemoryPoolPhase.Loading:
+                    return 4;
+                default:
+                    return 2;
+            }
+        }
 
         internal static void Register(Type type, MemoryPoolHandle handle)
         {
-            s_Handles[type] = handle;
+            AddOrUpdateHandle(type.TypeHandle.Value, handle);
         }
 
         internal static void ScheduleTick(MemoryPoolHandle handle)
         {
-            if (handle == null || handle.ActiveIndex >= 0)
+            if (handle == null)
                 return;
+            if (handle.ActiveIndex >= 0)
+            {
+                handle.ActiveQueueDebt = false;
+                return;
+            }
 
             if (s_ActiveCount == s_ActivePools.Length)
             {
-                int newLength = s_ActivePools.Length == 0 ? 16 : s_ActivePools.Length << 1;
-                var activePools = new MemoryPoolHandle[newLength];
-                Array.Copy(s_ActivePools, 0, activePools, 0, s_ActiveCount);
-                s_ActivePools = activePools;
+                handle.ActiveQueueDebt = true;
+                s_HasActiveQueueDebt = true;
+                return;
             }
 
             handle.ActiveIndex = s_ActiveCount;
+            handle.ActiveQueueDebt = false;
             s_ActivePools[s_ActiveCount++] = handle;
         }
-
 
         internal static void UnscheduleTick(MemoryPoolHandle handle)
         {
             if (handle == null)
                 return;
 
+            handle.ActiveQueueDebt = false;
             int index = handle.ActiveIndex;
             if (index < 0 || index >= s_ActiveCount)
             {
@@ -101,60 +163,32 @@ namespace AlicizaX
             }
         }
 
-
         public static AlicizaX.MemoryPoolHandle GetHandle(Type type)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-
-            if (s_Handles.TryGetValue(type, out var handle))
-                return new AlicizaX.MemoryPoolHandle(handle);
-
-            EnsureRegistered(type);
-
-            if (s_Handles.TryGetValue(type, out handle))
-                return new AlicizaX.MemoryPoolHandle(handle);
-
-            throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
+            return new AlicizaX.MemoryPoolHandle(GetOrCreateHandle(type));
         }
 
         public static IMemory Acquire(Type type)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-
-            if (s_Handles.TryGetValue(type, out var handle))
-                return handle.Acquire();
-
-            EnsureRegistered(type);
-
-            if (s_Handles.TryGetValue(type, out handle))
-                return handle.Acquire();
-
-            throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
+            return GetOrCreateHandle(type).Acquire();
         }
 
         public static void Release(IMemory memory)
         {
             if (memory == null)
-                throw new ArgumentNullException(nameof(memory));
+                return;
 
-            Type type = memory.GetType();
-            if (s_Handles.TryGetValue(type, out var handle))
+            if (!(memory is MemoryObject memoryObject))
+                throw new InvalidOperationException("MemoryPool.Release(IMemory) only accepts MemoryObject instances.");
+
+            MemoryPoolHandle handle = GetOwnerHandle(memoryObject);
+            if (handle.PoolId == memoryObject.PoolId)
             {
                 handle.Release(memory);
                 return;
             }
 
-            EnsureRegistered(type);
-
-            if (s_Handles.TryGetValue(type, out handle))
-            {
-                handle.Release(memory);
-                return;
-            }
-
-            throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
+            throw new InvalidOperationException("MemoryPool.Release(IMemory) rejected an object without a valid owner pool.");
         }
 
         public static int GetAllInfos(MemoryPoolInfo[] infos)
@@ -162,14 +196,18 @@ namespace AlicizaX
             if (infos == null)
                 throw new ArgumentNullException(nameof(infos));
 
-            int count = s_Handles.Count;
+            int count = s_HandleCount;
             if (infos.Length < count)
                 throw new ArgumentException("Target buffer is too small.", nameof(infos));
 
             int i = 0;
-            foreach (var kv in s_Handles)
+            for (int slot = 0; slot < s_HandleValues.Length; slot++)
             {
-                kv.Value.GetInfo(ref infos[i]);
+                MemoryPoolHandle handle = s_HandleValues[slot];
+                if (handle == null)
+                    continue;
+
+                handle.GetInfo(ref infos[i]);
                 i++;
             }
 
@@ -178,110 +216,89 @@ namespace AlicizaX
 
         public static MemoryPoolInfo[] GetAllInfos()
         {
-            var infos = new MemoryPoolInfo[s_Handles.Count];
+            var infos = new MemoryPoolInfo[s_HandleCount];
             GetAllInfos(infos);
             return infos;
         }
 
         public static void ClearAll()
         {
-            foreach (var kv in s_Handles)
-                kv.Value.Clear();
+            for (int i = 0; i < s_HandleValues.Length; i++)
+                s_HandleValues[i]?.Clear();
 
-            for (int i = 0; i < s_ActiveCount; i++)
-                s_ActivePools[i].ActiveIndex = -1;
-
-            Array.Clear(s_ActivePools, 0, s_ActiveCount);
-            s_ActiveCount = 0;
+            ClearActiveScheduleState();
         }
 
         public static void CompactAll()
         {
-            foreach (var kv in s_Handles)
-                kv.Value.Compact();
+            for (int i = 0; i < s_HandleValues.Length; i++)
+                s_HandleValues[i]?.Compact();
         }
 
-        public static void Prewarm(Type type, int count)
+        public static void ClearAllNativeMetadata()
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
+            for (int i = 0; i < s_HandleValues.Length; i++)
+                s_HandleValues[i]?.ClearNativeMetadata();
 
-            if (s_Handles.TryGetValue(type, out var handle))
+            ClearActiveScheduleState();
+        }
+
+        private static void ClearActiveScheduleState()
+        {
+            for (int i = 0; i < s_HandleValues.Length; i++)
             {
-                handle.Prewarm(count);
-                return;
+                MemoryPoolHandle handle = s_HandleValues[i];
+                if (handle == null)
+                    continue;
+
+                handle.ActiveIndex = -1;
+                handle.ActiveQueueDebt = false;
             }
 
-            EnsureRegistered(type);
-
-            if (s_Handles.TryGetValue(type, out handle))
+            for (int i = 0; i < s_ActiveCount; i++)
             {
-                handle.Prewarm(count);
-                return;
+                MemoryPoolHandle handle = s_ActivePools[i];
+                if (handle != null)
+                    handle.ActiveIndex = -1;
             }
 
-            throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
+            Array.Clear(s_ActivePools, 0, s_ActiveCount);
+            s_ActiveCount = 0;
+            s_HasActiveQueueDebt = false;
+        }
+
+        public static void Add(Type type, int count)
+        {
+            GetOrCreateHandle(type).Add(count);
+        }
+
+        public static void SetCapacity(Type type, int softCapacity, int hardCapacity)
+        {
+            GetOrCreateHandle(type).SetCapacity(softCapacity, hardCapacity);
         }
 
         public static void ClearType(Type type)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-
-            if (!s_Handles.TryGetValue(type, out var handle))
-            {
-                EnsureRegistered(type);
-                if (!s_Handles.TryGetValue(type, out handle))
-                    throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
-            }
-
-            handle.Clear();
+            GetOrCreateHandle(type).Clear();
         }
 
         public static void CompactType(Type type)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-
-            if (!s_Handles.TryGetValue(type, out var handle))
-            {
-                EnsureRegistered(type);
-                if (!s_Handles.TryGetValue(type, out handle))
-                    throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
-            }
-
-            handle.Compact();
+            GetOrCreateHandle(type).Compact();
         }
 
         public static void RemoveFromType(Type type, int count)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
-
-            if (s_Handles.TryGetValue(type, out var handle))
-            {
-                MemoryPoolInfo info = default;
-                handle.GetInfo(ref info);
-                int unused = info.UnusedCount;
-                handle.Shrink(unused - count);
-                return;
-            }
-
-            EnsureRegistered(type);
-            if (s_Handles.TryGetValue(type, out handle))
-            {
-                MemoryPoolInfo info = default;
-                handle.GetInfo(ref info);
-                int unused = info.UnusedCount;
-                handle.Shrink(unused - count);
-                return;
-            }
-
-            throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
+            MemoryPoolHandle handle = GetOrCreateHandle(type);
+            MemoryPoolInfo info = default;
+            handle.GetInfo(ref info);
+            handle.Shrink(info.UnusedCount - count);
         }
 
         public static void TickAll(int frameCount)
         {
+            CurrentFrame = frameCount;
+            ProcessActiveQueueDebt();
             int i = 0;
             while (i < s_ActiveCount)
             {
@@ -303,18 +320,175 @@ namespace AlicizaX
                     last.ActiveIndex = i;
                 }
             }
+            ProcessActiveQueueDebt();
         }
 
-        private static void EnsureRegistered(Type type)
+        private static void ProcessActiveQueueDebt()
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
+            if (!s_HasActiveQueueDebt)
+                return;
 
-            if (!typeof(IMemory).IsAssignableFrom(type))
-                throw new Exception($"MemoryPool: Type '{type.FullName}' is not a valid IMemory type.");
+            EnsureActiveCapacity(s_ActiveCount + CountDebtPools());
+            s_HasActiveQueueDebt = false;
+            for (int i = 0; i < s_HandleValues.Length; i++)
+            {
+                MemoryPoolHandle handle = s_HandleValues[i];
+                if (handle == null)
+                    continue;
+                if (!handle.ActiveQueueDebt || handle.ActiveIndex >= 0)
+                    continue;
+
+                handle.ActiveQueueDebt = false;
+                ScheduleTick(handle);
+                if (handle.ActiveQueueDebt)
+                    s_HasActiveQueueDebt = true;
+            }
+        }
+
+        private static int CountDebtPools()
+        {
+            int count = 0;
+            for (int i = 0; i < s_HandleValues.Length; i++)
+            {
+                MemoryPoolHandle handle = s_HandleValues[i];
+                if (handle != null && handle.ActiveQueueDebt && handle.ActiveIndex < 0)
+                    count++;
+            }
+
+            return count;
+        }
+
+        private static void EnsureActiveCapacity(int required)
+        {
+            if (s_ActivePools.Length >= required)
+                return;
+
+            int newLength = s_ActivePools.Length == 0 ? 16 : s_ActivePools.Length;
+            while (newLength < required)
+                newLength <<= 1;
+
+            var activePools = new MemoryPoolHandle[newLength];
+            Array.Copy(s_ActivePools, 0, activePools, 0, s_ActiveCount);
+            s_ActivePools = activePools;
+        }
+
+        private static bool TryGetHandle(IntPtr key, out MemoryPoolHandle handle)
+        {
+            int index = FindHandleSlot(key, out bool found);
+            if (found)
+            {
+                handle = s_HandleValues[index];
+                return true;
+            }
+
+            handle = null;
+            return false;
+        }
+
+        private static void AddOrUpdateHandle(IntPtr key, MemoryPoolHandle handle)
+        {
+            if ((s_HandleCount + 1) * 4 >= s_HandleKeys.Length * 3)
+                GrowHandleCache();
+
+            int index = FindHandleSlot(key, out bool found);
+            if (!found)
+                s_HandleCount++;
+
+            s_HandleKeys[index] = key;
+            s_HandleValues[index] = handle;
+        }
+
+        private static int FindHandleSlot(IntPtr key, out bool found)
+        {
+            int mask = s_HandleKeys.Length - 1;
+            int index = Mix((ulong)key.ToInt64()) & mask;
+            while (true)
+            {
+                IntPtr existing = s_HandleKeys[index];
+                if (existing == IntPtr.Zero)
+                {
+                    found = false;
+                    return index;
+                }
+
+                if (existing == key)
+                {
+                    found = true;
+                    return index;
+                }
+
+                index = (index + 1) & mask;
+            }
+        }
+
+        private static void GrowHandleCache()
+        {
+            IntPtr[] oldKeys = s_HandleKeys;
+            MemoryPoolHandle[] oldValues = s_HandleValues;
+            s_HandleKeys = new IntPtr[oldKeys.Length << 1];
+            s_HandleValues = new MemoryPoolHandle[oldValues.Length << 1];
+            int oldCount = s_HandleCount;
+            s_HandleCount = 0;
+            for (int i = 0; i < oldKeys.Length; i++)
+            {
+                if (oldKeys[i] != IntPtr.Zero)
+                    AddOrUpdateHandle(oldKeys[i], oldValues[i]);
+            }
+
+            s_HandleCount = oldCount;
+        }
+
+        private static int Mix(ulong value)
+        {
+            value ^= value >> 33;
+            value *= 0xff51afd7ed558ccdUL;
+            value ^= value >> 33;
+            value *= 0xc4ceb9fe1a85ec53UL;
+            value ^= value >> 33;
+            return (int)value;
+        }
+
+        private static MemoryPoolHandle GetOrCreateHandle(Type type)
+        {
+            ValidateMemoryObjectType(type);
+
+            RuntimeTypeHandle typeHandle = type.TypeHandle;
+            if (TryGetHandle(typeHandle.Value, out MemoryPoolHandle handle))
+                return handle;
 
             RuntimeHelpers.RunClassConstructor(
                 typeof(MemoryPool<>).MakeGenericType(type).TypeHandle);
+
+            if (TryGetHandle(typeHandle.Value, out handle))
+                return handle;
+
+            throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' could not be materialized.");
+        }
+
+        private static MemoryPoolHandle GetOwnerHandle(MemoryObject memory)
+        {
+            MemoryPoolHandle handle = memory.OwnerHandle.IsValid ? memory.OwnerHandle.Inner : null;
+            if (handle == null)
+                throw new InvalidOperationException("Memory object has no owner pool.");
+            if (handle.PoolId != memory.PoolId)
+                throw new InvalidOperationException("Memory object owner pool mismatch.");
+            return handle;
+        }
+
+        private static void ValidateMemoryObjectType(Type type)
+        {
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+            if (!type.IsClass)
+                throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must be a class.");
+            if (type.IsAbstract)
+                throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must not be abstract.");
+            if (type.ContainsGenericParameters)
+                throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must not be an open generic type.");
+            if (!typeof(MemoryObject).IsAssignableFrom(type))
+                throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must inherit MemoryObject.");
+            if (type.GetConstructor(BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null) == null)
+                throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must have a public parameterless constructor.");
         }
     }
 }

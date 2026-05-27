@@ -30,7 +30,6 @@ namespace AlicizaX.Debugger.Runtime
                 int infoCount = FetchInfos();
 
                 VisualElement overview = CreateSection("Memory Pool Overview", out VisualElement overviewCard);
-                overviewCard.Add(CreateRow("Enable Strict Check", MemoryPool.EnableStrictCheck.ToString()));
                 overviewCard.Add(CreateRow("Pool Type Count", MemoryPool.Count.ToString()));
 
                 int totalUnused = 0;
@@ -41,12 +40,12 @@ namespace AlicizaX.Debugger.Runtime
                     ref MemoryPoolInfo info = ref m_InfoBuffer[i];
                     totalUnused += info.UnusedCount;
                     totalUsing += info.UsingCount;
-                    totalArrayLen += info.PoolArrayLength;
+                    totalArrayLen += info.PageCapacity;
                 }
 
                 overviewCard.Add(CreateRow("Total Cached Objects", totalUnused.ToString()));
                 overviewCard.Add(CreateRow("Total In Use", totalUsing.ToString()));
-                overviewCard.Add(CreateRow("Total Array Capacity", totalArrayLen.ToString()));
+                overviewCard.Add(CreateRow("Total Page Capacity", totalArrayLen.ToString()));
 
                 m_ShowFullClassNameToggle = CreateConsoleFilterToggle("Show Full ClassName", m_ShowFullClassName, DebuggerTheme.PrimaryText, OnShowFullClassNameChanged);
                 overviewCard.Add(m_ShowFullClassNameToggle);
@@ -175,9 +174,9 @@ namespace AlicizaX.Debugger.Runtime
                 item.Add(statsLabel);
 
                 string recycleStatus = Utility.Text.Format(
-                    "HighWater {0} | MaxCap {1} | Idle {2}f | Array {3}",
-                    info.HighWaterMark, info.MaxCapacity,
-                    info.IdleFrames, info.PoolArrayLength);
+                    "Target {0} | MaxCap {1} | Idle {2}f | PageCap {3}",
+                    info.TargetFreeReserve, info.MaxCapacity,
+                    info.IdleFrames, info.PageCapacity);
                 Label recycleLabel = new Label(recycleStatus);
                 recycleLabel.style.fontSize = 13f * scale;
                 recycleLabel.style.whiteSpace = WhiteSpace.Normal;

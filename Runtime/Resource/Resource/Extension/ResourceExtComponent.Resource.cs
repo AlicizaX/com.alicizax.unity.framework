@@ -11,12 +11,12 @@ namespace AlicizaX.Resource.Runtime
 
         public static IResourceService ResourceService => _resourceService;
 
-        private class LoadingState : IMemory
+        private class LoadingState : MemoryObject
         {
             public string Location { get; set; }
             public int Version { get; set; }
 
-            public void Clear()
+            public override void Clear()
             {
                 Location = string.Empty;
                 Version = 0;

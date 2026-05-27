@@ -8,7 +8,7 @@ using Object = UnityEngine.Object;
 namespace AlicizaX.Resource.Runtime
 {
     [Serializable]
-    public class SetSpriteObject : ISetAssetObject
+    public class SetSpriteObject : MemoryObject, ISetAssetObject
     {
         enum SetType
         {
@@ -70,7 +70,7 @@ namespace AlicizaX.Resource.Runtime
             return true;
         }
 
-        public void Clear()
+        public override void Clear()
         {
             _spriteRenderer = null;
             _image = null;

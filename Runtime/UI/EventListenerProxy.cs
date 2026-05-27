@@ -8,7 +8,7 @@ namespace AlicizaX
     /// <summary>
     /// 游戏事件代理：UI 层订阅 -> Proxy 自动回收。
     /// </summary>
-    public class EventListenerProxy : IMemory
+    public class EventListenerProxy : MemoryObject
     {
         private readonly List<EventRuntimeHandle> _eventHandles = new();
 
@@ -44,7 +44,7 @@ namespace AlicizaX
         }
 
 
-        public void Clear()
+        public override void Clear()
         {
             for (int i = _eventHandles.Count - 1; i >= 0; i--)
             {

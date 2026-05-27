@@ -99,6 +99,19 @@ namespace AlicizaX
                 RunCase("Cached Handle Hot Path", RunCachedHandleHotPath);
                 RunCase("Info Buffer No Alloc", RunInfoBufferNoAlloc);
                 RunCase("Explicit Compact", RunExplicitCompact);
+                RunCase("Null Release Noop", RunNullReleaseNoop);
+                RunCase("Release IMemory Owner Path", RunReleaseIMemoryOwnerPath);
+                RunCase("Release IMemory Rejects Legacy", RunReleaseIMemoryRejectsLegacy);
+                RunCase("Release Rejects Unowned Object", RunReleaseRejectsUnownedObject);
+                RunCase("Double Release Guard", RunDoubleReleaseGuard);
+                RunCase("Invalid Type API Guards", RunInvalidTypeApiGuards);
+                RunCase("Dynamic Type Acquire Release", RunDynamicTypeAcquireRelease);
+                RunCase("Tombstone Leased Release", RunTombstoneLeasedRelease);
+                RunCase("Release Over Hard Evicts", RunReleaseOverHardEvicts);
+                RunCase("Free Evict Callback", RunFreeEvictCallback);
+                RunCase("Page Boundary Reuse", RunPageBoundaryReuse);
+                RunCase("LowMemory Phase Budget", RunLowMemoryPhaseBudget);
+                RunCase("Many Type Handle Cache", RunManyTypeHandleCache);
             }
 
             Debug.Log(BuildLog("MemoryPool benchmark finished. cases=", m_CaseCount, ", fails=", m_FailCount));
@@ -194,7 +207,7 @@ namespace AlicizaX
             using (s_SimpleMarker.Auto())
             {
                 MemoryPool<SimpleMemory>.ClearAll();
-                MemoryPool<SimpleMemory>.Prewarm(1);
+                WarmPool<SimpleMemory>(1);
 
                 RestartCaseMeasure();
                 SimpleMemory item = MemoryPool<SimpleMemory>.Acquire();
@@ -212,7 +225,7 @@ namespace AlicizaX
             using (s_SimpleMarker.Auto())
             {
                 MemoryPool<SimpleMemory>.ClearAll();
-                MemoryPool<SimpleMemory>.Prewarm(1);
+                WarmPool<SimpleMemory>(1);
                 SimpleMemory first = MemoryPool<SimpleMemory>.Acquire();
                 MemoryPool<SimpleMemory>.Release(first);
 
@@ -256,7 +269,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(objectCount, objectCount << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
 
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
@@ -278,7 +291,7 @@ namespace AlicizaX
                 int count = Math.Min(objectCount, m_Buffer.Length);
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(count, count << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(count >> 1);
+                WarmPool<BenchmarkMemory>(count >> 1);
 
                 RestartCaseMeasure();
                 for (int i = 0; i < count; i++)
@@ -312,7 +325,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(objectCount, objectCount << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
 
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
@@ -333,7 +346,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(objectCount, objectCount << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
 
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
@@ -354,7 +367,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(objectCount, objectCount << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
 
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
@@ -374,7 +387,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(objectCount, objectCount << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
 
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
@@ -411,7 +424,7 @@ namespace AlicizaX
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
                 AssertTrue(info.UnusedCount > 0, "adaptive fill did not keep reserve");
-                AssertTrue(info.PoolArrayLength >= info.UnusedCount, "pool array smaller than unused count");
+                AssertTrue(info.PageCapacity >= info.UnusedCount, "page capacity smaller than unused count");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
         }
@@ -422,16 +435,17 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(burstSize, burstSize << 1);
-                MemoryPool<BenchmarkMemory>.Prewarm(burstSize);
+                WarmPool<BenchmarkMemory>(burstSize);
 
                 RestartCaseMeasure();
-                for (int frame = 0; frame < adaptiveFrameCount + 360; frame++)
+                int frameCount = Math.Max(adaptiveFrameCount + 360, MemoryPool.ShortDecayStartFrames + 1);
+                for (int frame = 0; frame < frameCount; frame++)
                     MemoryPoolRegistry.TickAll(frame + 10000);
                 StopCaseMeasure();
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
                 AssertTrue(info.UnusedCount < burstSize, "idle release did not reduce unused objects");
-                AssertTrue(info.PoolArrayLength >= burstSize, "idle release should not compact backing array");
+                AssertTrue(info.PageCapacity >= info.UnusedCount, "idle release page capacity smaller than unused count");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
         }
@@ -463,7 +477,7 @@ namespace AlicizaX
                 StopCaseMeasure();
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
-                AssertTrue(info.PoolArrayLength >= count, "wave burst backing array shrank unexpectedly");
+                AssertTrue(info.PageCapacity >= info.UnusedCount, "wave burst page capacity smaller than unused count");
                 AssertTrue(info.UnusedCount > 0, "wave burst failed to retain reserve");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
@@ -490,7 +504,7 @@ namespace AlicizaX
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
                 AssertTrue(info.UnusedCount == count, "extreme single burst did not keep released objects under hard cap");
-                AssertTrue(info.PoolArrayLength >= count, "extreme single burst did not grow backing array");
+                AssertTrue(info.PageCapacity >= info.UnusedCount, "extreme single burst page capacity smaller than unused count");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
         }
@@ -517,7 +531,7 @@ namespace AlicizaX
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
                 AssertTrue(info.UnusedCount == hardCapacity, "hard capacity overflow retained more than hard cap");
-                AssertTrue(info.PoolArrayLength == hardCapacity, "hard capacity overflow grew array past hard cap");
+                AssertTrue(info.PageCapacity >= hardCapacity, "hard capacity overflow page capacity smaller than hard cap");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
         }
@@ -572,7 +586,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(burstSize, burstSize << 1);
-                MemoryPool<BenchmarkMemory>.Prewarm(burstSize);
+                WarmPool<BenchmarkMemory>(burstSize);
                 MemoryPoolRegistry.TickAll(39000);
                 MemoryPool<BenchmarkMemory>.ClearAll();
 
@@ -583,7 +597,7 @@ namespace AlicizaX
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
                 AssertTrue(info.UnusedCount == 0, "clear all should unschedule single pool tick");
-                AssertTrue(info.PoolArrayLength == 0, "clear all should keep backing array empty until reused");
+                AssertTrue(info.PageCapacity == 0, "clear all should keep page capacity empty until reused");
             }
         }
 
@@ -593,18 +607,18 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(burstSize, burstSize << 1);
-                MemoryPool<BenchmarkMemory>.Prewarm(burstSize);
+                WarmPool<BenchmarkMemory>(burstSize);
                 MemoryPoolRegistry.TickAll(40000);
                 MemoryPoolRegistry.ClearAll();
 
                 RestartCaseMeasure();
-                MemoryPool<BenchmarkMemory>.Prewarm(16);
+                WarmPool<BenchmarkMemory>(16);
                 MemoryPoolRegistry.TickAll(40001);
                 StopCaseMeasure();
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
                 AssertTrue(info.UnusedCount >= 16, "clear all active queue reset blocked reschedule");
-                AssertTrue(info.PoolArrayLength >= 16, "clear all active queue reset did not regrow backing array");
+                AssertTrue(info.PageCapacity >= 16, "clear all active queue reset did not regrow page capacity");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
         }
@@ -614,7 +628,7 @@ namespace AlicizaX
             using (s_ExtremeMarker.Auto())
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
                 {
@@ -633,7 +647,7 @@ namespace AlicizaX
             using (s_ExtremeMarker.Auto())
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
                 MemoryPoolHandle handle = MemoryPool.GetHandle(typeof(BenchmarkMemory));
                 AssertTrue(handle.IsValid, "cached handle is invalid");
 
@@ -669,7 +683,7 @@ namespace AlicizaX
             {
                 MemoryPool<BenchmarkMemory>.ClearAll();
                 MemoryPool<BenchmarkMemory>.SetCapacity(objectCount, objectCount << 2);
-                MemoryPool<BenchmarkMemory>.Prewarm(objectCount);
+                WarmPool<BenchmarkMemory>(objectCount);
                 MemoryPool<BenchmarkMemory>.Shrink(8);
 
                 RestartCaseMeasure();
@@ -677,9 +691,209 @@ namespace AlicizaX
                 StopCaseMeasure();
 
                 MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
-                AssertTrue(info.PoolArrayLength <= 8, "compact did not shrink backing array");
+                AssertTrue(info.UnusedCount <= 8, "compact did not reduce unused objects");
                 MemoryPool<BenchmarkMemory>.ClearAll();
             }
+        }
+
+        private void RunNullReleaseNoop()
+        {
+            RestartCaseMeasure();
+            MemoryPool.Release((IMemory)null);
+            MemoryPool<BenchmarkMemory>.Release(null);
+            StopCaseMeasure();
+        }
+
+        private void RunReleaseIMemoryOwnerPath()
+        {
+            MemoryPool<BenchmarkMemory>.ClearAll();
+            BenchmarkMemory item = MemoryPool<BenchmarkMemory>.Acquire();
+            item.Value = 23;
+
+            RestartCaseMeasure();
+            MemoryPool.Release((IMemory)item);
+            StopCaseMeasure();
+
+            AssertEqual(item.Value, 0, "IMemory release did not clear owned object");
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
+            AssertTrue(info.UsingCount == 0, "IMemory release left object in use");
+            AssertTrue(info.UnusedCount == 1, "IMemory release did not return object to pool");
+            MemoryPool<BenchmarkMemory>.ClearAll();
+        }
+
+        private void RunReleaseIMemoryRejectsLegacy()
+        {
+            LegacyMemory legacy = new LegacyMemory();
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Release((IMemory)legacy), "legacy IMemory release was accepted");
+        }
+
+        private void RunReleaseRejectsUnownedObject()
+        {
+            BenchmarkMemory item = new BenchmarkMemory();
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Release(item), "unowned MemoryObject release was accepted");
+        }
+
+        private void RunDoubleReleaseGuard()
+        {
+            MemoryPool<BenchmarkMemory>.ClearAll();
+            BenchmarkMemory item = MemoryPool<BenchmarkMemory>.Acquire();
+            MemoryPool<BenchmarkMemory>.Release(item);
+            AssertThrows<InvalidOperationException>(() => MemoryPool<BenchmarkMemory>.Release(item), "double release was accepted");
+            MemoryPool<BenchmarkMemory>.ClearAll();
+        }
+
+        private void RunInvalidTypeApiGuards()
+        {
+            AssertThrows<ArgumentNullException>(() => MemoryPool.Acquire(null), "null dynamic type was accepted");
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(LegacyMemory)), "legacy IMemory dynamic type was accepted");
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(AbstractBenchmarkMemory)), "abstract dynamic type was accepted");
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(OpenGenericMemory<>)), "open generic dynamic type was accepted");
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(PrivateCtorMemory)), "private ctor dynamic type was accepted");
+        }
+
+        private void RunDynamicTypeAcquireRelease()
+        {
+            MemoryPool<DynamicBenchmarkMemory>.ClearAll();
+            RestartCaseMeasure();
+            IMemory memory = MemoryPool.Acquire(typeof(DynamicBenchmarkMemory));
+            MemoryPool.Release(memory);
+            StopCaseMeasure();
+
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(DynamicBenchmarkMemory));
+            AssertTrue(info.AcquireCount > 0, "dynamic type acquire did not materialize pool");
+            AssertTrue(info.ReleaseCount > 0, "dynamic type release did not return through owner handle");
+            MemoryPool<DynamicBenchmarkMemory>.ClearAll();
+        }
+
+        private void RunTombstoneLeasedRelease()
+        {
+            TombstoneMemory.ClearCount = 0;
+            TombstoneMemory.EvictCount = 0;
+            MemoryPool<TombstoneMemory>.ClearAll();
+            TombstoneMemory item = MemoryPool<TombstoneMemory>.Acquire();
+            MemoryPool<TombstoneMemory>.ClearAll();
+
+            RestartCaseMeasure();
+            MemoryPool<TombstoneMemory>.Release(item);
+            StopCaseMeasure();
+
+            AssertEqual(TombstoneMemory.ClearCount, 1, "tombstone leased release did not call Clear once");
+            AssertEqual(TombstoneMemory.EvictCount, 1, "tombstone leased release did not call OnEvict once");
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(TombstoneMemory));
+            AssertTrue(info.UsingCount == 0, "tombstone leased release left object in use");
+            AssertTrue(info.PageCapacity == 0, "tombstone leased release did not free page storage");
+            MemoryPool<TombstoneMemory>.ClearAll();
+        }
+
+        private void RunReleaseOverHardEvicts()
+        {
+            EvictableMemory.ClearCount = 0;
+            EvictableMemory.EvictCount = 0;
+            const int hardCapacity = 4;
+            const int itemCount = hardCapacity + 1;
+            MemoryPool<EvictableMemory>.ClearAll();
+            MemoryPool<EvictableMemory>.SetCapacity(hardCapacity, hardCapacity);
+            EvictableMemory[] items = new EvictableMemory[itemCount];
+            for (int i = 0; i < itemCount; i++)
+                items[i] = MemoryPool<EvictableMemory>.Acquire();
+
+            for (int i = 0; i < itemCount; i++)
+                MemoryPool<EvictableMemory>.Release(items[i]);
+
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(EvictableMemory));
+            AssertEqual(EvictableMemory.ClearCount, itemCount, "release over hard did not clear all objects");
+            AssertEqual(EvictableMemory.EvictCount, 1, "release over hard did not evict overflow object");
+            AssertTrue(info.UnusedCount == hardCapacity, "release over hard retained wrong free count");
+            MemoryPool<EvictableMemory>.ClearAll();
+        }
+
+        private void RunFreeEvictCallback()
+        {
+            EvictableMemory.ClearCount = 0;
+            EvictableMemory.EvictCount = 0;
+            MemoryPool<EvictableMemory>.ClearAll();
+            WarmPool<EvictableMemory>(1);
+
+            RestartCaseMeasure();
+            MemoryPool<EvictableMemory>.Shrink(0);
+            StopCaseMeasure();
+
+            AssertEqual(EvictableMemory.ClearCount, 0, "free evict should not call Clear");
+            AssertTrue(EvictableMemory.EvictCount > 0, "free evict did not call OnEvict");
+            MemoryPool<EvictableMemory>.ClearAll();
+        }
+
+        private void RunPageBoundaryReuse()
+        {
+            int count = 96;
+            MemoryPool<BenchmarkMemory>.ClearAll();
+            EnsureBuffer(count);
+            for (int i = 0; i < count; i++)
+                m_Buffer[i] = MemoryPool<BenchmarkMemory>.Acquire();
+            for (int i = 0; i < count; i++)
+            {
+                MemoryPool<BenchmarkMemory>.Release(m_Buffer[i]);
+                m_Buffer[i] = null;
+            }
+
+            MemoryPoolInfo before = GetBenchmarkInfo(typeof(BenchmarkMemory));
+            for (int i = 0; i < count; i++)
+                m_Buffer[i] = MemoryPool<BenchmarkMemory>.Acquire();
+            MemoryPoolInfo after = GetBenchmarkInfo(typeof(BenchmarkMemory));
+            AssertTrue(before.PageCapacity >= count, "page boundary did not allocate enough page capacity");
+            AssertEqual(after.CreateCount, before.CreateCount, "page boundary reuse created extra objects");
+
+            for (int i = 0; i < count; i++)
+            {
+                MemoryPool<BenchmarkMemory>.Release(m_Buffer[i]);
+                m_Buffer[i] = null;
+            }
+            MemoryPool<BenchmarkMemory>.ClearAll();
+        }
+
+        private void RunLowMemoryPhaseBudget()
+        {
+            MemoryPoolPhase previous = MemoryPoolRegistry.Phase;
+            try
+            {
+                MemoryPool<BenchmarkMemory>.ClearAll();
+                MemoryPoolRegistry.Phase = MemoryPoolPhase.LowMemory;
+                MemoryPool<BenchmarkMemory>.Add(32);
+                for (int i = 0; i < 8; i++)
+                    MemoryPoolRegistry.TickAll(50000 + i);
+
+                MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
+                AssertTrue(info.UnusedCount == 0, "LowMemory phase created free reserve");
+            }
+            finally
+            {
+                MemoryPoolRegistry.Phase = previous;
+                MemoryPool<BenchmarkMemory>.ClearAll();
+            }
+        }
+
+        private void RunManyTypeHandleCache()
+        {
+            Type[] types =
+            {
+                typeof(CacheMemory01), typeof(CacheMemory02), typeof(CacheMemory03), typeof(CacheMemory04),
+                typeof(CacheMemory05), typeof(CacheMemory06), typeof(CacheMemory07), typeof(CacheMemory08),
+                typeof(CacheMemory09), typeof(CacheMemory10), typeof(CacheMemory11), typeof(CacheMemory12),
+                typeof(CacheMemory13), typeof(CacheMemory14), typeof(CacheMemory15), typeof(CacheMemory16)
+            };
+
+            RestartCaseMeasure();
+            for (int i = 0; i < types.Length; i++)
+            {
+                MemoryPoolHandle handle = MemoryPool.GetHandle(types[i]);
+                AssertTrue(handle.IsValid, "materialized cache handle is invalid");
+                IMemory item = handle.Acquire();
+                handle.Release(item);
+            }
+            StopCaseMeasure();
+
+            for (int i = 0; i < types.Length; i++)
+                MemoryPoolRegistry.ClearType(types[i]);
         }
 
         private MemoryPoolInfo GetBenchmarkInfo(Type targetType)
@@ -693,6 +907,15 @@ namespace AlicizaX
             }
 
             return default;
+        }
+
+        private static void WarmPool<T>(int count) where T : MemoryObject, new()
+        {
+            MemoryPool<T>.Add(count);
+            int startFrame = Time.frameCount + 1;
+            int maxFrames = Math.Max(1, count + 16);
+            for (int i = 0; i < maxFrames && MemoryPool<T>.UnusedCount < count; i++)
+                MemoryPoolRegistry.TickAll(startFrame + i);
         }
 
         private void EnsureBuffer(int count)
@@ -741,6 +964,27 @@ namespace AlicizaX
             Debug.LogError(BuildLog(message, " actual=", actual, ", expected=", expected));
         }
 
+        private void AssertThrows<TException>(Action action, string message) where TException : Exception
+        {
+            try
+            {
+                action();
+            }
+            catch (TException)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                m_FailCount++;
+                Debug.LogError(BuildLog(message, " exception=", exception.GetType().Name));
+                return;
+            }
+
+            m_FailCount++;
+            Debug.LogError(message);
+        }
+
         private static string BuildLog(object a, string b, object c, string d, object e)
         {
             using (var builder = ZString.CreateStringBuilder())
@@ -766,6 +1010,17 @@ namespace AlicizaX
             }
         }
 
+        private static string BuildLog(string a, string b, object c)
+        {
+            using (var builder = ZString.CreateStringBuilder())
+            {
+                builder.Append(a);
+                builder.Append(b);
+                builder.Append(c);
+                return builder.ToString();
+            }
+        }
+
         private static string BuildLog(string a, object b, string c, object d, string e, object f)
         {
             using (var builder = ZString.CreateStringBuilder())
@@ -780,55 +1035,140 @@ namespace AlicizaX
             }
         }
 
-        private sealed class SimpleMemory : IMemory
+        private sealed class SimpleMemory : MemoryObject
         {
             public int Value;
 
-            public void Clear()
+            public override void Clear()
             {
                 Value = 0;
             }
         }
 
-        private sealed class BenchmarkMemory : IMemory
+        private sealed class BenchmarkMemory : MemoryObject
         {
             public int Value;
 
-            public void Clear()
+            public override void Clear()
             {
                 Value = 0;
             }
         }
 
-        private sealed class BenchmarkMemoryA : IMemory
+        private sealed class BenchmarkMemoryA : MemoryObject
         {
             public int Value;
 
-            public void Clear()
+            public override void Clear()
             {
                 Value = 0;
             }
         }
 
-        private sealed class BenchmarkMemoryB : IMemory
+        private sealed class BenchmarkMemoryB : MemoryObject
         {
             public int Value;
 
-            public void Clear()
+            public override void Clear()
             {
                 Value = 0;
             }
         }
 
-        private sealed class BenchmarkMemoryC : IMemory
+        private sealed class BenchmarkMemoryC : MemoryObject
         {
             public int Value;
 
-            public void Clear()
+            public override void Clear()
             {
                 Value = 0;
             }
         }
+
+        private sealed class DynamicBenchmarkMemory : MemoryObject
+        {
+            public override void Clear()
+            {
+            }
+        }
+
+        private sealed class TombstoneMemory : MemoryObject, IPoolEvictable
+        {
+            public static int ClearCount;
+            public static int EvictCount;
+
+            public override void Clear()
+            {
+                ClearCount++;
+            }
+
+            public void OnEvict()
+            {
+                EvictCount++;
+            }
+        }
+
+        private sealed class EvictableMemory : MemoryObject, IPoolEvictable
+        {
+            public static int ClearCount;
+            public static int EvictCount;
+
+            public override void Clear()
+            {
+                ClearCount++;
+            }
+
+            public void OnEvict()
+            {
+                EvictCount++;
+            }
+        }
+
+        private sealed class LegacyMemory : IMemory
+        {
+            public void Clear()
+            {
+            }
+        }
+
+        private abstract class AbstractBenchmarkMemory : MemoryObject
+        {
+        }
+
+        private sealed class OpenGenericMemory<TValue> : MemoryObject
+        {
+            public override void Clear()
+            {
+            }
+        }
+
+        private sealed class PrivateCtorMemory : MemoryObject
+        {
+            private PrivateCtorMemory()
+            {
+            }
+
+            public override void Clear()
+            {
+            }
+        }
+
+        private sealed class CacheMemory01 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory02 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory03 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory04 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory05 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory06 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory07 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory08 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory09 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory10 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory11 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory12 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory13 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory14 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory15 : MemoryObject { public override void Clear() { } }
+        private sealed class CacheMemory16 : MemoryObject { public override void Clear() { } }
     }
 }
 #endif
