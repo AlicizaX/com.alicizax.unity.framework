@@ -15,9 +15,6 @@
     <Group GroupActiveRule="EnableGroup" GroupName="Configs" GroupDesc="配置表" AssetTags="Configs">
       <Collector CollectPath="Assets/AssetRaw/Configs" CollectGUID="dd2928019aef34248af368b99bc53bea" CollectType="MainAssetCollector" AddressRule="AddressByFileName" PackRule="PackDirectory" FilterRule="CollectAll" UserData="" AssetTags="" />
     </Group>
-    <Group GroupActiveRule="EnableGroup" GroupName="DLL" GroupDesc="代码" AssetTags="DLL">
-      <Collector CollectPath="Assets/AssetRaw/DLL" CollectGUID="3aad79ec1ea08c24c891bd3c669d4125" CollectType="MainAssetCollector" AddressRule="AddressByFileName" PackRule="PackDirectory" FilterRule="CollectAll" UserData="" AssetTags="" />
-    </Group>
     <Group GroupActiveRule="EnableGroup" GroupName="Effects" GroupDesc="特效" AssetTags="Effects">
       <Collector CollectPath="Assets/AssetRaw/Effects" CollectGUID="0fe175e1e1bd49a4ca71e66b6a9b7237" CollectType="MainAssetCollector" AddressRule="AddressByFileName" PackRule="PackDirectory" FilterRule="CollectAll" UserData="" AssetTags="" />
     </Group>

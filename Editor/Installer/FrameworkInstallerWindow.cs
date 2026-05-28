@@ -19,6 +19,9 @@ namespace AlicizaX.Editor
         private const string EnableHybridClrSymbol = "ENABLE_HYBRIDCLR";
         private const string UrpPackageName = "com.unity.render-pipelines.universal";
         private const string HybridClrPackageName = "com.code-philosophy.hybridclr";
+        private const string RequiredRegistryUrl = "https://package.openupm.com";
+        private const string RequiredRegistryScopeCysharp = "com.cysharp";
+        private const string RequiredRegistryScopeTuyooGame = "com.tuyoogame";
         private const string ManifestPath = "Packages/manifest.json";
         private const string InstallStatePath = "ProjectSettings/AlicizaXFrameworkInstaller.json";
 
@@ -95,6 +98,7 @@ namespace AlicizaX.Editor
                 DrawStatusRow("Installer state", _checkResult.ProjectState != ProjectInstallState.NotInstalled, _checkResult.StateText, MessageType.Warning);
                 DrawStatusRow("State source", true, _checkResult.StateSource);
                 DrawStatusRow("Unity 2022.3 or newer", _checkResult.UnityVersionSupported, _checkResult.UnityVersion);
+                DrawStatusRow("OpenUPM registry", _checkResult.HasRequiredScopedRegistry, _checkResult.RequiredScopedRegistryText);
                 DrawStatusRow("URP package", _checkResult.HasUrp, _checkResult.UrpVersionText);
                 DrawStatusRow("HybridCLR package", _checkResult.HasHybridClr, _checkResult.HybridClrVersionText, MessageType.Warning);
                 DrawStatusRow("Normal template folder", _checkResult.HasNormalTemplate, NormalTemplatePath);
@@ -304,6 +308,13 @@ namespace AlicizaX.Editor
 
         private void InstallSelectedTemplate()
         {
+            if (!EnsureRequiredScopedRegistry(out string registryError))
+            {
+                EditorUtility.DisplayDialog("AlicizaX 安装器", registryError, "确定");
+                RunInstallCheck();
+                return;
+            }
+
             if (!CanInstallSelectedTemplate(out string blockReason))
             {
                 EditorUtility.DisplayDialog("AlicizaX 安装器", blockReason, "确定");
@@ -334,6 +345,143 @@ namespace AlicizaX.Editor
             RunInstallCheck();
 
             EditorUtility.DisplayDialog("AlicizaX 安装器", "模板安装完成。", "确定");
+        }
+
+        private static bool EnsureRequiredScopedRegistry(out string error)
+        {
+            error = string.Empty;
+
+            if (InstallCheckResult.HasScopedRegistry(
+                    RequiredRegistryUrl,
+                    RequiredRegistryScopeCysharp,
+                    RequiredRegistryScopeTuyooGame))
+            {
+                return true;
+            }
+
+            try
+            {
+                if (!File.Exists(ManifestPath))
+                {
+                    error = "Package manifest is missing: " + ManifestPath;
+                    return false;
+                }
+
+                string manifest = File.ReadAllText(ManifestPath);
+                string nextManifest = AddOrUpdateScopedRegistry(
+                    manifest,
+                    "OpenUPM",
+                    RequiredRegistryUrl,
+                    RequiredRegistryScopeCysharp,
+                    RequiredRegistryScopeTuyooGame);
+
+                if (string.Equals(manifest, nextManifest, StringComparison.Ordinal))
+                {
+                    error = "Failed to update OpenUPM scoped registry in " + ManifestPath + ".";
+                    return false;
+                }
+
+                File.WriteAllText(ManifestPath, nextManifest);
+                Debug.Log("AlicizaX installer added OpenUPM scoped registry to " + ManifestPath + ".");
+                UnityEditor.PackageManager.Client.Resolve();
+                AssetDatabase.Refresh();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "Failed to update Package Manager scoped registry: " + ex.Message;
+                return false;
+            }
+        }
+
+        private static string AddOrUpdateScopedRegistry(string manifest, string registryName, string registryUrl, params string[] requiredScopes)
+        {
+            Match registryMatch = Regex.Match(
+                manifest,
+                "\\{\\s*\"name\"\\s*:\\s*\"[^\"]*\"\\s*,\\s*\"url\"\\s*:\\s*\"" + Regex.Escape(registryUrl) + "\"\\s*,\\s*\"scopes\"\\s*:\\s*\\[(?<scopes>[\\s\\S]*?)\\]\\s*\\}",
+                RegexOptions.Singleline);
+
+            if (registryMatch.Success)
+            {
+                string scopeBlock = registryMatch.Groups["scopes"].Value;
+                string nextScopeBlock = scopeBlock;
+                foreach (string scope in requiredScopes)
+                {
+                    if (Regex.IsMatch(scopeBlock, "\"" + Regex.Escape(scope) + "\""))
+                    {
+                        continue;
+                    }
+
+                    nextScopeBlock = AppendJsonArrayString(nextScopeBlock, scope, GetIndent(scopeBlock, 8));
+                }
+
+                return manifest.Substring(0, registryMatch.Groups["scopes"].Index) +
+                       nextScopeBlock +
+                       manifest.Substring(registryMatch.Groups["scopes"].Index + registryMatch.Groups["scopes"].Length);
+            }
+
+            string registryJson = BuildScopedRegistryJson(registryName, registryUrl, requiredScopes, "    ");
+            Match scopedRegistriesMatch = Regex.Match(manifest, "\"scopedRegistries\"\\s*:\\s*\\[(?<content>[\\s\\S]*?)\\]\\s*(?=\\n\\s*\\})", RegexOptions.Singleline);
+            if (scopedRegistriesMatch.Success)
+            {
+                string content = scopedRegistriesMatch.Groups["content"].Value;
+                string nextContent = string.IsNullOrWhiteSpace(content)
+                    ? "\n" + registryJson + "\n  "
+                    : content.TrimEnd() + ",\n" + registryJson + "\n  ";
+
+                return manifest.Substring(0, scopedRegistriesMatch.Groups["content"].Index) +
+                       nextContent +
+                       manifest.Substring(scopedRegistriesMatch.Groups["content"].Index + scopedRegistriesMatch.Groups["content"].Length);
+            }
+
+            int insertIndex = manifest.LastIndexOf('}');
+            if (insertIndex < 0)
+            {
+                return manifest;
+            }
+
+            string prefix = manifest.Substring(0, insertIndex).TrimEnd();
+            string suffix = manifest.Substring(insertIndex);
+            string separator = prefix.EndsWith("{", StringComparison.Ordinal) ? "\n" : ",\n";
+            return prefix + separator + "  \"scopedRegistries\": [\n" + registryJson + "\n  ]\n" + suffix;
+        }
+
+        private static string AppendJsonArrayString(string arrayContent, string value, string indent)
+        {
+            string trimmed = arrayContent.TrimEnd();
+            string separator = string.IsNullOrWhiteSpace(trimmed) ? string.Empty : ",";
+            return trimmed + separator + "\n" + indent + "\"" + value + "\"";
+        }
+
+        private static string BuildScopedRegistryJson(string registryName, string registryUrl, string[] scopes, string indent)
+        {
+            string scopeIndent = indent + "    ";
+            string json = indent + "{\n" +
+                          indent + "  \"name\": \"" + registryName + "\",\n" +
+                          indent + "  \"url\": \"" + registryUrl + "\",\n" +
+                          indent + "  \"scopes\": [";
+
+            for (int i = 0; i < scopes.Length; i++)
+            {
+                json += "\n" + scopeIndent + "\"" + scopes[i] + "\"";
+                if (i < scopes.Length - 1)
+                {
+                    json += ",";
+                }
+            }
+
+            return json + "\n" + indent + "  ]\n" + indent + "}";
+        }
+
+        private static string GetIndent(string text, int fallbackSpaces)
+        {
+            Match match = Regex.Match(text, "\\n(?<indent>\\s*)\"[^\"]+\"");
+            if (match.Success)
+            {
+                return match.Groups["indent"].Value;
+            }
+
+            return new string(' ', fallbackSpaces);
         }
 
         private string GetSelectedTemplatePath()
@@ -609,6 +757,8 @@ namespace AlicizaX.Editor
             public string StateSource;
             public bool UnityVersionSupported;
             public string UnityVersion;
+            public bool HasRequiredScopedRegistry;
+            public string RequiredScopedRegistryText;
             public bool HasUrp;
             public string UrpVersionText;
             public bool HasHybridClr;
@@ -638,6 +788,10 @@ namespace AlicizaX.Editor
             {
                 string urpVersion = FindManifestDependencyVersion(UrpPackageName);
                 string hybridClrVersion = FindManifestDependencyVersion(HybridClrPackageName);
+                bool hasRequiredScopedRegistry = HasScopedRegistry(
+                    RequiredRegistryUrl,
+                    RequiredRegistryScopeCysharp,
+                    RequiredRegistryScopeTuyooGame);
                 ProjectInstallState projectState = ReadInstallState(out string stateSource);
 
                 return new InstallCheckResult
@@ -646,6 +800,10 @@ namespace AlicizaX.Editor
                     StateSource = stateSource,
                     UnityVersionSupported = IsUnityVersionSupported(Application.unityVersion),
                     UnityVersion = Application.unityVersion,
+                    HasRequiredScopedRegistry = hasRequiredScopedRegistry,
+                    RequiredScopedRegistryText = hasRequiredScopedRegistry
+                        ? RequiredRegistryUrl + " (" + RequiredRegistryScopeCysharp + ", " + RequiredRegistryScopeTuyooGame + ")"
+                        : "Missing " + RequiredRegistryUrl + " scopes: " + RequiredRegistryScopeCysharp + ", " + RequiredRegistryScopeTuyooGame,
                     HasUrp = !string.IsNullOrEmpty(urpVersion),
                     UrpVersionText = string.IsNullOrEmpty(urpVersion) ? "Not installed" : urpVersion,
                     HasHybridClr = !string.IsNullOrEmpty(hybridClrVersion),
@@ -665,6 +823,59 @@ namespace AlicizaX.Editor
                 string manifest = File.ReadAllText(ManifestPath);
                 Match match = Regex.Match(manifest, "\"" + Regex.Escape(packageName) + "\"\\s*:\\s*\"([^\"]+)\"");
                 return match.Success ? match.Groups[1].Value : string.Empty;
+            }
+
+            public static bool HasScopedRegistry(string url, params string[] scopes)
+            {
+                if (string.IsNullOrEmpty(url) || scopes == null || scopes.Length == 0 || !File.Exists(ManifestPath))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    ManifestData manifestData = JsonUtility.FromJson<ManifestData>(File.ReadAllText(ManifestPath));
+                    if (manifestData?.scopedRegistries == null)
+                    {
+                        return false;
+                    }
+
+                    foreach (ScopedRegistryData registry in manifestData.scopedRegistries)
+                    {
+                        if (registry == null ||
+                            !string.Equals(NormalizeUrl(registry.url), NormalizeUrl(url), StringComparison.OrdinalIgnoreCase) ||
+                            registry.scopes == null)
+                        {
+                            continue;
+                        }
+
+                        bool containsAllScopes = true;
+                        foreach (string scope in scopes)
+                        {
+                            if (!Array.Exists(registry.scopes, registryScope => string.Equals(registryScope, scope, StringComparison.Ordinal)))
+                            {
+                                containsAllScopes = false;
+                                break;
+                            }
+                        }
+
+                        if (containsAllScopes)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning("Failed to read Package Manager scoped registries: " + ex.Message);
+                }
+
+                return false;
+            }
+
+            private static string NormalizeUrl(string url)
+            {
+                return string.IsNullOrEmpty(url) ? string.Empty : url.Trim().TrimEnd('/');
             }
 
             private static bool IsUnityVersionSupported(string version)
@@ -697,6 +908,20 @@ namespace AlicizaX.Editor
             public string unityVersion;
             public string projectPath;
             public string updatedAt;
+        }
+
+        [Serializable]
+        private sealed class ManifestData
+        {
+            public ScopedRegistryData[] scopedRegistries;
+        }
+
+        [Serializable]
+        private sealed class ScopedRegistryData
+        {
+            public string name;
+            public string url;
+            public string[] scopes;
         }
     }
 }
