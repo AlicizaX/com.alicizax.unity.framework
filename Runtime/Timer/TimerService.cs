@@ -34,6 +34,14 @@ namespace AlicizaX.Timer.Runtime
         private const int DEFAULT_INITIAL_CAPACITY = 1024;
         private const int MAX_PAGE_COUNT = 4096;
         private const int INVALID_INDEX = -1;
+        private const int WHEEL_SHIFT = 8;
+        private const int WHEEL_SIZE = 1 << WHEEL_SHIFT;
+        private const int WHEEL_MASK = WHEEL_SIZE - 1;
+        private const int WHEEL_LEVEL_COUNT = 4;
+        private const int WHEEL_MAX_LEVEL = WHEEL_LEVEL_COUNT - 1;
+        private const int WHEEL_BUCKET_COUNT = WHEEL_SIZE * WHEEL_LEVEL_COUNT;
+        private const int MAX_WHEEL_TICKS_PER_FRAME = 64;
+        private const double TICKS_PER_SECOND = 1000d;
         private const double MINIMUM_DELAY_SECONDS = 0.000001d;
         private const double STALE_ONE_SHOT_SECONDS = 300d;
 
@@ -57,7 +65,10 @@ namespace AlicizaX.Timer.Runtime
             public readonly double[] Durations = new double[PAGE_SIZE];
             public readonly double[] RemainingTimes = new double[PAGE_SIZE];
             public readonly double[] CreationTimes = new double[PAGE_SIZE];
+            public readonly long[] DueTicks = new long[PAGE_SIZE];
             public readonly int[] QueueIndices = new int[PAGE_SIZE];
+            public readonly int[] QueueNextIndices = new int[PAGE_SIZE];
+            public readonly int[] QueuePrevIndices = new int[PAGE_SIZE];
             public readonly int[] ActiveIndices = new int[PAGE_SIZE];
             public readonly TimerHandlerNoArgs[] NoArgsHandlers = new TimerHandlerNoArgs[PAGE_SIZE];
             public readonly TimerGenericInvoker[] GenericInvokers = new TimerGenericInvoker[PAGE_SIZE];
@@ -69,6 +80,8 @@ namespace AlicizaX.Timer.Runtime
                 for (int i = 0; i < PAGE_SIZE; i++)
                 {
                     QueueIndices[i] = INVALID_INDEX;
+                    QueueNextIndices[i] = INVALID_INDEX;
+                    QueuePrevIndices[i] = INVALID_INDEX;
                     ActiveIndices[i] = INVALID_INDEX;
                 }
             }
@@ -82,15 +95,19 @@ namespace AlicizaX.Timer.Runtime
         private TimerPage[] _pages;
         private IntPage[] _freeSlotPages;
         private IntPage[] _activeSlotPages;
-        private IntPage[] _scaledHeapPages;
-        private IntPage[] _unscaledHeapPages;
+        private int[] _scaledWheelHeads;
+        private int[] _scaledWheelTails;
+        private int[] _unscaledWheelHeads;
+        private int[] _unscaledWheelTails;
         private int _pageCount;
         private int _slotCapacity;
         private int _freeCount;
         private int _activeCount;
         private int _peakActiveCount;
-        private int _scaledHeapCount;
-        private int _unscaledHeapCount;
+        private int _scaledQueueCount;
+        private int _unscaledQueueCount;
+        private long _scaledCurrentTick;
+        private long _unscaledCurrentTick;
         private int _executingSlotIndex;
         private double _executingCurrentTime;
 
@@ -104,8 +121,12 @@ namespace AlicizaX.Timer.Runtime
             _pages = new TimerPage[MAX_PAGE_COUNT];
             _freeSlotPages = new IntPage[MAX_PAGE_COUNT];
             _activeSlotPages = new IntPage[MAX_PAGE_COUNT];
-            _scaledHeapPages = new IntPage[MAX_PAGE_COUNT];
-            _unscaledHeapPages = new IntPage[MAX_PAGE_COUNT];
+            _scaledWheelHeads = CreateWheelHeads();
+            _scaledWheelTails = CreateWheelHeads();
+            _unscaledWheelHeads = CreateWheelHeads();
+            _unscaledWheelTails = CreateWheelHeads();
+            _scaledCurrentTick = TimeToTickFloor(Time.timeAsDouble);
+            _unscaledCurrentTick = TimeToTickFloor(Time.unscaledTimeAsDouble);
             _executingSlotIndex = INVALID_INDEX;
             Prewarm(normalizedCapacity);
         }
@@ -374,8 +395,6 @@ namespace AlicizaX.Timer.Runtime
 
             EnsureIndexPage(_freeSlotPages, _pageCount);
             EnsureIndexPage(_activeSlotPages, _pageCount);
-            EnsureIndexPage(_scaledHeapPages, _pageCount);
-            EnsureIndexPage(_unscaledHeapPages, _pageCount);
 
             TimerPage page = new TimerPage();
             _pages[_pageCount] = page;
@@ -449,7 +468,10 @@ namespace AlicizaX.Timer.Runtime
             page.Durations[offset] = duration;
             page.RemainingTimes[offset] = 0d;
             page.CreationTimes[offset] = Time.realtimeSinceStartupAsDouble;
+            page.DueTicks[offset] = 0L;
             page.QueueIndices[offset] = INVALID_INDEX;
+            page.QueueNextIndices[offset] = INVALID_INDEX;
+            page.QueuePrevIndices[offset] = INVALID_INDEX;
             page.ActiveIndices[offset] = INVALID_INDEX;
             page.HandlerTypes[offset] = HANDLER_NONE;
             page.NoArgsHandlers[offset] = null;
@@ -543,6 +565,7 @@ namespace AlicizaX.Timer.Runtime
             SetTriggerTime(slotIndex, 0d);
             SetDuration(slotIndex, 0d);
             SetCreationTime(slotIndex, 0d);
+            SetDueTick(slotIndex, 0L);
             SetHandle(slotIndex, 0UL);
 
             if (slotIndex == _executingSlotIndex)
@@ -574,14 +597,18 @@ namespace AlicizaX.Timer.Runtime
 
         private void ClearAll()
         {
-            _scaledHeapCount = 0;
-            _unscaledHeapCount = 0;
             while (_activeCount > 0)
             {
                 _executingSlotIndex = INVALID_INDEX;
                 ReleaseSlot(GetActiveSlot(_activeCount - 1));
             }
 
+            ClearWheelHeads(_scaledWheelHeads);
+            ClearWheelHeads(_scaledWheelTails);
+            ClearWheelHeads(_unscaledWheelHeads);
+            ClearWheelHeads(_unscaledWheelTails);
+            _scaledQueueCount = 0;
+            _unscaledQueueCount = 0;
             _executingSlotIndex = INVALID_INDEX;
         }
 
@@ -636,17 +663,26 @@ namespace AlicizaX.Timer.Runtime
             _executingSlotIndex = slotIndex;
             _executingCurrentTime = currentTime;
 
-            byte handlerType = GetHandlerType(slotIndex);
-            if (handlerType == HANDLER_NO_ARGS)
+            try
             {
-                GetNoArgsHandler(slotIndex).Invoke();
+                byte handlerType = GetHandlerType(slotIndex);
+                if (handlerType == HANDLER_NO_ARGS)
+                {
+                    GetNoArgsHandler(slotIndex).Invoke();
+                }
+                else if (handlerType == HANDLER_GENERIC)
+                {
+                    GetGenericInvoker(slotIndex).Invoke(GetGenericHandler(slotIndex), GetGenericArg(slotIndex));
+                }
             }
-            else if (handlerType == HANDLER_GENERIC)
+            catch (Exception exception)
             {
-                GetGenericInvoker(slotIndex).Invoke(GetGenericHandler(slotIndex), GetGenericArg(slotIndex));
+                Debug.LogException(exception);
             }
-
-            _executingSlotIndex = INVALID_INDEX;
+            finally
+            {
+                _executingSlotIndex = INVALID_INDEX;
+            }
 
             state = GetState(slotIndex);
             if ((state & STATE_RELEASE_PENDING) != 0)
@@ -689,201 +725,261 @@ namespace AlicizaX.Timer.Runtime
 
         private void AdvanceQueue(bool isUnscaled, double currentTime)
         {
-            while (GetHeapCount(isUnscaled) > 0)
+            long currentTick = TimeToTickFloor(currentTime);
+            long cursorTick = GetCurrentWheelTick(isUnscaled);
+            int tickBudget = MAX_WHEEL_TICKS_PER_FRAME;
+            while (cursorTick <= currentTick && tickBudget > 0 && GetQueueCount(isUnscaled) > 0)
             {
-                int slotIndex = GetHeapRoot(isUnscaled);
-                byte state = GetState(slotIndex);
-                if ((state & (STATE_ACTIVE | STATE_RUNNING)) != (STATE_ACTIVE | STATE_RUNNING))
-                {
-                    RemoveRoot(isUnscaled);
-                    continue;
-                }
-
-                if (GetTriggerTime(slotIndex) > currentTime)
-                {
-                    return;
-                }
-
-                RemoveRoot(isUnscaled);
-                ProcessDueTimer(slotIndex, currentTime);
+                SetCurrentWheelTick(isUnscaled, cursorTick);
+                AdvanceWheelTick(isUnscaled, cursorTick, currentTime);
+                cursorTick++;
+                tickBudget--;
             }
+
+            SetCurrentWheelTick(isUnscaled, cursorTick <= currentTick ? cursorTick : currentTick + 1L);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AddToQueue(int slotIndex, bool isUnscaled)
         {
-            int heapIndex = GetHeapCount(isUnscaled);
-            SetHeapCount(isUnscaled, heapIndex + 1);
-            SetHeapValue(isUnscaled, heapIndex, slotIndex);
-            SetQueueIndex(slotIndex, heapIndex);
-            BubbleUp(isUnscaled, heapIndex);
+            long dueTick = TimeToTickCeiling(GetTriggerTime(slotIndex));
+            long currentTick = GetCurrentWheelTick(isUnscaled);
+            if (dueTick < currentTick)
+            {
+                dueTick = currentTick;
+            }
+
+            int bucketIndex = GetWheelBucketIndex(dueTick, currentTick);
+            SetDueTick(slotIndex, dueTick);
+            AddToBucket(slotIndex, bucketIndex, isUnscaled);
+            SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) + 1);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RemoveFromQueue(int slotIndex, bool isUnscaled)
         {
-            int heapIndex = GetQueueIndex(slotIndex);
-            int count = GetHeapCount(isUnscaled);
-            if ((uint)heapIndex >= (uint)count)
+            int bucketIndex = GetQueueIndex(slotIndex);
+            if (bucketIndex < 0)
             {
-                SetQueueIndex(slotIndex, INVALID_INDEX);
                 return;
             }
 
-            int lastIndex = count - 1;
-            int lastSlotIndex = GetHeapValue(isUnscaled, lastIndex);
-            SetHeapCount(isUnscaled, lastIndex);
+            RemoveFromBucket(slotIndex, bucketIndex, isUnscaled);
+            SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) - 1);
+        }
+
+        private void AdvanceWheelTick(bool isUnscaled, long tick, double currentTime)
+        {
+            for (int level = WHEEL_MAX_LEVEL; level > 0; level--)
+            {
+                CascadeWheelLevel(isUnscaled, tick, level);
+            }
+
+            ProcessBucket(isUnscaled, tick & WHEEL_MASK, currentTime, TimeToTickFloor(currentTime));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void CascadeWheelLevel(bool isUnscaled, long tick, int level)
+        {
+            long mask = (1L << (level * WHEEL_SHIFT)) - 1L;
+            if ((tick & mask) != 0L)
+            {
+                return;
+            }
+
+            int bucketIndex = (level << WHEEL_SHIFT) + (int)((tick >> (level * WHEEL_SHIFT)) & WHEEL_MASK);
+            int slotIndex = RemoveBucketHead(bucketIndex, isUnscaled);
+            while (slotIndex >= 0)
+            {
+                int nextSlotIndex = GetQueueNextIndex(slotIndex);
+                DetachRemovedBucketSlot(slotIndex);
+                int targetBucketIndex = GetWheelBucketIndex(GetDueTick(slotIndex), tick);
+                AddToBucket(slotIndex, targetBucketIndex, isUnscaled);
+                slotIndex = nextSlotIndex;
+            }
+        }
+
+        private void ProcessBucket(bool isUnscaled, long bucketIndex, double currentTime, long currentTick)
+        {
+            int slotIndex = GetWheelHead((int)bucketIndex, isUnscaled);
+            while (slotIndex >= 0)
+            {
+                RemoveFromQueue(slotIndex, isUnscaled);
+
+                byte state = GetState(slotIndex);
+                if ((state & (STATE_ACTIVE | STATE_RUNNING)) == (STATE_ACTIVE | STATE_RUNNING))
+                {
+                    if (GetDueTick(slotIndex) <= currentTick)
+                    {
+                        ProcessDueTimer(slotIndex, currentTime);
+                    }
+                    else
+                    {
+                        AddToQueue(slotIndex, isUnscaled);
+                    }
+                }
+
+                slotIndex = GetWheelHead((int)bucketIndex, isUnscaled);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void AddToBucket(int slotIndex, int bucketIndex, bool isUnscaled)
+        {
+            int tailSlotIndex = GetWheelTail(bucketIndex, isUnscaled);
+            SetQueueIndex(slotIndex, bucketIndex);
+            SetQueuePrevIndex(slotIndex, tailSlotIndex);
+            SetQueueNextIndex(slotIndex, INVALID_INDEX);
+            if (tailSlotIndex >= 0)
+            {
+                SetQueueNextIndex(tailSlotIndex, slotIndex);
+            }
+            else
+            {
+                SetWheelHead(bucketIndex, slotIndex, isUnscaled);
+            }
+
+            SetWheelTail(bucketIndex, slotIndex, isUnscaled);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void RemoveFromBucket(int slotIndex, int bucketIndex, bool isUnscaled)
+        {
+            int prevSlotIndex = GetQueuePrevIndex(slotIndex);
+            int nextSlotIndex = GetQueueNextIndex(slotIndex);
+            if (prevSlotIndex >= 0)
+            {
+                SetQueueNextIndex(prevSlotIndex, nextSlotIndex);
+            }
+            else
+            {
+                SetWheelHead(bucketIndex, nextSlotIndex, isUnscaled);
+            }
+
+            if (nextSlotIndex >= 0)
+            {
+                SetQueuePrevIndex(nextSlotIndex, prevSlotIndex);
+            }
+            else
+            {
+                SetWheelTail(bucketIndex, prevSlotIndex, isUnscaled);
+            }
+
+            DetachRemovedBucketSlot(slotIndex);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int RemoveBucketHead(int bucketIndex, bool isUnscaled)
+        {
+            int headSlotIndex = GetWheelHead(bucketIndex, isUnscaled);
+            SetWheelHead(bucketIndex, INVALID_INDEX, isUnscaled);
+            SetWheelTail(bucketIndex, INVALID_INDEX, isUnscaled);
+            return headSlotIndex;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void DetachRemovedBucketSlot(int slotIndex)
+        {
             SetQueueIndex(slotIndex, INVALID_INDEX);
-            if (heapIndex == lastIndex)
-            {
-                return;
-            }
-
-            SetHeapValue(isUnscaled, heapIndex, lastSlotIndex);
-            SetQueueIndex(lastSlotIndex, heapIndex);
-            if (!BubbleUp(isUnscaled, heapIndex))
-            {
-                BubbleDown(isUnscaled, heapIndex);
-            }
+            SetQueueNextIndex(slotIndex, INVALID_INDEX);
+            SetQueuePrevIndex(slotIndex, INVALID_INDEX);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RemoveRoot(bool isUnscaled)
+        private static int GetWheelBucketIndex(long dueTick, long currentTick)
         {
-            int rootSlotIndex = GetHeapRoot(isUnscaled);
-            int lastIndex = GetHeapCount(isUnscaled) - 1;
-            int lastSlotIndex = GetHeapValue(isUnscaled, lastIndex);
-            SetHeapCount(isUnscaled, lastIndex);
-            SetQueueIndex(rootSlotIndex, INVALID_INDEX);
-            if (lastIndex <= 0)
+            long delta = dueTick - currentTick;
+            if (delta < WHEEL_SIZE)
             {
-                return;
+                return (int)(dueTick & WHEEL_MASK);
             }
 
-            SetHeapValue(isUnscaled, 0, lastSlotIndex);
-            SetQueueIndex(lastSlotIndex, 0);
-            BubbleDown(isUnscaled, 0);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool BubbleUp(bool isUnscaled, int index)
-        {
-            bool moved = false;
-            while (index > 0)
+            if (delta < (1L << (WHEEL_SHIFT * 2)))
             {
-                int parentIndex = (index - 1) >> 1;
-                if (!Less(GetHeapValue(isUnscaled, index), GetHeapValue(isUnscaled, parentIndex)))
-                {
-                    break;
-                }
-
-                SwapHeap(isUnscaled, index, parentIndex);
-                index = parentIndex;
-                moved = true;
+                return WHEEL_SIZE + (int)((dueTick >> WHEEL_SHIFT) & WHEEL_MASK);
             }
 
-            return moved;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void BubbleDown(bool isUnscaled, int index)
-        {
-            int count = GetHeapCount(isUnscaled);
-            while (true)
+            if (delta < (1L << (WHEEL_SHIFT * 3)))
             {
-                int leftIndex = (index << 1) + 1;
-                if (leftIndex >= count)
-                {
-                    return;
-                }
-
-                int rightIndex = leftIndex + 1;
-                int smallestIndex = leftIndex;
-                if (rightIndex < count && Less(GetHeapValue(isUnscaled, rightIndex), GetHeapValue(isUnscaled, leftIndex)))
-                {
-                    smallestIndex = rightIndex;
-                }
-
-                if (!Less(GetHeapValue(isUnscaled, smallestIndex), GetHeapValue(isUnscaled, index)))
-                {
-                    return;
-                }
-
-                SwapHeap(isUnscaled, index, smallestIndex);
-                index = smallestIndex;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool Less(int leftSlotIndex, int rightSlotIndex)
-        {
-            double leftTime = GetTriggerTime(leftSlotIndex);
-            double rightTime = GetTriggerTime(rightSlotIndex);
-            if (leftTime < rightTime)
-            {
-                return true;
+                return (WHEEL_SIZE << 1) + (int)((dueTick >> (WHEEL_SHIFT * 2)) & WHEEL_MASK);
             }
 
-            if (leftTime > rightTime)
-            {
-                return false;
-            }
-
-            return GetHandle(leftSlotIndex) < GetHandle(rightSlotIndex);
+            return (WHEEL_MAX_LEVEL << WHEEL_SHIFT) + (int)((dueTick >> (WHEEL_SHIFT * WHEEL_MAX_LEVEL)) & WHEEL_MASK);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SwapHeap(bool isUnscaled, int leftIndex, int rightIndex)
+        private int GetQueueCount(bool isUnscaled)
         {
-            int leftSlotIndex = GetHeapValue(isUnscaled, leftIndex);
-            int rightSlotIndex = GetHeapValue(isUnscaled, rightIndex);
-            SetHeapValue(isUnscaled, leftIndex, rightSlotIndex);
-            SetHeapValue(isUnscaled, rightIndex, leftSlotIndex);
-            SetQueueIndex(leftSlotIndex, rightIndex);
-            SetQueueIndex(rightSlotIndex, leftIndex);
+            return isUnscaled ? _unscaledQueueCount : _scaledQueueCount;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetHeapCount(bool isUnscaled)
-        {
-            return isUnscaled ? _unscaledHeapCount : _scaledHeapCount;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetHeapCount(bool isUnscaled, int value)
+        private void SetQueueCount(bool isUnscaled, int value)
         {
             if (isUnscaled)
             {
-                _unscaledHeapCount = value;
+                _unscaledQueueCount = value;
             }
             else
             {
-                _scaledHeapCount = value;
+                _scaledQueueCount = value;
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetHeapRoot(bool isUnscaled)
+        private long GetCurrentWheelTick(bool isUnscaled)
         {
-            return GetHeapValue(isUnscaled, 0);
+            return isUnscaled ? _unscaledCurrentTick : _scaledCurrentTick;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetHeapValue(bool isUnscaled, int index)
-        {
-            return isUnscaled ? GetPagedInt(_unscaledHeapPages, index) : GetPagedInt(_scaledHeapPages, index);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetHeapValue(bool isUnscaled, int index, int value)
+        private void SetCurrentWheelTick(bool isUnscaled, long value)
         {
             if (isUnscaled)
             {
-                SetPagedInt(_unscaledHeapPages, index, value);
+                _unscaledCurrentTick = value;
             }
             else
             {
-                SetPagedInt(_scaledHeapPages, index, value);
+                _scaledCurrentTick = value;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetWheelHead(int bucketIndex, bool isUnscaled)
+        {
+            return isUnscaled ? _unscaledWheelHeads[bucketIndex] : _scaledWheelHeads[bucketIndex];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetWheelHead(int bucketIndex, int value, bool isUnscaled)
+        {
+            if (isUnscaled)
+            {
+                _unscaledWheelHeads[bucketIndex] = value;
+            }
+            else
+            {
+                _scaledWheelHeads[bucketIndex] = value;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetWheelTail(int bucketIndex, bool isUnscaled)
+        {
+            return isUnscaled ? _unscaledWheelTails[bucketIndex] : _scaledWheelTails[bucketIndex];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetWheelTail(int bucketIndex, int value, bool isUnscaled)
+        {
+            if (isUnscaled)
+            {
+                _unscaledWheelTails[bucketIndex] = value;
+            }
+            else
+            {
+                _scaledWheelTails[bucketIndex] = value;
             }
         }
 
@@ -903,6 +999,33 @@ namespace AlicizaX.Timer.Runtime
         private static double GetCurrentTime(bool isUnscaled)
         {
             return isUnscaled ? Time.unscaledTimeAsDouble : Time.timeAsDouble;
+        }
+
+        private static int[] CreateWheelHeads()
+        {
+            int[] heads = new int[WHEEL_BUCKET_COUNT];
+            ClearWheelHeads(heads);
+            return heads;
+        }
+
+        private static void ClearWheelHeads(int[] heads)
+        {
+            for (int i = 0; i < heads.Length; i++)
+            {
+                heads[i] = INVALID_INDEX;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long TimeToTickFloor(double time)
+        {
+            return (long)(time * TICKS_PER_SECOND);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long TimeToTickCeiling(double time)
+        {
+            return (long)Math.Ceiling(time * TICKS_PER_SECOND);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1037,6 +1160,18 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private long GetDueTick(int slotIndex)
+        {
+            return GetPage(slotIndex).DueTicks[GetOffset(slotIndex)];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetDueTick(int slotIndex, long value)
+        {
+            GetPage(slotIndex).DueTicks[GetOffset(slotIndex)] = value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int GetQueueIndex(int slotIndex)
         {
             return GetPage(slotIndex).QueueIndices[GetOffset(slotIndex)];
@@ -1046,6 +1181,30 @@ namespace AlicizaX.Timer.Runtime
         private void SetQueueIndex(int slotIndex, int value)
         {
             GetPage(slotIndex).QueueIndices[GetOffset(slotIndex)] = value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetQueueNextIndex(int slotIndex)
+        {
+            return GetPage(slotIndex).QueueNextIndices[GetOffset(slotIndex)];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetQueueNextIndex(int slotIndex, int value)
+        {
+            GetPage(slotIndex).QueueNextIndices[GetOffset(slotIndex)] = value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int GetQueuePrevIndex(int slotIndex)
+        {
+            return GetPage(slotIndex).QueuePrevIndices[GetOffset(slotIndex)];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void SetQueuePrevIndex(int slotIndex, int value)
+        {
+            GetPage(slotIndex).QueuePrevIndices[GetOffset(slotIndex)] = value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
