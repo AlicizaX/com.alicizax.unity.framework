@@ -1,0 +1,17 @@
+name: Publish Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    uses: AlicizaX/public-github-actions-Public/.github/workflows/publish-upm-release.yml@main
+    with:
+      package_json_path: package.json
+    secrets: inherit

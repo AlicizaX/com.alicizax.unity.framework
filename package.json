@@ -3,7 +3,7 @@
   "displayName": "Aliciza X Framework",
   "category": "Aliciza X",
   "description": "Aliciza X Core Framework",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "unity": "2022.3",
   "keywords": [
     "Aliciza X"
@@ -18,5 +18,7 @@
     "email": "yuliuren00@gmail.com"
   },
   "dependencies": {
+    "com.tuyoogame.yooasset": "2.3.18",
+    "com.cysharp.zstring": "2.6.0"
   }
 }
