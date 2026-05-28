@@ -32,13 +32,22 @@ namespace AlicizaX
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public IMemory Acquire()
         {
+            ThrowIfInvalid();
             return _handle.Acquire();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Release(IMemory memory)
         {
+            ThrowIfInvalid();
             _handle.Release(memory);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ThrowIfInvalid()
+        {
+            if (_handle == null)
+                throw new System.InvalidOperationException("MemoryPoolHandle is invalid.");
         }
     }
 }

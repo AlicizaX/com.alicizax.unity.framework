@@ -1,6 +1,8 @@
 using System;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 
 namespace AlicizaX
 {
@@ -28,6 +30,8 @@ namespace AlicizaX
             public readonly TickHandler Tick;
             public readonly IntHandler Shrink;
             public readonly ClearHandler Compact;
+            public readonly ClearHandler TrimNativeMetadata;
+            public readonly ClearHandler ResetStats;
             public int ActiveIndex = -1;
             public bool ActiveQueueDebt;
 
@@ -42,7 +46,9 @@ namespace AlicizaX
                 GetInfoHandler getInfo,
                 TickHandler tick,
                 IntHandler shrink,
-                ClearHandler compact)
+                ClearHandler compact,
+                ClearHandler trimNativeMetadata,
+                ClearHandler resetStats)
             {
                 PoolId = ++s_NextPoolId;
                 MemoryType = memoryType;
@@ -56,6 +62,8 @@ namespace AlicizaX
                 Tick = tick;
                 Shrink = shrink;
                 Compact = compact;
+                TrimNativeMetadata = trimNativeMetadata;
+                ResetStats = resetStats;
             }
         }
 
@@ -68,6 +76,7 @@ namespace AlicizaX
         private static int s_NextPoolId;
         private static MemoryPoolPhase s_Phase = MemoryPoolPhase.Gameplay;
         private static bool s_HasActiveQueueDebt;
+        private static int s_MainThreadId;
 
         public static int Count => s_HandleCount;
 
@@ -76,7 +85,33 @@ namespace AlicizaX
         public static MemoryPoolPhase Phase
         {
             get => s_Phase;
-            set => s_Phase = value;
+            set
+            {
+                AssertMainThread();
+                s_Phase = value;
+            }
+        }
+
+        internal static void InitializeMainThread()
+        {
+            s_MainThreadId = Thread.CurrentThread.ManagedThreadId;
+        }
+
+        [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void InitializeMainThreadOnLoad()
+        {
+            InitializeMainThread();
+        }
+
+        [System.Diagnostics.Conditional("UNITY_EDITOR")]
+        [System.Diagnostics.Conditional("DEVELOPMENT_BUILD")]
+        internal static void AssertMainThread()
+        {
+            int currentThreadId = Thread.CurrentThread.ManagedThreadId;
+            if (s_MainThreadId == 0)
+                s_MainThreadId = currentThreadId;
+            if (s_MainThreadId != currentThreadId)
+                throw new InvalidOperationException("MemoryPool must be used from the Unity main thread.");
         }
 
         internal static int GetGrowthBudget()
@@ -165,16 +200,19 @@ namespace AlicizaX
 
         public static AlicizaX.MemoryPoolHandle GetHandle(Type type)
         {
+            AssertMainThread();
             return new AlicizaX.MemoryPoolHandle(GetOrCreateHandle(type));
         }
 
         public static IMemory Acquire(Type type)
         {
+            AssertMainThread();
             return GetOrCreateHandle(type).Acquire();
         }
 
         public static void Release(IMemory memory)
         {
+            AssertMainThread();
             if (memory == null)
                 return;
 
@@ -193,6 +231,7 @@ namespace AlicizaX
 
         public static int GetAllInfos(MemoryPoolInfo[] infos)
         {
+            AssertMainThread();
             if (infos == null)
                 throw new ArgumentNullException(nameof(infos));
 
@@ -223,24 +262,49 @@ namespace AlicizaX
 
         public static void ClearAll()
         {
+            AssertMainThread();
+            Exception exception = null;
             for (int i = 0; i < s_HandleValues.Length; i++)
-                s_HandleValues[i]?.Clear();
+                CaptureFirstException(ref exception, s_HandleValues[i]?.Clear);
 
             ClearActiveScheduleState();
+            Rethrow(exception);
         }
 
         public static void CompactAll()
         {
+            AssertMainThread();
+            Exception exception = null;
             for (int i = 0; i < s_HandleValues.Length; i++)
-                s_HandleValues[i]?.Compact();
+                CaptureFirstException(ref exception, s_HandleValues[i]?.Compact);
+            Rethrow(exception);
+        }
+
+        public static void TrimAllNativeMetadata()
+        {
+            AssertMainThread();
+            Exception exception = null;
+            for (int i = 0; i < s_HandleValues.Length; i++)
+                CaptureFirstException(ref exception, s_HandleValues[i]?.TrimNativeMetadata);
+            Rethrow(exception);
+        }
+
+        public static void ResetAllStats()
+        {
+            AssertMainThread();
+            for (int i = 0; i < s_HandleValues.Length; i++)
+                s_HandleValues[i]?.ResetStats();
         }
 
         public static void ClearAllNativeMetadata()
         {
+            AssertMainThread();
+            Exception exception = null;
             for (int i = 0; i < s_HandleValues.Length; i++)
-                s_HandleValues[i]?.ClearNativeMetadata();
+                CaptureFirstException(ref exception, s_HandleValues[i]?.ClearNativeMetadata);
 
             ClearActiveScheduleState();
+            Rethrow(exception);
         }
 
         private static void ClearActiveScheduleState()
@@ -269,26 +333,44 @@ namespace AlicizaX
 
         public static void Add(Type type, int count)
         {
+            AssertMainThread();
             GetOrCreateHandle(type).Add(count);
         }
 
         public static void SetCapacity(Type type, int softCapacity, int hardCapacity)
         {
+            AssertMainThread();
             GetOrCreateHandle(type).SetCapacity(softCapacity, hardCapacity);
+        }
+
+        public static void SetCapacityAll(int softCapacity, int hardCapacity)
+        {
+            AssertMainThread();
+            for (int i = 0; i < s_HandleValues.Length; i++)
+                s_HandleValues[i]?.SetCapacity(softCapacity, hardCapacity);
         }
 
         public static void ClearType(Type type)
         {
+            AssertMainThread();
             GetOrCreateHandle(type).Clear();
         }
 
         public static void CompactType(Type type)
         {
+            AssertMainThread();
             GetOrCreateHandle(type).Compact();
+        }
+
+        public static void TrimNativeMetadata(Type type)
+        {
+            AssertMainThread();
+            GetOrCreateHandle(type).TrimNativeMetadata();
         }
 
         public static void RemoveFromType(Type type, int count)
         {
+            AssertMainThread();
             MemoryPoolHandle handle = GetOrCreateHandle(type);
             MemoryPoolInfo info = default;
             handle.GetInfo(ref info);
@@ -297,6 +379,7 @@ namespace AlicizaX
 
         public static void TickAll(int frameCount)
         {
+            AssertMainThread();
             CurrentFrame = frameCount;
             ProcessActiveQueueDebt();
             int i = 0;
@@ -450,12 +533,14 @@ namespace AlicizaX
 
         private static MemoryPoolHandle GetOrCreateHandle(Type type)
         {
-            ValidateMemoryObjectType(type);
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
 
             RuntimeTypeHandle typeHandle = type.TypeHandle;
             if (TryGetHandle(typeHandle.Value, out MemoryPoolHandle handle))
                 return handle;
 
+            ValidateMemoryObjectType(type);
             RuntimeHelpers.RunClassConstructor(
                 typeof(MemoryPool<>).MakeGenericType(type).TypeHandle);
 
@@ -489,6 +574,28 @@ namespace AlicizaX
                 throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must inherit MemoryObject.");
             if (type.GetConstructor(BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null) == null)
                 throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must have a public parameterless constructor.");
+        }
+
+        private static void CaptureFirstException(ref Exception first, MemoryPoolHandle.ClearHandler action)
+        {
+            if (action == null)
+                return;
+
+            try
+            {
+                action();
+            }
+            catch (Exception exception)
+            {
+                if (first == null)
+                    first = exception;
+            }
+        }
+
+        private static void Rethrow(Exception exception)
+        {
+            if (exception != null)
+                ExceptionDispatchInfo.Capture(exception).Throw();
         }
     }
 }

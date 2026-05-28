@@ -5,6 +5,8 @@ namespace AlicizaX
 {
     public static partial class MemoryPool
     {
+        public const int MinimumFreeReserveLimit = 4;
+
         /// <summary>
         /// 池空闲多少帧后开始缓慢缩容（每 tick 释放 4 个）。默认 1800 帧（@60fps ≈ 30秒）。
         /// </summary>
@@ -19,6 +21,14 @@ namespace AlicizaX
         /// 池空闲多少帧后停止调度 Tick（省 CPU）。默认 18000 帧（@60fps ≈ 5分钟）。
         /// </summary>
         public static int UnscheduleIdleFrames = 18000;
+
+        public static int ZeroFreeReserveStartFrames = 7200;
+
+        public static int AutoTrimNativeMetadataFrames = 18000;
+
+        public static int DefaultSoftFreeReserveLimit = 128;
+
+        public static int DefaultHardFreeReserveLimit = 512;
 
 
         public static int Count => MemoryPoolRegistry.Count;
@@ -85,6 +95,15 @@ namespace AlicizaX
             MemoryPoolRegistry.SetCapacity(memoryType, softCapacity, hardCapacity);
         }
 
+        public static void SetDefaultCapacity(int softCapacity, int hardCapacity)
+        {
+            softCapacity = Math.Max(softCapacity, MinimumFreeReserveLimit);
+            hardCapacity = Math.Max(hardCapacity, softCapacity);
+            DefaultSoftFreeReserveLimit = softCapacity;
+            DefaultHardFreeReserveLimit = hardCapacity;
+            MemoryPoolRegistry.SetCapacityAll(softCapacity, hardCapacity);
+        }
+
         public static void Remove<T>(int count) where T : MemoryObject, new()
         {
             int target = MemoryPool<T>.UnusedCount - count;
@@ -119,6 +138,26 @@ namespace AlicizaX
         public static void CompactAll()
         {
             MemoryPoolRegistry.CompactAll();
+        }
+
+        public static void TrimNativeMetadata<T>() where T : MemoryObject, new()
+        {
+            MemoryPool<T>.TrimNativeMetadata();
+        }
+
+        public static void TrimNativeMetadata(Type memoryType)
+        {
+            MemoryPoolRegistry.TrimNativeMetadata(memoryType);
+        }
+
+        public static void TrimAllNativeMetadata()
+        {
+            MemoryPoolRegistry.TrimAllNativeMetadata();
+        }
+
+        public static void ResetAllStats()
+        {
+            MemoryPoolRegistry.ResetAllStats();
         }
 
         public static void RemoveAll(Type memoryType)

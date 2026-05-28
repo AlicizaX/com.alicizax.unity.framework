@@ -14,7 +14,7 @@ namespace AlicizaX.Editor
         private const float ToolbarHeight = 30f;
         private const float RowHeight = 24f;
         private const float RowLabelWidth = 154f;
-        private const float ActionButtonWidth = 124f;
+        private const float ActionButtonWidth = 136f;
         private const float ExportButtonWidth = 104f;
         private const float HeaderKindWidth = 44f;
         private const float HeaderSummaryWidth = 92f;
@@ -31,7 +31,12 @@ namespace AlicizaX.Editor
         private SerializedProperty m_ShortDecayStartFrames;
         private SerializedProperty m_LongDecayStartFrames;
         private SerializedProperty m_UnscheduleIdleFrames;
+        private SerializedProperty m_ZeroFreeReserveStartFrames;
+        private SerializedProperty m_AutoTrimNativeMetadataFrames;
+        private SerializedProperty m_SoftFreeReserveLimit;
+        private SerializedProperty m_HardFreeReserveLimit;
         private bool m_ShowFullClassName;
+        private bool m_ShowEmptyPools;
         private GUIStyle _panelStyle;
         private GUIStyle _entryBodyStyle;
         private GUIStyle _fieldRowStyle;
@@ -73,6 +78,10 @@ namespace AlicizaX.Editor
             m_ShortDecayStartFrames = serializedObject.FindProperty("m_ShortDecayStartFrames");
             m_LongDecayStartFrames = serializedObject.FindProperty("m_LongDecayStartFrames");
             m_UnscheduleIdleFrames = serializedObject.FindProperty("m_UnscheduleIdleFrames");
+            m_ZeroFreeReserveStartFrames = serializedObject.FindProperty("m_ZeroFreeReserveStartFrames");
+            m_AutoTrimNativeMetadataFrames = serializedObject.FindProperty("m_AutoTrimNativeMetadataFrames");
+            m_SoftFreeReserveLimit = serializedObject.FindProperty("m_SoftFreeReserveLimit");
+            m_HardFreeReserveLimit = serializedObject.FindProperty("m_HardFreeReserveLimit");
         }
 
         private void EnsureStyles()
@@ -105,9 +114,15 @@ namespace AlicizaX.Editor
 
         private void DrawConfiguration()
         {
-            DrawIntPropertyRow("Short Decay Start", m_ShortDecayStartFrames);
-            DrawIntPropertyRow("Long Decay Start", m_LongDecayStartFrames);
-            DrawIntPropertyRow("Unschedule Idle", m_UnscheduleIdleFrames);
+            NormalizeSerializedConfiguration();
+            DrawIntPropertyRow("Short Decay Start", m_ShortDecayStartFrames, 0);
+            DrawIntPropertyRow("Long Decay Start", m_LongDecayStartFrames, m_ShortDecayStartFrames.intValue);
+            DrawIntPropertyRow("Zero Free Start", m_ZeroFreeReserveStartFrames, m_LongDecayStartFrames.intValue);
+            DrawIntPropertyRow("Unschedule Idle", m_UnscheduleIdleFrames, m_ZeroFreeReserveStartFrames.intValue);
+            DrawIntPropertyRow("Auto Trim Native", m_AutoTrimNativeMetadataFrames, -1);
+            DrawIntPropertyRow("Soft Free Limit", m_SoftFreeReserveLimit, MemoryPool.MinimumFreeReserveLimit);
+            DrawIntPropertyRow("Hard Free Limit", m_HardFreeReserveLimit, m_SoftFreeReserveLimit.intValue);
+            NormalizeSerializedConfiguration();
         }
 
         private void DrawRuntimeInspector(MemoryPoolSetting setting)
@@ -116,25 +131,53 @@ namespace AlicizaX.Editor
 
             DrawReadOnlyRow("Memory Pool Count", MemoryPool.Count.ToString(), MemoryPool.Count > 0 ? _rowLabelStyle : _mutedLabelStyle);
             m_ShowFullClassName = DrawBoolValueRow("Show Full Class Name", m_ShowFullClassName);
+            m_ShowEmptyPools = DrawBoolValueRow("Show Empty Pools", m_ShowEmptyPools);
             DrawSectionEnd();
 
             DrawSectionBegin("Idle Trim");
-            int shortDecay = DrawIntValueRow("Short Decay Start", MemoryPool.ShortDecayStartFrames);
+            int shortDecay = DrawIntValueRow("Short Decay Start", MemoryPool.ShortDecayStartFrames, 0);
             if (shortDecay != MemoryPool.ShortDecayStartFrames)
             {
                 MemoryPool.ShortDecayStartFrames = shortDecay;
             }
 
-            int longDecay = DrawIntValueRow("Long Decay Start", MemoryPool.LongDecayStartFrames);
+            int longDecay = DrawIntValueRow("Long Decay Start", MemoryPool.LongDecayStartFrames, MemoryPool.ShortDecayStartFrames);
             if (longDecay != MemoryPool.LongDecayStartFrames)
             {
                 MemoryPool.LongDecayStartFrames = longDecay;
             }
 
-            int unschedule = DrawIntValueRow("Unschedule Idle", MemoryPool.UnscheduleIdleFrames);
+            int zeroFree = DrawIntValueRow("Zero Free Start", MemoryPool.ZeroFreeReserveStartFrames, MemoryPool.LongDecayStartFrames);
+            if (zeroFree != MemoryPool.ZeroFreeReserveStartFrames)
+            {
+                MemoryPool.ZeroFreeReserveStartFrames = zeroFree;
+            }
+
+            int unschedule = DrawIntValueRow("Unschedule Idle", MemoryPool.UnscheduleIdleFrames, MemoryPool.ZeroFreeReserveStartFrames);
             if (unschedule != MemoryPool.UnscheduleIdleFrames)
             {
                 MemoryPool.UnscheduleIdleFrames = unschedule;
+            }
+
+            int autoTrim = DrawIntValueRow("Auto Trim Native", MemoryPool.AutoTrimNativeMetadataFrames, -1);
+            if (autoTrim >= 0 && autoTrim < MemoryPool.ZeroFreeReserveStartFrames)
+            {
+                autoTrim = MemoryPool.ZeroFreeReserveStartFrames;
+            }
+
+            if (autoTrim != MemoryPool.AutoTrimNativeMetadataFrames)
+            {
+                MemoryPool.AutoTrimNativeMetadataFrames = autoTrim;
+            }
+
+            DrawSectionEnd();
+
+            DrawSectionBegin("Capacity");
+            int softLimit = DrawIntValueRow("Soft Free Limit", MemoryPool.DefaultSoftFreeReserveLimit, MemoryPool.MinimumFreeReserveLimit);
+            int hardLimit = DrawIntValueRow("Hard Free Limit", MemoryPool.DefaultHardFreeReserveLimit, softLimit);
+            if (softLimit != MemoryPool.DefaultSoftFreeReserveLimit || hardLimit != MemoryPool.DefaultHardFreeReserveLimit)
+            {
+                MemoryPool.SetDefaultCapacity(softLimit, hardLimit);
             }
 
             DrawSectionEnd();
@@ -170,9 +213,19 @@ namespace AlicizaX.Editor
             DrawSectionBegin("Actions");
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             GUILayout.FlexibleSpace();
-            if (AlicizaEditorGUI.DrawInlineButton("Clear All Pools", ActionButtonWidth))
+            if (AlicizaEditorGUI.DrawInlineButton("Clear Cached", ActionButtonWidth))
             {
                 MemoryPoolRegistry.ClearAll();
+            }
+
+            if (AlicizaEditorGUI.DrawInlineButton("Trim Native", ActionButtonWidth))
+            {
+                MemoryPool.TrimAllNativeMetadata();
+            }
+
+            if (AlicizaEditorGUI.DrawInlineButton("Reset Stats", ActionButtonWidth))
+            {
+                MemoryPool.ResetAllStats();
             }
 
             EditorGUILayout.EndHorizontal();
@@ -185,7 +238,7 @@ namespace AlicizaX.Editor
             if (m_ActiveAssemblyKeys.Count == 0)
             {
                 DrawSectionBegin("Pools");
-                DrawEmptyState("No memory pools.");
+                DrawEmptyState(m_ShowEmptyPools ? "No memory pools." : "No visible memory pools.");
                 DrawSectionEnd();
                 return;
             }
@@ -291,19 +344,19 @@ namespace AlicizaX.Editor
             return expanded;
         }
 
-        private void DrawIntPropertyRow(string label, SerializedProperty property)
+        private void DrawIntPropertyRow(string label, SerializedProperty property, int minValue)
         {
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            property.intValue = EditorGUILayout.IntField(property.intValue);
+            property.intValue = Math.Max(minValue, EditorGUILayout.IntField(property.intValue));
             EditorGUILayout.EndHorizontal();
         }
 
-        private int DrawIntValueRow(string label, int value)
+        private int DrawIntValueRow(string label, int value, int minValue)
         {
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            int result = EditorGUILayout.IntField(value);
+            int result = Math.Max(minValue, EditorGUILayout.IntField(value));
             EditorGUILayout.EndHorizontal();
             return result;
         }
@@ -390,6 +443,11 @@ namespace AlicizaX.Editor
             for (int i = 0; i < infoCount; i++)
             {
                 ref MemoryPoolInfo info = ref m_InfoBuffer[i];
+                if (!m_ShowEmptyPools && IsEmptyPool(info))
+                {
+                    continue;
+                }
+
                 string assemblyName = info.Type.Assembly.GetName().Name;
                 if (!m_GroupedIndices.TryGetValue(assemblyName, out List<int> indices))
                 {
@@ -406,6 +464,26 @@ namespace AlicizaX.Editor
             }
 
             m_ActiveAssemblyKeys.Sort(StringComparer.Ordinal);
+        }
+
+        private void NormalizeSerializedConfiguration()
+        {
+            m_ShortDecayStartFrames.intValue = Math.Max(0, m_ShortDecayStartFrames.intValue);
+            m_LongDecayStartFrames.intValue = Math.Max(m_ShortDecayStartFrames.intValue, m_LongDecayStartFrames.intValue);
+            m_ZeroFreeReserveStartFrames.intValue = Math.Max(m_LongDecayStartFrames.intValue, m_ZeroFreeReserveStartFrames.intValue);
+            m_UnscheduleIdleFrames.intValue = Math.Max(m_ZeroFreeReserveStartFrames.intValue, m_UnscheduleIdleFrames.intValue);
+            if (m_AutoTrimNativeMetadataFrames.intValue >= 0)
+            {
+                m_AutoTrimNativeMetadataFrames.intValue = Math.Max(m_ZeroFreeReserveStartFrames.intValue, m_AutoTrimNativeMetadataFrames.intValue);
+            }
+
+            m_SoftFreeReserveLimit.intValue = Math.Max(MemoryPool.MinimumFreeReserveLimit, m_SoftFreeReserveLimit.intValue);
+            m_HardFreeReserveLimit.intValue = Math.Max(m_SoftFreeReserveLimit.intValue, m_HardFreeReserveLimit.intValue);
+        }
+
+        private static bool IsEmptyPool(MemoryPoolInfo info)
+        {
+            return info.UnusedCount == 0 && info.UsingCount == 0 && info.PageCapacity == 0;
         }
 
         private void ExportCsv(string assemblyName, List<int> indices)

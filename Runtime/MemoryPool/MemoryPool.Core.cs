@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 
 namespace AlicizaX
@@ -10,7 +11,7 @@ namespace AlicizaX
         private const int PageSize = 1 << PageShift;
         private const int PageMask = PageSize - 1;
         private const int InvalidIndex = -1;
-        private const int MinKeep = 4;
+        private const int MinKeep = MemoryPool.MinimumFreeReserveLimit;
         private const int LookaheadFrames = 8;
         private const int MissBoost = 2;
         private const int BurstMargin = 2;
@@ -131,14 +132,16 @@ namespace AlicizaX
         private static int s_SlowPeakInUse;
         private static int s_TargetLiveForecast = MinKeep;
         private static int s_TargetFreeReserve = MinKeep;
-        private static int s_SoftFreeReserveLimit = 2048;
-        private static int s_HardFreeReserveLimit = 8192;
+        private static int s_SoftFreeReserveLimit = MemoryPool.DefaultSoftFreeReserveLimit;
+        private static int s_HardFreeReserveLimit = MemoryPool.DefaultHardFreeReserveLimit;
         private static int s_IdleFrames;
         private static int s_LastTickFrame = InvalidIndex;
         private static bool s_InPoolCallback;
+        private static bool s_PendingClearNativeMetadata;
 
         static MemoryPool()
         {
+            MemoryPoolRegistry.AssertMainThread();
             s_Handle = new MemoryPoolRegistry.MemoryPoolHandle(
                 typeof(T),
                 acquire: AcquireAsMemory,
@@ -150,7 +153,9 @@ namespace AlicizaX
                 getInfo: GetInfo,
                 tick: Tick,
                 shrink: Shrink,
-                compact: Compact);
+                compact: Compact,
+                trimNativeMetadata: TrimNativeMetadata,
+                resetStats: ResetStats);
             s_PublicHandle = new MemoryPoolHandle(s_Handle);
             s_PoolId = s_Handle.PoolId;
             MemoryPoolRegistry.Register(typeof(T), s_Handle);
@@ -171,6 +176,7 @@ namespace AlicizaX
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static T Acquire()
         {
+            MemoryPoolRegistry.AssertMainThread();
             ThrowIfInPoolCallback("Acquire");
             MemoryPoolRegistry.ScheduleTick(s_Handle);
             s_AcquireCount++;
@@ -189,11 +195,13 @@ namespace AlicizaX
             s_MissDebt++;
             s_LastMissFrame = s_LastAcquireFrame;
             UpdateWatermarkOnMiss();
+            NormalizeMissDebt();
             return EmergencyCreateOne();
         }
 
         public static void Release(T item)
         {
+            MemoryPoolRegistry.AssertMainThread();
             if (item == null)
                 return;
             ThrowIfInPoolCallback("Release");
@@ -210,6 +218,7 @@ namespace AlicizaX
 
         public static void Add(int count)
         {
+            MemoryPoolRegistry.AssertMainThread();
             if (count <= 0)
                 return;
 
@@ -218,6 +227,7 @@ namespace AlicizaX
             s_TargetFreeReserve = Clamp(target, MinKeep, s_HardFreeReserveLimit);
             s_TargetLiveForecast = Math.Max(s_TargetLiveForecast, s_InUse + s_TargetFreeReserve);
             s_MissDebt += count;
+            NormalizeMissDebt();
 
             int budget = MemoryPoolRegistry.GetGrowthBudget();
             ProcessGrowth(Math.Min(count, budget));
@@ -225,6 +235,7 @@ namespace AlicizaX
 
         public static void Shrink(int keepCount)
         {
+            MemoryPoolRegistry.AssertMainThread();
             keepCount = Math.Max(keepCount, 0);
             s_TargetFreeReserve = Math.Min(s_TargetFreeReserve, keepCount);
             int budget = Math.Max(0, s_FreeCount - keepCount);
@@ -233,7 +244,21 @@ namespace AlicizaX
 
         public static void Compact()
         {
+            MemoryPoolRegistry.AssertMainThread();
             ProcessEvict(Math.Max(0, s_FreeCount - s_TargetFreeReserve));
+        }
+
+        public static void TrimNativeMetadata()
+        {
+            MemoryPoolRegistry.AssertMainThread();
+            ThrowIfInPoolCallback("TrimNativeMetadata");
+            if (s_InUse != 0)
+                return;
+
+            Exception callbackException = ClearAllCore();
+            ReleaseNativeMetadataNow();
+            MemoryPoolRegistry.UnscheduleTick(s_Handle);
+            Rethrow(callbackException);
         }
 
         public static void SetMaxCapacity(int max)
@@ -243,20 +268,30 @@ namespace AlicizaX
 
         public static void SetCapacity(int softCapacity, int hardCapacity)
         {
+            MemoryPoolRegistry.AssertMainThread();
             softCapacity = Math.Max(softCapacity, MinKeep);
             hardCapacity = Math.Max(hardCapacity, softCapacity);
             s_SoftFreeReserveLimit = softCapacity;
             s_HardFreeReserveLimit = hardCapacity;
             s_TargetFreeReserve = Math.Min(s_TargetFreeReserve, s_SoftFreeReserveLimit);
             s_TargetLiveForecast = Math.Min(s_TargetLiveForecast, s_SoftFreeReserveLimit);
+            NormalizeMissDebt();
             MemoryPoolRegistry.ScheduleTick(s_Handle);
         }
 
         public static void ClearAll()
         {
+            MemoryPoolRegistry.AssertMainThread();
             ThrowIfInPoolCallback("ClearAll");
+            Exception callbackException = ClearAllCore();
+            Rethrow(callbackException);
+        }
+
+        private static Exception ClearAllCore()
+        {
+            Exception callbackException = null;
             for (int pageIndex = 0; pageIndex < s_PageCount; pageIndex++)
-                TombstonePage(pageIndex);
+                CaptureFirstException(ref callbackException, TombstonePage(pageIndex));
 
             ClearQueues();
             s_FreeCount = 0;
@@ -289,11 +324,28 @@ namespace AlicizaX
                 ReleaseAllPages();
 
             MemoryPoolRegistry.UnscheduleTick(s_Handle);
+            return callbackException;
         }
 
         public static void ClearAllNativeMetadata()
         {
-            ClearAll();
+            MemoryPoolRegistry.AssertMainThread();
+            ThrowIfInPoolCallback("ClearAllNativeMetadata");
+            Exception callbackException = ClearAllCore();
+            if (s_InUse > 0)
+            {
+                s_PendingClearNativeMetadata = true;
+                Rethrow(callbackException);
+                return;
+            }
+
+            ReleaseNativeMetadataNow();
+            Rethrow(callbackException);
+        }
+
+        private static void ReleaseNativeMetadataNow()
+        {
+            s_PendingClearNativeMetadata = false;
             FreeNativeMetadata();
             s_ObjectPages = Array.Empty<T[]>();
             s_PageCount = 0;
@@ -307,6 +359,26 @@ namespace AlicizaX
             s_EmptyQueueCapacity = 0;
             s_EvictQueueCapacity = 0;
             s_ReleasedPageCapacity = 0;
+        }
+
+        public static void ResetStats()
+        {
+            MemoryPoolRegistry.AssertMainThread();
+            s_AcquireCount = 0;
+            s_ReleaseCount = 0;
+            s_CreatedCount = 0;
+            s_EmergencyCreateCount = 0;
+            s_MissCount = 0;
+            s_AcquireThisFrame = 0;
+            s_ReleaseThisFrame = 0;
+            s_LastAcquireFrame = InvalidIndex;
+            s_LastReleaseFrame = InvalidIndex;
+            s_LastMissFrame = InvalidIndex;
+            s_AcquireRateEwma = 0f;
+            s_ReleaseRateEwma = 0f;
+            s_BurstEwma = 0f;
+            s_FastPeakInUse = s_InUse;
+            s_SlowPeakInUse = s_InUse;
         }
 
         public static int UnusedCount
@@ -328,6 +400,7 @@ namespace AlicizaX
 
         internal static bool Tick(int frameCount)
         {
+            MemoryPoolRegistry.AssertMainThread();
             ThrowIfInPoolCallback("Tick");
             if (frameCount == s_LastTickFrame)
                 return true;
@@ -336,15 +409,44 @@ namespace AlicizaX
             bool active = s_AcquireThisFrame > 0 || s_ReleaseThisFrame > 0 || s_InUse > 0 || s_MissDebt > 0;
             s_IdleFrames = active ? 0 : s_IdleFrames + 1;
 
+            NormalizeMissDebt();
             UpdateWatermarks();
+            NormalizeMissDebt();
             ProcessDirtyQueues(8);
             ProcessGrowth(MemoryPoolRegistry.GetGrowthBudget());
+            NormalizeMissDebt();
             ProcessEvict(MemoryPoolRegistry.GetEvictBudget());
 
             s_AcquireThisFrame = 0;
             s_ReleaseThisFrame = 0;
 
-            return s_IdleFrames < MemoryPool.UnscheduleIdleFrames || s_FreeCount > s_TargetFreeReserve || s_MissDebt > 0 || s_InUse > 0;
+            if (TryAutoTrimNativeMetadata())
+                return false;
+
+            return s_IdleFrames < MemoryPool.UnscheduleIdleFrames || ShouldKeepTickingForAutoTrim() || s_FreeCount > s_TargetFreeReserve || s_MissDebt > 0 || s_InUse > 0;
+        }
+
+        private static bool ShouldKeepTickingForAutoTrim()
+        {
+            return MemoryPool.AutoTrimNativeMetadataFrames >= 0
+                   && s_IdleFrames < MemoryPool.AutoTrimNativeMetadataFrames
+                   && s_InUse == 0
+                   && s_PageCapacity > 0;
+        }
+
+        private static bool TryAutoTrimNativeMetadata()
+        {
+            if (MemoryPool.AutoTrimNativeMetadataFrames < 0)
+                return false;
+            if (s_IdleFrames < MemoryPool.AutoTrimNativeMetadataFrames)
+                return false;
+            if (s_InUse != 0 || s_FreeCount != 0 || s_ConstructedCount != 0)
+                return false;
+            if (s_PageCapacity <= 0)
+                return false;
+
+            ReleaseNativeMetadataNow();
+            return true;
         }
 
         private static bool TryAcquireFree(out T item)
@@ -411,7 +513,16 @@ namespace AlicizaX
             ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
             item.State = ObjectStateReleasing;
             slot.State = SlotStateReleasing;
-            InvokeClear(item);
+            try
+            {
+                InvokeClear(item);
+            }
+            catch
+            {
+                item.State = ObjectStateLeased;
+                slot.State = SlotStateLeased;
+                throw;
+            }
 
             item.State = ObjectStateFree;
             slot.State = SlotStateFree;
@@ -427,6 +538,7 @@ namespace AlicizaX
             s_LastReleaseFrame = MemoryPoolRegistry.CurrentFrame;
             s_ObjectPages[pageIndex][slotIndex] = item;
             EnqueuePage(s_FreePageQueue, s_FreeQueueCapacity, ref s_FreeQueueHead, ref s_FreeQueueTail, ref s_FreeQueueCount, pageIndex, PageFlagInFreeQueue);
+            TryCompletePendingNativeMetadataClear();
         }
 
         private static void ReleaseOverHard(T item, int pageIndex, int slotIndex)
@@ -435,13 +547,25 @@ namespace AlicizaX
             ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
             item.State = ObjectStateReleasing;
             slot.State = SlotStateReleasing;
-            InvokeClear(item);
-            EvictLeasedObject(item, ref page, ref slot, pageIndex, slotIndex, true);
+            try
+            {
+                InvokeClear(item);
+            }
+            catch
+            {
+                item.State = ObjectStateLeased;
+                slot.State = SlotStateLeased;
+                throw;
+            }
+
+            Exception evictException = EvictLeasedObject(item, ref page, ref slot, pageIndex, slotIndex, true);
             s_InUse--;
             s_ReleaseCount++;
             s_ReleaseThisFrame++;
             s_LastReleaseFrame = MemoryPoolRegistry.CurrentFrame;
             TryReleaseEmptyPage(pageIndex);
+            TryCompletePendingNativeMetadataClear();
+            Rethrow(evictException);
         }
 
         private static void ReleaseTombstoneLeased(T item, int pageIndex, int slotIndex)
@@ -450,21 +574,33 @@ namespace AlicizaX
             ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
             item.State = ObjectStateReleasing;
             slot.State = SlotStateReleasing;
-            InvokeClear(item);
-            EvictLeasedObject(item, ref page, ref slot, pageIndex, slotIndex, false);
+            try
+            {
+                InvokeClear(item);
+            }
+            catch
+            {
+                item.State = ObjectStateLeased;
+                slot.State = SlotStateLeased;
+                throw;
+            }
+
+            Exception evictException = EvictLeasedObject(item, ref page, ref slot, pageIndex, slotIndex, false);
             s_InUse = Math.Max(0, s_InUse - 1);
             s_ReleaseCount++;
             s_ReleaseThisFrame++;
             s_LastReleaseFrame = MemoryPoolRegistry.CurrentFrame;
             if ((page.Flags & PageFlagTombstone) != 0 && page.LeasedCount == 0)
                 ReleasePageStorage(pageIndex);
+            TryCompletePendingNativeMetadataClear();
+            Rethrow(evictException);
         }
 
-        private static void EvictLeasedObject(T item, ref PageHeader page, ref SlotMeta slot, int pageIndex, int slotIndex, bool enqueueEmpty)
+        private static Exception EvictLeasedObject(T item, ref PageHeader page, ref SlotMeta slot, int pageIndex, int slotIndex, bool enqueueEmpty)
         {
             item.State = ObjectStateEvicting;
             slot.State = SlotStateEvicting;
-            InvokeOnEvict(item);
+            Exception callbackException = CaptureCallbackException(item);
 
             item.State = ObjectStateEvicted;
             ResetMemoryObject(item);
@@ -485,9 +621,10 @@ namespace AlicizaX
             s_ConstructedCount--;
             if (enqueueEmpty)
                 EnqueuePage(s_EmptyPageQueue, s_EmptyQueueCapacity, ref s_EmptyQueueHead, ref s_EmptyQueueTail, ref s_EmptyQueueCount, pageIndex, PageFlagInEmptyQueue);
+            return callbackException;
         }
 
-        private static void EvictFree(int pageIndex, int slotIndex)
+        private static Exception EvictFree(int pageIndex, int slotIndex)
         {
             ref PageHeader page = ref s_PageHeaders[pageIndex];
             ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
@@ -497,7 +634,7 @@ namespace AlicizaX
 
             item.State = ObjectStateEvicting;
             slot.State = SlotStateEvicting;
-            InvokeOnEvict(item);
+            Exception callbackException = CaptureCallbackException(item);
 
             item.State = ObjectStateEvicted;
             s_ObjectPages[pageIndex][slotIndex] = null;
@@ -512,6 +649,7 @@ namespace AlicizaX
             s_ConstructedCount--;
             s_FreeCount--;
             EnqueuePage(s_EmptyPageQueue, s_EmptyQueueCapacity, ref s_EmptyQueueHead, ref s_EmptyQueueTail, ref s_EmptyQueueCount, pageIndex, PageFlagInEmptyQueue);
+            return callbackException;
         }
 
         private static void ProcessGrowth(int budget)
@@ -539,10 +677,12 @@ namespace AlicizaX
                 EnqueuePage(s_FreePageQueue, s_FreeQueueCapacity, ref s_FreeQueueHead, ref s_FreeQueueTail, ref s_FreeQueueCount, pageIndex, PageFlagInFreeQueue);
                 budget--;
             }
+            NormalizeMissDebt();
         }
 
         private static void ProcessEvict(int budget)
         {
+            NormalizeMissDebt();
             if (budget <= 0 || s_MissDebt > 0 || s_FreeCount <= s_TargetFreeReserve)
                 return;
 
@@ -557,11 +697,12 @@ namespace AlicizaX
                     continue;
 
                 page.FreeHead = s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)].Next;
-                EvictFree(pageIndex, slotIndex);
+                Exception evictException = EvictFree(pageIndex, slotIndex);
                 if (page.FreeCount > 0)
                     EnqueuePage(s_FreePageQueue, s_FreeQueueCapacity, ref s_FreeQueueHead, ref s_FreeQueueTail, ref s_FreeQueueCount, pageIndex, PageFlagInFreeQueue);
                 TryReleaseEmptyPage(pageIndex);
                 budget--;
+                Rethrow(evictException);
             }
         }
 
@@ -819,8 +960,26 @@ namespace AlicizaX
             s_TargetLiveForecast = Math.Min(Math.Max(s_TargetLiveForecast, s_InUse + boostedMissDebt), s_SoftFreeReserveLimit);
         }
 
+        private static void NormalizeMissDebt()
+        {
+            if (s_MissDebt <= 0)
+                return;
+
+            if (MemoryPoolRegistry.GetGrowthBudget() <= 0)
+            {
+                s_MissDebt = 0;
+                return;
+            }
+
+            int reserveLimit = Math.Min(s_TargetFreeReserve, s_HardFreeReserveLimit);
+            int maxDebt = Math.Max(0, reserveLimit - s_FreeCount);
+            if (s_MissDebt > maxDebt)
+                s_MissDebt = maxDebt;
+        }
+
         private static void UpdateWatermarks()
         {
+            int minFreeReserve = s_IdleFrames >= MemoryPool.ZeroFreeReserveStartFrames ? 0 : MinKeep;
             s_AcquireRateEwma = Lerp(s_AcquireRateEwma, s_AcquireThisFrame, RateEwmaAlpha);
             s_ReleaseRateEwma = Lerp(s_ReleaseRateEwma, s_ReleaseThisFrame, RateEwmaAlpha);
             int frameBurst = Math.Max(0, s_AcquireThisFrame - s_ReleaseThisFrame);
@@ -838,12 +997,12 @@ namespace AlicizaX
                 s_SlowPeakInUse,
                 CeilToInt(s_AcquireRateEwma * LookaheadFrames),
                 s_MissDebt * MissBoost,
-                MinKeep);
+                minFreeReserve);
             int desiredFree = Max(
                 CeilToInt(s_BurstEwma),
                 CeilToInt(s_AcquireRateEwma * LookaheadFrames),
                 s_MissDebt * MissBoost,
-                MinKeep);
+                minFreeReserve);
             if (s_MissDebt > 0)
             {
                 liveForecast = Math.Max(liveForecast, s_TargetLiveForecast);
@@ -855,24 +1014,25 @@ namespace AlicizaX
                 desiredFree = Math.Max(desiredFree, s_TargetFreeReserve);
             }
 
-            s_TargetFreeReserve = Clamp(desiredFree, MinKeep, Math.Min(s_SoftFreeReserveLimit, s_HardFreeReserveLimit));
+            s_TargetFreeReserve = Clamp(desiredFree, minFreeReserve, Math.Min(s_SoftFreeReserveLimit, s_HardFreeReserveLimit));
             s_TargetLiveForecast = Math.Min(liveForecast, s_SoftFreeReserveLimit);
         }
 
-        private static void TombstonePage(int pageIndex)
+        private static Exception TombstonePage(int pageIndex)
         {
             ref PageHeader page = ref s_PageHeaders[pageIndex];
             if ((page.Flags & PageFlagTombstone) != 0)
-                return;
+                return null;
 
             page.Flags |= PageFlagTombstone;
             page.QueueGeneration++;
 
+            Exception callbackException = null;
             int slotIndex = page.FreeHead;
             while (slotIndex >= 0)
             {
                 int next = s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)].Next;
-                TombstoneEvictFree(pageIndex, slotIndex);
+                CaptureFirstException(ref callbackException, TombstoneEvictFree(pageIndex, slotIndex));
                 slotIndex = next;
             }
 
@@ -883,18 +1043,20 @@ namespace AlicizaX
             page.EmptyCount = PageSize - page.LeasedCount;
             page.ConstructedCount = page.LeasedCount;
             page.Flags &= ~(PageFlagInFreeQueue | PageFlagInEmptyQueue | PageFlagInEvictQueue);
+            return callbackException;
         }
 
-        private static void TombstoneEvictFree(int pageIndex, int slotIndex)
+        private static Exception TombstoneEvictFree(int pageIndex, int slotIndex)
         {
             ref PageHeader page = ref s_PageHeaders[pageIndex];
             ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
             T item = s_ObjectPages[pageIndex][slotIndex];
+            Exception callbackException = null;
             if (item != null)
             {
                 item.State = ObjectStateEvicting;
                 slot.State = SlotStateEvicting;
-                InvokeOnEvict(item);
+                callbackException = CaptureCallbackException(item);
                 item.State = ObjectStateEvicted;
                 ResetMemoryObject(item);
             }
@@ -908,6 +1070,7 @@ namespace AlicizaX
             page.EmptyCount++;
             s_ConstructedCount--;
             s_FreeCount--;
+            return callbackException;
         }
 
         private static void TryReleaseEmptyPage(int pageIndex)
@@ -1068,6 +1231,41 @@ namespace AlicizaX
             s_EmptyPageQueue = null;
             s_EvictPageQueue = null;
             s_ReleasedPageStack = null;
+        }
+
+        private static void TryCompletePendingNativeMetadataClear()
+        {
+            if (!s_PendingClearNativeMetadata || s_InUse > 0)
+                return;
+
+            Exception callbackException = ClearAllCore();
+            ReleaseNativeMetadataNow();
+            Rethrow(callbackException);
+        }
+
+        private static Exception CaptureCallbackException(T item)
+        {
+            try
+            {
+                InvokeOnEvict(item);
+                return null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }
+
+        private static void CaptureFirstException(ref Exception first, Exception next)
+        {
+            if (first == null && next != null)
+                first = next;
+        }
+
+        private static void Rethrow(Exception exception)
+        {
+            if (exception != null)
+                ExceptionDispatchInfo.Capture(exception).Throw();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
