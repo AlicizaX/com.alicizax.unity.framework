@@ -20,7 +20,7 @@ namespace AlicizaX.ObjectPool
         T Spawn();
         T Spawn(string name);
         void Unspawn(T obj);
-        void Unspawn(object target);
+        void UnspawnTarget(object target);
         void Release();
         void Release(int toReleaseCount);
         void ReleaseAllUnused();

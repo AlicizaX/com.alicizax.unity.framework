@@ -17,6 +17,8 @@ namespace AlicizaX.ObjectPool
                 public float LastUseTime;
                 public int PrevByName;
                 public int NextByName;
+                public int PrevAvailableByName;
+                public int NextAvailableByName;
                 public int PrevUnused;
                 public int NextUnused;
                 public byte Flags;
@@ -47,7 +49,7 @@ namespace AlicizaX.ObjectPool
 
             private ReferenceOpenHashMap m_TargetMap;
             private StringOpenHashMap m_AllNameHeadMap;
-            private StringOpenHashMap m_NameCursorMap;
+            private StringOpenHashMap m_AvailableNameHeadMap;
 
             private readonly bool m_AllowMultiSpawn;
             private readonly MemoryPoolHandle m_ObjectMemoryPoolHandle;
@@ -92,7 +94,7 @@ namespace AlicizaX.ObjectPool
                 m_ReleasedPageStack = SlotArrayPool<int>.Rent(InitPageCapacity);
                 m_TargetMap = new ReferenceOpenHashMap(initCap);
                 m_AllNameHeadMap = new StringOpenHashMap(initCap);
-                m_NameCursorMap = new StringOpenHashMap(initCap);
+                m_AvailableNameHeadMap = new StringOpenHashMap(initCap);
                 m_PageCount = 0;
                 m_FreePageTop = 0;
                 m_EmptyPageTop = 0;
@@ -209,6 +211,8 @@ namespace AlicizaX.ObjectPool
                 slot.LastUseTime = Time.realtimeSinceStartup;
                 slot.PrevByName = -1;
                 slot.NextByName = -1;
+                slot.PrevAvailableByName = -1;
+                slot.NextAvailableByName = -1;
                 slot.PrevUnused = -1;
                 slot.NextUnused = -1;
                 slot.SetAlive(true);
@@ -220,10 +224,6 @@ namespace AlicizaX.ObjectPool
                 {
                     GetSlotRef(existingHead).PrevByName = idx;
                     slot.NextByName = existingHead;
-                }
-                else
-                {
-                    m_NameCursorMap.AddOrUpdate(objectName, idx);
                 }
                 m_AllNameHeadMap.AddOrUpdate(objectName, idx);
 
@@ -278,62 +278,36 @@ namespace AlicizaX.ObjectPool
 
             private int FindAvailableByName(string name)
             {
-                if (!m_AllNameHeadMap.TryGetValue(name, out int head))
+                if (!m_AvailableNameHeadMap.TryGetValue(name, out int head))
                     return -1;
 
-                ref var headSlot = ref GetSlotRef(head);
-                if (headSlot.IsAlive()
-                    && headSlot.SpawnCount == 0
-                    && string.Equals(headSlot.Obj.Name, name, StringComparison.Ordinal))
-                {
-                    return head;
-                }
+                ref var slot = ref GetSlotRef(head);
+                if (!slot.IsAlive()
+                    || slot.SpawnCount != 0
+                    || !string.Equals(slot.Obj.Name, name, StringComparison.Ordinal))
+                    return -1;
 
-                int current = GetValidNameCursor(name, head);
-                if (current == head)
-                    current = headSlot.NextByName >= 0 ? headSlot.NextByName : head;
-
-                int first = current;
-
-                do
-                {
-                    ref var slot = ref GetSlotRef(current);
-                    if (slot.IsAlive()
-                        && slot.SpawnCount == 0
-                        && string.Equals(slot.Obj.Name, name, StringComparison.Ordinal))
-                    {
-                        int nextCursor = slot.NextByName >= 0 ? slot.NextByName : head;
-                        m_NameCursorMap.AddOrUpdate(name, nextCursor);
-                        return current;
-                    }
-
-                    current = slot.NextByName >= 0 ? slot.NextByName : head;
-                }
-                while (current != first);
-
-                return -1;
-            }
-
-            private int GetValidNameCursor(string name, int head)
-            {
-                if (m_NameCursorMap.TryGetValue(name, out int cursor) && IsValidIndex(cursor))
-                {
-                    ref var slot = ref GetSlotRef(cursor);
-                    if (slot.IsAlive() && string.Equals(slot.Obj.Name, name, StringComparison.Ordinal))
-                        return cursor;
-                }
-
-                m_NameCursorMap.AddOrUpdate(name, head);
                 return head;
             }
 
             public void Unspawn(T obj)
             {
                 if (obj == null) return;
-                Unspawn(obj.Target);
+                if (obj.Target == null) return;
+                if (!m_TargetMap.TryGetValue(obj.Target, out int idx))
+                {
+                    if (m_IsShuttingDown) return;
+#if UNITY_EDITOR
+                    UnityEngine.Debug.LogError($"Cannot find target in pool '{Name}', type='{obj.Target.GetType().FullName}'");
+#endif
+                    return;
+                }
+
+                UnspawnSlot(idx);
+                ValidateState();
             }
 
-            public void Unspawn(object target)
+            public void UnspawnTarget(object target)
             {
                 if (target == null) return;
                 if (!m_TargetMap.TryGetValue(target, out int idx))
@@ -375,10 +349,10 @@ namespace AlicizaX.ObjectPool
                     current = next;
                 }
 
-                if (released > 0)
+                int releasedPages = ReleaseEmptyPages(int.MaxValue);
+                if (released > 0 || releasedPages > 0)
                 {
                     m_PendingReleaseCount = Math.Max(0, m_PendingReleaseCount - released);
-                    ReleaseEmptyPages(EmptyPageReleaseBudget);
                     UpdateActiveState();
                     ValidateState();
                 }
@@ -447,9 +421,9 @@ namespace AlicizaX.ObjectPool
                     }
                 }
 
-                m_TargetMap.Clear();
-                m_AllNameHeadMap.Clear();
-                m_NameCursorMap.Clear();
+                m_TargetMap.Dispose();
+                m_AllNameHeadMap.Dispose();
+                m_AvailableNameHeadMap.Dispose();
 
                 ReleaseAllPages();
                 ReturnPageStorage();
@@ -592,8 +566,8 @@ namespace AlicizaX.ObjectPool
                 }
                 else
                 {
+                    EnsurePageStorageCapacity(m_PageCount + 1);
                     page = m_PageCount++;
-                    EnsurePageStorageCapacity(m_PageCount);
                 }
 
                 m_Pages[page] = SlotArrayPool<ObjectSlot>.Rent(PageSize);
@@ -628,6 +602,8 @@ namespace AlicizaX.ObjectPool
                 slot.SpawnCount = 0;
                 slot.PrevByName = -1;
                 slot.NextByName = -1;
+                slot.PrevAvailableByName = -1;
+                slot.NextAvailableByName = -1;
                 slot.PrevUnused = -1;
                 slot.NextUnused = -1;
 
@@ -778,8 +754,9 @@ namespace AlicizaX.ObjectPool
                 m_EmptyPageStack[m_EmptyPageTop++] = page;
             }
 
-            private void ReleaseEmptyPages(int budget)
+            private int ReleaseEmptyPages(int budget)
             {
+                int released = 0;
                 while (budget > 0 && m_EmptyPageTop > 0)
                 {
                     int page = m_EmptyPageStack[--m_EmptyPageTop];
@@ -789,8 +766,10 @@ namespace AlicizaX.ObjectPool
 
                     ReleasePage(page);
                     AddReleasedPage(page);
+                    released++;
                     budget--;
                 }
+                return released;
             }
 
             private void AddReleasedPage(int page)
@@ -875,13 +854,6 @@ namespace AlicizaX.ObjectPool
                         m_AllNameHeadMap.Remove(objectName);
                 }
 
-                if (m_NameCursorMap.TryGetValue(objectName, out int cursor) && cursor == idx)
-                {
-                    if (next >= 0) m_NameCursorMap.AddOrUpdate(objectName, next);
-                    else if (prev >= 0) m_NameCursorMap.AddOrUpdate(objectName, prev);
-                    else m_NameCursorMap.Remove(objectName);
-                }
-
                 if (next >= 0)
                     GetSlotRef(next).PrevByName = prev;
 
@@ -892,10 +864,12 @@ namespace AlicizaX.ObjectPool
             private int ReleaseUnused(int maxReleaseCount, bool requireExpired, float expireThreshold)
             {
                 int released = 0;
+                int scanned = 0;
                 int current = requireExpired ? m_UnusedHead : GetBudgetScanStart();
 
-                while (current >= 0 && released < maxReleaseCount)
+                while (current >= 0 && scanned < maxReleaseCount && released < maxReleaseCount)
                 {
+                    scanned++;
                     ref var slot = ref GetSlotRef(current);
                     int next = slot.NextUnused;
 
@@ -1006,6 +980,24 @@ namespace AlicizaX.ObjectPool
                             UnityEngine.Debug.LogError($"Object pool '{FullName}' all-name chain link is inconsistent.");
                         }
 
+                        if (slot.SpawnCount == 0)
+                        {
+                            if (!m_AvailableNameHeadMap.TryGetValue(objectName, out int availableHead))
+                            {
+                                UnityEngine.Debug.LogError($"Object pool '{FullName}' available-name head is missing.");
+                            }
+
+                            if (slot.PrevAvailableByName < 0 && availableHead != idx)
+                            {
+                                UnityEngine.Debug.LogError($"Object pool '{FullName}' available-name chain head is inconsistent.");
+                            }
+
+                            if (slot.NextAvailableByName >= 0 && GetSlotRef(slot.NextAvailableByName).PrevAvailableByName != idx)
+                            {
+                                UnityEngine.Debug.LogError($"Object pool '{FullName}' available-name chain link is inconsistent.");
+                            }
+                        }
+
                         bool inUnusedList = m_UnusedHead == idx || slot.PrevUnused >= 0 || slot.NextUnused >= 0;
 
                         if (slot.SpawnCount == 0)
@@ -1061,14 +1053,68 @@ namespace AlicizaX.ObjectPool
             private void MarkSlotAvailable(int idx)
             {
                 AddToUnusedListTail(idx);
-                ref var slot = ref GetSlotRef(idx);
-                if (slot.IsAlive())
-                    m_NameCursorMap.AddOrUpdate(slot.Obj.Name ?? string.Empty, idx);
+                AddToAvailableNameChain(idx);
             }
 
             private void MarkSlotUnavailable(int idx)
             {
+                RemoveFromAvailableNameChain(idx);
                 RemoveFromUnusedList(idx);
+            }
+
+            private void AddToAvailableNameChain(int idx)
+            {
+                ref var slot = ref GetSlotRef(idx);
+                if (!slot.IsAlive() || slot.SpawnCount != 0)
+                    return;
+                if (slot.PrevAvailableByName >= 0 || slot.NextAvailableByName >= 0)
+                    return;
+
+                string objectName = slot.Obj.Name ?? string.Empty;
+                if (m_AvailableNameHeadMap.TryGetValue(objectName, out int head))
+                {
+                    if (head == idx)
+                        return;
+
+                    GetSlotRef(head).PrevAvailableByName = idx;
+                    slot.NextAvailableByName = head;
+                }
+                else
+                {
+                    slot.NextAvailableByName = -1;
+                }
+
+                slot.PrevAvailableByName = -1;
+                m_AvailableNameHeadMap.AddOrUpdate(objectName, idx);
+            }
+
+            private void RemoveFromAvailableNameChain(int idx)
+            {
+                ref var slot = ref GetSlotRef(idx);
+                if (!slot.IsAlive())
+                    return;
+
+                string objectName = slot.Obj.Name ?? string.Empty;
+                bool hasHead = m_AvailableNameHeadMap.TryGetValue(objectName, out int head);
+                if (!hasHead && slot.PrevAvailableByName < 0 && slot.NextAvailableByName < 0)
+                    return;
+
+                int prev = slot.PrevAvailableByName;
+                int next = slot.NextAvailableByName;
+
+                if (prev >= 0)
+                    GetSlotRef(prev).NextAvailableByName = next;
+                else if (hasHead && head == idx)
+                {
+                    if (next >= 0) m_AvailableNameHeadMap.AddOrUpdate(objectName, next);
+                    else m_AvailableNameHeadMap.Remove(objectName);
+                }
+
+                if (next >= 0)
+                    GetSlotRef(next).PrevAvailableByName = prev;
+
+                slot.PrevAvailableByName = -1;
+                slot.NextAvailableByName = -1;
             }
 
             private void AddToUnusedListTail(int idx)

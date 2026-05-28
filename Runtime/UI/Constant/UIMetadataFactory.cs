@@ -77,7 +77,7 @@ namespace AlicizaX.UI.Runtime
         internal static void ReturnToPool(UIMetadata metadata)
         {
             if (metadata == null) return;
-            m_UIMetadataPool.Unspawn(metadata);
+            m_UIMetadataPool.UnspawnTarget(metadata);
         }
     }
 }

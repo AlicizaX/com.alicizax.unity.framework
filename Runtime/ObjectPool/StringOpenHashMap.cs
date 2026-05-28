@@ -163,6 +163,8 @@ namespace AlicizaX.ObjectPool
             var newValues = SlotArrayPool<int>.Rent(newCap);
             var newNext = SlotArrayPool<int>.Rent(newCap);
             Array.Clear(newBuckets, 0, newBuckets.Length);
+            Array.Clear(newKeys, 0, newKeys.Length);
+            Array.Clear(newValues, 0, newValues.Length);
             Array.Clear(newNext, 0, newNext.Length);
 
             int newAlloc = 0;

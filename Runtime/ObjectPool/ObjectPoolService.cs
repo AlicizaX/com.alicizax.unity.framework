@@ -49,9 +49,10 @@ namespace AlicizaX.ObjectPool
         {
             for (int i = m_PoolCount - 1; i >= 0; i--)
                 m_Pools[i].Shutdown();
-            m_PoolMap.Clear();
-            m_PoolRefMap.Clear();
+            m_PoolMap.Dispose();
+            m_PoolRefMap.Dispose();
             Array.Clear(m_Pools, 0, m_PoolCount);
+            Array.Clear(m_CachedSortedPools, 0, m_CachedSortedCount);
             m_PoolCount = 0;
             m_CachedSortedCount = 0;
         }
@@ -150,6 +151,16 @@ namespace AlicizaX.ObjectPool
 #endif
                 return false;
             }
+            if (!m_PoolRefMap.TryGetValue(objectPool, out int idx)
+                || idx < 0
+                || idx >= m_PoolCount
+                || !ReferenceEquals(m_Pools[idx], objectPool))
+            {
+#if UNITY_EDITOR
+                UnityEngine.Debug.LogError("Object pool is not registered in this service.");
+#endif
+                return false;
+            }
             return InternalDestroy(new TypeNamePair(typeof(T), objectPool.Name));
         }
 
@@ -208,6 +219,9 @@ namespace AlicizaX.ObjectPool
 
             m_PoolMap.Remove(key);
             m_PoolRefMap.Remove(pool);
+            if (m_CachedSortedCount > 0)
+                Array.Clear(m_CachedSortedPools, 0, m_CachedSortedCount);
+            m_CachedSortedCount = 0;
             return true;
         }
 
@@ -218,6 +232,8 @@ namespace AlicizaX.ObjectPool
                 m_CachedSortedPools = new ObjectPoolBase[Math.Max(count, 8)];
 
             Array.Copy(m_Pools, 0, m_CachedSortedPools, 0, count);
+            if (m_CachedSortedCount > count)
+                Array.Clear(m_CachedSortedPools, count, m_CachedSortedCount - count);
             m_CachedSortedCount = count;
 
             for (int i = 1; i < count; i++)

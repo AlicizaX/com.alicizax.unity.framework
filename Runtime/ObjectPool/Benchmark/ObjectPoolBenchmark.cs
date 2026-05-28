@@ -217,7 +217,7 @@ namespace AlicizaX.ObjectPool
                 {
                     BenchmarkObject spawned = pool.Spawn();
                     AssertReference(spawned, obj, "single spawn returned wrong object");
-                    pool.Unspawn(target);
+                    pool.Unspawn(spawned);
                 }
                 StopCaseMeasure();
 
@@ -236,7 +236,7 @@ namespace AlicizaX.ObjectPool
             RestartCaseMeasure();
             BenchmarkObject spawned = pool.Spawn(null);
             AssertReference(spawned, obj, "Spawn(null) failed for empty-name object");
-            pool.Unspawn(target);
+            pool.Unspawn(spawned);
             StopCaseMeasure();
 
             DestroyPool(poolName);
@@ -266,7 +266,7 @@ namespace AlicizaX.ObjectPool
                     {
                         BenchmarkObject spawned = pool.Spawn("same");
                         AssertNotNull(spawned, "same-name spawn returned null");
-                        pool.Unspawn(spawned.Target);
+                        pool.Unspawn(spawned);
                     }
                 }
                 StopCaseMeasure();
@@ -284,7 +284,7 @@ namespace AlicizaX.ObjectPool
                 int cycles = Math.Max(1, loopCount / Math.Max(1, blockedCount));
                 string poolName = MakePoolName("same-name-occupied");
                 IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, totalCount, float.MaxValue);
-                BenchmarkTarget[] blockedTargets = new BenchmarkTarget[blockedCount];
+                BenchmarkObject[] blockedObjects = new BenchmarkObject[blockedCount];
 
                 for (int i = 0; i < totalCount; i++)
                     pool.Register(BenchmarkObject.Create("occupied", new BenchmarkTarget(i), false, true), false);
@@ -294,7 +294,7 @@ namespace AlicizaX.ObjectPool
                     BenchmarkObject spawned = pool.Spawn("occupied");
                     AssertNotNull(spawned, "occupied setup spawn returned null");
                     if (spawned != null)
-                        blockedTargets[i] = spawned.Target;
+                        blockedObjects[i] = spawned;
                 }
 
                 RestartCaseMeasure();
@@ -303,14 +303,14 @@ namespace AlicizaX.ObjectPool
                     BenchmarkObject spawned = pool.Spawn("occupied");
                     AssertNotNull(spawned, "occupied scan spawn returned null");
                     if (spawned != null)
-                        pool.Unspawn(spawned.Target);
+                        pool.Unspawn(spawned);
                 }
                 StopCaseMeasure();
 
                 for (int i = 0; i < blockedCount; i++)
                 {
-                    if (blockedTargets[i] != null)
-                        pool.Unspawn(blockedTargets[i]);
+                    if (blockedObjects[i] != null)
+                        pool.Unspawn(blockedObjects[i]);
                 }
 
                 DestroyPool(poolName);
@@ -325,7 +325,7 @@ namespace AlicizaX.ObjectPool
                 int blockedCount = totalCount - 1;
                 string poolName = MakePoolName("same-name-extreme");
                 IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, totalCount, float.MaxValue);
-                BenchmarkTarget[] blockedTargets = new BenchmarkTarget[blockedCount];
+                BenchmarkObject[] blockedObjects = new BenchmarkObject[blockedCount];
 
                 for (int i = 0; i < totalCount; i++)
                     pool.Register(BenchmarkObject.Create("extreme", new BenchmarkTarget(i), false, true), false);
@@ -335,7 +335,7 @@ namespace AlicizaX.ObjectPool
                     BenchmarkObject spawned = pool.Spawn("extreme");
                     AssertNotNull(spawned, "extreme setup spawn returned null");
                     if (spawned != null)
-                        blockedTargets[i] = spawned.Target;
+                        blockedObjects[i] = spawned;
                 }
 
                 RestartCaseMeasure();
@@ -344,14 +344,14 @@ namespace AlicizaX.ObjectPool
                     BenchmarkObject spawned = pool.Spawn("extreme");
                     AssertNotNull(spawned, "extreme one-free spawn returned null");
                     if (spawned != null)
-                        pool.Unspawn(spawned.Target);
+                        pool.Unspawn(spawned);
                 }
                 StopCaseMeasure();
 
                 for (int i = 0; i < blockedCount; i++)
                 {
-                    if (blockedTargets[i] != null)
-                        pool.Unspawn(blockedTargets[i]);
+                    if (blockedObjects[i] != null)
+                        pool.Unspawn(blockedObjects[i]);
                 }
 
                 DestroyPool(poolName);
@@ -376,7 +376,7 @@ namespace AlicizaX.ObjectPool
                 }
 
                 for (int i = 0; i < loopCount; i++)
-                    pool.Unspawn(target);
+                    pool.Unspawn(obj);
                 StopCaseMeasure();
 
                 DestroyPool(poolName);
@@ -407,7 +407,7 @@ namespace AlicizaX.ObjectPool
                     BenchmarkObject spawned = pool.Spawn(objectName);
                     AssertNotNull(spawned, "mixed-name spawn returned null");
                     if (spawned != null)
-                        pool.Unspawn(spawned.Target);
+                        pool.Unspawn(spawned);
                 }
                 StopCaseMeasure();
 
@@ -436,7 +436,7 @@ namespace AlicizaX.ObjectPool
                 if (spawned != null)
                     AssertReference(spawned.Target, second, "capacity replacement kept wrong object");
 
-                pool.Unspawn(second);
+                pool.Unspawn(spawned);
                 pool.ReleaseAllUnused();
                 AssertEqual(pool.Count, 0, "capacity release did not clear unused object");
                 StopCaseMeasure();
@@ -450,12 +450,13 @@ namespace AlicizaX.ObjectPool
             string poolName = MakePoolName("spawned-release");
             IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 4, float.MaxValue);
             BenchmarkTarget target = new BenchmarkTarget(8);
-            pool.Register(BenchmarkObject.Create("spawned", target, false, true), true);
+            BenchmarkObject obj = BenchmarkObject.Create("spawned", target, false, true);
+            pool.Register(obj, true);
 
             RestartCaseMeasure();
             pool.ReleaseAllUnused();
             AssertEqual(pool.Count, 1, "spawned object was released while in use");
-            pool.Unspawn(target);
+            pool.Unspawn(obj);
             pool.ReleaseAllUnused();
             AssertEqual(pool.Count, 0, "spawned object was not released after unspawn");
             StopCaseMeasure();
@@ -487,36 +488,36 @@ namespace AlicizaX.ObjectPool
             {
                 string poolName = MakePoolName("cursor-recovery");
                 IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 4, float.MaxValue);
-                BenchmarkTarget[] blockedTargets = new BenchmarkTarget[3];
+                BenchmarkObject[] blockedObjects = new BenchmarkObject[3];
 
                 for (int i = 0; i < 4; i++)
                     pool.Register(BenchmarkObject.Create("cursor", new BenchmarkTarget(i), false, true), false);
 
-                for (int i = 0; i < blockedTargets.Length; i++)
+                for (int i = 0; i < blockedObjects.Length; i++)
                 {
                     BenchmarkObject spawned = pool.Spawn("cursor");
                     AssertNotNull(spawned, "cursor setup spawn returned null");
                     if (spawned != null)
-                        blockedTargets[i] = spawned.Target;
+                        blockedObjects[i] = spawned;
                 }
 
                 BenchmarkObject cursorObject = pool.Spawn("cursor");
                 AssertNotNull(cursorObject, "cursor target spawn returned null");
                 if (cursorObject != null)
-                    pool.Unspawn(cursorObject.Target);
+                    pool.Unspawn(cursorObject);
 
                 RestartCaseMeasure();
                 pool.ReleaseAllUnused();
-                if (blockedTargets[0] != null)
-                    pool.Unspawn(blockedTargets[0]);
+                if (blockedObjects[0] != null)
+                    pool.Unspawn(blockedObjects[0]);
                 BenchmarkObject recovered = pool.Spawn("cursor");
                 AssertNotNull(recovered, "cursor did not recover after release");
                 if (recovered != null)
-                    pool.Unspawn(recovered.Target);
+                    pool.Unspawn(recovered);
                 StopCaseMeasure();
 
-                for (int i = 1; i < blockedTargets.Length; i++)
-                    pool.Unspawn(blockedTargets[i]);
+                for (int i = 1; i < blockedObjects.Length; i++)
+                    pool.Unspawn(blockedObjects[i]);
 
                 DestroyPool(poolName);
             }

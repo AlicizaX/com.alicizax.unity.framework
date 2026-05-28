@@ -139,6 +139,8 @@ namespace AlicizaX.ObjectPool
             var newValues = SlotArrayPool<int>.Rent(newCap);
             var newNext = SlotArrayPool<int>.Rent(newCap);
             Array.Clear(newBuckets, 0, newBuckets.Length);
+            Array.Clear(newKeys, 0, newKeys.Length);
+            Array.Clear(newValues, 0, newValues.Length);
             Array.Clear(newNext, 0, newNext.Length);
 
             int newAlloc = 0;
@@ -172,6 +174,22 @@ namespace AlicizaX.ObjectPool
             m_Mask = newMask;
             m_AllocCount = newAlloc;
             m_FreeList = 0;
+        }
+
+        public void Dispose()
+        {
+            SlotArrayPool<int>.Return(m_Buckets, true);
+            SlotArrayPool<object>.Return(m_Keys, true);
+            SlotArrayPool<int>.Return(m_Values, true);
+            SlotArrayPool<int>.Return(m_Next, true);
+            m_Buckets = null;
+            m_Keys = null;
+            m_Values = null;
+            m_Next = null;
+            m_Count = 0;
+            m_FreeList = 0;
+            m_Mask = 0;
+            m_AllocCount = 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

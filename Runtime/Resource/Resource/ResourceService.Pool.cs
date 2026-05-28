@@ -51,7 +51,7 @@ namespace AlicizaX.Resource.Runtime
         {
             if (_assetPool != null)
             {
-                _assetPool.Unspawn(asset);
+                _assetPool.UnspawnTarget(asset);
             }
         }
 
