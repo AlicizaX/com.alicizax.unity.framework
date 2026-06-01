@@ -174,6 +174,10 @@ namespace AlicizaX.Timer.Runtime
             return GetHandle(slotIndex);
         }
 
+        /// <summary>
+        /// 热路径调用方必须使用缓存委托或静态方法组，禁止传入捕获 lambda 或闭包，
+        /// 因为闭包对象会产生分配，破坏 0GC 约束。
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ulong AddTimer<T>(Action<T> callback, T arg, float time, bool isLoop = false, bool isUnscaled = false) where T : class
         {
@@ -734,6 +738,12 @@ namespace AlicizaX.Timer.Runtime
                 AdvanceWheelTick(isUnscaled, cursorTick, currentTime);
                 cursorTick++;
                 tickBudget--;
+            }
+
+            if (GetQueueCount(isUnscaled) == 0)
+            {
+                SetCurrentWheelTick(isUnscaled, currentTick + 1L);
+                return;
             }
 
             SetCurrentWheelTick(isUnscaled, cursorTick <= currentTick ? cursorTick : currentTick + 1L);
