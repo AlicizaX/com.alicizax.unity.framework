@@ -143,7 +143,7 @@ namespace AlicizaX
 
             Log.Init();
 
-            Log.Info("Game Version: {0}, Unity Version: {1}", AppVersion.GameVersion, Application.unityVersion);
+            Log.Info("Game Version: {0}, Unity Version: {1}", Application.version, Application.unityVersion);
 
             Utility.Converter.ScreenDpi = Screen.dpi;
             if (Utility.Converter.ScreenDpi <= 0)

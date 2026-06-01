@@ -23,6 +23,11 @@ namespace AlicizaX.Resource.Runtime
         int InternalResourceVersion { get; }
 
         /// <summary>
+        /// 资源绑定服务。
+        /// </summary>
+        IResourceBindingService BindingService { get; }
+
+        /// <summary>
         /// 获取或设置运行模式。
         /// </summary>
         EPlayMode PlayMode { get; set; }
@@ -63,30 +68,69 @@ namespace AlicizaX.Resource.Runtime
         long Milliseconds { get; set; }
 
         /// <summary>
-        /// 获取或设置资源对象池自动释放可释放对象的间隔秒数。
+        /// 获取或设置资源资产记录预热容量。
         /// </summary>
-        float AssetAutoReleaseInterval { get; set; }
+        int AssetRecordCapacity { get; set; }
+
+        int AssetLeaseCapacity { get; set; }
+
+        int BindingOwnerCapacity { get; set; }
+
+        int BindingSlotCapacity { get; set; }
+
+        int RegisteredTargetCapacity { get; set; }
 
         /// <summary>
-        /// 获取或设置资源对象池的容量。
+        /// 获取或设置无引用资源句柄进入 Idle 后的过期秒数。
         /// </summary>
-        int AssetCapacity { get; set; }
-
-        /// <summary>
-        /// 获取或设置资源对象池对象过期秒数。
-        /// </summary>
-        float AssetExpireTime { get; set; }
-
-        /// <summary>
-        /// 获取或设置资源对象池的优先级。
-        /// </summary>
-        int AssetPriority { get; set; }
+        float IdleAssetExpireTime { get; set; }
 
         /// <summary>
         /// 卸载资源。
         /// </summary>
         /// <param name="asset">要卸载的资源。</param>
         void UnloadAsset(object asset);
+
+        /// <summary>
+        /// 使用显式资源 Key 获取一个直接资源租约。
+        /// </summary>
+        /// <param name="key">资源 Key。</param>
+        /// <returns>资源租约句柄，失败时返回无效句柄。</returns>
+        ResourceLeaseHandle AcquireDirect(ResourceKey key);
+
+        /// <summary>
+        /// 异步获取一个直接资源租约。
+        /// </summary>
+        /// <param name="key">资源 Key。</param>
+        /// <param name="cancellationToken">取消操作 Token。</param>
+        /// <returns>资源租约句柄，失败时返回无效句柄。</returns>
+        UniTask<ResourceLeaseHandle> AcquireDirectAsync(ResourceKey key, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// 尝试使用显式资源 Key 获取一个直接资源租约。
+        /// </summary>
+        /// <param name="key">资源 Key。</param>
+        /// <param name="handle">获取到的资源租约句柄。</param>
+        /// <returns>是否获取成功。</returns>
+        bool TryAcquireDirect(ResourceKey key, out ResourceLeaseHandle handle);
+
+        /// <summary>
+        /// 释放一个显式资源租约。
+        /// </summary>
+        /// <param name="handle">资源租约句柄。</param>
+        void Release(ResourceLeaseHandle handle);
+
+        /// <summary>
+        /// 尝试从资源租约中读取 Unity 资源对象。
+        /// </summary>
+        /// <param name="handle">资源租约句柄。</param>
+        /// <param name="asset">Unity 资源对象。</param>
+        /// <returns>是否读取成功。</returns>
+        bool TryGetLeaseAsset(ResourceLeaseHandle handle, out UnityEngine.Object asset);
+
+        void WarmupResourceRecords(int assetCapacity, int leaseCapacity, int unityObjectIndexCapacity);
+
+        int GetAssetInfos(ResourceAssetInfo[] results, int startIndex, int maxCount);
 
         /// <summary>
         /// 资源回收（卸载引用计数为零的资源）

@@ -2,7 +2,6 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
-using AlicizaX.ObjectPool;
 using AlicizaX;
 using Cysharp.Text;
 using Cysharp.Threading.Tasks;
@@ -52,6 +51,8 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         public int InternalResourceVersion => _internalResourceVersion;
 
+        public IResourceBindingService BindingService => _bindingService;
+
         /// <summary>
         /// 当前最新的包裹版本。
         /// </summary>
@@ -83,7 +84,9 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         private readonly Dictionary<string, LoadingOperationState> _assetLoadingOperations = new Dictionary<string, LoadingOperationState>();
 
-        private readonly Dictionary<AssetCacheKey, string> _assetObjectKeyMap = new Dictionary<AssetCacheKey, string>(AssetCacheKeyComparer.Instance);
+        private readonly Dictionary<AssetCacheKey, string> _assetLoadingKeyMap = new Dictionary<AssetCacheKey, string>(AssetCacheKeyComparer.Instance);
+
+        private readonly Dictionary<AssetCacheKey, string> _subAssetsLoadingKeyMap = new Dictionary<AssetCacheKey, string>(AssetCacheKeyComparer.Instance);
 
         private const float ProgressCallbackThreshold = 0.01f;
 
@@ -92,6 +95,8 @@ namespace AlicizaX.Resource.Runtime
         private UnloadAllAssetsOperation _unloadAllAssetsOperation;
 
         private bool _isDestroying;
+
+        private ResourceBindingService _bindingService;
 
         private readonly struct AssetCacheKey
         {
@@ -177,6 +182,8 @@ namespace AlicizaX.Resource.Runtime
         public void Initialize()
         {
             _isDestroying = false;
+            InitializeAssetRecords();
+            _bindingService = new ResourceBindingService(this);
             // 初始化资源系。。
             YooAssets.Initialize(new ResourceLogger());
 
@@ -199,7 +206,6 @@ namespace AlicizaX.Resource.Runtime
 
             PackageMap[packageName] = defaultPackage;
 
-            CreateAssetPool();
         }
 
         protected override void OnInitialize()
@@ -217,10 +223,13 @@ namespace AlicizaX.Resource.Runtime
             }
 
             PackageMap.Clear();
-            _assetPool = null;
-            _assetLoadingOperations.Clear();
+            ShutdownLoadingOperations();
             _assetInfoMap.Clear();
-            _assetObjectKeyMap.Clear();
+            _assetLoadingKeyMap.Clear();
+            _subAssetsLoadingKeyMap.Clear();
+            _bindingService?.Shutdown();
+            _bindingService = null;
+            ShutdownAssetRecords();
         }
 
         public UniTask<bool> InitPackageAsync(string packageName = "", string hostServerURL = "", string fallbackHostServerURL = "")
@@ -373,7 +382,7 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         public void UnloadUnusedAssets()
         {
-            _assetPool.ReleaseAllUnused();
+            ReleaseAllUnusedAssetRecords();
             if (_unloadUnusedAssetsOperation is { IsDone: false })
             {
                 return;
@@ -654,12 +663,12 @@ namespace AlicizaX.Resource.Runtime
         #endregion
 
         /// <summary>
-        /// 获取资源定位地址的缓存Key。
+        /// 获取资源定位地址的加载去重Key。
         /// </summary>
         /// <param name="location">资源定位地址。</param>
         /// <param name="packageName">资源包名称。</param>
-        /// <returns>资源定位地址的缓存Key。</returns>
-        private string GetCacheKey(string location, string packageName = "")
+        /// <returns>资源定位地址的加载去重Key。</returns>
+        private string GetLoadingOperationKey(string location, string packageName = "")
         {
             if (string.IsNullOrEmpty(packageName) || packageName.Equals(DefaultPackageName))
             {
@@ -668,13 +677,26 @@ namespace AlicizaX.Resource.Runtime
 
             AssetCacheKey key = new AssetCacheKey(packageName, location);
 
-            if (_assetObjectKeyMap.TryGetValue(key, out string cacheKey))
+            if (_assetLoadingKeyMap.TryGetValue(key, out string cacheKey))
             {
                 return cacheKey;
             }
 
             cacheKey = ZString.Concat(packageName, "/", location);
-            _assetObjectKeyMap[key] = cacheKey;
+            _assetLoadingKeyMap[key] = cacheKey;
+            return cacheKey;
+        }
+
+        private string GetSubAssetsLoadingOperationKey(string location, string packageName)
+        {
+            AssetCacheKey key = new AssetCacheKey(NormalizePackageName(packageName), location);
+            if (_subAssetsLoadingKeyMap.TryGetValue(key, out string cacheKey))
+            {
+                return cacheKey;
+            }
+
+            cacheKey = ZString.Concat(key.PackageName, "/@subassets/", location);
+            _subAssetsLoadingKeyMap[key] = cacheKey;
             return cacheKey;
         }
 
@@ -691,18 +713,33 @@ namespace AlicizaX.Resource.Runtime
                 return null;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
-            AssetObject assetObject = _assetPool.Spawn(assetObjectKey);
-
-            if (assetObject != null)
+            string normalizedPackageName = NormalizePackageName(packageName);
+            Type assetType = typeof(T);
+            ResourceAssetKind assetKind = InferAssetKind(assetType);
+            if (TryGetCachedAssetRecord(normalizedPackageName, location, assetType, assetKind, ResourceHandleKind.AssetHandle, out int cachedAssetId, out UnityEngine.Object cachedAsset))
             {
-                return assetObject.Target as T;
+                ref AssetSlot cachedSlot = ref GetAssetSlotRef(cachedAssetId);
+                TryAddLegacyDirectRef(cachedAssetId, cachedSlot.Generation);
+                return cachedAsset as T;
             }
 
             AssetHandle handle = GetHandleSync<T>(location, packageName: packageName);
+            if (handle == null)
+            {
+                return null;
+            }
+
             T ret = handle.AssetObject as T;
-            assetObject = AssetObject.Create(assetObjectKey, handle.AssetObject, handle);
-            _assetPool.Register(assetObject, true);
+            if (ret == null)
+            {
+                DisposeHandle(handle);
+                return null;
+            }
+
+            int assetId = GetOrCreateAssetRecord(normalizedPackageName, location, assetType, assetKind,
+                ResourceHandleKind.AssetHandle, handle.AssetObject, handle);
+            ref AssetSlot slot = ref GetAssetSlotRef(assetId);
+            TryAddLegacyDirectRef(assetId, slot.Generation);
 
             return ret;
         }
@@ -720,20 +757,35 @@ namespace AlicizaX.Resource.Runtime
                 return null;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
-            AssetObject assetObject = _assetPool.Spawn(assetObjectKey);
-
-            if (assetObject != null)
+            ResourceLeaseHandle prefabLease = AcquirePrefabSourceLease(location, packageName);
+            if (!prefabLease.IsValid)
             {
-                return AssetsReference.Instantiate(assetObject.Target as GameObject, parent, this).gameObject;
+                return null;
             }
 
-            AssetHandle handle = GetHandleSync<GameObject>(location, packageName: packageName);
-            GameObject gameObject = AssetsReference.Instantiate(handle.AssetObject as GameObject, parent, this).gameObject;
-            assetObject = AssetObject.Create(assetObjectKey, handle.AssetObject, handle);
-            _assetPool.Register(assetObject, true);
+            if (!TryGetLeaseAssetObject(prefabLease, out UnityEngine.Object prefabObject) || prefabObject is not GameObject prefab)
+            {
+                Release(prefabLease);
+                return null;
+            }
 
-            return gameObject;
+            GameObject instance = UnityEngine.Object.Instantiate(prefab, parent);
+            if (instance == null)
+            {
+                Release(prefabLease);
+                return null;
+            }
+
+            ResourceOwner owner = EnsureResourceOwner(instance);
+            ResourceBindStatus bindStatus = _bindingService.RegisterPrefabSource(owner, prefabLease, prefab);
+            if (bindStatus != ResourceBindStatus.Success)
+            {
+                UnityEngine.Object.Destroy(instance);
+                Release(prefabLease);
+                return null;
+            }
+
+            return instance;
         }
 
         /// <summary>
@@ -758,8 +810,13 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
-            var asset = await GetOrLoadAssetAsync(location, typeof(T), packageName, assetObjectKey);
+            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
+            var asset = await GetOrLoadAssetAsync(location, typeof(T), InferAssetKind(typeof(T)), packageName, assetLoadingKey);
+            if (asset != null)
+            {
+                TryAddLegacyDirectRefByKey(packageName, location, typeof(T), asset);
+            }
+
             callback?.Invoke(asset as T);
         }
 
@@ -776,8 +833,13 @@ namespace AlicizaX.Resource.Runtime
                 return null;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
-            var asset = await GetOrLoadAssetAsync(location, typeof(T), packageName, assetObjectKey, cancellationToken: cancellationToken);
+            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
+            var asset = await GetOrLoadAssetAsync(location, typeof(T), InferAssetKind(typeof(T)), packageName, assetLoadingKey, cancellationToken: cancellationToken);
+            if (asset != null)
+            {
+                TryAddLegacyDirectRefByKey(packageName, location, typeof(T), asset);
+            }
+
             return asset as T;
         }
 
@@ -794,9 +856,41 @@ namespace AlicizaX.Resource.Runtime
                 return null;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
-            var asset = await GetOrLoadAssetAsync(location, typeof(GameObject), packageName, assetObjectKey, cancellationToken: cancellationToken);
-            return asset != null ? AssetsReference.Instantiate(asset as GameObject, parent, this).gameObject : null;
+            ResourceLeaseHandle prefabLease = await AcquirePrefabSourceLeaseAsync(location, packageName, cancellationToken);
+            if (!prefabLease.IsValid)
+            {
+                return null;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Release(prefabLease);
+                return null;
+            }
+
+            if (!TryGetLeaseAssetObject(prefabLease, out UnityEngine.Object prefabObject) || prefabObject is not GameObject prefab)
+            {
+                Release(prefabLease);
+                return null;
+            }
+
+            GameObject instance = UnityEngine.Object.Instantiate(prefab, parent);
+            if (instance == null)
+            {
+                Release(prefabLease);
+                return null;
+            }
+
+            ResourceOwner owner = EnsureResourceOwner(instance);
+            ResourceBindStatus bindStatus = _bindingService.RegisterPrefabSource(owner, prefabLease, prefab);
+            if (bindStatus != ResourceBindStatus.Success)
+            {
+                UnityEngine.Object.Destroy(instance);
+                Release(prefabLease);
+                return null;
+            }
+
+            return instance;
         }
 
         #endregion
@@ -834,7 +928,7 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
+            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
             float duration = Time.time;
             AssetInfo assetInfo = GetAssetInfo(location, packageName);
             if (!string.IsNullOrEmpty(assetInfo.Error))
@@ -849,7 +943,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException(errorMessage);
             }
 
-            var asset = await GetOrLoadAssetAsync(location, assetType, packageName, assetObjectKey, NormalizePriority(priority), default,
+            var asset = await GetOrLoadAssetAsync(location, assetType, InferAssetKind(assetType), packageName, assetLoadingKey, NormalizePriority(priority), default,
                 loadAssetCallbacks.LoadAssetUpdateCallback, userData);
 
             if (asset == null)
@@ -859,6 +953,7 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
+            TryAddLegacyDirectRefByKey(packageName, location, assetType, asset);
             loadAssetCallbacks.LoadAssetSuccessCallback?.Invoke(location, asset, Time.time - duration, userData);
         }
 
@@ -894,7 +989,7 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            string assetObjectKey = GetCacheKey(location, packageName);
+            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
             float duration = Time.time;
             AssetInfo assetInfo = GetAssetInfo(location, packageName);
             if (!string.IsNullOrEmpty(assetInfo.Error))
@@ -909,7 +1004,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException(errorMessage);
             }
 
-            var asset = await GetOrLoadAssetAsync(location, assetInfo.AssetType, packageName, assetObjectKey, NormalizePriority(priority), default,
+            var asset = await GetOrLoadAssetAsync(location, assetInfo.AssetType, InferAssetKind(assetInfo.AssetType), packageName, assetLoadingKey, NormalizePriority(priority), default,
                 loadAssetCallbacks.LoadAssetUpdateCallback, userData);
 
             if (asset == null)
@@ -919,6 +1014,7 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
+            TryAddLegacyDirectRefByKey(packageName, location, assetInfo.AssetType, asset);
             loadAssetCallbacks.LoadAssetSuccessCallback?.Invoke(location, asset, Time.time - duration, userData);
         }
 
@@ -988,33 +1084,43 @@ namespace AlicizaX.Resource.Runtime
 
         #endregion
 
-        private async UniTask<UnityEngine.Object> GetOrLoadAssetAsync(string location, Type assetType, string packageName,
-            string assetObjectKey, uint priority = 0, CancellationToken cancellationToken = default, LoadAssetUpdateCallback loadAssetUpdateCallback = null, object userData = null)
+        private async UniTask<UnityEngine.Object> GetOrLoadAssetAsync(string location, Type assetType, ResourceAssetKind assetKind, string packageName,
+            string assetLoadingKey, uint priority = 0, CancellationToken cancellationToken = default, LoadAssetUpdateCallback loadAssetUpdateCallback = null, object userData = null)
         {
+            string normalizedPackageName = NormalizePackageName(packageName);
+            assetKind = NormalizeAssetKind(assetType, assetKind);
+            assetType = NormalizeAssetType(assetType, assetKind);
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (_isDestroying || _assetPool == null)
+                if (cancellationToken.IsCancellationRequested)
                 {
                     return null;
                 }
 
-                AssetObject cachedAssetObject = _assetPool.Spawn(assetObjectKey);
-                if (cachedAssetObject != null)
+                if (_isDestroying)
                 {
-                    return cachedAssetObject.Target as UnityEngine.Object;
+                    return null;
                 }
 
-                if (!TryBeginLoading(assetObjectKey))
+                if (TryGetCachedAssetRecord(normalizedPackageName, location, assetType, assetKind, ResourceHandleKind.AssetHandle, out _, out UnityEngine.Object cachedAsset))
                 {
-                    await WaitForLoadingAsync(assetObjectKey, cancellationToken);
+                    return cachedAsset;
+                }
+
+                if (!TryBeginLoading(assetLoadingKey))
+                {
+                    if (!await WaitForLoadingAsync(assetLoadingKey, cancellationToken))
+                    {
+                        return null;
+                    }
+
                     continue;
                 }
 
                 AssetHandle handle = GetHandleAsync(location, assetType, packageName: packageName, priority: priority);
                 if (handle == null)
                 {
-                    FailLoading(assetObjectKey, null);
+                    FailLoading(assetLoadingKey, null);
                     return null;
                 }
 
@@ -1024,7 +1130,7 @@ namespace AlicizaX.Resource.Runtime
                     if (cancellationToken.IsCancellationRequested)
                     {
                         DisposeHandle(handle);
-                        FailLoading(assetObjectKey, null);
+                        FailLoading(assetLoadingKey, null);
                         return null;
                     }
 
@@ -1034,21 +1140,27 @@ namespace AlicizaX.Resource.Runtime
                 if (handle.AssetObject == null || handle.Status == EOperationStatus.Failed)
                 {
                     DisposeHandle(handle);
-                    FailLoading(assetObjectKey, null);
+                    FailLoading(assetLoadingKey, null);
                     return null;
                 }
 
-                var assetObject = AssetObject.Create(assetObjectKey, handle.AssetObject, handle);
-                if (_isDestroying || _assetPool == null)
+                if (_isDestroying)
                 {
-                    assetObject.Release(false);
-                    MemoryPool.Release(assetObject);
-                    FailLoading(assetObjectKey, null);
+                    DisposeHandle(handle);
+                    FailLoading(assetLoadingKey, null);
                     return null;
                 }
 
-                _assetPool.Register(assetObject, true);
-                CompleteLoading(assetObjectKey);
+                if (TryGetCachedAssetRecord(normalizedPackageName, location, assetType, assetKind, ResourceHandleKind.AssetHandle, out _, out cachedAsset))
+                {
+                    DisposeHandle(handle);
+                    CompleteLoading(assetLoadingKey);
+                    return cachedAsset;
+                }
+
+                GetOrCreateAssetRecord(normalizedPackageName, location, assetType, assetKind,
+                    ResourceHandleKind.AssetHandle, handle.AssetObject, handle);
+                CompleteLoading(assetLoadingKey);
                 return handle.AssetObject as UnityEngine.Object;
             }
         }
@@ -1064,27 +1176,30 @@ namespace AlicizaX.Resource.Runtime
             return true;
         }
 
-        private async UniTask WaitForLoadingAsync(string assetObjectKey, CancellationToken cancellationToken = default)
+        private async UniTask<bool> WaitForLoadingAsync(string assetObjectKey, CancellationToken cancellationToken = default)
         {
             if (!_assetLoadingOperations.TryGetValue(assetObjectKey, out var loadingOperation))
             {
-                return;
+                return true;
             }
 
             loadingOperation.AddWaiter();
-            try
+            while (!loadingOperation.IsDone)
             {
-                while (!loadingOperation.IsDone)
+                if (cancellationToken.IsCancellationRequested || _isDestroying)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await UniTask.Yield();
+                    loadingOperation.RemoveWaiter();
+                    ReleaseLoadingOperationIfReady(loadingOperation);
+                    return false;
                 }
+
+                await UniTask.Yield();
             }
-            finally
-            {
-                loadingOperation.RemoveWaiter();
-                ReleaseLoadingOperationIfReady(loadingOperation);
-            }
+
+            bool succeeded = loadingOperation.Succeeded;
+            loadingOperation.RemoveWaiter();
+            ReleaseLoadingOperationIfReady(loadingOperation);
+            return succeeded;
         }
 
         private void CompleteLoading(string assetObjectKey)
@@ -1114,6 +1229,18 @@ namespace AlicizaX.Resource.Runtime
             ReleaseLoadingOperationIfReady(loadingOperation);
         }
 
+        private void ShutdownLoadingOperations()
+        {
+            foreach (LoadingOperationState loadingOperation in _assetLoadingOperations.Values)
+            {
+                loadingOperation.Complete(false);
+                loadingOperation.RequestRelease();
+                ReleaseLoadingOperationIfReady(loadingOperation);
+            }
+
+            _assetLoadingOperations.Clear();
+        }
+
         private static void ReleaseLoadingOperationIfReady(LoadingOperationState loadingOperation)
         {
             if (loadingOperation is { ReleaseRequested: true, WaiterCount: 0 })
@@ -1136,6 +1263,18 @@ namespace AlicizaX.Resource.Runtime
             {
                 InvokeProgress(location, handle, loadAssetUpdateCallback, userData).Forget();
             }
+        }
+
+        private ResourceOwner EnsureResourceOwner(GameObject root)
+        {
+            ResourceOwner owner = root.GetComponent<ResourceOwner>();
+            if (owner == null)
+            {
+                owner = root.AddComponent<ResourceOwner>();
+            }
+
+            _bindingService.RegisterOwner(owner);
+            return owner;
         }
 
         #endregion

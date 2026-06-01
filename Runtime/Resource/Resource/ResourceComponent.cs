@@ -104,42 +104,53 @@ namespace AlicizaX.Resource.Runtime
 
         public float LastUnloadUnusedAssetsOperationElapseSeconds => _lastUnloadUnusedAssetsOperationElapseSeconds;
 
-        [SerializeField] private float assetAutoReleaseInterval = 60f;
+        [SerializeField] private int assetRecordCapacity = 64;
 
-        [SerializeField] private int assetCapacity = 64;
+        [SerializeField] private int assetLeaseCapacity = 128;
 
-        [SerializeField] private float assetExpireTime = 60f;
+        [SerializeField] private int bindingOwnerCapacity = 64;
 
-        [SerializeField] private int assetPriority = 0;
+        [SerializeField] private int bindingSlotCapacity = 128;
 
+        [SerializeField] private int registeredTargetCapacity = 128;
 
-        public float AssetAutoReleaseInterval
+        [SerializeField] private float idleAssetExpireTime = 60f;
+
+        public int AssetRecordCapacity
         {
-            get => _resourceService.AssetAutoReleaseInterval;
-            set => _resourceService.AssetAutoReleaseInterval = assetAutoReleaseInterval = value;
+            get => _resourceService.AssetRecordCapacity;
+            set => _resourceService.AssetRecordCapacity = assetRecordCapacity = value;
         }
 
-
-        public int AssetCapacity
+        public int AssetLeaseCapacity
         {
-            get => _resourceService.AssetCapacity;
-            set => _resourceService.AssetCapacity = assetCapacity = value;
+            get => _resourceService.AssetLeaseCapacity;
+            set => _resourceService.AssetLeaseCapacity = assetLeaseCapacity = value;
         }
 
-
-        public float AssetExpireTime
+        public int BindingOwnerCapacity
         {
-            get => _resourceService.AssetExpireTime;
-            set => _resourceService.AssetExpireTime = assetExpireTime = value;
+            get => _resourceService.BindingOwnerCapacity;
+            set => _resourceService.BindingOwnerCapacity = bindingOwnerCapacity = value;
         }
 
-
-        public int AssetPriority
+        public int BindingSlotCapacity
         {
-            get => _resourceService.AssetPriority;
-            set => _resourceService.AssetPriority = assetPriority = value;
+            get => _resourceService.BindingSlotCapacity;
+            set => _resourceService.BindingSlotCapacity = bindingSlotCapacity = value;
         }
 
+        public int RegisteredTargetCapacity
+        {
+            get => _resourceService.RegisteredTargetCapacity;
+            set => _resourceService.RegisteredTargetCapacity = registeredTargetCapacity = value;
+        }
+
+        public float IdleAssetExpireTime
+        {
+            get => _resourceService.IdleAssetExpireTime;
+            set => _resourceService.IdleAssetExpireTime = idleAssetExpireTime = value;
+        }
         #endregion
 
         internal void SetPlayMode(int playMode)
@@ -154,7 +165,7 @@ namespace AlicizaX.Resource.Runtime
 
 
 #if UNITY_EDITOR
-        public static string PrefsKey = ZString.Concat(Application.dataPath.GetHashCode(), "GamePlayMode");
+        public static string PrefsKey = string.Concat(Application.dataPath.GetHashCode(), "GamePlayMode");
 #endif
 
         private void Awake()
@@ -173,10 +184,12 @@ namespace AlicizaX.Resource.Runtime
             _resourceService.DownloadingMaxNum = DownloadingMaxNum;
             _resourceService.FailedTryAgain = FailedTryAgain;
             _resourceService.Initialize();
-            _resourceService.AssetAutoReleaseInterval = assetAutoReleaseInterval;
-            _resourceService.AssetCapacity = assetCapacity;
-            _resourceService.AssetExpireTime = assetExpireTime;
-            _resourceService.AssetPriority = assetPriority;
+            _resourceService.AssetRecordCapacity = assetRecordCapacity;
+            _resourceService.AssetLeaseCapacity = assetLeaseCapacity;
+            _resourceService.BindingOwnerCapacity = bindingOwnerCapacity;
+            _resourceService.BindingSlotCapacity = bindingSlotCapacity;
+            _resourceService.RegisteredTargetCapacity = registeredTargetCapacity;
+            _resourceService.IdleAssetExpireTime = idleAssetExpireTime;
             _resourceService.SetForceUnloadUnusedAssetsAction(ForceUnloadUnusedAssets);
             Log.Info(ZString.Format("ResourceModule Run Mode {0}", _playMode));
         }
@@ -201,6 +214,11 @@ namespace AlicizaX.Resource.Runtime
 
         private void Update()
         {
+            if (_resourceService is ResourceService resourceService)
+            {
+                resourceService.ProcessKeepAlive(Time.unscaledTime);
+            }
+
             _lastUnloadUnusedAssetsOperationElapseSeconds += Time.unscaledDeltaTime;
             _lastGCCollectElapseSeconds += Time.unscaledDeltaTime;
             if (_asyncOperation == null && (_forceUnloadUnusedAssets || _lastUnloadUnusedAssetsOperationElapseSeconds >= maxUnloadUnusedAssetsInterval ||

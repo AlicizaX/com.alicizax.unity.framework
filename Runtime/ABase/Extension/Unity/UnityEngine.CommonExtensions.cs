@@ -32,38 +32,6 @@ namespace UnityEngine
         }
     }
 
-    [UnityEngine.Scripting.Preserve]
-    public static class AudioSourceExtensions
-    {
-        public static void SetSoundClip(this AudioSource audioSource, SoundClip soundClip, float volumeMul = 1f, bool play = false)
-        {
-            if (soundClip == null || soundClip.audioClip == null || audioSource == null)
-            {
-                return;
-            }
-
-            if (audioSource.clip != soundClip.audioClip)
-            {
-                audioSource.clip = soundClip.audioClip;
-            }
-
-            audioSource.volume = soundClip.volume * volumeMul;
-            if (play && !audioSource.isPlaying)
-            {
-                audioSource.Play();
-            }
-        }
-
-        public static void PlayOneShotSoundClip(this AudioSource audioSource, SoundClip soundClip, float volumeMul = 1f)
-        {
-            if (soundClip == null || soundClip.audioClip == null || audioSource == null)
-            {
-                return;
-            }
-
-            audioSource.PlayOneShot(soundClip.audioClip, soundClip.volume * volumeMul);
-        }
-    }
 
     [UnityEngine.Scripting.Preserve]
     public static class LayerMaskExtensions

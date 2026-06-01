@@ -15,8 +15,7 @@ namespace AlicizaX.Debugger.Runtime
                 card.Add(CreateRow("Product Name", Application.productName));
                 card.Add(CreateRow("Company Name", Application.companyName));
                 card.Add(CreateRow("Game Identifier", Application.identifier));
-                card.Add(CreateRow("Game Framework Version", AppVersion.GameFrameworkVersion));
-                card.Add(CreateRow("Game Version", Utility.Text.Format("{0} ({1})", AppVersion.GameVersion, AppVersion.GameFrameworkVersion)));
+                card.Add(CreateRow("Game Version", Utility.Text.Format("{0}", Application.version)));
                 card.Add(CreateRow("Application Version", Application.version));
                 card.Add(CreateRow("Unity Version", Application.unityVersion));
                 card.Add(CreateRow("Platform", Application.platform.ToString()));

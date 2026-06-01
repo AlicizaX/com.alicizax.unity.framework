@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace AlicizaX
 {
-    [CreateAssetMenu(fileName = "PoolConfig", menuName = "GameplaySystem/PoolConfig", order = 10)]
+    [CreateAssetMenu(fileName = "GameObjectPoolConfig", menuName = "AlicizaX/PoolConfig", order = 10)]
     public sealed class PoolConfigScriptableObject : ScriptableObject
     {
         public List<PoolEntry> entries = new List<PoolEntry>();

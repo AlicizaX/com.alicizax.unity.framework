@@ -1,0 +1,240 @@
+using System;
+
+namespace AlicizaX.Resource.Runtime
+{
+    internal sealed class ResourceIndexMap<TKey, TValue>
+        where TKey : struct, IEquatable<TKey>
+        where TValue : struct
+    {
+        private const int DefaultCapacity = 16;
+
+        private int[] _buckets;
+        private Entry[] _entries;
+        private int _count;
+        private int _freeHead = -1;
+        private int _freeCount;
+
+        private struct Entry
+        {
+            public int HashCode;
+            public int Next;
+            public TKey Key;
+            public TValue Value;
+            public byte State;
+        }
+
+        public int Count => _count - _freeCount;
+
+        public void Clear()
+        {
+            if (_buckets != null)
+            {
+                for (int i = 0; i < _buckets.Length; i++)
+                {
+                    _buckets[i] = -1;
+                }
+            }
+
+            if (_entries != null)
+            {
+                Array.Clear(_entries, 0, _entries.Length);
+            }
+
+            _count = 0;
+            _freeHead = -1;
+            _freeCount = 0;
+        }
+
+        public void EnsureCapacity(int capacity)
+        {
+            if (capacity <= 0)
+            {
+                return;
+            }
+
+            int target = NextPowerOfTwo(Math.Max(DefaultCapacity, capacity));
+            if (_buckets == null)
+            {
+                Initialize(target);
+                return;
+            }
+
+            if (_entries.Length < target)
+            {
+                Resize(target);
+            }
+        }
+
+        public bool TryGetValue(TKey key, out TValue value)
+        {
+            value = default;
+            if (_buckets == null)
+            {
+                return false;
+            }
+
+            int hashCode = GetHashCode(key);
+            int entryIndex = _buckets[hashCode & (_buckets.Length - 1)];
+            while (entryIndex >= 0)
+            {
+                ref Entry entry = ref _entries[entryIndex];
+                if (entry.State == 1 && entry.HashCode == hashCode && entry.Key.Equals(key))
+                {
+                    value = entry.Value;
+                    return true;
+                }
+
+                entryIndex = entry.Next;
+            }
+
+            return false;
+        }
+
+        public void Set(TKey key, TValue value)
+        {
+            if (_buckets == null)
+            {
+                Initialize(DefaultCapacity);
+            }
+
+            int hashCode = GetHashCode(key);
+            int bucket = hashCode & (_buckets.Length - 1);
+            int entryIndex = _buckets[bucket];
+            while (entryIndex >= 0)
+            {
+                ref Entry entry = ref _entries[entryIndex];
+                if (entry.State == 1 && entry.HashCode == hashCode && entry.Key.Equals(key))
+                {
+                    entry.Value = value;
+                    return;
+                }
+
+                entryIndex = entry.Next;
+            }
+
+            int newIndex;
+            if (_freeHead >= 0)
+            {
+                newIndex = _freeHead;
+                _freeHead = _entries[newIndex].Next;
+                _freeCount--;
+            }
+            else
+            {
+                if (_count == _entries.Length)
+                {
+                    Resize(_entries.Length << 1);
+                    bucket = hashCode & (_buckets.Length - 1);
+                }
+
+                newIndex = _count;
+                _count++;
+            }
+
+            ref Entry newEntry = ref _entries[newIndex];
+            newEntry.HashCode = hashCode;
+            newEntry.Next = _buckets[bucket];
+            newEntry.Key = key;
+            newEntry.Value = value;
+            newEntry.State = 1;
+            _buckets[bucket] = newIndex;
+        }
+
+        public bool Remove(TKey key)
+        {
+            if (_buckets == null)
+            {
+                return false;
+            }
+
+            int hashCode = GetHashCode(key);
+            int bucket = hashCode & (_buckets.Length - 1);
+            int previous = -1;
+            int entryIndex = _buckets[bucket];
+            while (entryIndex >= 0)
+            {
+                ref Entry entry = ref _entries[entryIndex];
+                if (entry.State == 1 && entry.HashCode == hashCode && entry.Key.Equals(key))
+                {
+                    if (previous < 0)
+                    {
+                        _buckets[bucket] = entry.Next;
+                    }
+                    else
+                    {
+                        _entries[previous].Next = entry.Next;
+                    }
+
+                    entry = default;
+                    entry.Next = _freeHead;
+                    _freeHead = entryIndex;
+                    _freeCount++;
+                    return true;
+                }
+
+                previous = entryIndex;
+                entryIndex = entry.Next;
+            }
+
+            return false;
+        }
+
+        private void Initialize(int capacity)
+        {
+            _buckets = new int[capacity];
+            for (int i = 0; i < _buckets.Length; i++)
+            {
+                _buckets[i] = -1;
+            }
+
+            _entries = new Entry[capacity];
+            _count = 0;
+            _freeHead = -1;
+            _freeCount = 0;
+        }
+
+        private void Resize(int capacity)
+        {
+            int newCapacity = NextPowerOfTwo(capacity);
+            Entry[] oldEntries = _entries;
+            int[] newBuckets = new int[newCapacity];
+            for (int i = 0; i < newBuckets.Length; i++)
+            {
+                newBuckets[i] = -1;
+            }
+
+            Entry[] newEntries = new Entry[newCapacity];
+            Array.Copy(oldEntries, 0, newEntries, 0, _count);
+            for (int i = 0; i < _count; i++)
+            {
+                if (newEntries[i].State != 1)
+                {
+                    continue;
+                }
+
+                int bucket = newEntries[i].HashCode & (newBuckets.Length - 1);
+                newEntries[i].Next = newBuckets[bucket];
+                newBuckets[bucket] = i;
+            }
+
+            _buckets = newBuckets;
+            _entries = newEntries;
+        }
+
+        private static int GetHashCode(TKey key)
+        {
+            return key.GetHashCode() & 0x7fffffff;
+        }
+
+        private static int NextPowerOfTwo(int value)
+        {
+            int result = 1;
+            while (result < value)
+            {
+                result <<= 1;
+            }
+
+            return result;
+        }
+    }
+}
