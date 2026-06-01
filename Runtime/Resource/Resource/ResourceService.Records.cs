@@ -28,13 +28,16 @@ namespace AlicizaX.Resource.Runtime
         private int _leaseSlotFreeHead;
         private int _lastKeepAliveProcessTick;
         private int _lastIdleProcessTick;
-        private readonly ResourceIndexMap<AssetRecordKey, int> _assetRecordsByKey = new ResourceIndexMap<AssetRecordKey, int>();
+        private readonly ResourceUlongIntMap _assetRecordsByKey = new ResourceUlongIntMap();
         private readonly ResourceIndexMap<int, int> _assetRecordByLoadKeyId = new ResourceIndexMap<int, int>();
         private readonly ResourceIndexMap<int, int> _assetRecordHeadByUnityObjectId = new ResourceIndexMap<int, int>();
 
         private struct AssetSlot
         {
-            public AssetRecordKey Key;
+            public ulong Key;
+            public string PackageName;
+            public string Location;
+            public Type AssetType;
             public int LoadKeyId;
             public int AssetInstanceId;
             public Object Asset;
@@ -66,52 +69,6 @@ namespace AlicizaX.Resource.Runtime
             public ResourceLeaseState State;
             public byte Flags;
             public int NextFree;
-        }
-
-        private readonly struct AssetRecordKey : IEquatable<AssetRecordKey>
-        {
-            public readonly string PackageName;
-            public readonly string Location;
-            public readonly Type AssetType;
-            public readonly ResourceAssetKind AssetKind;
-            public readonly ResourceHandleKind HandleKind;
-
-            public AssetRecordKey(string packageName, string location, Type assetType, ResourceAssetKind assetKind, ResourceHandleKind handleKind)
-            {
-                PackageName = packageName ?? string.Empty;
-                Location = location ?? string.Empty;
-                AssetType = assetType ?? typeof(Object);
-                AssetKind = assetKind;
-                HandleKind = handleKind;
-            }
-
-            public bool Equals(AssetRecordKey other)
-            {
-                return string.Equals(PackageName, other.PackageName, StringComparison.Ordinal) &&
-                       string.Equals(Location, other.Location, StringComparison.Ordinal) &&
-                       ReferenceEquals(AssetType, other.AssetType) &&
-                       AssetKind == other.AssetKind &&
-                       HandleKind == other.HandleKind;
-            }
-
-            public override bool Equals(object obj)
-            {
-                return obj is AssetRecordKey other && Equals(other);
-            }
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = 17;
-                    hash = hash * 31 + StringComparer.Ordinal.GetHashCode(PackageName ?? string.Empty);
-                    hash = hash * 31 + StringComparer.Ordinal.GetHashCode(Location ?? string.Empty);
-                    hash = hash * 31 + (AssetType != null ? AssetType.GetHashCode() : 0);
-                    hash = hash * 31 + (int)AssetKind;
-                    hash = hash * 31 + (int)HandleKind;
-                    return hash;
-                }
-            }
         }
 
         private void InitializeAssetRecords()
@@ -149,6 +106,8 @@ namespace AlicizaX.Resource.Runtime
                 EnsureAssetSlotPage(assetCapacity - 1);
                 _assetRecordsByKey.EnsureCapacity(assetCapacity);
                 _assetRecordByLoadKeyId.EnsureCapacity(assetCapacity);
+                _assetLoadingOperationByKey.EnsureCapacity(assetCapacity);
+                _assetInfoByKey.EnsureCapacity(assetCapacity);
             }
 
             if (leaseCapacity > 0)
@@ -188,9 +147,11 @@ namespace AlicizaX.Resource.Runtime
                 }
             }
 
+            ReleaseAllResourceKeysFromMap(_assetRecordsByKey);
             _assetRecordsByKey.Clear();
             _assetRecordByLoadKeyId.Clear();
             _assetRecordHeadByUnityObjectId.Clear();
+            TrimResourceKeyRegistryIfUnused();
             _assetSlotPages = null;
             _leaseSlotPages = null;
             _keepAliveBuckets = null;
@@ -232,13 +193,13 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceLeaseHandle.Invalid;
             }
 
-            AssetRecordKey recordKey = new AssetRecordKey(normalizedPackageName, location, typeof(Sprite), ResourceAssetKind.SubAssets, ResourceHandleKind.SubAssetsHandle);
+            ulong recordKey = GetAssetRecordKey(normalizedPackageName, location, typeof(Sprite), ResourceAssetKind.SubAssets, ResourceHandleKind.SubAssetsHandle);
             if (TryGetCachedSubAssetsRecord(recordKey, out int existingAssetId))
             {
                 return AcquireLease(existingAssetId, ResourceLeaseKind.Binding, leaseOptions);
             }
 
-            string loadingKey = GetSubAssetsLoadingOperationKey(location, normalizedPackageName);
+            ulong loadingKey = GetSubAssetsLoadingOperationKey(location, normalizedPackageName);
             while (!TryBeginLoading(loadingKey))
             {
                 if (!await WaitForLoadingAsync(loadingKey, cancellationToken))
@@ -307,7 +268,7 @@ namespace AlicizaX.Resource.Runtime
             return callerCancellationRequested ? ResourceLeaseHandle.Invalid : AcquireLease(assetId, ResourceLeaseKind.Binding, leaseOptions);
         }
 
-        private bool TryGetCachedSubAssetsRecord(AssetRecordKey recordKey, out int assetId)
+        private bool TryGetCachedSubAssetsRecord(ulong recordKey, out int assetId)
         {
             assetId = -1;
             if (!_assetRecordsByKey.TryGetValue(recordKey, out assetId) || !IsValidAssetId(assetId))
@@ -366,14 +327,14 @@ namespace AlicizaX.Resource.Runtime
             }
 
             ResourceAssetKind assetKind = key.AssetKind == ResourceAssetKind.Unknown ? InferAssetKind(assetType) : key.AssetKind;
-            string assetLoadingKey = GetLoadingOperationKey(key.Location, packageName);
+            ulong assetLoadingKey = GetLoadingOperationKey(key.Location, packageName, assetType, assetKind);
             UnityEngine.Object asset = await GetOrLoadAssetAsync(key.Location, assetType, assetKind, packageName, assetLoadingKey, cancellationToken: cancellationToken);
             if (asset == null)
             {
                 return ResourceLeaseHandle.Invalid;
             }
 
-            AssetRecordKey recordKey = new AssetRecordKey(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle);
+            ulong recordKey = GetAssetRecordKey(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle);
             if (!_assetRecordsByKey.TryGetValue(recordKey, out int assetId) || !IsValidAssetId(assetId))
             {
                 return ResourceLeaseHandle.Invalid;
@@ -719,9 +680,9 @@ namespace AlicizaX.Resource.Runtime
                 ref AssetSlot slot = ref GetAssetSlotRef(index);
                 ref ResourceAssetInfo info = ref results[written];
                 info.LoadKeyId = slot.LoadKeyId;
-                info.Package = slot.Key.PackageName;
-                info.Location = slot.Key.Location;
-                info.TypeName = slot.Key.AssetType != null ? slot.Key.AssetType.Name : string.Empty;
+                info.Package = slot.PackageName;
+                info.Location = slot.Location;
+                info.TypeName = slot.AssetType != null ? slot.AssetType.Name : string.Empty;
                 info.Kind = slot.AssetKind;
                 info.State = slot.State;
                 info.DirectRefCount = slot.DirectRefCount;
@@ -786,12 +747,14 @@ namespace AlicizaX.Resource.Runtime
                 FreeAssetSlot(i);
             }
 
+            ReleaseAllResourceKeysFromMap(_assetRecordsByKey);
             _assetRecordsByKey.Clear();
             _assetRecordByLoadKeyId.Clear();
             _assetRecordHeadByUnityObjectId.Clear();
 
             _leaseSlotNextIndex = 0;
             _leaseSlotFreeHead = -1;
+            TrimResourceKeyRegistryIfUnused();
         }
 
         internal ResourceLeaseHandle AcquirePrefabSourceLease(string location, string packageName)
@@ -813,14 +776,14 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceLeaseHandle.Invalid;
             }
 
-            string assetLoadingKey = GetLoadingOperationKey(location, normalizedPackageName);
+            ulong assetLoadingKey = GetLoadingOperationKey(location, normalizedPackageName, typeof(GameObject), ResourceAssetKind.Prefab);
             UnityEngine.Object asset = await GetOrLoadAssetAsync(location, typeof(GameObject), ResourceAssetKind.Prefab, normalizedPackageName, assetLoadingKey, cancellationToken: cancellationToken);
             if (asset == null)
             {
                 return ResourceLeaseHandle.Invalid;
             }
 
-            AssetRecordKey key = new AssetRecordKey(normalizedPackageName, location, typeof(GameObject), ResourceAssetKind.Prefab, ResourceHandleKind.AssetHandle);
+            ulong key = GetAssetRecordKey(normalizedPackageName, location, typeof(GameObject), ResourceAssetKind.Prefab, ResourceHandleKind.AssetHandle);
             if (!_assetRecordsByKey.TryGetValue(key, out int assetId) || !IsValidAssetId(assetId))
             {
                 return ResourceLeaseHandle.Invalid;
@@ -870,7 +833,8 @@ namespace AlicizaX.Resource.Runtime
         {
             assetKind = NormalizeAssetKind(assetType, assetKind);
             assetType = NormalizeAssetType(assetType, assetKind);
-            AssetRecordKey key = new AssetRecordKey(NormalizePackageName(packageName), location, assetType, assetKind, handleKind);
+            string normalizedPackageName = NormalizePackageName(packageName);
+            ulong key = GetAssetRecordKey(normalizedPackageName, location, assetType, assetKind, handleKind);
             if (_assetRecordsByKey.TryGetValue(key, out int existingId) && IsValidAssetId(existingId))
             {
                 ref AssetSlot existing = ref GetAssetSlotRef(existingId);
@@ -894,6 +858,9 @@ namespace AlicizaX.Resource.Runtime
             int assetId = AllocateAssetSlot();
             ref AssetSlot slot = ref GetAssetSlotRef(assetId);
             slot.Key = key;
+            slot.PackageName = normalizedPackageName;
+            slot.Location = location;
+            slot.AssetType = assetType;
             slot.LoadKeyId = AllocateLoadKeyId();
             slot.Asset = asset;
             slot.AssetInstanceId = ResourceUnityObjectId.Get(asset);
@@ -906,6 +873,7 @@ namespace AlicizaX.Resource.Runtime
             slot.NextFree = -1;
             slot.State = ResourceAssetState.Idle;
             _assetRecordsByKey.Set(key, assetId);
+            RetainResourceKey(key);
             _assetRecordByLoadKeyId.Set(slot.LoadKeyId, assetId);
             LinkAssetByUnityObject(assetId, ref slot);
             UpdateAssetStateAndIdleQueue(assetId, ref slot);
@@ -914,7 +882,8 @@ namespace AlicizaX.Resource.Runtime
 
         private int GetOrCreateSubAssetsRecord(string packageName, string location, SubAssetsHandle subAssetsHandle)
         {
-            AssetRecordKey key = new AssetRecordKey(NormalizePackageName(packageName), location, typeof(Sprite), ResourceAssetKind.SubAssets, ResourceHandleKind.SubAssetsHandle);
+            string normalizedPackageName = NormalizePackageName(packageName);
+            ulong key = GetAssetRecordKey(normalizedPackageName, location, typeof(Sprite), ResourceAssetKind.SubAssets, ResourceHandleKind.SubAssetsHandle);
             if (_assetRecordsByKey.TryGetValue(key, out int existingId) && IsValidAssetId(existingId))
             {
                 ref AssetSlot existing = ref GetAssetSlotRef(existingId);
@@ -935,6 +904,9 @@ namespace AlicizaX.Resource.Runtime
             int assetId = AllocateAssetSlot();
             ref AssetSlot slot = ref GetAssetSlotRef(assetId);
             slot.Key = key;
+            slot.PackageName = normalizedPackageName;
+            slot.Location = location;
+            slot.AssetType = typeof(Sprite);
             slot.LoadKeyId = AllocateLoadKeyId();
             slot.Asset = null;
             slot.AssetInstanceId = 0;
@@ -947,6 +919,7 @@ namespace AlicizaX.Resource.Runtime
             slot.NextFree = -1;
             slot.State = ResourceAssetState.Idle;
             _assetRecordsByKey.Set(key, assetId);
+            RetainResourceKey(key);
             _assetRecordByLoadKeyId.Set(slot.LoadKeyId, assetId);
             UpdateAssetStateAndIdleQueue(assetId, ref slot);
             return assetId;
@@ -958,7 +931,7 @@ namespace AlicizaX.Resource.Runtime
             asset = null;
             assetKind = NormalizeAssetKind(assetType, assetKind);
             assetType = NormalizeAssetType(assetType, assetKind);
-            AssetRecordKey key = new AssetRecordKey(NormalizePackageName(packageName), location, assetType, assetKind, handleKind);
+            ulong key = GetAssetRecordKey(packageName, location, assetType, assetKind, handleKind);
             if (!_assetRecordsByKey.TryGetValue(key, out assetId) || !IsValidAssetId(assetId))
             {
                 assetId = -1;
@@ -998,7 +971,7 @@ namespace AlicizaX.Resource.Runtime
         {
             ResourceAssetKind assetKind = InferAssetKind(assetType);
             assetType = NormalizeAssetType(assetType, assetKind);
-            AssetRecordKey key = new AssetRecordKey(NormalizePackageName(packageName), location, assetType, assetKind, ResourceHandleKind.AssetHandle);
+            ulong key = GetAssetRecordKey(packageName, location, assetType, assetKind, ResourceHandleKind.AssetHandle);
             if (_assetRecordsByKey.TryGetValue(key, out int assetId) && IsValidAssetId(assetId))
             {
                 ref AssetSlot slot = ref GetAssetSlotRef(assetId);
@@ -1132,7 +1105,9 @@ namespace AlicizaX.Resource.Runtime
             RemoveFromExpiryQueue(assetId, ref slot);
             DisposeAssetSlotHandle(ref slot);
             UnlinkAssetByUnityObject(assetId, ref slot);
-            _assetRecordsByKey.Remove(slot.Key);
+            ulong key = slot.Key;
+            _assetRecordsByKey.Remove(key);
+            ReleaseResourceKey(key);
             if (slot.LoadKeyId > 0)
             {
                 _assetRecordByLoadKeyId.Remove(slot.LoadKeyId);

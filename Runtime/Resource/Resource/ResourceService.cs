@@ -77,67 +77,76 @@ namespace AlicizaX.Resource.Runtime
         /// <summary>
         /// 资源信息列表。
         /// </summary>
-        private readonly Dictionary<AssetCacheKey, AssetInfo> _assetInfoMap = new Dictionary<AssetCacheKey, AssetInfo>(AssetCacheKeyComparer.Instance);
+        private readonly ResourceUlongIntMap _assetInfoByKey = new ResourceUlongIntMap();
+
+        private AssetInfoSlot[][] _assetInfoSlotPages;
+
+        private int _assetInfoSlotNextIndex;
 
         /// <summary>
         /// 正在加载的资源任务。
         /// </summary>
-        private readonly Dictionary<string, LoadingOperationState> _assetLoadingOperations = new Dictionary<string, LoadingOperationState>();
+        private readonly ResourceUlongIntMap _assetLoadingOperationByKey = new ResourceUlongIntMap();
 
-        private readonly Dictionary<AssetCacheKey, string> _assetLoadingKeyMap = new Dictionary<AssetCacheKey, string>(AssetCacheKeyComparer.Instance);
+        private LoadingOperationSlot[][] _loadingOperationSlotPages;
 
-        private readonly Dictionary<AssetCacheKey, string> _subAssetsLoadingKeyMap = new Dictionary<AssetCacheKey, string>(AssetCacheKeyComparer.Instance);
+        private int _loadingOperationSlotNextIndex;
+
+        private int _loadingOperationSlotFreeHead = -1;
+
+        private readonly Dictionary<string, int> _resourcePackageIds = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        private readonly Dictionary<string, int> _resourceLocationIds = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        private readonly Dictionary<Type, int> _resourceTypeIds = new Dictionary<Type, int>();
+
+        private string[] _resourcePackagesById;
+
+        private string[] _resourceLocationsById;
+
+        private Type[] _resourceTypesById;
+
+        private int[] _resourcePackageRefCounts;
+
+        private int[] _resourceLocationRefCounts;
+
+        private int[] _resourceTypeRefCounts;
+
+        private int _nextResourcePackageId = 1;
+
+        private int _nextResourceLocationId = 1;
+
+        private int _nextResourceTypeId = 1;
 
         private const float ProgressCallbackThreshold = 0.01f;
+
+        private const int ResourceKeyHandleBits = 4;
+        private const int ResourceKeyAssetKindBits = 4;
+        private const int ResourceKeyTypeBits = 12;
+        private const int ResourceKeyLocationBits = 32;
+        private const int ResourceKeyPackageBits = 12;
+        private const int ResourceKeyHandleShift = 0;
+        private const int ResourceKeyAssetKindShift = ResourceKeyHandleShift + ResourceKeyHandleBits;
+        private const int ResourceKeyTypeShift = ResourceKeyAssetKindShift + ResourceKeyAssetKindBits;
+        private const int ResourceKeyLocationShift = ResourceKeyTypeShift + ResourceKeyTypeBits;
+        private const int ResourceKeyPackageShift = ResourceKeyLocationShift + ResourceKeyLocationBits;
+        private const int ResourceKeyPackageMax = (1 << ResourceKeyPackageBits) - 1;
+        private const int ResourceKeyLocationMax = int.MaxValue;
+        private const int ResourceKeyTypeMax = (1 << ResourceKeyTypeBits) - 1;
+        private const int ResourceKeyAssetKindMax = (1 << ResourceKeyAssetKindBits) - 1;
+        private const int ResourceKeyHandleMax = (1 << ResourceKeyHandleBits) - 1;
 
         private readonly List<UnloadUnusedAssetsOperation> _unloadUnusedAssetsOperations = new List<UnloadUnusedAssetsOperation>();
 
         private readonly List<UnloadAllAssetsOperation> _unloadAllAssetsOperations = new List<UnloadAllAssetsOperation>();
+
+        private readonly List<UpdatePackageManifestOperation> _manifestUpdateOperations = new List<UpdatePackageManifestOperation>();
 
         private bool _isDestroying;
 
         private int _assetUnloadGeneration;
 
         private ResourceBindingService _bindingService;
-
-        private readonly struct AssetCacheKey
-        {
-            public readonly string PackageName;
-
-            public readonly string Location;
-
-            public AssetCacheKey(string packageName, string location)
-            {
-                PackageName = packageName ?? string.Empty;
-                Location = location ?? string.Empty;
-            }
-        }
-
-        private sealed class AssetCacheKeyComparer : IEqualityComparer<AssetCacheKey>
-        {
-            public static readonly AssetCacheKeyComparer Instance = new AssetCacheKeyComparer();
-
-            private AssetCacheKeyComparer()
-            {
-            }
-
-            public bool Equals(AssetCacheKey x, AssetCacheKey y)
-            {
-                return string.Equals(x.PackageName, y.PackageName, StringComparison.Ordinal) &&
-                       string.Equals(x.Location, y.Location, StringComparison.Ordinal);
-            }
-
-            public int GetHashCode(AssetCacheKey obj)
-            {
-                unchecked
-                {
-                    int hash = 17;
-                    hash = hash * 31 + StringComparer.Ordinal.GetHashCode(obj.PackageName ?? string.Empty);
-                    hash = hash * 31 + StringComparer.Ordinal.GetHashCode(obj.Location ?? string.Empty);
-                    return hash;
-                }
-            }
-        }
 
         private sealed class LoadingOperationState : MemoryObject
         {
@@ -221,9 +230,9 @@ namespace AlicizaX.Resource.Runtime
             ShutdownLoadingOperations();
             _unloadUnusedAssetsOperations.Clear();
             _unloadAllAssetsOperations.Clear();
-            _assetInfoMap.Clear();
-            _assetLoadingKeyMap.Clear();
-            _subAssetsLoadingKeyMap.Clear();
+            _manifestUpdateOperations.Clear();
+            ClearAssetInfoCache();
+            ClearResourceKeyRegistry();
             _bindingService?.Shutdown();
             _bindingService = null;
             ShutdownAssetRecords();
@@ -319,7 +328,11 @@ namespace AlicizaX.Resource.Runtime
         public UpdatePackageManifestOperation UpdatePackageManifestAsync(string packageVersion, int timeout = 60, string customPackageName = "")
         {
             var package = GetPackageOrThrow(customPackageName);
-            return package.UpdatePackageManifestAsync(packageVersion, timeout);
+            ClearAssetInfoCache();
+            UpdatePackageManifestOperation operation = package.UpdatePackageManifestAsync(packageVersion, timeout);
+            TrackManifestUpdateOperation(operation);
+            WatchManifestUpdateOperation(operation).Forget();
+            return operation;
         }
 
         /// <summary>
@@ -393,6 +406,21 @@ namespace AlicizaX.Resource.Runtime
                     _unloadUnusedAssetsOperations.Add(package.UnloadUnusedAssetsAsync());
                 }
             }
+        }
+
+        private struct LoadingOperationSlot
+        {
+            public ulong Key;
+            public LoadingOperationState Operation;
+            public byte State;
+            public int NextFree;
+        }
+
+        private struct AssetInfoSlot
+        {
+            public ulong Key;
+            public AssetInfo AssetInfo;
+            public byte State;
         }
 
         /// <summary>
@@ -470,6 +498,50 @@ namespace AlicizaX.Resource.Runtime
                     _unloadAllAssetsOperations.RemoveAt(i);
                 }
             }
+        }
+
+        private void TrackManifestUpdateOperation(UpdatePackageManifestOperation operation)
+        {
+            if (operation == null || operation.IsDone)
+            {
+                return;
+            }
+
+            _manifestUpdateOperations.Add(operation);
+        }
+
+        private bool IsManifestUpdateInProgress()
+        {
+            bool inProgress = false;
+            for (int i = _manifestUpdateOperations.Count - 1; i >= 0; i--)
+            {
+                UpdatePackageManifestOperation operation = _manifestUpdateOperations[i];
+                if (operation == null || operation.IsDone)
+                {
+                    _manifestUpdateOperations.RemoveAt(i);
+                    continue;
+                }
+
+                inProgress = true;
+            }
+
+            return inProgress;
+        }
+
+        private async UniTaskVoid WatchManifestUpdateOperation(UpdatePackageManifestOperation operation)
+        {
+            if (operation == null)
+            {
+                return;
+            }
+
+            while (!_isDestroying && !operation.IsDone)
+            {
+                await UniTask.Yield();
+            }
+
+            _manifestUpdateOperations.Remove(operation);
+            ClearAssetInfoCache();
         }
 
         #region Public Methods
@@ -555,36 +627,44 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Asset name is invalid.");
             }
 
+            bool cacheEnabled = !IsManifestUpdateInProgress();
+            string normalizedPackageName = NormalizePackageName(packageName);
+            if (cacheEnabled &&
+                TryGetAssetInfoKey(normalizedPackageName, location, out ulong assetInfoKey) &&
+                TryGetCachedAssetInfo(assetInfoKey, out AssetInfo cachedAssetInfo))
+            {
+                return cachedAssetInfo;
+            }
+
+            AssetInfo assetInfo = GetAssetInfoUncached(location, packageName);
+            if (cacheEnabled && CanCacheAssetInfo(assetInfo))
+            {
+                assetInfoKey = GetAssetInfoKey(normalizedPackageName, location);
+                SetCachedAssetInfo(assetInfoKey, assetInfo);
+            }
+
+            return assetInfo;
+        }
+
+        private AssetInfo GetAssetInfoUncached(string location, string packageName)
+        {
             if (string.IsNullOrEmpty(packageName))
             {
-                AssetCacheKey key = new AssetCacheKey(DefaultPackageName, location);
-                if (_assetInfoMap.TryGetValue(key, out AssetInfo assetInfo))
-                {
-                    return assetInfo;
-                }
-
-                assetInfo = YooAssets.GetAssetInfo(location);
-                _assetInfoMap[key] = assetInfo;
-                return assetInfo;
+                return YooAssets.GetAssetInfo(location);
             }
-            else
+
+            var package = YooAssets.GetPackage(packageName);
+            if (package == null)
             {
-                AssetCacheKey key = new AssetCacheKey(packageName, location);
-                if (_assetInfoMap.TryGetValue(key, out AssetInfo assetInfo))
-                {
-                    return assetInfo;
-                }
-
-                var package = YooAssets.GetPackage(packageName);
-                if (package == null)
-                {
-                    throw new GameFrameworkException(ZString.Format("The package does not exist. Package Name :{0}", packageName));
-                }
-
-                assetInfo = package.GetAssetInfo(location);
-                _assetInfoMap[key] = assetInfo;
-                return assetInfo;
+                throw new GameFrameworkException(ZString.Format("The package does not exist. Package Name :{0}", packageName));
             }
+
+            return package.GetAssetInfo(location);
+        }
+
+        private static bool CanCacheAssetInfo(AssetInfo assetInfo)
+        {
+            return assetInfo != null && string.IsNullOrEmpty(assetInfo.Error);
         }
 
         /// <summary>
@@ -695,42 +775,388 @@ namespace AlicizaX.Resource.Runtime
 
         #endregion
 
-        /// <summary>
-        /// 获取资源定位地址的加载去重Key。
-        /// </summary>
-        /// <param name="location">资源定位地址。</param>
-        /// <param name="packageName">资源包名称。</param>
-        /// <returns>资源定位地址的加载去重Key。</returns>
-        private string GetLoadingOperationKey(string location, string packageName = "")
+        private ulong GetAssetRecordKey(string packageName, string location, Type assetType, ResourceAssetKind assetKind, ResourceHandleKind handleKind)
         {
-            if (string.IsNullOrEmpty(packageName) || packageName.Equals(DefaultPackageName))
-            {
-                return location;
-            }
-
-            AssetCacheKey key = new AssetCacheKey(packageName, location);
-
-            if (_assetLoadingKeyMap.TryGetValue(key, out string cacheKey))
-            {
-                return cacheKey;
-            }
-
-            cacheKey = ZString.Concat(packageName, "/", location);
-            _assetLoadingKeyMap[key] = cacheKey;
-            return cacheKey;
+            assetKind = NormalizeAssetKind(assetType, assetKind);
+            assetType = NormalizeAssetType(assetType, assetKind);
+            return PackResourceKey(
+                GetOrAddPackageId(NormalizePackageName(packageName)),
+                GetOrAddLocationId(location),
+                GetOrAddTypeId(assetType),
+                assetKind,
+                handleKind);
         }
 
-        private string GetSubAssetsLoadingOperationKey(string location, string packageName)
+        private ulong GetLoadingOperationKey(string location, string packageName, Type assetType, ResourceAssetKind assetKind)
         {
-            AssetCacheKey key = new AssetCacheKey(NormalizePackageName(packageName), location);
-            if (_subAssetsLoadingKeyMap.TryGetValue(key, out string cacheKey))
+            return GetAssetRecordKey(packageName, location, assetType, assetKind, ResourceHandleKind.AssetHandle);
+        }
+
+        private ulong GetSubAssetsLoadingOperationKey(string location, string packageName)
+        {
+            return GetAssetRecordKey(packageName, location, typeof(Sprite), ResourceAssetKind.SubAssets, ResourceHandleKind.SubAssetsHandle);
+        }
+
+        private ulong GetAssetInfoKey(string packageName, string location)
+        {
+            return GetAssetRecordKey(packageName, location, typeof(UnityEngine.Object), ResourceAssetKind.Asset, ResourceHandleKind.None);
+        }
+
+        private bool TryGetAssetInfoKey(string packageName, string location, out ulong key)
+        {
+            return TryGetResourceKey(packageName, location, typeof(UnityEngine.Object), ResourceAssetKind.Asset, ResourceHandleKind.None, out key);
+        }
+
+        private bool TryGetResourceKey(string packageName, string location, Type assetType, ResourceAssetKind assetKind, ResourceHandleKind handleKind, out ulong key)
+        {
+            key = 0;
+            assetKind = NormalizeAssetKind(assetType, assetKind);
+            assetType = NormalizeAssetType(assetType, assetKind);
+            if (!_resourcePackageIds.TryGetValue(NormalizePackageName(packageName), out int packageId) ||
+                !_resourceLocationIds.TryGetValue(location ?? string.Empty, out int locationId) ||
+                !_resourceTypeIds.TryGetValue(assetType, out int typeId))
             {
-                return cacheKey;
+                return false;
             }
 
-            cacheKey = ZString.Concat(key.PackageName, "/@subassets/", location);
-            _subAssetsLoadingKeyMap[key] = cacheKey;
-            return cacheKey;
+            key = PackResourceKey(packageId, locationId, typeId, assetKind, handleKind);
+            return true;
+        }
+
+        private int GetOrAddPackageId(string packageName)
+        {
+            packageName = NormalizePackageName(packageName);
+            if (_resourcePackageIds.TryGetValue(packageName, out int id))
+            {
+                return id;
+            }
+
+            id = AllocateResourceId(ref _nextResourcePackageId, ResourceKeyPackageMax);
+            _resourcePackageIds.Add(packageName, id);
+            EnsureResourceNameSlot(ref _resourcePackagesById, ref _resourcePackageRefCounts, id);
+            _resourcePackagesById[id] = packageName;
+            return id;
+        }
+
+        private int GetOrAddLocationId(string location)
+        {
+            location ??= string.Empty;
+            if (_resourceLocationIds.TryGetValue(location, out int id))
+            {
+                return id;
+            }
+
+            id = AllocateResourceId(ref _nextResourceLocationId, ResourceKeyLocationMax);
+            _resourceLocationIds.Add(location, id);
+            EnsureResourceNameSlot(ref _resourceLocationsById, ref _resourceLocationRefCounts, id);
+            _resourceLocationsById[id] = location;
+            return id;
+        }
+
+        private int GetOrAddTypeId(Type assetType)
+        {
+            assetType ??= typeof(UnityEngine.Object);
+            if (_resourceTypeIds.TryGetValue(assetType, out int id))
+            {
+                return id;
+            }
+
+            id = AllocateResourceId(ref _nextResourceTypeId, ResourceKeyTypeMax);
+            _resourceTypeIds.Add(assetType, id);
+            EnsureResourceTypeSlot(id);
+            _resourceTypesById[id] = assetType;
+            return id;
+        }
+
+        private void ClearResourceKeyRegistry()
+        {
+            _resourcePackageIds.Clear();
+            _resourceLocationIds.Clear();
+            _resourceTypeIds.Clear();
+            _resourcePackagesById = null;
+            _resourceLocationsById = null;
+            _resourceTypesById = null;
+            _resourcePackageRefCounts = null;
+            _resourceLocationRefCounts = null;
+            _resourceTypeRefCounts = null;
+            _nextResourcePackageId = 1;
+            _nextResourceLocationId = 1;
+            _nextResourceTypeId = 1;
+        }
+
+        private void TrimResourceKeyRegistryIfUnused()
+        {
+            if (_assetRecordsByKey.Count != 0 ||
+                _assetLoadingOperationByKey.Count != 0 ||
+                _assetInfoByKey.Count != 0)
+            {
+                return;
+            }
+
+            ClearResourceKeyRegistry();
+        }
+
+        private void RetainResourceKey(ulong key)
+        {
+            int packageId = UnpackPackageId(key);
+            int locationId = UnpackLocationId(key);
+            int typeId = UnpackTypeId(key);
+            IncrementResourceRef(_resourcePackageRefCounts, packageId);
+            IncrementResourceRef(_resourceLocationRefCounts, locationId);
+            IncrementResourceRef(_resourceTypeRefCounts, typeId);
+        }
+
+        private void ReleaseResourceKey(ulong key)
+        {
+            ReleasePackageId(UnpackPackageId(key));
+            ReleaseLocationId(UnpackLocationId(key));
+            ReleaseTypeId(UnpackTypeId(key));
+            TrimResourceKeyRegistryIfUnused();
+        }
+
+        private void ReleaseAllResourceKeysFromMap(ResourceUlongIntMap map)
+        {
+            map.ForEachKey(ReleaseResourceKeyNoTrim);
+        }
+
+        private void ReleaseResourceKeyNoTrim(ulong key)
+        {
+            ReleasePackageId(UnpackPackageId(key));
+            ReleaseLocationId(UnpackLocationId(key));
+            ReleaseTypeId(UnpackTypeId(key));
+        }
+
+        private void ReleasePackageId(int id)
+        {
+            if (!DecrementResourceRef(_resourcePackageRefCounts, id))
+            {
+                return;
+            }
+
+            string value = id < _resourcePackagesById.Length ? _resourcePackagesById[id] : null;
+            if (value != null)
+            {
+                _resourcePackageIds.Remove(value);
+                _resourcePackagesById[id] = null;
+            }
+        }
+
+        private void ReleaseLocationId(int id)
+        {
+            if (!DecrementResourceRef(_resourceLocationRefCounts, id))
+            {
+                return;
+            }
+
+            string value = id < _resourceLocationsById.Length ? _resourceLocationsById[id] : null;
+            if (value != null)
+            {
+                _resourceLocationIds.Remove(value);
+                _resourceLocationsById[id] = null;
+            }
+        }
+
+        private void ReleaseTypeId(int id)
+        {
+            if (!DecrementResourceRef(_resourceTypeRefCounts, id))
+            {
+                return;
+            }
+
+            Type value = id < _resourceTypesById.Length ? _resourceTypesById[id] : null;
+            if (value != null)
+            {
+                _resourceTypeIds.Remove(value);
+                _resourceTypesById[id] = null;
+            }
+        }
+
+        private static void IncrementResourceRef(int[] refCounts, int id)
+        {
+            if (refCounts == null || id <= 0 || id >= refCounts.Length)
+            {
+                return;
+            }
+
+            refCounts[id]++;
+        }
+
+        private static bool DecrementResourceRef(int[] refCounts, int id)
+        {
+            if (refCounts == null || id <= 0 || id >= refCounts.Length || refCounts[id] <= 0)
+            {
+                return false;
+            }
+
+            refCounts[id]--;
+            return refCounts[id] == 0;
+        }
+
+        private static int UnpackPackageId(ulong key)
+        {
+            return (int)((key >> ResourceKeyPackageShift) & ResourceKeyPackageMax);
+        }
+
+        private static int UnpackLocationId(ulong key)
+        {
+            return (int)((key >> ResourceKeyLocationShift) & ResourceKeyLocationMax);
+        }
+
+        private static int UnpackTypeId(ulong key)
+        {
+            return (int)((key >> ResourceKeyTypeShift) & ResourceKeyTypeMax);
+        }
+
+        private static void EnsureResourceNameSlot(ref string[] values, ref int[] refCounts, int id)
+        {
+            EnsureResourceArray(ref values, id);
+            EnsureResourceArray(ref refCounts, id);
+        }
+
+        private void EnsureResourceTypeSlot(int id)
+        {
+            EnsureResourceArray(ref _resourceTypesById, id);
+            EnsureResourceArray(ref _resourceTypeRefCounts, id);
+        }
+
+        private static void EnsureResourceArray<T>(ref T[] array, int index)
+        {
+            if (array == null)
+            {
+                array = new T[Math.Max(16, index + 1)];
+                return;
+            }
+
+            if (index < array.Length)
+            {
+                return;
+            }
+
+            Array.Resize(ref array, Math.Max(index + 1, array.Length << 1));
+        }
+
+        private static int AllocateResourceId(ref int nextId, int maxId)
+        {
+            if (nextId <= 0 || nextId > maxId)
+            {
+                throw new GameFrameworkException("Resource key id range exceeded.");
+            }
+
+            int id = nextId++;
+            return id;
+        }
+
+        private static ulong PackResourceKey(int packageId, int locationId, int typeId, ResourceAssetKind assetKind, ResourceHandleKind handleKind)
+        {
+            if (packageId <= 0 ||
+                locationId <= 0 ||
+                typeId <= 0 ||
+                packageId > ResourceKeyPackageMax ||
+                locationId > ResourceKeyLocationMax ||
+                typeId > ResourceKeyTypeMax ||
+                (uint)assetKind > ResourceKeyAssetKindMax ||
+                (uint)handleKind > ResourceKeyHandleMax)
+            {
+                throw new GameFrameworkException("Resource key id range exceeded.");
+            }
+
+            return ((ulong)(uint)packageId << ResourceKeyPackageShift) |
+                   ((ulong)(uint)locationId << ResourceKeyLocationShift) |
+                   ((ulong)(uint)typeId << ResourceKeyTypeShift) |
+                   ((ulong)(byte)assetKind << ResourceKeyAssetKindShift) |
+                   ((ulong)(byte)handleKind << ResourceKeyHandleShift);
+        }
+
+        private bool TryGetCachedAssetInfo(ulong key, out AssetInfo assetInfo)
+        {
+            assetInfo = default;
+            if (!_assetInfoByKey.TryGetValue(key, out int slotIndex) || !IsValidAssetInfoSlotId(slotIndex))
+            {
+                return false;
+            }
+
+            ref AssetInfoSlot slot = ref GetAssetInfoSlotRef(slotIndex);
+            if (slot.State != 1 || slot.Key != key)
+            {
+                return false;
+            }
+
+            assetInfo = slot.AssetInfo;
+            return true;
+        }
+
+        private void SetCachedAssetInfo(ulong key, AssetInfo assetInfo)
+        {
+            bool keyAlreadyRetained = false;
+            if (_assetInfoByKey.TryGetValue(key, out int slotIndex) && IsValidAssetInfoSlotId(slotIndex))
+            {
+                ref AssetInfoSlot existing = ref GetAssetInfoSlotRef(slotIndex);
+                if (existing.State == 1 && existing.Key == key)
+                {
+                    existing.AssetInfo = assetInfo;
+                    return;
+                }
+
+                _assetInfoByKey.Remove(key);
+                keyAlreadyRetained = true;
+            }
+
+            slotIndex = AllocateAssetInfoSlot();
+            ref AssetInfoSlot slot = ref GetAssetInfoSlotRef(slotIndex);
+            slot.Key = key;
+            slot.AssetInfo = assetInfo;
+            slot.State = 1;
+            _assetInfoByKey.Set(key, slotIndex);
+            if (!keyAlreadyRetained)
+            {
+                RetainResourceKey(key);
+            }
+        }
+
+        private void ClearAssetInfoCache()
+        {
+            ReleaseAllResourceKeysFromMap(_assetInfoByKey);
+            _assetInfoByKey.Clear();
+            _assetInfoSlotPages = null;
+            _assetInfoSlotNextIndex = 0;
+            TrimResourceKeyRegistryIfUnused();
+        }
+
+        private int AllocateAssetInfoSlot()
+        {
+            int index = _assetInfoSlotNextIndex++;
+            EnsureAssetInfoSlotPage(index);
+            ref AssetInfoSlot slot = ref GetAssetInfoSlotRef(index);
+            slot = default;
+            return index;
+        }
+
+        private bool IsValidAssetInfoSlotId(int index)
+        {
+            return index >= 0 && index < _assetInfoSlotNextIndex && _assetInfoSlotPages != null;
+        }
+
+        private ref AssetInfoSlot GetAssetInfoSlotRef(int index)
+        {
+            return ref _assetInfoSlotPages[index >> RecordPageBits][index & RecordPageMask];
+        }
+
+        private void EnsureAssetInfoSlotPage(int index)
+        {
+            int pageIndex = index >> RecordPageBits;
+            if (_assetInfoSlotPages == null)
+            {
+                _assetInfoSlotPages = new AssetInfoSlot[Math.Max(4, pageIndex + 1)][];
+            }
+            else if (pageIndex >= _assetInfoSlotPages.Length)
+            {
+                Array.Resize(ref _assetInfoSlotPages, Math.Max(pageIndex + 1, _assetInfoSlotPages.Length << 1));
+            }
+
+            if (_assetInfoSlotPages[pageIndex] == null)
+            {
+                _assetInfoSlotPages[pageIndex] = new AssetInfoSlot[RecordPageSize];
+            }
         }
 
         public T LoadAsset<T>(string location, string packageName = "") where T : UnityEngine.Object
@@ -843,11 +1269,13 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
-            var asset = await GetOrLoadAssetAsync(location, typeof(T), InferAssetKind(typeof(T)), packageName, assetLoadingKey);
+            Type assetType = typeof(T);
+            ResourceAssetKind assetKind = InferAssetKind(assetType);
+            ulong assetLoadingKey = GetLoadingOperationKey(location, packageName, assetType, assetKind);
+            var asset = await GetOrLoadAssetAsync(location, assetType, assetKind, packageName, assetLoadingKey);
             if (asset != null)
             {
-                TryAddLegacyDirectRefByKey(packageName, location, typeof(T), asset);
+                TryAddLegacyDirectRefByKey(packageName, location, assetType, asset);
             }
 
             callback?.Invoke(asset as T);
@@ -866,11 +1294,13 @@ namespace AlicizaX.Resource.Runtime
                 return null;
             }
 
-            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
-            var asset = await GetOrLoadAssetAsync(location, typeof(T), InferAssetKind(typeof(T)), packageName, assetLoadingKey, cancellationToken: cancellationToken);
+            Type assetType = typeof(T);
+            ResourceAssetKind assetKind = InferAssetKind(assetType);
+            ulong assetLoadingKey = GetLoadingOperationKey(location, packageName, assetType, assetKind);
+            var asset = await GetOrLoadAssetAsync(location, assetType, assetKind, packageName, assetLoadingKey, cancellationToken: cancellationToken);
             if (asset != null)
             {
-                TryAddLegacyDirectRefByKey(packageName, location, typeof(T), asset);
+                TryAddLegacyDirectRefByKey(packageName, location, assetType, asset);
             }
 
             return asset as T;
@@ -961,7 +1391,8 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
+            ResourceAssetKind assetKind = InferAssetKind(assetType);
+            ulong assetLoadingKey = GetLoadingOperationKey(location, packageName, assetType, assetKind);
             float duration = Time.time;
             AssetInfo assetInfo = GetAssetInfo(location, packageName);
             if (!string.IsNullOrEmpty(assetInfo.Error))
@@ -976,7 +1407,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException(errorMessage);
             }
 
-            var asset = await GetOrLoadAssetAsync(location, assetType, InferAssetKind(assetType), packageName, assetLoadingKey, NormalizePriority(priority), default,
+            var asset = await GetOrLoadAssetAsync(location, assetType, assetKind, packageName, assetLoadingKey, NormalizePriority(priority), default,
                 loadAssetCallbacks.LoadAssetUpdateCallback, userData);
 
             if (asset == null)
@@ -1022,7 +1453,6 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            string assetLoadingKey = GetLoadingOperationKey(location, packageName);
             float duration = Time.time;
             AssetInfo assetInfo = GetAssetInfo(location, packageName);
             if (!string.IsNullOrEmpty(assetInfo.Error))
@@ -1037,7 +1467,10 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException(errorMessage);
             }
 
-            var asset = await GetOrLoadAssetAsync(location, assetInfo.AssetType, InferAssetKind(assetInfo.AssetType), packageName, assetLoadingKey, NormalizePriority(priority), default,
+            Type assetType = assetInfo.AssetType;
+            ResourceAssetKind assetKind = InferAssetKind(assetType);
+            ulong assetLoadingKey = GetLoadingOperationKey(location, packageName, assetType, assetKind);
+            var asset = await GetOrLoadAssetAsync(location, assetType, assetKind, packageName, assetLoadingKey, NormalizePriority(priority), default,
                 loadAssetCallbacks.LoadAssetUpdateCallback, userData);
 
             if (asset == null)
@@ -1047,7 +1480,7 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            TryAddLegacyDirectRefByKey(packageName, location, assetInfo.AssetType, asset);
+            TryAddLegacyDirectRefByKey(packageName, location, assetType, asset);
             loadAssetCallbacks.LoadAssetSuccessCallback?.Invoke(location, asset, Time.time - duration, userData);
         }
 
@@ -1123,7 +1556,7 @@ namespace AlicizaX.Resource.Runtime
         #endregion
 
         private async UniTask<UnityEngine.Object> GetOrLoadAssetAsync(string location, Type assetType, ResourceAssetKind assetKind, string packageName,
-            string assetLoadingKey, uint priority = 0, CancellationToken cancellationToken = default, LoadAssetUpdateCallback loadAssetUpdateCallback = null, object userData = null)
+            ulong assetLoadingKey, uint priority = 0, CancellationToken cancellationToken = default, LoadAssetUpdateCallback loadAssetUpdateCallback = null, object userData = null)
         {
             string normalizedPackageName = NormalizePackageName(packageName);
             assetKind = NormalizeAssetKind(assetType, assetKind);
@@ -1225,20 +1658,40 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private bool TryBeginLoading(string assetObjectKey)
+        private bool TryBeginLoading(ulong assetObjectKey)
         {
-            if (_assetLoadingOperations.TryGetValue(assetObjectKey, out _))
+            bool keyAlreadyRetained = false;
+            if (_assetLoadingOperationByKey.TryGetValue(assetObjectKey, out int existingSlotIndex))
             {
-                return false;
+                if (IsValidLoadingOperationSlotId(existingSlotIndex))
+                {
+                    ref LoadingOperationSlot existingSlot = ref GetLoadingOperationSlotRef(existingSlotIndex);
+                    if (existingSlot.State == 1 && existingSlot.Key == assetObjectKey && existingSlot.Operation != null)
+                    {
+                        return false;
+                    }
+                }
+
+                _assetLoadingOperationByKey.Remove(assetObjectKey);
+                keyAlreadyRetained = true;
             }
 
-            _assetLoadingOperations.Add(assetObjectKey, MemoryPool.Acquire<LoadingOperationState>());
+            int slotIndex = AllocateLoadingOperationSlot();
+            ref LoadingOperationSlot slot = ref GetLoadingOperationSlotRef(slotIndex);
+            slot.Key = assetObjectKey;
+            slot.Operation = MemoryPool.Acquire<LoadingOperationState>();
+            slot.State = 1;
+            _assetLoadingOperationByKey.Set(assetObjectKey, slotIndex);
+            if (!keyAlreadyRetained)
+            {
+                RetainResourceKey(assetObjectKey);
+            }
             return true;
         }
 
-        private async UniTask<bool> WaitForLoadingAsync(string assetObjectKey, CancellationToken cancellationToken = default)
+        private async UniTask<bool> WaitForLoadingAsync(ulong assetObjectKey, CancellationToken cancellationToken = default)
         {
-            if (!_assetLoadingOperations.TryGetValue(assetObjectKey, out var loadingOperation))
+            if (!TryGetLoadingOperation(assetObjectKey, out LoadingOperationState loadingOperation))
             {
                 return true;
             }
@@ -1262,28 +1715,25 @@ namespace AlicizaX.Resource.Runtime
             return succeeded;
         }
 
-        private void CompleteLoading(string assetObjectKey)
+        private void CompleteLoading(ulong assetObjectKey)
         {
-            if (!_assetLoadingOperations.TryGetValue(assetObjectKey, out var loadingOperation))
+            if (!TryRemoveLoadingOperation(assetObjectKey, out LoadingOperationState loadingOperation))
             {
                 return;
             }
 
-            _assetLoadingOperations.Remove(assetObjectKey);
             loadingOperation.Complete(true);
             loadingOperation.RequestRelease();
             ReleaseLoadingOperationIfReady(loadingOperation);
         }
 
-        private void FailLoading(string assetObjectKey, Exception exception)
+        private void FailLoading(ulong assetObjectKey, Exception exception)
         {
-            if (!_assetLoadingOperations.TryGetValue(assetObjectKey, out var loadingOperation))
-
+            if (!TryRemoveLoadingOperation(assetObjectKey, out LoadingOperationState loadingOperation))
             {
                 return;
             }
 
-            _assetLoadingOperations.Remove(assetObjectKey);
             loadingOperation.Complete(false);
             loadingOperation.RequestRelease();
             ReleaseLoadingOperationIfReady(loadingOperation);
@@ -1291,14 +1741,28 @@ namespace AlicizaX.Resource.Runtime
 
         private void ShutdownLoadingOperations()
         {
-            foreach (LoadingOperationState loadingOperation in _assetLoadingOperations.Values)
+            int total = _loadingOperationSlotNextIndex;
+            for (int i = 0; i < total; i++)
             {
+                ref LoadingOperationSlot slot = ref GetLoadingOperationSlotRef(i);
+                if (slot.State != 1 || slot.Operation == null)
+                {
+                    continue;
+                }
+
+                LoadingOperationState loadingOperation = slot.Operation;
                 loadingOperation.Complete(false);
                 loadingOperation.RequestRelease();
                 ReleaseLoadingOperationIfReady(loadingOperation);
+                ClearLoadingOperationSlot(ref slot);
             }
 
-            _assetLoadingOperations.Clear();
+            ReleaseAllResourceKeysFromMap(_assetLoadingOperationByKey);
+            _assetLoadingOperationByKey.Clear();
+            _loadingOperationSlotPages = null;
+            _loadingOperationSlotNextIndex = 0;
+            _loadingOperationSlotFreeHead = -1;
+            TrimResourceKeyRegistryIfUnused();
         }
 
         private bool IsLoadingStateCurrent(int loadGeneration)
@@ -1306,7 +1770,7 @@ namespace AlicizaX.Resource.Runtime
             return !_isDestroying && loadGeneration == _assetUnloadGeneration;
         }
 
-        private bool ShouldAbortLoadingAfterCallerCancellation(string assetObjectKey, CancellationToken cancellationToken, ref bool callerCancellationRequested)
+        private bool ShouldAbortLoadingAfterCallerCancellation(ulong assetObjectKey, CancellationToken cancellationToken, ref bool callerCancellationRequested)
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -1316,10 +1780,116 @@ namespace AlicizaX.Resource.Runtime
             return callerCancellationRequested && !HasLoadingWaiters(assetObjectKey);
         }
 
-        private bool HasLoadingWaiters(string assetObjectKey)
+        private bool HasLoadingWaiters(ulong assetObjectKey)
         {
-            return _assetLoadingOperations.TryGetValue(assetObjectKey, out LoadingOperationState loadingOperation) &&
+            return TryGetLoadingOperation(assetObjectKey, out LoadingOperationState loadingOperation) &&
                    loadingOperation.WaiterCount > 0;
+        }
+
+        private bool TryGetLoadingOperation(ulong assetObjectKey, out LoadingOperationState loadingOperation)
+        {
+            loadingOperation = null;
+            if (!_assetLoadingOperationByKey.TryGetValue(assetObjectKey, out int slotIndex) || !IsValidLoadingOperationSlotId(slotIndex))
+            {
+                return false;
+            }
+
+            ref LoadingOperationSlot slot = ref GetLoadingOperationSlotRef(slotIndex);
+            if (slot.State != 1 || slot.Key != assetObjectKey || slot.Operation == null)
+            {
+                return false;
+            }
+
+            loadingOperation = slot.Operation;
+            return true;
+        }
+
+        private bool TryRemoveLoadingOperation(ulong assetObjectKey, out LoadingOperationState loadingOperation)
+        {
+            loadingOperation = null;
+            if (!_assetLoadingOperationByKey.TryGetValue(assetObjectKey, out int slotIndex) || !IsValidLoadingOperationSlotId(slotIndex))
+            {
+                return false;
+            }
+
+            ref LoadingOperationSlot slot = ref GetLoadingOperationSlotRef(slotIndex);
+            if (slot.State != 1 || slot.Key != assetObjectKey || slot.Operation == null)
+            {
+                _assetLoadingOperationByKey.Remove(assetObjectKey);
+                ReleaseResourceKey(assetObjectKey);
+                return false;
+            }
+
+            loadingOperation = slot.Operation;
+            _assetLoadingOperationByKey.Remove(assetObjectKey);
+            ReleaseResourceKey(assetObjectKey);
+            FreeLoadingOperationSlot(slotIndex);
+            return true;
+        }
+
+        private int AllocateLoadingOperationSlot()
+        {
+            int index;
+            if (_loadingOperationSlotFreeHead >= 0)
+            {
+                index = _loadingOperationSlotFreeHead;
+                ref LoadingOperationSlot freeSlot = ref GetLoadingOperationSlotRef(index);
+                _loadingOperationSlotFreeHead = freeSlot.NextFree;
+            }
+            else
+            {
+                index = _loadingOperationSlotNextIndex++;
+                EnsureLoadingOperationSlotPage(index);
+            }
+
+            ref LoadingOperationSlot slot = ref GetLoadingOperationSlotRef(index);
+            slot = default;
+            slot.NextFree = -1;
+            return index;
+        }
+
+        private void FreeLoadingOperationSlot(int index)
+        {
+            ref LoadingOperationSlot slot = ref GetLoadingOperationSlotRef(index);
+            ClearLoadingOperationSlot(ref slot);
+            slot.NextFree = _loadingOperationSlotFreeHead;
+            _loadingOperationSlotFreeHead = index;
+        }
+
+        private static void ClearLoadingOperationSlot(ref LoadingOperationSlot slot)
+        {
+            slot.Key = 0;
+            slot.Operation = null;
+            slot.State = 0;
+            slot.NextFree = -1;
+        }
+
+        private bool IsValidLoadingOperationSlotId(int index)
+        {
+            return index >= 0 && index < _loadingOperationSlotNextIndex && _loadingOperationSlotPages != null;
+        }
+
+        private ref LoadingOperationSlot GetLoadingOperationSlotRef(int index)
+        {
+            return ref _loadingOperationSlotPages[index >> RecordPageBits][index & RecordPageMask];
+        }
+
+        private void EnsureLoadingOperationSlotPage(int index)
+        {
+            int pageIndex = index >> RecordPageBits;
+            if (_loadingOperationSlotPages == null)
+            {
+                _loadingOperationSlotPages = new LoadingOperationSlot[Math.Max(4, pageIndex + 1)][];
+            }
+            else if (pageIndex >= _loadingOperationSlotPages.Length)
+            {
+                Array.Resize(ref _loadingOperationSlotPages, Math.Max(pageIndex + 1, _loadingOperationSlotPages.Length << 1));
+            }
+
+            if (_loadingOperationSlotPages[pageIndex] == null)
+            {
+                _loadingOperationSlotPages[pageIndex] = new LoadingOperationSlot[RecordPageSize];
+            }
         }
 
         private static void ReleaseLoadingOperationIfReady(LoadingOperationState loadingOperation)

@@ -10,7 +10,7 @@ namespace AlicizaX.Resource.Runtime
         private float _idleAssetExpireTime = 60f;
 
         /// <summary>
-        /// Gets or sets the preheated capacity for Resource asset records.
+        /// 获取或设置资源记录的预热容量。
         /// </summary>
         public int AssetRecordCapacity
         {
@@ -22,6 +22,9 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
+        /// <summary>
+        /// 获取或设置资源租约记录的预热容量。
+        /// </summary>
         public int AssetLeaseCapacity
         {
             get => _assetLeaseCapacity;
@@ -32,6 +35,9 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
+        /// <summary>
+        /// 获取或设置绑定所有者记录的预热容量。
+        /// </summary>
         public int BindingOwnerCapacity
         {
             get => _bindingOwnerCapacity;
@@ -42,6 +48,9 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
+        /// <summary>
+        /// 获取或设置绑定槽位记录的预热容量。
+        /// </summary>
         public int BindingSlotCapacity
         {
             get => _bindingSlotCapacity;
@@ -52,6 +61,9 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
+        /// <summary>
+        /// 获取或设置已注册目标组件索引的预热容量。
+        /// </summary>
         public int RegisteredTargetCapacity
         {
             get => _registeredTargetCapacity;
@@ -69,7 +81,7 @@ namespace AlicizaX.Resource.Runtime
         }
 
         /// <summary>
-        /// Gets or sets the seconds an unreferenced asset handle stays in Idle before release.
+        /// 获取或设置无引用资源句柄在空闲状态保留的秒数，超时后释放。
         /// </summary>
         public float IdleAssetExpireTime
         {
@@ -78,9 +90,9 @@ namespace AlicizaX.Resource.Runtime
         }
 
         /// <summary>
-        /// Releases one legacy direct asset reference.
+        /// 释放一个旧式直接资源引用。
         /// </summary>
-        /// <param name="asset">The asset to unload.</param>
+        /// <param name="asset">要卸载的资源。</param>
         public void UnloadAsset(object asset)
         {
             TryReleaseLegacyDirectByAsset(asset);
