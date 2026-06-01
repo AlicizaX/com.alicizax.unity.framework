@@ -54,33 +54,27 @@ namespace AlicizaX.UI.Runtime
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static bool TryReflectAndRegisterInternal(Type holderType, out UIResInfo info)
         {
-            try
+            IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(holderType);
+            for (int i = 0; i < attributes.Count; i++)
             {
-                IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(holderType);
-                for (int i = 0; i < attributes.Count; i++)
+                CustomAttributeData attribute = attributes[i];
+                if (attribute.AttributeType.Name != nameof(UIResAttribute))
                 {
-                    CustomAttributeData attribute = attributes[i];
-                    if (attribute.AttributeType.Name != nameof(UIResAttribute))
-                    {
-                        continue;
-                    }
-
-                    IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
-                    string resLocation = args.Count > 0 ? (string)(args[0].Value ?? string.Empty) : string.Empty;
-                    EUIResLoadType resLoadType = args.Count > 1
-                        ? (EUIResLoadType)(args[1].Value ?? EUIResLoadType.AssetBundle)
-                        : EUIResLoadType.AssetBundle;
-
-                    Register(holderType, resLocation, resLoadType);
-                    info = _typeHandleMap[holderType.TypeHandle];
-                    return true;
+                    continue;
                 }
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"[UI] Failed to register UI resource for {holderType.FullName}: {ex.Message}");
+
+                IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
+                string resLocation = args.Count > 0 ? (string)(args[0].Value ?? string.Empty) : string.Empty;
+                EUIResLoadType resLoadType = args.Count > 1
+                    ? (EUIResLoadType)(args[1].Value ?? EUIResLoadType.AssetBundle)
+                    : EUIResLoadType.AssetBundle;
+
+                Register(holderType, resLocation, resLoadType);
+                info = _typeHandleMap[holderType.TypeHandle];
+                return true;
             }
 
+            Log.Error($"[UI] Failed to register UI resource for {holderType.FullName}: UIResAttribute not found.");
             info = default;
             return false;
         }

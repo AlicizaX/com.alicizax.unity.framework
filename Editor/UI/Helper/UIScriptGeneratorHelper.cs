@@ -244,7 +244,7 @@ namespace AlicizaX.UI.Editor
                 .Where(type => type != null && !type.IsAbstract && !type.IsInterface)
                 .Where(type => typeof(Component).IsAssignableFrom(type))
                 .Where(type => string.Equals(type.FullName, componentTypeName, StringComparison.Ordinal)
-                    || string.Equals(type.Name, componentTypeName, StringComparison.Ordinal))
+                               || string.Equals(type.Name, componentTypeName, StringComparison.Ordinal))
                 .OrderBy(type => string.Equals(type.FullName, componentTypeName, StringComparison.Ordinal) ? 0 : 1)
                 .ThenBy(type => string.Equals(type.Namespace, "UnityEngine.UI", StringComparison.Ordinal) ? 0 : 1)
                 .ThenBy(type => type.FullName, StringComparer.Ordinal)
@@ -389,7 +389,13 @@ namespace AlicizaX.UI.Editor
                 return;
             }
 
-            var groupKey = $"{root.GetInstanceID()}::{groupName}";
+#if UNITY_6000_4_OR_NEWER
+            string keyId = root.GetEntityId().ToString();
+#else
+            string keyId = root.GetInstanceID().ToString();
+#endif
+
+            var groupKey = $"{keyId}::{groupName}";
             if (!_arrayComponents.Add(groupKey))
             {
                 return;
@@ -639,7 +645,11 @@ namespace AlicizaX.UI.Editor
 
         private static void InitializeGenerationContext(GameObject targetObject)
         {
+#if UNITY_6000_4_OR_NEWER
+            EditorPrefs.SetInt(GenerateInstanceIdKey, targetObject.GetEntityId());
+#else
             EditorPrefs.SetInt(GenerateInstanceIdKey, targetObject.GetInstanceID());
+#endif
             var assetPath = UIGenerateQuick.GetPrefabAssetPath(targetObject);
             if (!string.IsNullOrEmpty(assetPath))
             {

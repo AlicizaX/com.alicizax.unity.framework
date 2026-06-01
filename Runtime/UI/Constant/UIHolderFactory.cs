@@ -55,18 +55,23 @@ namespace AlicizaX.UI.Runtime
         internal static async UniTask CreateUIResourceAsync(UIMetadata meta, Transform parent, UIBase owner = null)
         {
             if (meta.State != UIState.CreatedUI) return;
+            int operationVersion = meta.OperationVersion;
             GameObject obj = await LoadUIResourcesAsync(meta.ResInfo, parent);
-            if (meta.CancellationToken.IsCancellationRequested || meta.View == null || meta.State != UIState.CreatedUI)
+            if (operationVersion != meta.OperationVersion || meta.ExistingCancellationToken.IsCancellationRequested || meta.View == null || meta.State != UIState.CreatedUI)
             {
                 if (obj != null)
                 {
-                    Object.Destroy(obj);
+                    ResourceOwner.ReleaseBindingsInHierarchy(obj);
+                    DestroyObject(obj);
                 }
 
                 return;
             }
 
-            ValidateAndBind(meta, obj, owner);
+            if (!ValidateAndBind(meta, obj, owner))
+            {
+                return;
+            }
         }
 
         internal static void CreateUIResourceSync(UIMetadata meta, Transform parent, UIBase owner = null)
@@ -98,18 +103,45 @@ namespace AlicizaX.UI.Runtime
             return InstantiateResourceSync(location, parent);
         }
 
-        private static void ValidateAndBind(UIMetadata meta, GameObject holderObject, UIBase owner)
+        private static bool ValidateAndBind(UIMetadata meta, GameObject holderObject, UIBase owner)
         {
-            if (!holderObject) throw new NullReferenceException(ZString.Format("UI resource load failed: {0}", meta.ResInfo.Location));
-
-            var holder = (UIHolderObjectBase)holderObject.GetComponent(meta.View.UIHolderType);
-
-            if (holder == null)
+            if (!holderObject)
             {
-                throw new InvalidCastException(ZString.Format("UI resource {0} missing holder component {1}", holderObject.name, meta.View.UIHolderType.FullName));
+                Log.Error(ZString.Format("UI resource load failed: {0}", meta.ResInfo.Location));
+                return false;
             }
 
-            meta.View?.BindUIHolder(holder, owner);
+            if (meta.View == null)
+            {
+                Log.Error(ZString.Format("UI logic missing while binding holder: {0}", holderObject.name));
+                ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
+                DestroyObject(holderObject);
+                return false;
+            }
+
+            var holder = (UIHolderObjectBase)holderObject.GetComponent(meta.View.UIHolderType);
+            if (holder == null)
+            {
+                Log.Error(ZString.Format("UI resource {0} missing holder component {1}", holderObject.name, meta.View.UIHolderType.FullName));
+                ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
+                DestroyObject(holderObject);
+                return false;
+            }
+
+            meta.View.BindUIHolder(holder, owner);
+            return true;
+        }
+
+        private static void DestroyObject(GameObject obj)
+        {
+            if (Application.isPlaying)
+            {
+                Object.Destroy(obj);
+            }
+            else
+            {
+                Object.DestroyImmediate(obj);
+            }
         }
     }
 }

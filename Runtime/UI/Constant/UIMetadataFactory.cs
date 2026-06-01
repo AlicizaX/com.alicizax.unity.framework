@@ -33,6 +33,11 @@ namespace AlicizaX.UI.Runtime
             if (!UIWindowMetadata.TryGetValue(handle, out var meta))
             {
                 meta = new UIMetadata(Type.GetTypeFromHandle(handle));
+                if (!meta.IsValid)
+                {
+                    return null;
+                }
+
                 UIWindowMetadata[handle] = meta;
             }
 
@@ -66,6 +71,11 @@ namespace AlicizaX.UI.Runtime
 
 
             UIMetadata newMetadata = new UIMetadata(type);
+            if (!newMetadata.IsValid)
+            {
+                return null;
+            }
+
             UIMetadataObject newMetadataObj = UIMetadataObject.Create(newMetadata, typeHandleKey);
 
             m_UIMetadataPool.Register(newMetadataObj, true);

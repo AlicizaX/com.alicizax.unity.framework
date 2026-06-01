@@ -17,11 +17,16 @@ namespace AlicizaX.UI.Editor
         private const float DefaultButtonSize = 20f;
         private const float RuntimeMinHeight = 260f;
         private const float RuntimeMaxHeight = 720f;
+        private const float OperationStuckSeconds = 5f;
+        private const int UpdateWindowWarningCount = 8;
+        private const int CacheWindowWarningCount = 16;
 
         private readonly UIServiceDebugInfo _serviceInfo = new UIServiceDebugInfo();
         private readonly UILayerDebugInfo _layerInfo = new UILayerDebugInfo();
         private readonly UIWindowDebugInfo _windowInfo = new UIWindowDebugInfo();
         private readonly UIWindowDebugInfo[] _cacheInfos = new UIWindowDebugInfo[CacheDebugInfoCapacity];
+        private readonly System.Collections.Generic.List<string> _alerts = new System.Collections.Generic.List<string>(16);
+        private readonly System.Collections.Generic.Dictionary<int, int> _visibleDepths = new System.Collections.Generic.Dictionary<int, int>(32);
 
         private SerializedProperty uiRoot;
         private SerializedProperty _isOrthographic;
@@ -186,11 +191,12 @@ namespace AlicizaX.UI.Editor
             DrawRuntimeOptions();
 
             EditorGUILayout.BeginVertical(_entryBodyStyle);
-            _runtimeScroll = EditorGUILayout.BeginScrollView(_runtimeScroll, GUILayout.MinHeight(RuntimeMinHeight), GUILayout.MaxHeight(RuntimeMaxHeight));
+            _runtimeScroll = GUILayout.BeginScrollView(_runtimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(RuntimeMinHeight), GUILayout.MaxHeight(RuntimeMaxHeight));
+            DrawRuntimeAlerts(debugService);
             DrawReferences();
             DrawLayerDebugInfo(debugService);
             DrawCacheDebugInfo(debugService);
-            EditorGUILayout.EndScrollView();
+            GUILayout.EndScrollView();
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndVertical();
         }
@@ -270,6 +276,99 @@ namespace AlicizaX.UI.Editor
             DrawSectionEnd();
         }
 
+        private void DrawRuntimeAlerts(IUIDebugService debugService)
+        {
+            _alerts.Clear();
+
+            if (_serviceInfo.UpdateWindowCount > UpdateWindowWarningCount)
+            {
+                _alerts.Add("Update window count is high: " + _serviceInfo.UpdateWindowCount);
+            }
+
+            if (_serviceInfo.CacheWindowCount > CacheWindowWarningCount)
+            {
+                _alerts.Add("Cached window count is high: " + _serviceInfo.CacheWindowCount);
+            }
+
+            for (int layerIndex = 0; layerIndex < debugService.LayerCount; layerIndex++)
+            {
+                if (!debugService.FillLayerDebugInfo(layerIndex, _layerInfo))
+                {
+                    continue;
+                }
+
+                _visibleDepths.Clear();
+                for (int windowIndex = 0; windowIndex < _layerInfo.WindowCount; windowIndex++)
+                {
+                    if (!debugService.FillWindowDebugInfo(layerIndex, windowIndex, _windowInfo))
+                    {
+                        continue;
+                    }
+
+                    AppendWindowAlerts(_windowInfo, _layerInfo, windowIndex);
+                }
+            }
+
+            int cacheCount = debugService.FillCacheDebugInfo(_cacheInfos, _cacheInfos.Length);
+            for (int i = 0; i < cacheCount; i++)
+            {
+                UIWindowDebugInfo info = _cacheInfos[i];
+                if (info.InCache && info.Visible)
+                {
+                    _alerts.Add(GetWindowName(info) + " is cached but still visible.");
+                }
+            }
+
+            if (_alerts.Count == 0)
+            {
+                return;
+            }
+
+            DrawSectionBegin("Runtime Alerts");
+            for (int i = 0; i < _alerts.Count; i++)
+            {
+                EditorUtils.TrHelpIconText(_alerts[i], MessageType.Warning);
+            }
+            DrawSectionEnd();
+        }
+
+        private void AppendWindowAlerts(UIWindowDebugInfo info, UILayerDebugInfo layerInfo, int windowIndex)
+        {
+            string windowName = GetWindowName(info);
+
+            if ((info.ShowInProgress || info.CloseInProgress) && info.StateDuration >= OperationStuckSeconds)
+            {
+                _alerts.Add(windowName + " has been in " + info.State + " for " + info.StateDuration.ToString("F1") + "s.");
+            }
+
+            if (info.InCache && info.Visible)
+            {
+                _alerts.Add(windowName + " is marked cached while visible.");
+            }
+
+            if (info.HolderTransform == null && info.State != UIState.Uninitialized && info.State != UIState.Destroyed)
+            {
+                _alerts.Add(windowName + " holder transform is missing in state " + info.State + ".");
+            }
+
+            if (info.Visible)
+            {
+                if (_visibleDepths.TryGetValue(info.Depth, out int otherIndex))
+                {
+                    _alerts.Add(windowName + " has duplicate visible depth " + info.Depth + " with window index " + otherIndex + ".");
+                }
+                else
+                {
+                    _visibleDepths.Add(info.Depth, windowIndex);
+                }
+            }
+
+            if (layerInfo.LastFullscreenIndex >= 0 && windowIndex < layerInfo.LastFullscreenIndex && info.Visible)
+            {
+                _alerts.Add(windowName + " is visible behind fullscreen window index " + layerInfo.LastFullscreenIndex + ".");
+            }
+        }
+
         private void DrawLayerDebugInfo(IUIDebugService debugService)
         {
             if (!_showLayers)
@@ -347,8 +446,8 @@ namespace AlicizaX.UI.Editor
             AlicizaEditorGUI.DrawListItemBackground(rowRect, info.WindowCount > 0, hovered);
 
             Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 48f, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Max(96f, rowRect.width * 0.35f), 18f);
-            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, rowRect.xMax - titleRect.xMax - 16f, 18f);
+            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(160f, Mathf.Max(96f, rowRect.width * 0.30f)), 18f);
+            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
 
             GUI.Label(kindRect, "LAYER", _kindBadgeStyle);
             GUI.Label(titleRect, info.Layer.ToString(), _rowLabelStyle);
@@ -362,8 +461,8 @@ namespace AlicizaX.UI.Editor
             AlicizaEditorGUI.DrawListItemBackground(rowRect, cached || info.InCache, hovered);
 
             Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 44f, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Max(128f, rowRect.width * 0.46f), 18f);
-            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, rowRect.xMax - titleRect.xMax - 16f, 18f);
+            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.38f)), 18f);
+            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
             GUI.Label(kindRect, GetWindowBadge(info, cached), _kindBadgeStyle);
             GUI.Label(titleRect, GetWindowTitle(info, cached), GetWindowTitleStyle(info, cached));
             GUI.Label(summaryRect, GetWindowSummary(info), _mutedMiniLabelStyle);
@@ -383,14 +482,19 @@ namespace AlicizaX.UI.Editor
 
         private static string GetWindowTitle(UIWindowDebugInfo info, bool cached)
         {
-            string logicName = string.IsNullOrEmpty(info.LogicTypeName) ? "Unknown" : info.LogicTypeName;
+            string logicName = GetWindowName(info);
             string prefix = cached ? "[Cache] " : "";
             return prefix + "#" + info.OrderIndex + " L" + info.LayerIndex + "  " + logicName;
         }
 
+        private static string GetWindowName(UIWindowDebugInfo info)
+        {
+            return string.IsNullOrEmpty(info.LogicTypeName) ? "Unknown" : info.LogicTypeName;
+        }
+
         private static string GetStateLine(UIWindowDebugInfo info)
         {
-            return info.State + " | Visible " + info.Visible + " | Depth " + info.Depth + " | FullScreen " + info.FullScreen;
+            return info.State + " | Visible " + info.Visible + " | Depth " + info.Depth + " | FullScreen " + info.FullScreen + " | " + info.StateDuration.ToString("F1") + "s";
         }
 
         private static string GetFlagLine(UIWindowDebugInfo info)
@@ -405,7 +509,7 @@ namespace AlicizaX.UI.Editor
 
         private static string GetWindowSummary(UIWindowDebugInfo info)
         {
-            return info.State + " | " + (info.Visible ? "Visible" : "Hidden") + " | Depth " + info.Depth;
+            return info.State + " | " + (info.Visible ? "Visible" : "Hidden") + " | Depth " + info.Depth + " | " + info.StateDuration.ToString("F1") + "s";
         }
 
         private static string GetWindowBadge(UIWindowDebugInfo info, bool cached)

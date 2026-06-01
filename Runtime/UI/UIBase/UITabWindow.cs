@@ -37,7 +37,10 @@ namespace AlicizaX.UI.Runtime
         internal sealed override void BindUIHolder(UIHolderObjectBase holder, UIBase owner)
         {
             if (_state != UIState.CreatedUI)
-                throw new InvalidOperationException("UI already Created");
+            {
+                Log.Error("Cannot bind UI holder because tab window has already been created.");
+                return;
+            }
 
             Holder = holder;
             _canvas = Holder.transform.GetComponent<Canvas>();
@@ -53,7 +56,7 @@ namespace AlicizaX.UI.Runtime
             Holder.RectTransform.offsetMin = Vector2.zero;
             Holder.RectTransform.offsetMax = Vector2.zero;
             Holder.RectTransform.localScale = Vector3.one;
-            _state = UIState.Loaded;
+            SetState(UIState.Loaded);
         }
 
         // 初始化方法（泛型版本）

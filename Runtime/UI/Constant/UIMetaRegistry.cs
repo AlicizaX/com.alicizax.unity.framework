@@ -89,60 +89,51 @@ namespace AlicizaX.UI.Runtime
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static bool TryReflectAndRegisterInternal(Type uiType, out UIMetaInfo info)
         {
-            try
+            Type holderType = ResolveHolderType(uiType);
+            if (holderType == null)
             {
-                Type holderType = ResolveHolderType(uiType);
-                if (holderType == null)
-                {
-                    info = default;
-                    return false;
-                }
-
-                UILayer layer = UILayer.UI;
-                bool fullScreen = false;
-                int cacheTime = 0;
-                bool needUpdate = false;
-
-                IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(uiType);
-                for (int i = 0; i < attributes.Count; i++)
-                {
-                    CustomAttributeData attribute = attributes[i];
-                    string attributeName = attribute.AttributeType.Name;
-                    if (attributeName == nameof(WindowAttribute))
-                    {
-                        IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
-                        if (args.Count > 0)
-                        {
-                            layer = (UILayer)(args[0].Value ?? UILayer.UI);
-                        }
-
-                        if (args.Count > 1)
-                        {
-                            fullScreen = (bool)(args[1].Value ?? false);
-                        }
-
-                        if (args.Count > 2)
-                        {
-                            cacheTime = (int)(args[2].Value ?? 0);
-                        }
-                    }
-                    else if (attributeName == nameof(UIUpdateAttribute))
-                    {
-                        needUpdate = true;
-                    }
-                }
-
-                Register(uiType, holderType, layer, fullScreen, cacheTime, needUpdate);
-                info = _typeHandleMap[uiType.TypeHandle];
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: {ex.Message}");
+                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: holder type not found.");
+                info = default;
+                return false;
             }
 
-            info = default;
-            return false;
+            UILayer layer = UILayer.UI;
+            bool fullScreen = false;
+            int cacheTime = 0;
+            bool needUpdate = false;
+
+            IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(uiType);
+            for (int i = 0; i < attributes.Count; i++)
+            {
+                CustomAttributeData attribute = attributes[i];
+                string attributeName = attribute.AttributeType.Name;
+                if (attributeName == nameof(WindowAttribute))
+                {
+                    IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
+                    if (args.Count > 0)
+                    {
+                        layer = (UILayer)(args[0].Value ?? UILayer.UI);
+                    }
+
+                    if (args.Count > 1)
+                    {
+                        fullScreen = (bool)(args[1].Value ?? false);
+                    }
+
+                    if (args.Count > 2)
+                    {
+                        cacheTime = (int)(args[2].Value ?? 0);
+                    }
+                }
+                else if (attributeName == nameof(UIUpdateAttribute))
+                {
+                    needUpdate = true;
+                }
+            }
+
+            Register(uiType, holderType, layer, fullScreen, cacheTime, needUpdate);
+            info = _typeHandleMap[uiType.TypeHandle];
+            return true;
         }
 
         private static Type ResolveHolderType(Type uiType)

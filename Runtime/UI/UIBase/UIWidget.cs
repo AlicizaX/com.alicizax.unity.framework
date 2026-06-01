@@ -1,4 +1,5 @@
 ﻿using System;
+using AlicizaX;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
@@ -35,7 +36,10 @@ namespace AlicizaX.UI.Runtime
         internal sealed  override void BindUIHolder(UIHolderObjectBase holder, UIBase owner)
         {
             if (_state != UIState.CreatedUI)
-                throw new InvalidOperationException("UI already Created");
+            {
+                Log.Error("Cannot bind UI holder because widget has already been created.");
+                return;
+            }
 
             Holder = holder;
             _parent = owner;
@@ -46,7 +50,7 @@ namespace AlicizaX.UI.Runtime
             }
             _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
             Depth = owner.Depth + 5;
-            _state = UIState.Loaded;
+            SetState(UIState.Loaded);
         }
     }
 }

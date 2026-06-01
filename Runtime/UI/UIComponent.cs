@@ -29,7 +29,8 @@ namespace AlicizaX.UI.Runtime
             _uiService = AppServices.App.Register<IUIService>(new UIService());
             if (uiRoot == null)
             {
-                throw new GameFrameworkException("UIRoot Prefab is invalid.");
+                Log.Error("UIRoot Prefab is invalid.");
+                return;
             }
 
             GameObject obj = Instantiate(uiRoot, Vector3.zero, Quaternion.identity);

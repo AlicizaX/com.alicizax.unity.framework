@@ -20,6 +20,10 @@ namespace AlicizaX.UI.Runtime
             SetLayerBlockOption(false);
         }
 
+        /// <summary>
+        /// 设置 UI 阻挡层，并在指定时长后自动解除。
+        /// </summary>
+        /// <param name="timeDuration">阻挡持续时间，单位为秒</param>
         public void SetUIBlock(float timeDuration)
         {
             ITimerService timerService = GetTimerService();
@@ -32,6 +36,9 @@ namespace AlicizaX.UI.Runtime
             m_LastCountDownHandle = timerService.AddTimer(OnBlockCountDown, timeDuration);
         }
 
+        /// <summary>
+        /// 强制退出 UI 阻挡状态。
+        /// </summary>
         public void ForceExitBlock()
         {
             ITimerService timerService = GetTimerService();

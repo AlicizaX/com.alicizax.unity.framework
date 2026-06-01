@@ -6,9 +6,15 @@ using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
-    internal sealed partial class UIService : ServiceBase, IUIService, IUIDebugService, IServiceTickable
+    internal sealed partial class UIService : ServiceBase, IUIService,
+#if UNITY_EDITOR
+        IUIDebugService,
+#endif
+        IServiceTickable
     {
         private ITimerService _timerService;
+        private UIMetadata[] _updateableWindows = new UIMetadata[8];
+        private int _updateableWindowCount;
 
         protected override void OnInitialize()
         {
@@ -21,22 +27,16 @@ namespace AlicizaX.UI.Runtime
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            for (int layerIndex = 0; layerIndex < _openUI.Length; layerIndex++)
+            int count = _updateableWindowCount;
+            for (int i = 0; i < count; i++)
             {
-                var layer = _openUI[layerIndex];
-                int count = layer.Count;
-                if (count == 0) continue;
-                for (int i = 0; i < count; i++)
+                if (_updateableWindowCount != count)
                 {
-                    if (layer.Count != count)
-                    {
-                        break;
-                    }
-
-                    var window = layer.Items[i];
-                    if (window.MetaInfo.NeedUpdate)
-                        window.View.InternalUpdate();
+                    break;
                 }
+
+                var window = _updateableWindows[i];
+                window?.View?.InternalUpdate();
             }
         }
 
@@ -46,6 +46,11 @@ namespace AlicizaX.UI.Runtime
             if (UIMetaRegistry.TryGet(type, out var metaRegistry))
             {
                 UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(metaRegistry.RuntimeTypeHandle);
+                if (metadata == null)
+                {
+                    return null;
+                }
+
                 return ShowUI(metadata, userDatas);
             }
 
@@ -54,33 +59,50 @@ namespace AlicizaX.UI.Runtime
 
         public T ShowUISync<T>(params object[] userDatas) where T : UIBase
         {
-            return (T)ShowUIImplSync(UIMetadataFactory.GetWindowMetadata<T>(), userDatas);
+            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
+            return metadata == null ? null : (T)ShowUIImplSync(metadata, userDatas);
         }
 
         public async UniTask<T> ShowUI<T>(params System.Object[] userDatas) where T : UIBase
         {
-            return (T)await ShowUIAsync(UIMetadataFactory.GetWindowMetadata<T>(), userDatas);
+            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
+            return metadata == null ? null : (T)await ShowUIAsync(metadata, userDatas);
         }
 
 
         public void CloseUI<T>(bool force = false) where T : UIBase
         {
-            CloseUIImpl(UIMetadataFactory.GetWindowMetadata<T>(), force).Forget();
+            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
+            if (metadata != null)
+            {
+                CloseUIImpl(metadata, force).Forget();
+            }
         }
 
         public T GetUI<T>() where T : UIBase
         {
-            return (T)GetUIImpl(UIMetadataFactory.GetWindowMetadata<T>());
+            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
+            return metadata == null ? null : (T)GetUIImpl(metadata);
         }
 
 
         private UniTask<UIBase> ShowUI(UIMetadata meta, params System.Object[] userDatas)
         {
+            if (meta == null)
+            {
+                return UniTask.FromResult<UIBase>(null);
+            }
+
             return ShowUIImplAsync(meta, userDatas);
         }
 
         private async UniTask<UIBase> ShowUIAsync(UIMetadata meta, params System.Object[] userDatas)
         {
+            if (meta == null)
+            {
+                return null;
+            }
+
             return await ShowUIImplAsync(meta, userDatas);
         }
 
@@ -88,6 +110,11 @@ namespace AlicizaX.UI.Runtime
         public void CloseUI(RuntimeTypeHandle handle, bool force = false)
         {
             var metadata = UIMetadataFactory.GetWindowMetadata(handle);
+            if (metadata == null)
+            {
+                return;
+            }
+
             if (metadata.State != UIState.Uninitialized && metadata.State != UIState.Destroying)
             {
                 CloseUIImpl(metadata, force).Forget();
@@ -127,6 +154,9 @@ namespace AlicizaX.UI.Runtime
                 layer.Count = 0;
                 layer.LastFullscreenIndex = -1;
             }
+
+            Array.Clear(_updateableWindows, 0, _updateableWindowCount);
+            _updateableWindowCount = 0;
 
             if (m_CacheWindowCount > 0)
             {

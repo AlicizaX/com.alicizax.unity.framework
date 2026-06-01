@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using AlicizaX;
+using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
@@ -13,7 +14,7 @@ namespace AlicizaX.UI.Runtime
     {
         protected UIBase()
         {
-            _state = UIState.CreatedUI;
+            SetState(UIState.CreatedUI);
         }
 
         private bool _disposed;
@@ -25,6 +26,10 @@ namespace AlicizaX.UI.Runtime
 
         internal UIState _state = UIState.Uninitialized;
         internal UIState State => _state;
+#if UNITY_EDITOR
+        private float _stateEnteredRealtime;
+        internal float StateDuration => Time.realtimeSinceStartup - _stateEnteredRealtime;
+#endif
 
 
         private System.Object[] _userDatas;
@@ -136,6 +141,7 @@ namespace AlicizaX.UI.Runtime
             // 非托管资源释放
             if (Holder != null)
             {
+                ResourceOwner.ReleaseBindingsInHierarchy(Holder.gameObject);
                 if (Application.isPlaying)
                     Object.Destroy(Holder.gameObject);
                 else
@@ -218,15 +224,18 @@ namespace AlicizaX.UI.Runtime
 
         internal abstract void BindUIHolder(UIHolderObjectBase holder, UIBase owner);
 
-        internal async UniTask<bool> InternalInitlized(CancellationToken cancellationToken = default)
+        internal async UniTask<bool> InternalInitlized(CancellationToken cancellationToken, UIMetadata metadata, int operationVersion)
         {
             if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Initialized))
                 return false;
 
-            _state = UIState.Initialized;
+            SetState(UIState.Initialized);
             Holder.OnWindowInitEvent?.Invoke();
             await OnInitializeAsync();
             if (cancellationToken.IsCancellationRequested)
+                return false;
+
+            if (metadata != null && metadata.OperationVersion != operationVersion)
                 return false;
 
             OnRegisterEvent(EventListenerProxy);
@@ -238,7 +247,7 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Initialized))
                 return false;
 
-            _state = UIState.Initialized;
+            SetState(UIState.Initialized);
             Holder.OnWindowInitEvent?.Invoke();
             OnInitialize();
             OnRegisterEvent(EventListenerProxy);
@@ -254,7 +263,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             int lifecycleVersion = BeginLifecycleTransition();
-            _state = UIState.Opening;
+            SetState(UIState.Opening);
             Visible = true;
             Holder.OnWindowBeforeShowEvent?.Invoke();
             await OnOpenAsync();
@@ -274,7 +283,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return false;
 
-            _state = UIState.Opened;
+            SetState(UIState.Opened);
             Holder.OnWindowAfterShowEvent?.Invoke();
             return true;
         }
@@ -288,7 +297,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             int lifecycleVersion = BeginLifecycleTransition();
-            _state = UIState.Opening;
+            SetState(UIState.Opening);
             Visible = true;
             Holder.OnWindowBeforeShowEvent?.Invoke();
             OnOpen();
@@ -308,7 +317,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             int lifecycleVersion = BeginLifecycleTransition();
-            _state = UIState.Closing;
+            SetState(UIState.Closing);
             Holder.OnWindowBeforeClosedEvent?.Invoke();
             await OnCloseAsync();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
@@ -324,7 +333,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             Visible = false;
-            _state = UIState.Closed;
+            SetState(UIState.Closed);
             Holder.OnWindowAfterClosedEvent?.Invoke();
             return true;
         }
@@ -338,7 +347,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             int lifecycleVersion = BeginLifecycleTransition();
-            _state = UIState.Closing;
+            SetState(UIState.Closing);
             Holder.OnWindowBeforeClosedEvent?.Invoke();
             OnClose();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
@@ -361,13 +370,13 @@ namespace AlicizaX.UI.Runtime
                 return;
 
             InterruptLifecycleTransition();
-            _state = UIState.Destroying;
+            SetState(UIState.Destroying);
             Holder?.OnWindowDestroyEvent?.Invoke();
             await DestroyAllChildren();
             OnDestroy();
             ReleaseEventListenerProxy();
             Dispose();
-            _state = UIState.Destroyed;
+            SetState(UIState.Destroyed);
         }
 
         internal void InternalDestroyImmediate()
@@ -378,13 +387,13 @@ namespace AlicizaX.UI.Runtime
             }
 
             InterruptLifecycleTransition();
-            _state = UIState.Destroying;
+            SetState(UIState.Destroying);
             Holder?.OnWindowDestroyEvent?.Invoke();
             DestroyAllChildrenImmediate();
             OnDestroy();
             ReleaseEventListenerProxy();
             Dispose();
-            _state = UIState.Destroyed;
+            SetState(UIState.Destroyed);
         }
 
         internal void RefreshParams(params System.Object[] userDatas)
@@ -409,13 +418,21 @@ namespace AlicizaX.UI.Runtime
             return lifecycleVersion == _lifecycleVersion && _state == state;
         }
 
+        protected void SetState(UIState state)
+        {
+            _state = state;
+#if UNITY_EDITOR
+            _stateEnteredRealtime = Time.realtimeSinceStartup;
+#endif
+        }
+
         private void RollbackOpeningState(int lifecycleVersion)
         {
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return;
 
             Visible = false;
-            _state = UIState.Initialized;
+            SetState(UIState.Initialized);
         }
 
         private async UniTaskVoid FireAndForgetOpenTransition(int lifecycleVersion)
@@ -424,7 +441,7 @@ namespace AlicizaX.UI.Runtime
             if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return;
 
-            _state = UIState.Opened;
+            SetState(UIState.Opened);
             Holder.OnWindowAfterShowEvent?.Invoke();
         }
 
@@ -435,7 +452,7 @@ namespace AlicizaX.UI.Runtime
                 return;
 
             Visible = false;
-            _state = UIState.Closed;
+            SetState(UIState.Closed);
             Holder.OnWindowAfterClosedEvent?.Invoke();
         }
 

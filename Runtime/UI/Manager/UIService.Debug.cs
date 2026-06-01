@@ -1,3 +1,4 @@
+#if UNITY_EDITOR
 namespace AlicizaX.UI.Runtime
 {
     internal sealed partial class UIService
@@ -144,6 +145,8 @@ namespace AlicizaX.UI.Runtime
             info.CacheTime = metadata.MetaInfo.CacheTime;
             info.CacheTimerHandle = timerHandle;
             info.HolderTransform = holder != null ? holder.transform : null;
+            info.StateDuration = view != null ? view.StateDuration : 0f;
         }
     }
 }
+#endif

@@ -64,28 +64,10 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask<UIBase> ShowUIImplAsync(UIMetadata metaInfo, params object[] userDatas)
         {
-            CreateMetaUI(metaInfo);
-            if (!metaInfo.BeginShowOperation())
-            {
-                metaInfo.View?.RefreshParams(userDatas);
-                return metaInfo.View;
-            }
-
-            int operationVersion = metaInfo.OperationVersion;
-            await UIHolderFactory.CreateUIResourceAsync(metaInfo, UICacheLayer);
-            if (operationVersion != metaInfo.OperationVersion || metaInfo.View == null || metaInfo.State == UIState.Uninitialized || metaInfo.State == UIState.Destroyed)
-            {
-                metaInfo.EndShowOperation(operationVersion);
-                return null;
-            }
-
-            FinalizeShow(metaInfo, userDatas);
-            bool showResult = await UpdateVisualState(metaInfo, metaInfo.CancellationToken);
-            metaInfo.EndShowOperation(operationVersion);
-            return showResult ? metaInfo.View : null;
+            return await ShowUIImplAsyncCore(metaInfo, userDatas);
         }
 
-        private UIBase ShowUIImplSync(UIMetadata metaInfo, params object[] userDatas)
+        private async UniTask<UIBase> ShowUIImplAsyncCore(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
             if (!metaInfo.BeginShowOperation())
@@ -95,25 +77,65 @@ namespace AlicizaX.UI.Runtime
             }
 
             int operationVersion = metaInfo.OperationVersion;
+            bool showResult = false;
+            await UIHolderFactory.CreateUIResourceAsync(metaInfo, UICacheLayer);
+            if (operationVersion != metaInfo.OperationVersion || metaInfo.View == null || metaInfo.State == UIState.Uninitialized || metaInfo.State == UIState.Destroyed)
+            {
+                showResult = false;
+            }
+            else
+            {
+                FinalizeShow(metaInfo, userDatas);
+                showResult = await UpdateVisualState(metaInfo, operationVersion, metaInfo.ExistingCancellationToken);
+                if (!showResult)
+                {
+                    await RollbackFailedShowAsync(metaInfo, operationVersion);
+                }
+            }
+
+            metaInfo.EndShowOperation(operationVersion);
+            return showResult ? metaInfo.View : null;
+        }
+        private UIBase ShowUIImplSync(UIMetadata metaInfo, params object[] userDatas)
+        {
+            return ShowUIImplSyncCore(metaInfo, userDatas);
+        }
+
+        private UIBase ShowUIImplSyncCore(UIMetadata metaInfo, object[] userDatas)
+        {
+            CreateMetaUI(metaInfo);
+            if (!metaInfo.BeginShowOperation())
+            {
+                metaInfo.View?.RefreshParams(userDatas);
+                return metaInfo.View;
+            }
+
+            int operationVersion = metaInfo.OperationVersion;
+            bool showResult = false;
             UIHolderFactory.CreateUIResourceSync(metaInfo, UICacheLayer);
             if (operationVersion != metaInfo.OperationVersion || metaInfo.View == null || metaInfo.State == UIState.Uninitialized || metaInfo.State == UIState.Destroyed)
             {
-                metaInfo.EndShowOperation(operationVersion);
-                return null;
+                showResult = false;
             }
-
-            FinalizeShow(metaInfo, userDatas);
-            bool showResult = UpdateVisualStateSync(metaInfo);
-            metaInfo.EndShowOperation(operationVersion);
-            if (!showResult)
+            else
             {
-                return null;
+                FinalizeShow(metaInfo, userDatas);
+                showResult = UpdateVisualStateSync(metaInfo);
+                if (!showResult)
+                {
+                    RollbackFailedShow(metaInfo, operationVersion);
+                }
             }
 
-            return metaInfo.View;
+            metaInfo.EndShowOperation(operationVersion);
+            return showResult ? metaInfo.View : null;
+        }
+        private async UniTask CloseUIImpl(UIMetadata meta, bool force)
+        {
+            await CloseUIImplCore(meta, force);
         }
 
-        private async UniTask CloseUIImpl(UIMetadata meta, bool force)
+        private async UniTask CloseUIImplCore(UIMetadata meta, bool force)
         {
             if (meta.State == UIState.Uninitialized)
             {
@@ -126,40 +148,32 @@ namespace AlicizaX.UI.Runtime
             }
 
             int operationVersion = meta.OperationVersion;
-
             if (meta.State == UIState.CreatedUI)
             {
                 await meta.DisposeAsync();
-                meta.EndCloseOperation(operationVersion);
-                return;
             }
-
-            if (meta.State == UIState.Loaded || meta.State == UIState.Initialized)
+            else if (meta.State == UIState.Loaded || meta.State == UIState.Initialized)
             {
                 var popResult = Pop(meta);
                 SortWindowVisible(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
                 SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
                 meta.View.Visible = false;
                 CacheWindow(meta, force);
-                meta.EndCloseOperation(operationVersion);
-                return;
             }
-
-            bool closeResult = await meta.View.InternalClose(meta.CancellationToken);
-            if (!closeResult || meta.State != UIState.Closed)
+            else
             {
-                meta.EndCloseOperation(operationVersion);
-                return;
-            }
+                bool closeResult = await meta.View.InternalClose(meta.ExistingCancellationToken);
+                if (closeResult && meta.State == UIState.Closed)
+                {
+                    var closedPopResult = Pop(meta);
+                    SortWindowVisible(meta.MetaInfo.UILayer, closedPopResult.previousFullscreenIndex);
+                    SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex >= 0 ? closedPopResult.removedIndex : 0);
+                    CacheWindow(meta, force);
+                }
 
-            var closedPopResult = Pop(meta);
-            SortWindowVisible(meta.MetaInfo.UILayer, closedPopResult.previousFullscreenIndex);
-            SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex >= 0 ? closedPopResult.removedIndex : 0);
-            CacheWindow(meta, force);
+            }
             meta.EndCloseOperation(operationVersion);
         }
-
-
         private UIBase GetUIImpl(UIMetadata meta)
         {
             return meta.View;
@@ -214,6 +228,7 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 UpdateLayerParent(meta);
+                AddUpdateableWindow(meta);
             }
         }
 
@@ -242,6 +257,7 @@ namespace AlicizaX.UI.Runtime
                 layer.Items[lastIndex] = null;
                 layer.Count = lastIndex;
                 layer.TypeIdToIndex[typeId] = -1;
+                RemoveUpdateableWindow(meta);
 
                 UpdateFullscreenIndexAfterRemove(layer, meta, index);
                 return (index, previousFullscreenIndex);
@@ -290,20 +306,27 @@ namespace AlicizaX.UI.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private async UniTask<bool> UpdateVisualState(UIMetadata meta, CancellationToken cancellationToken = default)
+        private async UniTask<bool> UpdateVisualState(UIMetadata meta, int operationVersion, CancellationToken cancellationToken = default)
         {
             SortWindowVisible(meta.MetaInfo.UILayer);
             SortWindowDepth(meta.MetaInfo.UILayer);
             if (meta.State == UIState.Loaded)
             {
-                if (!await meta.View.InternalInitlized(cancellationToken))
+                if (!await meta.View.InternalInitlized(cancellationToken, meta, operationVersion))
+                {
+                    return false;
+                }
+
+                if (meta.OperationVersion != operationVersion)
                 {
                     return false;
                 }
             }
 
-            return await meta.View.InternalOpen(cancellationToken);
+            bool openResult = await meta.View.InternalOpen(cancellationToken);
+            return openResult && meta.OperationVersion == operationVersion;
         }
+
 
         private bool UpdateVisualStateSync(UIMetadata meta)
         {
@@ -311,7 +334,10 @@ namespace AlicizaX.UI.Runtime
             SortWindowDepth(meta.MetaInfo.UILayer);
             if (meta.State == UIState.Loaded)
             {
-                if (!meta.View.InternalInitlizedSync()) return false;
+                if (!meta.View.InternalInitlizedSync())
+                {
+                    return false;
+                }
             }
 
             return meta.View.InternalOpenSync();
@@ -444,6 +470,79 @@ namespace AlicizaX.UI.Runtime
             }
 
             layer.LastFullscreenIndex = Math.Max(layer.LastFullscreenIndex, toIndex);
+        }
+
+        private async UniTask RollbackFailedShowAsync(UIMetadata meta, int operationVersion)
+        {
+            if (meta == null || meta.OperationVersion != operationVersion)
+            {
+                return;
+            }
+
+            var popResult = Pop(meta);
+            SortWindowVisible(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
+            SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+
+            await meta.DisposeAsync();
+        }
+
+        private void RollbackFailedShow(UIMetadata meta, int operationVersion)
+        {
+            if (meta == null || meta.OperationVersion != operationVersion)
+            {
+                return;
+            }
+
+            var popResult = Pop(meta);
+            SortWindowVisible(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
+            SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+
+            meta.DisposeImmediate();
+        }
+
+        private void AddUpdateableWindow(UIMetadata meta)
+        {
+            if (meta == null || !meta.MetaInfo.NeedUpdate)
+            {
+                return;
+            }
+
+            for (int i = 0; i < _updateableWindowCount; i++)
+            {
+                if (_updateableWindows[i] == meta)
+                {
+                    return;
+                }
+            }
+
+            if (_updateableWindowCount >= _updateableWindows.Length)
+            {
+                Array.Resize(ref _updateableWindows, _updateableWindows.Length << 1);
+            }
+
+            _updateableWindows[_updateableWindowCount++] = meta;
+        }
+
+        private void RemoveUpdateableWindow(UIMetadata meta)
+        {
+            if (meta == null || !meta.MetaInfo.NeedUpdate)
+            {
+                return;
+            }
+
+            for (int i = 0; i < _updateableWindowCount; i++)
+            {
+                if (_updateableWindows[i] != meta)
+                {
+                    continue;
+                }
+
+                int lastIndex = _updateableWindowCount - 1;
+                _updateableWindows[i] = _updateableWindows[lastIndex];
+                _updateableWindows[lastIndex] = null;
+                _updateableWindowCount = lastIndex;
+                return;
+            }
         }
     }
 }

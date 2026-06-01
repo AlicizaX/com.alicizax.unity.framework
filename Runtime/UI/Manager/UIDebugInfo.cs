@@ -1,3 +1,4 @@
+#if UNITY_EDITOR
 using System;
 using UnityEngine;
 
@@ -81,6 +82,7 @@ namespace AlicizaX.UI.Runtime
         public float CacheTime;
         public ulong CacheTimerHandle;
         public Transform HolderTransform;
+        public float StateDuration;
 
         public void Clear()
         {
@@ -100,6 +102,8 @@ namespace AlicizaX.UI.Runtime
             CacheTime = 0f;
             CacheTimerHandle = 0UL;
             HolderTransform = null;
+            StateDuration = 0f;
         }
     }
 }
+#endif

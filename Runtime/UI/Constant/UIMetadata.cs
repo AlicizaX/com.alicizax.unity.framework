@@ -16,9 +16,19 @@ namespace AlicizaX.UI.Runtime
         public readonly string UILogicTypeName;
         public readonly string UIHolderTypeName;
         public bool InCache = false;
+        public readonly bool IsValid;
 
         private CancellationTokenSource _cancellationTokenSource;
-        public CancellationToken CancellationToken => _cancellationTokenSource?.Token ?? CancellationToken.None;
+        public CancellationToken CancellationToken
+        {
+            get
+            {
+                EnsureCancellationToken();
+                return _cancellationTokenSource.Token;
+            }
+        }
+
+        public CancellationToken ExistingCancellationToken => _cancellationTokenSource?.Token ?? CancellationToken.None;
         private int _operationVersion;
         private bool _cancelRequested;
         private bool _showInProgress;
@@ -46,8 +56,11 @@ namespace AlicizaX.UI.Runtime
                 if (!UIStateMachine.ValidateTransition(UILogicType.Name, UIState.Uninitialized, UIState.CreatedUI))
                     return;
 
-                View = (UIBase)InstanceFactory.CreateInstanceOptimized(UILogicType);
-                EnsureCancellationToken();
+                View = (UIBase)Utility.InstanceFactory.CreateInstanceOptimized(UILogicType);
+                if (View == null)
+                {
+                    Log.Error(ZString.Format("[UI] Failed to create UI instance: {0}", UILogicTypeName));
+                }
             }
         }
 
@@ -68,7 +81,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             RequestCancelCurrentOperation();
-            EnsureCancellationToken();
             _operationVersion++;
             _cancelRequested = false;
             _showInProgress = true;
@@ -84,7 +96,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             RequestCancelCurrentOperation();
-            EnsureCancellationToken();
             _operationVersion++;
             _cancelRequested = false;
             _closeInProgress = true;
@@ -111,6 +122,7 @@ namespace AlicizaX.UI.Runtime
         public void CancelAsyncOperations()
         {
             RequestCancelCurrentOperation();
+            _operationVersion++;
             _showInProgress = false;
             _closeInProgress = false;
         }
@@ -154,7 +166,14 @@ namespace AlicizaX.UI.Runtime
         {
             if (uiType == null)
             {
-                throw new ArgumentNullException(nameof(uiType));
+                UILogicType = null;
+                UILogicTypeName = string.Empty;
+                MetaInfo = default;
+                ResInfo = default;
+                UIHolderTypeName = string.Empty;
+                IsValid = false;
+                Log.Error("[UI] Metadata create failed: ui type is null.");
+                return;
             }
 
             UILogicType = uiType;
@@ -162,15 +181,23 @@ namespace AlicizaX.UI.Runtime
 
             if (!UIMetaRegistry.TryGet(UILogicType.TypeHandle, out MetaInfo))
             {
-                throw new InvalidOperationException(ZString.Format("[UI] Metadata not registered for {0}", UILogicType.FullName));
+                ResInfo = default;
+                UIHolderTypeName = string.Empty;
+                IsValid = false;
+                Log.Error(ZString.Format("[UI] Metadata not registered for {0}", UILogicType.FullName));
+                return;
             }
 
             if (!UIResRegistry.TryGet(MetaInfo.HolderRuntimeTypeHandle, out ResInfo))
             {
-                throw new InvalidOperationException(ZString.Format("[UI] Resource metadata not registered for holder of {0}", UILogicType.FullName));
+                UIHolderTypeName = Type.GetTypeFromHandle(MetaInfo.HolderRuntimeTypeHandle)?.Name;
+                IsValid = false;
+                Log.Error(ZString.Format("[UI] Resource metadata not registered for holder of {0}", UILogicType.FullName));
+                return;
             }
 
             UIHolderTypeName = Type.GetTypeFromHandle(MetaInfo.HolderRuntimeTypeHandle)?.Name;
+            IsValid = true;
         }
     }
 }

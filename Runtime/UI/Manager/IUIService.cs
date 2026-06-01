@@ -28,7 +28,24 @@ namespace AlicizaX.UI.Runtime
         /// </summary>
         Transform UICanvasRoot { get; set; }
 
+        /// <summary>
+        /// 获取指定 UI 层级的根节点。
+        /// </summary>
+        /// <param name="layer">UI 层级</param>
+        /// <returns>指定层级对应的根节点</returns>
         RectTransform GetLayer(UILayer layer);
+
+        /// <summary>
+        /// 设置 UI 阻挡层，并在指定时长后自动解除。
+        /// </summary>
+        /// <param name="timeDuration">阻挡持续时间，单位为秒</param>
+        void SetUIBlock(float timeDuration);
+
+        /// <summary>
+        /// 强制退出 UI 阻挡状态。
+        /// </summary>
+        void ForceExitBlock();
+
         // ───────────────────────────────────────────────
         //  Show 系列：异步为主，同步为辅
         // ───────────────────────────────────────────────
