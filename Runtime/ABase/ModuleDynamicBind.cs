@@ -7,6 +7,8 @@ using UnityEngine.Serialization;
 
 namespace AlicizaX
 {
+    [DisallowMultipleComponent]
+    [DefaultExecutionOrder(-2000)]
     public class ModuleDynamicBind : MonoBehaviour
     {
         [SerializeField] private ResourceComponent resourceComponent;
