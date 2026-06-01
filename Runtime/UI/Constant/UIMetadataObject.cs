@@ -17,6 +17,7 @@ namespace AlicizaX.UI.Runtime
             UIMetadata metadata = Target;
             if (metadata != null)
             {
+                metadata.ResetRuntimeState();
             }
         }
 
@@ -27,7 +28,7 @@ namespace AlicizaX.UI.Runtime
             UIMetadata metadata = Target;
             if (metadata != null)
             {
-                metadata.CancelAsyncOperations();
+                metadata.ResetRuntimeState();
             }
         }
     }

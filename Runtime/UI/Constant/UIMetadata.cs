@@ -135,6 +135,16 @@ namespace AlicizaX.UI.Runtime
             _cancellationTokenSource = null;
         }
 
+        internal void ResetRuntimeState()
+        {
+            RequestCancelCurrentOperation();
+            View = null;
+            InCache = false;
+            _cancelRequested = false;
+            _showInProgress = false;
+            _closeInProgress = false;
+        }
+
         public void Dispose()
         {
             DisposeAsync().Forget();

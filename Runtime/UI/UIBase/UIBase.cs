@@ -224,50 +224,61 @@ namespace AlicizaX.UI.Runtime
 
         internal abstract void BindUIHolder(UIHolderObjectBase holder, UIBase owner);
 
+        protected void BindHolderCommon(UIHolderObjectBase holder, bool overrideSorting, bool stretchToParent)
+        {
+            Holder = holder;
+            _canvas = Holder.transform.GetComponent<Canvas>();
+            if (_canvas != null)
+            {
+                _canvas.overrideSorting = overrideSorting;
+            }
+
+            _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
+            if (stretchToParent)
+            {
+                RectTransform rectTransform = Holder.RectTransform;
+                rectTransform.localPosition = Vector3.zero;
+                rectTransform.pivot = new Vector2(0.5f, 0.5f);
+                rectTransform.anchorMin = Vector2.zero;
+                rectTransform.anchorMax = Vector2.one;
+                rectTransform.offsetMin = Vector2.zero;
+                rectTransform.offsetMax = Vector2.zero;
+                rectTransform.localScale = Vector3.one;
+            }
+
+            SetState(UIState.Loaded);
+        }
+
         internal async UniTask<bool> InternalInitlized(CancellationToken cancellationToken, UIMetadata metadata, int operationVersion)
         {
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Initialized))
+            if (!TryBeginInitialize())
                 return false;
 
-            SetState(UIState.Initialized);
-            Holder.OnWindowInitEvent?.Invoke();
             await OnInitializeAsync();
-            if (cancellationToken.IsCancellationRequested)
+            if (!IsInitializeStillValid(cancellationToken, metadata, operationVersion))
                 return false;
 
-            if (metadata != null && metadata.OperationVersion != operationVersion)
-                return false;
-
-            OnRegisterEvent(EventListenerProxy);
+            CompleteInitialize();
             return true;
         }
 
         internal bool InternalInitlizedSync()
         {
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Initialized))
+            if (!TryBeginInitialize())
                 return false;
 
-            SetState(UIState.Initialized);
-            Holder.OnWindowInitEvent?.Invoke();
             OnInitialize();
-            OnRegisterEvent(EventListenerProxy);
+            CompleteInitialize();
             return true;
         }
 
         internal async UniTask<bool> InternalOpen(CancellationToken cancellationToken = default)
         {
-            if (_state == UIState.Opened || _state == UIState.Opening)
-                return _state == UIState.Opened;
+            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult))
+                return skippedResult;
 
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Opening))
-                return false;
-
-            int lifecycleVersion = BeginLifecycleTransition();
-            SetState(UIState.Opening);
-            Visible = true;
-            Holder.OnWindowBeforeShowEvent?.Invoke();
             await OnOpenAsync();
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening) || cancellationToken.IsCancellationRequested)
+            if (IsOpeningCanceled(lifecycleVersion, cancellationToken))
             {
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -280,26 +291,14 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
-                return false;
-
-            SetState(UIState.Opened);
-            Holder.OnWindowAfterShowEvent?.Invoke();
-            return true;
+            return CompleteOpenTransition(lifecycleVersion);
         }
 
         internal bool InternalOpenSync()
         {
-            if (_state == UIState.Opened || _state == UIState.Opening)
-                return _state == UIState.Opened;
+            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult))
+                return skippedResult;
 
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Opening))
-                return false;
-
-            int lifecycleVersion = BeginLifecycleTransition();
-            SetState(UIState.Opening);
-            Visible = true;
-            Holder.OnWindowBeforeShowEvent?.Invoke();
             OnOpen();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return false;
@@ -310,15 +309,9 @@ namespace AlicizaX.UI.Runtime
 
         internal async UniTask<bool> InternalClose(CancellationToken cancellationToken = default)
         {
-            if (_state == UIState.Closed || _state == UIState.Closing)
-                return _state == UIState.Closed;
+            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult))
+                return skippedResult;
 
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Closing))
-                return false;
-
-            int lifecycleVersion = BeginLifecycleTransition();
-            SetState(UIState.Closing);
-            Holder.OnWindowBeforeClosedEvent?.Invoke();
             await OnCloseAsync();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
                 return false;
@@ -329,26 +322,14 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
-                return false;
-
-            Visible = false;
-            SetState(UIState.Closed);
-            Holder.OnWindowAfterClosedEvent?.Invoke();
-            return true;
+            return CompleteCloseTransition(lifecycleVersion);
         }
 
         internal bool InternalCloseSync()
         {
-            if (_state == UIState.Closed || _state == UIState.Closing)
-                return _state == UIState.Closed;
+            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult))
+                return skippedResult;
 
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Closing))
-                return false;
-
-            int lifecycleVersion = BeginLifecycleTransition();
-            SetState(UIState.Closing);
-            Holder.OnWindowBeforeClosedEvent?.Invoke();
             OnClose();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
                 return false;
@@ -407,6 +388,93 @@ namespace AlicizaX.UI.Runtime
             return _lifecycleVersion;
         }
 
+        private bool TryBeginInitialize()
+        {
+            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Initialized))
+                return false;
+
+            SetState(UIState.Initialized);
+            Holder.OnWindowInitEvent?.Invoke();
+            return true;
+        }
+
+        private bool IsInitializeStillValid(CancellationToken cancellationToken, UIMetadata metadata, int operationVersion)
+        {
+            return !cancellationToken.IsCancellationRequested
+                   && (metadata == null || metadata.OperationVersion == operationVersion);
+        }
+
+        private void CompleteInitialize()
+        {
+            OnRegisterEvent(EventListenerProxy);
+        }
+
+        private bool TryBeginOpen(out int lifecycleVersion, out bool skippedResult)
+        {
+            lifecycleVersion = 0;
+            skippedResult = false;
+            if (_state == UIState.Opened || _state == UIState.Opening)
+            {
+                skippedResult = _state == UIState.Opened;
+                return false;
+            }
+
+            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Opening))
+                return false;
+
+            lifecycleVersion = BeginLifecycleTransition();
+            SetState(UIState.Opening);
+            Visible = true;
+            Holder.OnWindowBeforeShowEvent?.Invoke();
+            return true;
+        }
+
+        private bool IsOpeningCanceled(int lifecycleVersion, CancellationToken cancellationToken)
+        {
+            return !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening)
+                   || cancellationToken.IsCancellationRequested;
+        }
+
+        private bool CompleteOpenTransition(int lifecycleVersion)
+        {
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+                return false;
+
+            SetState(UIState.Opened);
+            Holder.OnWindowAfterShowEvent?.Invoke();
+            return true;
+        }
+
+        private bool TryBeginClose(out int lifecycleVersion, out bool skippedResult)
+        {
+            lifecycleVersion = 0;
+            skippedResult = false;
+            if (_state == UIState.Closed || _state == UIState.Closing)
+            {
+                skippedResult = _state == UIState.Closed;
+                return false;
+            }
+
+            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Closing))
+                return false;
+
+            lifecycleVersion = BeginLifecycleTransition();
+            SetState(UIState.Closing);
+            Holder.OnWindowBeforeClosedEvent?.Invoke();
+            return true;
+        }
+
+        private bool CompleteCloseTransition(int lifecycleVersion)
+        {
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+                return false;
+
+            Visible = false;
+            SetState(UIState.Closed);
+            Holder.OnWindowAfterClosedEvent?.Invoke();
+            return true;
+        }
+
         private void InterruptLifecycleTransition()
         {
             _lifecycleVersion++;
@@ -441,8 +509,7 @@ namespace AlicizaX.UI.Runtime
             if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
                 return;
 
-            SetState(UIState.Opened);
-            Holder.OnWindowAfterShowEvent?.Invoke();
+            CompleteOpenTransition(lifecycleVersion);
         }
 
         private async UniTaskVoid FireAndForgetCloseTransition(int lifecycleVersion)
@@ -451,9 +518,7 @@ namespace AlicizaX.UI.Runtime
             if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
                 return;
 
-            Visible = false;
-            SetState(UIState.Closed);
-            Holder.OnWindowAfterClosedEvent?.Invoke();
+            CompleteCloseTransition(lifecycleVersion);
         }
 
         #endregion

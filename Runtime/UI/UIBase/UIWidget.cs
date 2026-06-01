@@ -1,8 +1,6 @@
 ﻿using System;
 using AlicizaX;
 using Cysharp.Threading.Tasks;
-using UnityEngine;
-using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -41,16 +39,9 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            Holder = holder;
             _parent = owner;
-            _canvas = Holder.transform.GetComponent<Canvas>();
-            if (_canvas != null)
-            {
-                _canvas.overrideSorting = false;
-            }
-            _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
+            BindHolderCommon(holder, false, false);
             Depth = owner.Depth + 5;
-            SetState(UIState.Loaded);
         }
     }
 }

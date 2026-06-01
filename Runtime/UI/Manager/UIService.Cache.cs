@@ -20,7 +20,7 @@ namespace AlicizaX.UI.Runtime
         }
 
         private CacheEntry[] m_CacheWindow = new CacheEntry[8];
-        private int[] m_CacheTypeIdToIndex = CreateCacheIndexArray(8);
+        private int[] m_CacheTypeIdToIndex = UITypeIndexArray.Create(8);
         private int m_CacheWindowCount;
 
         private void CacheWindow(UIMetadata uiMetadata, bool force)
@@ -132,34 +132,7 @@ namespace AlicizaX.UI.Runtime
 
         private void EnsureCacheIndexCapacity(int typeId)
         {
-            if ((uint)typeId < (uint)m_CacheTypeIdToIndex.Length)
-            {
-                return;
-            }
-
-            int oldLength = m_CacheTypeIdToIndex.Length;
-            int newLength = oldLength;
-            while (newLength <= typeId)
-            {
-                newLength <<= 1;
-            }
-
-            Array.Resize(ref m_CacheTypeIdToIndex, newLength);
-            for (int i = oldLength; i < newLength; i++)
-            {
-                m_CacheTypeIdToIndex[i] = -1;
-            }
-        }
-
-        private static int[] CreateCacheIndexArray(int capacity)
-        {
-            int[] values = new int[capacity];
-            for (int i = 0; i < values.Length; i++)
-            {
-                values[i] = -1;
-            }
-
-            return values;
+            UITypeIndexArray.EnsureCapacity(ref m_CacheTypeIdToIndex, typeId);
         }
 
         private ITimerService GetTimerService()

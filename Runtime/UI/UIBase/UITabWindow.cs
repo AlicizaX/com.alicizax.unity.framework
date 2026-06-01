@@ -4,7 +4,6 @@ using AlicizaX;
 using Cysharp.Text;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -42,21 +41,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            Holder = holder;
-            _canvas = Holder.transform.GetComponent<Canvas>();
-            if (_canvas != null)
-            {
-                _canvas.overrideSorting = owner == null;
-            }
-            _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
-            Holder.RectTransform.localPosition = Vector3.zero;
-            Holder.RectTransform.pivot = new Vector2(0.5f, 0.5f);
-            Holder.RectTransform.anchorMin = Vector2.zero;
-            Holder.RectTransform.anchorMax = Vector2.one;
-            Holder.RectTransform.offsetMin = Vector2.zero;
-            Holder.RectTransform.offsetMax = Vector2.zero;
-            Holder.RectTransform.localScale = Vector3.one;
-            SetState(UIState.Loaded);
+            BindHolderCommon(holder, owner == null, true);
         }
 
         // 初始化方法（泛型版本）
@@ -134,6 +119,5 @@ namespace AlicizaX.UI.Runtime
             Debug.LogError(ZString.Format("Invalid tab index: {0}", index));
             return false;
         }
-
     }
 }

@@ -16,11 +16,7 @@ namespace AlicizaX.UI.Runtime
         public LayerData(int initialCapacity)
         {
             Items = new UIMetadata[initialCapacity];
-            TypeIdToIndex = new int[initialCapacity];
-            for (int i = 0; i < TypeIdToIndex.Length; i++)
-            {
-                TypeIdToIndex[i] = -1;
-            }
+            TypeIdToIndex = UITypeIndexArray.Create(initialCapacity);
 
             Count = 0;
             LastFullscreenIndex = -1;
@@ -28,23 +24,7 @@ namespace AlicizaX.UI.Runtime
 
         public void EnsureTypeCapacity(int typeId)
         {
-            if ((uint)typeId < (uint)TypeIdToIndex.Length)
-            {
-                return;
-            }
-
-            int oldLength = TypeIdToIndex.Length;
-            int newLength = oldLength;
-            while (newLength <= typeId)
-            {
-                newLength <<= 1;
-            }
-
-            Array.Resize(ref TypeIdToIndex, newLength);
-            for (int i = oldLength; i < newLength; i++)
-            {
-                TypeIdToIndex[i] = -1;
-            }
+            UITypeIndexArray.EnsureCapacity(ref TypeIdToIndex, typeId);
         }
 
         public void EnsureItemCapacity()
@@ -62,12 +42,7 @@ namespace AlicizaX.UI.Runtime
     {
         private readonly LayerData[] _openUI = new LayerData[(int)UILayer.All];
 
-        private async UniTask<UIBase> ShowUIImplAsync(UIMetadata metaInfo, params object[] userDatas)
-        {
-            return await ShowUIImplAsyncCore(metaInfo, userDatas);
-        }
-
-        private async UniTask<UIBase> ShowUIImplAsyncCore(UIMetadata metaInfo, object[] userDatas)
+        private async UniTask<UIBase> ShowUIImplAsync(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
             if (!metaInfo.BeginShowOperation())
@@ -96,12 +71,7 @@ namespace AlicizaX.UI.Runtime
             metaInfo.EndShowOperation(operationVersion);
             return showResult ? metaInfo.View : null;
         }
-        private UIBase ShowUIImplSync(UIMetadata metaInfo, params object[] userDatas)
-        {
-            return ShowUIImplSyncCore(metaInfo, userDatas);
-        }
-
-        private UIBase ShowUIImplSyncCore(UIMetadata metaInfo, object[] userDatas)
+        private UIBase ShowUIImplSync(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
             if (!metaInfo.BeginShowOperation())

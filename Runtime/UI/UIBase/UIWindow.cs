@@ -1,8 +1,5 @@
 using System;
-using System.Reflection;
 using AlicizaX;
-using UnityEngine;
-using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -15,7 +12,7 @@ namespace AlicizaX.UI.Runtime
         /// <summary>
         /// 关闭自身 如果存在缓存 则会强制从缓存中移除
         /// </summary>
-        protected void ForceCloseSlef()
+        protected void ForceCloseSelf()
         {
             AppServices.App.Require<IUIService>().CloseUI(RuntimeTypeHandler, true);
         }
@@ -33,21 +30,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            Holder = holder;
-            _canvas = Holder.transform.GetComponent<Canvas>();
-            if (_canvas != null)
-            {
-                _canvas.overrideSorting = owner == null;
-            }
-            _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
-            Holder.RectTransform.localPosition = Vector3.zero;
-            Holder.RectTransform.pivot = new Vector2(0.5f, 0.5f);
-            Holder.RectTransform.anchorMin = Vector2.zero;
-            Holder.RectTransform.anchorMax = Vector2.one;
-            Holder.RectTransform.offsetMin = Vector2.zero;
-            Holder.RectTransform.offsetMax = Vector2.zero;
-            Holder.RectTransform.localScale = Vector3.one;
-            SetState(UIState.Loaded);
+            BindHolderCommon(holder, owner == null, true);
         }
     }
 }
