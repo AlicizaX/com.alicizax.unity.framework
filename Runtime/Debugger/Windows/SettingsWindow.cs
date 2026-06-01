@@ -33,12 +33,12 @@ namespace AlicizaX.Debugger.Runtime
                 {
                     _mDebuggerComponent.EnableFloatingToggleSnap = value;
                 }));
-                layoutCard.Add(CreateRangeControl("Width", _mDebuggerComponent.WindowRect.width, MinWindowWidth, Screen.width - 32f, value =>
+                layoutCard.Add(CreateRangeControl("Width", _mDebuggerComponent.WindowRect.width, MinWindowWidth, GetLayoutScreenWidth() - 32f, value =>
                 {
                     _mDebuggerComponent.WindowRect = new Rect(_mDebuggerComponent.WindowRect.x, _mDebuggerComponent.WindowRect.y, value, _mDebuggerComponent.WindowRect.height);
                     _mDebuggerComponent.SaveWindowLayoutSettings();
                 }, allowIncreaseBeyondMax: true));
-                layoutCard.Add(CreateRangeControl("Height", _mDebuggerComponent.WindowRect.height, MinWindowHeight, Screen.height - 32f, value =>
+                layoutCard.Add(CreateRangeControl("Height", _mDebuggerComponent.WindowRect.height, MinWindowHeight, GetLayoutScreenHeight() - 32f, value =>
                 {
                     _mDebuggerComponent.WindowRect = new Rect(_mDebuggerComponent.WindowRect.x, _mDebuggerComponent.WindowRect.y, _mDebuggerComponent.WindowRect.width, value);
                     _mDebuggerComponent.SaveWindowLayoutSettings();

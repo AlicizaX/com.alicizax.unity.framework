@@ -31,6 +31,8 @@ namespace AlicizaX.Debugger.Runtime
         private const float MinWindowWidth = 420f;
         private const float MinWindowHeight = 320f;
         private const float MinWindowScale = 0.5f;
+        private const float ReferenceScreenWidth = 1920f;
+        private const float ReferenceScreenHeight = 1080f;
         private const float ToggleClickMoveThreshold = 10f;
         private const float ToggleClickSuppressAfterDrag = 0.35f;
         private const float ToggleDoubleClickInterval = 0.3f;
@@ -881,8 +883,9 @@ namespace AlicizaX.Debugger.Runtime
             _window.style.flexDirection = FlexDirection.Column;
             _window.pickingMode = PickingMode.Position;
             _window.usageHints = UsageHints.DynamicTransform;
-            _window.style.minWidth = MinWindowWidth;
-            _window.style.minHeight = MinWindowHeight;
+            float resolutionScale = GetResolutionScale();
+            _window.style.minWidth = MinWindowWidth * resolutionScale;
+            _window.style.minHeight = MinWindowHeight * resolutionScale;
 
             VisualElement header = new VisualElement();
             header.style.height = 54f * scale;
@@ -1067,7 +1070,25 @@ namespace AlicizaX.Debugger.Runtime
 
         internal float GetUiScale()
         {
-            return m_ShowFullWindow ? m_WindowScale : 1f;
+            float resolutionScale = GetResolutionScale();
+            return m_ShowFullWindow ? m_WindowScale * resolutionScale : resolutionScale;
+        }
+
+        private static float GetResolutionScale()
+        {
+            float widthScale = Screen.width > 0 ? Screen.width / ReferenceScreenWidth : 1f;
+            float heightScale = Screen.height > 0 ? Screen.height / ReferenceScreenHeight : 1f;
+            return Mathf.Max(0.001f, Mathf.Min(widthScale, heightScale));
+        }
+
+        internal static float GetLayoutScreenWidth()
+        {
+            return Screen.width / GetResolutionScale();
+        }
+
+        internal static float GetLayoutScreenHeight()
+        {
+            return Screen.height / GetResolutionScale();
         }
 
         private void RebuildSidebar()
@@ -1387,10 +1408,11 @@ namespace AlicizaX.Debugger.Runtime
                 return;
             }
 
-            _toggleButton.style.left = m_IconRect.x;
-            _toggleButton.style.top = m_IconRect.y;
-            _toggleButton.style.width = m_IconRect.width;
-            _toggleButton.style.height = m_IconRect.height;
+            float resolutionScale = GetResolutionScale();
+            _toggleButton.style.left = m_IconRect.x * resolutionScale;
+            _toggleButton.style.top = m_IconRect.y * resolutionScale;
+            _toggleButton.style.width = m_IconRect.width * resolutionScale;
+            _toggleButton.style.height = m_IconRect.height * resolutionScale;
         }
 
         private void ApplyToggleVisualOffset(Vector2 offset)
@@ -1410,10 +1432,11 @@ namespace AlicizaX.Debugger.Runtime
                 return;
             }
 
-            _window.style.left = m_WindowRect.x;
-            _window.style.top = m_WindowRect.y;
-            _window.style.width = m_WindowRect.width;
-            _window.style.height = m_WindowRect.height;
+            float resolutionScale = GetResolutionScale();
+            _window.style.left = m_WindowRect.x * resolutionScale;
+            _window.style.top = m_WindowRect.y * resolutionScale;
+            _window.style.width = m_WindowRect.width * resolutionScale;
+            _window.style.height = m_WindowRect.height * resolutionScale;
         }
 
         private void ApplyWindowScale()
@@ -1467,7 +1490,7 @@ namespace AlicizaX.Debugger.Runtime
                     return;
                 }
 
-                Vector2 delta = new Vector2(evt.position.x, evt.position.y) - _dragPointerStart;
+                Vector2 delta = (new Vector2(evt.position.x, evt.position.y) - _dragPointerStart) / GetResolutionScale();
                 if (moveWindow)
                 {
                     WindowRect = new Rect(_dragWindowStart.x + delta.x, _dragWindowStart.y + delta.y, m_WindowRect.width, m_WindowRect.height);
@@ -1529,7 +1552,7 @@ namespace AlicizaX.Debugger.Runtime
                 }
 
                 Vector2 currentPosition = new Vector2(evt.position.x, evt.position.y);
-                Vector2 delta = currentPosition - _dragPointerStart;
+                Vector2 delta = (currentPosition - _dragPointerStart) / GetResolutionScale();
                 if (!_isToggleDragging && delta.sqrMagnitude > ToggleClickMoveThreshold * ToggleClickMoveThreshold)
                 {
                     _isToggleDragging = true;
@@ -1619,7 +1642,7 @@ namespace AlicizaX.Debugger.Runtime
                     return;
                 }
 
-                Vector2 delta = (new Vector2(evt.position.x, evt.position.y) - _resizePointerStart) / Mathf.Max(0.001f, GetUiScale());
+                Vector2 delta = (new Vector2(evt.position.x, evt.position.y) - _resizePointerStart) / GetResolutionScale();
                 WindowRect = new Rect(m_WindowRect.x, m_WindowRect.y, _resizeWindowSizeStart.x + delta.x, _resizeWindowSizeStart.y + delta.y);
                 evt.StopPropagation();
             });
@@ -1707,12 +1730,13 @@ namespace AlicizaX.Debugger.Runtime
             }
 
             WindowRect = new Rect(m_WindowRect.x, m_WindowRect.y, m_WindowRect.width, m_WindowRect.height);
+            RebuildRuntimeVisualTree();
         }
 
         private Vector2 ClampIconPosition(Vector2 position)
         {
-            float maxX = Mathf.Max(0f, Screen.width - m_IconRect.width);
-            float maxY = Mathf.Max(0f, Screen.height - m_IconRect.height);
+            float maxX = Mathf.Max(0f, GetLayoutScreenWidth() - m_IconRect.width);
+            float maxY = Mathf.Max(0f, GetLayoutScreenHeight() - m_IconRect.height);
             position.x = Mathf.Clamp(position.x, 0f, maxX);
             position.y = Mathf.Clamp(position.y, 0f, maxY);
             return position;
@@ -1723,9 +1747,9 @@ namespace AlicizaX.Debugger.Runtime
             position = ClampIconPosition(position);
 
             float leftDistance = position.x;
-            float rightDistance = Mathf.Max(0f, Screen.width - (position.x + m_IconRect.width));
+            float rightDistance = Mathf.Max(0f, GetLayoutScreenWidth() - (position.x + m_IconRect.width));
             float topDistance = position.y;
-            float bottomDistance = Mathf.Max(0f, Screen.height - (position.y + m_IconRect.height));
+            float bottomDistance = Mathf.Max(0f, GetLayoutScreenHeight() - (position.y + m_IconRect.height));
 
             float minDistance = leftDistance;
             Vector2 snappedPosition = new Vector2(0f, position.y);
@@ -1733,7 +1757,7 @@ namespace AlicizaX.Debugger.Runtime
             if (rightDistance < minDistance)
             {
                 minDistance = rightDistance;
-                snappedPosition = new Vector2(Mathf.Max(0f, Screen.width - m_IconRect.width), position.y);
+                snappedPosition = new Vector2(Mathf.Max(0f, GetLayoutScreenWidth() - m_IconRect.width), position.y);
             }
 
             if (topDistance < minDistance)
@@ -1744,7 +1768,7 @@ namespace AlicizaX.Debugger.Runtime
 
             if (bottomDistance < minDistance)
             {
-                snappedPosition = new Vector2(position.x, Mathf.Max(0f, Screen.height - m_IconRect.height));
+                snappedPosition = new Vector2(position.x, Mathf.Max(0f, GetLayoutScreenHeight() - m_IconRect.height));
             }
 
             return ClampIconPosition(snappedPosition);
@@ -1762,16 +1786,13 @@ namespace AlicizaX.Debugger.Runtime
 
         private Rect ClampWindowRect(Rect rect)
         {
-            float uiScale = GetUiScale();
-            float screenW = Screen.width;
-            float screenH = Screen.height;
+            float screenW = GetLayoutScreenWidth();
+            float screenH = GetLayoutScreenHeight();
             rect.width = Mathf.Max(rect.width, MinWindowWidth);
             rect.height = Mathf.Max(rect.height, MinWindowHeight);
 
-            float scaledWidth = rect.width * uiScale;
-            float scaledHeight = rect.height * uiScale;
             const float edgeMargin = 60f;
-            float minX = -(scaledWidth - edgeMargin);
+            float minX = -(rect.width - edgeMargin);
             float minY = 0f;
             float maxX = screenW - edgeMargin;
             float maxY = screenH - edgeMargin;
