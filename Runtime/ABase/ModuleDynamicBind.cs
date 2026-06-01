@@ -1,9 +1,6 @@
-using System;
-using AlicizaX.Debugger.Runtime;
 using AlicizaX.Localization.Runtime;
 using AlicizaX.Resource.Runtime;
 using UnityEngine;
-using UnityEngine.Serialization;
 
 namespace AlicizaX
 {
@@ -12,14 +9,12 @@ namespace AlicizaX
     public class ModuleDynamicBind : MonoBehaviour
     {
         [SerializeField] private ResourceComponent resourceComponent;
-        [SerializeField] private DebuggerComponent debuggerComponent;
         [SerializeField] private LocalizationComponent localizationComponent;
         private ServiceDynamicBindInfo _dynamicBindInfo;
 
         private void OnValidate()
         {
             resourceComponent = GetComponentInChildren<ResourceComponent>();
-            debuggerComponent = GetComponentInChildren<DebuggerComponent>();
             localizationComponent = GetComponentInChildren<LocalizationComponent>();
         }
 
@@ -42,11 +37,6 @@ namespace AlicizaX
                 resourceComponent.SetDecryptionServices(_dynamicBindInfo.DecryptionServices);
             }
 
-            if (debuggerComponent != null)
-            {
-                debuggerComponent.SetActiveMode(_dynamicBindInfo.DebuggerActiveWindowType);
-            }
-
             if (localizationComponent != null)
             {
                 localizationComponent.SetLanguage(_dynamicBindInfo.Language);
@@ -56,7 +46,6 @@ namespace AlicizaX
 
     public struct ServiceDynamicBindInfo
     {
-        public DebuggerActiveWindowType DebuggerActiveWindowType;
         public int ResMode;
         public string Language;
         public string DecryptionServices;
