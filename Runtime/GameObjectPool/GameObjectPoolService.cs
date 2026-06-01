@@ -583,6 +583,11 @@ namespace AlicizaX
                 return;
             }
 
+            if (target is GameObject gameObject)
+            {
+                ResourceOwner.ReleaseBindingsInHierarchy(gameObject);
+            }
+
 #if UNITY_EDITOR
             if (!Application.isPlaying)
             {

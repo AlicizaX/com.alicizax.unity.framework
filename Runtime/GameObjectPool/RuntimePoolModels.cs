@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using AlicizaX.ObjectPool;
+using AlicizaX.Resource.Runtime;
 using Cysharp.Text;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -1017,6 +1018,7 @@ internal sealed class RuntimeGameObjectPool : MemoryObject
 
                     if (slot.instance != null)
                     {
+                        ResourceOwner.ReleaseBindingsInHierarchy(slot.instance);
                         GameObject.Destroy(slot.instance);
                     }
 
@@ -1262,6 +1264,11 @@ internal sealed class RuntimeGameObjectPool : MemoryObject
             _releaseSinceMaintain++;
             _activeCount = Mathf.Max(0, _activeCount - 1);
             InvokeOnPoolRelease(ref slot);
+            if (slot.instance != null)
+            {
+                ResourceOwner.ReleaseBindingsInHierarchy(slot.instance);
+            }
+
             if (slot.instance.activeSelf)
             {
                 slot.instance.SetActive(false);
@@ -1548,6 +1555,7 @@ internal sealed class RuntimeGameObjectPool : MemoryObject
 
             if (slot.instance != null)
             {
+                ResourceOwner.ReleaseBindingsInHierarchy(slot.instance);
                 GameObject.Destroy(slot.instance);
             }
 
@@ -1607,6 +1615,11 @@ internal sealed class RuntimeGameObjectPool : MemoryObject
             }
 
             InvokeOnPoolDestroy(ref slot);
+            if (slot.instance != null)
+            {
+                ResourceOwner.ReleaseBindingsInHierarchy(slot.instance);
+            }
+
             if (slot.handle != null)
             {
                 slot.handle.Detach();
