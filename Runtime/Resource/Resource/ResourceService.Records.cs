@@ -46,14 +46,11 @@ namespace AlicizaX.Resource.Runtime
             public int BindingRefCount;
             public int KeepAliveRefCount;
             public int IdleReleaseRequested;
-            public int LoadingWaiterHead;
             public int NextByUnityObject;
             public int KeepAliveExpireTick;
             public int IdleExpireTick;
             public int ExpireQueuePrev;
             public int ExpireQueueNext;
-            public int LastKeepAliveOwnerId;
-            public long LastKeepAliveSlotKey;
             public int NextFree;
             public ResourceAssetKind AssetKind;
             public ResourceHandleKind HandleKind;
@@ -64,12 +61,10 @@ namespace AlicizaX.Resource.Runtime
         private struct LeaseSlot
         {
             public int AssetId;
-            public int OwnerId;
-            public long SlotKey;
             public uint Generation;
             public ResourceLeaseKind Kind;
             public ResourceLeaseState State;
-            public int NextByAsset;
+            public byte Flags;
             public int NextFree;
         }
 
@@ -229,7 +224,7 @@ namespace AlicizaX.Resource.Runtime
             return await AcquireLeaseAsync(key, ResourceLeaseKind.Binding, cancellationToken);
         }
 
-        internal async UniTask<ResourceLeaseHandle> AcquireSubAssetsBindingAsync(string location, string packageName, CancellationToken cancellationToken = default)
+        internal async UniTask<ResourceLeaseHandle> AcquireSubAssetsBindingAsync(string location, string packageName, ResourceLeaseOptions leaseOptions, CancellationToken cancellationToken = default)
         {
             string normalizedPackageName = NormalizePackageName(packageName);
             if (string.IsNullOrEmpty(location) || !CheckLocationValid(location, normalizedPackageName))
@@ -240,7 +235,7 @@ namespace AlicizaX.Resource.Runtime
             AssetRecordKey recordKey = new AssetRecordKey(normalizedPackageName, location, typeof(Sprite), ResourceAssetKind.SubAssets, ResourceHandleKind.SubAssetsHandle);
             if (TryGetCachedSubAssetsRecord(recordKey, out int existingAssetId))
             {
-                return AcquireLease(existingAssetId, ResourceLeaseKind.Binding);
+                return AcquireLease(existingAssetId, ResourceLeaseKind.Binding, leaseOptions);
             }
 
             string loadingKey = GetSubAssetsLoadingOperationKey(location, normalizedPackageName);
@@ -253,7 +248,7 @@ namespace AlicizaX.Resource.Runtime
 
                 if (TryGetCachedSubAssetsRecord(recordKey, out existingAssetId))
                 {
-                    return AcquireLease(existingAssetId, ResourceLeaseKind.Binding);
+                    return AcquireLease(existingAssetId, ResourceLeaseKind.Binding, leaseOptions);
                 }
             }
 
@@ -264,11 +259,26 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceLeaseHandle.Invalid;
             }
 
+            int loadGeneration = _assetUnloadGeneration;
+            if (!IsLoadingStateCurrent(loadGeneration))
+            {
+                FailLoading(loadingKey, null);
+                return ResourceLeaseHandle.Invalid;
+            }
+
             SubAssetsHandle handle = package.LoadSubAssetsAsync<Sprite>(location);
 
+            bool callerCancellationRequested = false;
             while (handle is { IsValid: true, IsDone: false })
             {
-                if (cancellationToken.IsCancellationRequested)
+                if (!IsLoadingStateCurrent(loadGeneration))
+                {
+                    DisposeSubAssetsHandle(handle);
+                    FailLoading(loadingKey, null);
+                    return ResourceLeaseHandle.Invalid;
+                }
+
+                if (ShouldAbortLoadingAfterCallerCancellation(loadingKey, cancellationToken, ref callerCancellationRequested))
                 {
                     DisposeSubAssetsHandle(handle);
                     FailLoading(loadingKey, null);
@@ -276,6 +286,13 @@ namespace AlicizaX.Resource.Runtime
                 }
 
                 await UniTask.Yield();
+            }
+
+            if (!IsLoadingStateCurrent(loadGeneration))
+            {
+                DisposeSubAssetsHandle(handle);
+                FailLoading(loadingKey, null);
+                return ResourceLeaseHandle.Invalid;
             }
 
             if (!handle.IsValid || handle.Status == EOperationStatus.Failed)
@@ -287,7 +304,7 @@ namespace AlicizaX.Resource.Runtime
 
             int assetId = GetOrCreateSubAssetsRecord(normalizedPackageName, location, handle);
             CompleteLoading(loadingKey);
-            return AcquireLease(assetId, ResourceLeaseKind.Binding);
+            return callerCancellationRequested ? ResourceLeaseHandle.Invalid : AcquireLease(assetId, ResourceLeaseKind.Binding, leaseOptions);
         }
 
         private bool TryGetCachedSubAssetsRecord(AssetRecordKey recordKey, out int assetId)
@@ -362,7 +379,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceLeaseHandle.Invalid;
             }
 
-            return AcquireLease(assetId, leaseKind);
+            return AcquireLease(assetId, leaseKind, ResourceLeaseOptions.None);
         }
 
         public bool TryAcquireDirect(ResourceKey key, out ResourceLeaseHandle handle)
@@ -389,7 +406,7 @@ namespace AlicizaX.Resource.Runtime
                 return false;
             }
 
-            handle = AcquireLease(assetId, leaseKind);
+            handle = AcquireLease(assetId, leaseKind, ResourceLeaseOptions.None);
             return handle.IsValid;
         }
 
@@ -417,7 +434,7 @@ namespace AlicizaX.Resource.Runtime
             ResourceAssetKind assetKind = key.AssetKind == ResourceAssetKind.Unknown ? InferAssetKind(assetType) : key.AssetKind;
             if (TryGetCachedAssetRecord(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle, out int cachedAssetId, out _))
             {
-                handle = AcquireLease(cachedAssetId, leaseKind);
+                handle = AcquireLease(cachedAssetId, leaseKind, ResourceLeaseOptions.None);
                 return handle.IsValid;
             }
 
@@ -430,7 +447,7 @@ namespace AlicizaX.Resource.Runtime
 
             int assetId = GetOrCreateAssetRecord(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle, assetHandle.AssetObject, assetHandle);
 
-            handle = AcquireLease(assetId, leaseKind);
+            handle = AcquireLease(assetId, leaseKind, ResourceLeaseOptions.None);
             return handle.IsValid;
         }
 
@@ -444,6 +461,7 @@ namespace AlicizaX.Resource.Runtime
             ref LeaseSlot lease = ref GetLeaseSlotRef(leaseIndex);
             int assetId = lease.AssetId;
             ResourceLeaseKind leaseKind = lease.Kind;
+            byte leaseFlags = lease.Flags;
             if (!IsValidActiveAssetId(assetId))
             {
                 FreeLeaseSlot(leaseIndex);
@@ -466,7 +484,9 @@ namespace AlicizaX.Resource.Runtime
                 }
             }
 
-            if (leaseKind == ResourceLeaseKind.Binding && CanEnterKeepAlive(ref asset))
+            if (leaseKind == ResourceLeaseKind.Binding &&
+                (leaseFlags & (byte)ResourceLeaseOptions.KeepAliveOnRelease) != 0 &&
+                CanEnterKeepAlive(ref asset))
             {
                 EnterKeepAlive(assetId, ref asset);
             }
@@ -671,6 +691,18 @@ namespace AlicizaX.Resource.Runtime
             return true;
         }
 
+        internal bool SetLeaseOptions(ResourceLeaseHandle handle, ResourceLeaseOptions options)
+        {
+            if (!TryGetLeaseSlotIndex(handle, out int leaseIndex))
+            {
+                return false;
+            }
+
+            ref LeaseSlot lease = ref GetLeaseSlotRef(leaseIndex);
+            lease.Flags = (byte)options;
+            return true;
+        }
+
         public int GetAssetInfos(ResourceAssetInfo[] results, int startIndex, int maxCount)
         {
             int total = _assetSlotNextIndex;
@@ -736,6 +768,32 @@ namespace AlicizaX.Resource.Runtime
             return releasedCount;
         }
 
+        internal void ForceReleaseAllAssetRecords()
+        {
+            int total = _assetSlotNextIndex;
+            for (int i = 0; i < total; i++)
+            {
+                ref AssetSlot slot = ref GetAssetSlotRef(i);
+                if (slot.Generation == 0 || slot.State == ResourceAssetState.Released)
+                {
+                    continue;
+                }
+
+                RemoveFromExpiryQueue(i, ref slot);
+                DisposeAssetSlotHandle(ref slot);
+                UnlinkAssetByUnityObject(i, ref slot);
+                ClearAssetSlot(ref slot, preserveGeneration: true);
+                FreeAssetSlot(i);
+            }
+
+            _assetRecordsByKey.Clear();
+            _assetRecordByLoadKeyId.Clear();
+            _assetRecordHeadByUnityObjectId.Clear();
+
+            _leaseSlotNextIndex = 0;
+            _leaseSlotFreeHead = -1;
+        }
+
         internal ResourceLeaseHandle AcquirePrefabSourceLease(string location, string packageName)
         {
             ResourceKey key = new ResourceKey(location, packageName, typeof(GameObject), ResourceAssetKind.Prefab);
@@ -768,10 +826,10 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceLeaseHandle.Invalid;
             }
 
-            return AcquireLease(assetId, ResourceLeaseKind.Direct);
+            return AcquireLease(assetId, ResourceLeaseKind.Direct, ResourceLeaseOptions.None);
         }
 
-        private ResourceLeaseHandle AcquireLease(int assetId, ResourceLeaseKind leaseKind)
+        private ResourceLeaseHandle AcquireLease(int assetId, ResourceLeaseKind leaseKind, ResourceLeaseOptions options)
         {
             if (!IsValidAssetId(assetId))
             {
@@ -801,11 +859,9 @@ namespace AlicizaX.Resource.Runtime
             int leaseIndex = AllocateLeaseSlot();
             ref LeaseSlot lease = ref GetLeaseSlotRef(leaseIndex);
             lease.AssetId = assetId;
-            lease.OwnerId = 0;
-            lease.SlotKey = 0;
             lease.Kind = leaseKind;
             lease.State = ResourceLeaseState.Active;
-            lease.NextByAsset = -1;
+            lease.Flags = (byte)options;
             return new ResourceLeaseHandle(leaseIndex, lease.Generation);
         }
 
@@ -844,7 +900,6 @@ namespace AlicizaX.Resource.Runtime
             slot.AssetHandle = assetHandle;
             slot.AssetKind = assetKind;
             slot.HandleKind = handleKind;
-            slot.LoadingWaiterHead = -1;
             slot.NextByUnityObject = -1;
             slot.ExpireQueuePrev = -1;
             slot.ExpireQueueNext = -1;
@@ -886,7 +941,6 @@ namespace AlicizaX.Resource.Runtime
             slot.SubAssetsHandle = subAssetsHandle;
             slot.AssetKind = ResourceAssetKind.SubAssets;
             slot.HandleKind = ResourceHandleKind.SubAssetsHandle;
-            slot.LoadingWaiterHead = -1;
             slot.NextByUnityObject = -1;
             slot.ExpireQueuePrev = -1;
             slot.ExpireQueueNext = -1;
@@ -1369,7 +1423,6 @@ namespace AlicizaX.Resource.Runtime
             slot.Generation = preserveGeneration ? generation : 0;
             slot.NextByUnityObject = -1;
             slot.NextFree = -1;
-            slot.LoadingWaiterHead = -1;
             slot.ExpireQueuePrev = -1;
             slot.ExpireQueueNext = -1;
             slot.State = ResourceAssetState.Released;
@@ -1458,7 +1511,6 @@ namespace AlicizaX.Resource.Runtime
             slot.Generation = generation;
             slot.NextByUnityObject = -1;
             slot.NextFree = -1;
-            slot.LoadingWaiterHead = -1;
             slot.ExpireQueuePrev = -1;
             slot.ExpireQueueNext = -1;
             slot.State = ResourceAssetState.Released;
@@ -1496,7 +1548,6 @@ namespace AlicizaX.Resource.Runtime
 
             slot = default;
             slot.Generation = generation;
-            slot.NextByAsset = -1;
             slot.NextFree = -1;
             slot.State = ResourceLeaseState.Free;
             return index;

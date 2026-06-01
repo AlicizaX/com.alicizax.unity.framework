@@ -97,6 +97,13 @@ namespace AlicizaX.Resource.Runtime
         Released = 2,
     }
 
+    [Flags]
+    internal enum ResourceLeaseOptions : byte
+    {
+        None = 0,
+        KeepAliveOnRelease = 1,
+    }
+
     public struct ResourceAssetInfo
     {
         public int LoadKeyId;

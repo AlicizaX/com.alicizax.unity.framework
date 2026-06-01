@@ -42,6 +42,12 @@ public static class ResourceBindingExtensions
 
     public static void SetSprite(this Image image, string location, bool setNativeSize = false, CancellationToken cancellationToken = default)
     {
+        ResourceBindingOptions options = setNativeSize ? ResourceBindingOptions.SetNativeSize : ResourceBindingOptions.None;
+        SetSprite(image, location, options, cancellationToken);
+    }
+
+    public static void SetSprite(this Image image, string location, ResourceBindingOptions options, CancellationToken cancellationToken = default)
+    {
         if (image == null || cancellationToken.IsCancellationRequested)
         {
             return;
@@ -53,12 +59,16 @@ public static class ResourceBindingExtensions
         }
 
         ResourceOwner owner = ResourceOwner.EnsureFor(image, bindingService);
-        ResourceBindingOptions options = setNativeSize ? ResourceBindingOptions.SetNativeSize : ResourceBindingOptions.None;
         bindingService.BindSprite(owner, image, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.Sprite), options);
     }
 
     public static void SetSprite(this SpriteRenderer spriteRenderer, string location, CancellationToken cancellationToken = default)
     {
+        SetSprite(spriteRenderer, location, ResourceBindingOptions.None, cancellationToken);
+    }
+
+    public static void SetSprite(this SpriteRenderer spriteRenderer, string location, ResourceBindingOptions options, CancellationToken cancellationToken = default)
+    {
         if (spriteRenderer == null || cancellationToken.IsCancellationRequested)
         {
             return;
@@ -70,10 +80,16 @@ public static class ResourceBindingExtensions
         }
 
         ResourceOwner owner = ResourceOwner.EnsureFor(spriteRenderer, bindingService);
-        bindingService.BindSprite(owner, spriteRenderer, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.Sprite));
+        bindingService.BindSprite(owner, spriteRenderer, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.Sprite), options);
     }
 
     public static void SetSubSprite(this Image image, string location, string spriteName, bool setNativeSize = false, CancellationToken cancellationToken = default)
+    {
+        ResourceBindingOptions options = setNativeSize ? ResourceBindingOptions.SetNativeSize : ResourceBindingOptions.None;
+        SetSubSprite(image, location, spriteName, options, cancellationToken);
+    }
+
+    public static void SetSubSprite(this Image image, string location, string spriteName, ResourceBindingOptions options, CancellationToken cancellationToken = default)
     {
         if (image == null || cancellationToken.IsCancellationRequested)
         {
@@ -86,11 +102,15 @@ public static class ResourceBindingExtensions
         }
 
         ResourceOwner owner = ResourceOwner.EnsureFor(image, bindingService);
-        ResourceBindingOptions options = setNativeSize ? ResourceBindingOptions.SetNativeSize : ResourceBindingOptions.None;
         bindingService.BindSubSpriteAsync(owner, image, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.SubAssets), spriteName, options, cancellationToken).Forget();
     }
 
     public static void SetSubSprite(this SpriteRenderer spriteRenderer, string location, string spriteName, CancellationToken cancellationToken = default)
+    {
+        SetSubSprite(spriteRenderer, location, spriteName, ResourceBindingOptions.None, cancellationToken);
+    }
+
+    public static void SetSubSprite(this SpriteRenderer spriteRenderer, string location, string spriteName, ResourceBindingOptions options, CancellationToken cancellationToken = default)
     {
         if (spriteRenderer == null || cancellationToken.IsCancellationRequested)
         {
@@ -103,10 +123,15 @@ public static class ResourceBindingExtensions
         }
 
         ResourceOwner owner = ResourceOwner.EnsureFor(spriteRenderer, bindingService);
-        bindingService.BindSubSpriteAsync(owner, spriteRenderer, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.SubAssets), spriteName, ResourceBindingOptions.None, cancellationToken).Forget();
+        bindingService.BindSubSpriteAsync(owner, spriteRenderer, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.SubAssets), spriteName, options, cancellationToken).Forget();
     }
 
     public static void SetMaterial(this Image image, string location, bool isAsync = false, string packageName = "")
+    {
+        SetMaterial(image, location, ResourceBindingOptions.None, isAsync, packageName);
+    }
+
+    public static void SetMaterial(this Image image, string location, ResourceBindingOptions options, bool isAsync = false, string packageName = "")
     {
         if (image == null)
         {
@@ -121,14 +146,19 @@ public static class ResourceBindingExtensions
         ResourceOwner owner = EnsureOwner(bindingService, image);
         if (isAsync)
         {
-            bindingService.BindImageMaterialAsync(owner, image, MaterialKey(location, packageName)).Forget();
+            bindingService.BindImageMaterialAsync(owner, image, MaterialKey(location, packageName), options).Forget();
             return;
         }
 
-        bindingService.BindImageMaterial(owner, image, MaterialKey(location, packageName));
+        bindingService.BindImageMaterial(owner, image, MaterialKey(location, packageName), options);
     }
 
     public static void SetMaterial(this SpriteRenderer spriteRenderer, string location, bool isAsync = false, string packageName = "")
+    {
+        SetMaterial(spriteRenderer, location, ResourceBindingOptions.None, isAsync, packageName);
+    }
+
+    public static void SetMaterial(this SpriteRenderer spriteRenderer, string location, ResourceBindingOptions options, bool isAsync = false, string packageName = "")
     {
         if (spriteRenderer == null)
         {
@@ -143,14 +173,19 @@ public static class ResourceBindingExtensions
         ResourceOwner owner = EnsureOwner(bindingService, spriteRenderer);
         if (isAsync)
         {
-            bindingService.BindSharedMaterialAsync(owner, spriteRenderer, MaterialKey(location, packageName)).Forget();
+            bindingService.BindSharedMaterialAsync(owner, spriteRenderer, MaterialKey(location, packageName), options).Forget();
             return;
         }
 
-        bindingService.BindSharedMaterial(owner, spriteRenderer, MaterialKey(location, packageName));
+        bindingService.BindSharedMaterial(owner, spriteRenderer, MaterialKey(location, packageName), options);
     }
 
     public static void SetMaterial(this MeshRenderer meshRenderer, string location, bool needInstance = true, bool isAsync = false, string packageName = "")
+    {
+        SetMaterial(meshRenderer, location, ResourceBindingOptions.None, needInstance, isAsync, packageName);
+    }
+
+    public static void SetMaterial(this MeshRenderer meshRenderer, string location, ResourceBindingOptions options, bool needInstance = true, bool isAsync = false, string packageName = "")
     {
         if (meshRenderer == null)
         {
@@ -167,11 +202,11 @@ public static class ResourceBindingExtensions
         {
             if (needInstance)
             {
-                bindingService.BindMaterialInstanceAsync(owner, meshRenderer, MaterialKey(location, packageName)).Forget();
+                bindingService.BindMaterialInstanceAsync(owner, meshRenderer, MaterialKey(location, packageName), options).Forget();
             }
             else
             {
-                bindingService.BindSharedMaterialAsync(owner, meshRenderer, MaterialKey(location, packageName)).Forget();
+                bindingService.BindSharedMaterialAsync(owner, meshRenderer, MaterialKey(location, packageName), options).Forget();
             }
 
             return;
@@ -179,15 +214,20 @@ public static class ResourceBindingExtensions
 
         if (needInstance)
         {
-            bindingService.BindMaterialInstance(owner, meshRenderer, MaterialKey(location, packageName));
+            bindingService.BindMaterialInstance(owner, meshRenderer, MaterialKey(location, packageName), options);
         }
         else
         {
-            bindingService.BindSharedMaterial(owner, meshRenderer, MaterialKey(location, packageName));
+            bindingService.BindSharedMaterial(owner, meshRenderer, MaterialKey(location, packageName), options);
         }
     }
 
     public static void SetSharedMaterial(this MeshRenderer meshRenderer, string location, bool isAsync = false, string packageName = "")
+    {
+        SetSharedMaterial(meshRenderer, location, ResourceBindingOptions.None, isAsync, packageName);
+    }
+
+    public static void SetSharedMaterial(this MeshRenderer meshRenderer, string location, ResourceBindingOptions options, bool isAsync = false, string packageName = "")
     {
         if (meshRenderer == null)
         {
@@ -202,11 +242,11 @@ public static class ResourceBindingExtensions
         ResourceOwner owner = EnsureOwner(bindingService, meshRenderer);
         if (isAsync)
         {
-            bindingService.BindSharedMaterialAsync(owner, meshRenderer, MaterialKey(location, packageName)).Forget();
+            bindingService.BindSharedMaterialAsync(owner, meshRenderer, MaterialKey(location, packageName), options).Forget();
             return;
         }
 
-        bindingService.BindSharedMaterial(owner, meshRenderer, MaterialKey(location, packageName));
+        bindingService.BindSharedMaterial(owner, meshRenderer, MaterialKey(location, packageName), options);
     }
 
     private static ResourceOwner EnsureOwner(IResourceBindingService bindingService, Component target)

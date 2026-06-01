@@ -90,11 +90,13 @@ namespace AlicizaX.Resource.Runtime
 
         private const float ProgressCallbackThreshold = 0.01f;
 
-        private UnloadUnusedAssetsOperation _unloadUnusedAssetsOperation;
+        private readonly List<UnloadUnusedAssetsOperation> _unloadUnusedAssetsOperations = new List<UnloadUnusedAssetsOperation>();
 
-        private UnloadAllAssetsOperation _unloadAllAssetsOperation;
+        private readonly List<UnloadAllAssetsOperation> _unloadAllAssetsOperations = new List<UnloadAllAssetsOperation>();
 
         private bool _isDestroying;
+
+        private int _assetUnloadGeneration;
 
         private ResourceBindingService _bindingService;
 
@@ -215,15 +217,10 @@ namespace AlicizaX.Resource.Runtime
         protected override void OnDestroyService()
         {
             _isDestroying = true;
-            foreach (var loadingOperation in _assetLoadingOperations.Values)
-            {
-                loadingOperation.Complete(false);
-                loadingOperation.RequestRelease();
-                ReleaseLoadingOperationIfReady(loadingOperation);
-            }
-
             PackageMap.Clear();
             ShutdownLoadingOperations();
+            _unloadUnusedAssetsOperations.Clear();
+            _unloadAllAssetsOperations.Clear();
             _assetInfoMap.Clear();
             _assetLoadingKeyMap.Clear();
             _subAssetsLoadingKeyMap.Clear();
@@ -383,7 +380,8 @@ namespace AlicizaX.Resource.Runtime
         public void UnloadUnusedAssets()
         {
             ReleaseAllUnusedAssetRecords();
-            if (_unloadUnusedAssetsOperation is { IsDone: false })
+            RemoveCompletedUnloadUnusedOperations();
+            if (_unloadUnusedAssetsOperations.Count > 0)
             {
                 return;
             }
@@ -392,7 +390,7 @@ namespace AlicizaX.Resource.Runtime
             {
                 if (package is { InitializeStatus: EOperationStatus.Succeed })
                 {
-                    _unloadUnusedAssetsOperation = package.UnloadUnusedAssetsAsync();
+                    _unloadUnusedAssetsOperations.Add(package.UnloadUnusedAssetsAsync());
                 }
             }
         }
@@ -406,16 +404,27 @@ namespace AlicizaX.Resource.Runtime
             Log.Warning(ZString.Format("WebGL not support invoke {0}", nameof(ForceUnloadAllAssets)));
 			return;
 #else
-            if (_unloadAllAssetsOperation is { IsDone: false })
+            RemoveCompletedUnloadAllOperations();
+            if (_unloadAllAssetsOperations.Count > 0)
             {
                 return;
             }
 
+            unchecked
+            {
+                _assetUnloadGeneration++;
+            }
+
+            ShutdownLoadingOperations();
+            _bindingService?.Shutdown();
+            _bindingService = new ResourceBindingService(this);
+            WarmupBindingRecords();
+            ForceReleaseAllAssetRecords();
             foreach (var package in PackageMap.Values)
             {
                 if (package is { InitializeStatus: EOperationStatus.Succeed })
                 {
-                    _unloadAllAssetsOperation = package.UnloadAllAssetsAsync();
+                    _unloadAllAssetsOperations.Add(package.UnloadAllAssetsAsync());
                 }
             }
 #endif
@@ -437,6 +446,30 @@ namespace AlicizaX.Resource.Runtime
             }
 
             return package;
+        }
+
+        private void RemoveCompletedUnloadUnusedOperations()
+        {
+            for (int i = _unloadUnusedAssetsOperations.Count - 1; i >= 0; i--)
+            {
+                UnloadUnusedAssetsOperation operation = _unloadUnusedAssetsOperations[i];
+                if (operation == null || operation.IsDone)
+                {
+                    _unloadUnusedAssetsOperations.RemoveAt(i);
+                }
+            }
+        }
+
+        private void RemoveCompletedUnloadAllOperations()
+        {
+            for (int i = _unloadAllAssetsOperations.Count - 1; i >= 0; i--)
+            {
+                UnloadAllAssetsOperation operation = _unloadAllAssetsOperations[i];
+                if (operation == null || operation.IsDone)
+                {
+                    _unloadAllAssetsOperations.RemoveAt(i);
+                }
+            }
         }
 
         #region Public Methods
@@ -1018,7 +1051,7 @@ namespace AlicizaX.Resource.Runtime
             loadAssetCallbacks.LoadAssetSuccessCallback?.Invoke(location, asset, Time.time - duration, userData);
         }
 
-        private async UniTaskVoid InvokeProgress(string location, AssetHandle assetHandle, LoadAssetUpdateCallback loadAssetUpdateCallback, object userData)
+        private async UniTaskVoid InvokeProgress(string location, AssetHandle assetHandle, LoadAssetUpdateCallback loadAssetUpdateCallback, object userData, CancellationToken cancellationToken)
         {
             if (string.IsNullOrEmpty(location))
             {
@@ -1030,6 +1063,11 @@ namespace AlicizaX.Resource.Runtime
                 float lastReportedProgress = -1f;
                 while (assetHandle is { IsValid: true, IsDone: false })
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     await UniTask.Yield();
                     float progress = assetHandle.Progress;
                     if (lastReportedProgress < 0f || progress - lastReportedProgress >= ProgressCallbackThreshold)
@@ -1039,7 +1077,7 @@ namespace AlicizaX.Resource.Runtime
                     }
                 }
 
-                if (assetHandle is { IsValid: true } && lastReportedProgress < 1f)
+                if (!cancellationToken.IsCancellationRequested && assetHandle is { IsValid: true } && lastReportedProgress < 1f)
                 {
                     loadAssetUpdateCallback.Invoke(location, 1f, userData);
                 }
@@ -1117,6 +1155,13 @@ namespace AlicizaX.Resource.Runtime
                     continue;
                 }
 
+                int loadGeneration = _assetUnloadGeneration;
+                if (!IsLoadingStateCurrent(loadGeneration))
+                {
+                    FailLoading(assetLoadingKey, null);
+                    return null;
+                }
+
                 AssetHandle handle = GetHandleAsync(location, assetType, packageName: packageName, priority: priority);
                 if (handle == null)
                 {
@@ -1124,10 +1169,18 @@ namespace AlicizaX.Resource.Runtime
                     return null;
                 }
 
-                StartProgressTask(location, handle, loadAssetUpdateCallback, userData);
+                StartProgressTask(location, handle, loadAssetUpdateCallback, userData, cancellationToken);
+                bool callerCancellationRequested = false;
                 while (handle is { IsValid: true, IsDone: false })
                 {
-                    if (cancellationToken.IsCancellationRequested)
+                    if (!IsLoadingStateCurrent(loadGeneration))
+                    {
+                        DisposeHandle(handle);
+                        FailLoading(assetLoadingKey, null);
+                        return null;
+                    }
+
+                    if (ShouldAbortLoadingAfterCallerCancellation(assetLoadingKey, cancellationToken, ref callerCancellationRequested))
                     {
                         DisposeHandle(handle);
                         FailLoading(assetLoadingKey, null);
@@ -1135,6 +1188,13 @@ namespace AlicizaX.Resource.Runtime
                     }
 
                     await UniTask.Yield();
+                }
+
+                if (!IsLoadingStateCurrent(loadGeneration))
+                {
+                    DisposeHandle(handle);
+                    FailLoading(assetLoadingKey, null);
+                    return null;
                 }
 
                 if (handle.AssetObject == null || handle.Status == EOperationStatus.Failed)
@@ -1161,7 +1221,7 @@ namespace AlicizaX.Resource.Runtime
                 GetOrCreateAssetRecord(normalizedPackageName, location, assetType, assetKind,
                     ResourceHandleKind.AssetHandle, handle.AssetObject, handle);
                 CompleteLoading(assetLoadingKey);
-                return handle.AssetObject as UnityEngine.Object;
+                return callerCancellationRequested ? null : handle.AssetObject as UnityEngine.Object;
             }
         }
 
@@ -1241,6 +1301,27 @@ namespace AlicizaX.Resource.Runtime
             _assetLoadingOperations.Clear();
         }
 
+        private bool IsLoadingStateCurrent(int loadGeneration)
+        {
+            return !_isDestroying && loadGeneration == _assetUnloadGeneration;
+        }
+
+        private bool ShouldAbortLoadingAfterCallerCancellation(string assetObjectKey, CancellationToken cancellationToken, ref bool callerCancellationRequested)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                callerCancellationRequested = true;
+            }
+
+            return callerCancellationRequested && !HasLoadingWaiters(assetObjectKey);
+        }
+
+        private bool HasLoadingWaiters(string assetObjectKey)
+        {
+            return _assetLoadingOperations.TryGetValue(assetObjectKey, out LoadingOperationState loadingOperation) &&
+                   loadingOperation.WaiterCount > 0;
+        }
+
         private static void ReleaseLoadingOperationIfReady(LoadingOperationState loadingOperation)
         {
             if (loadingOperation is { ReleaseRequested: true, WaiterCount: 0 })
@@ -1257,11 +1338,11 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private void StartProgressTask(string location, AssetHandle handle, LoadAssetUpdateCallback loadAssetUpdateCallback, object userData)
+        private void StartProgressTask(string location, AssetHandle handle, LoadAssetUpdateCallback loadAssetUpdateCallback, object userData, CancellationToken cancellationToken)
         {
             if (loadAssetUpdateCallback != null && handle is { IsValid: true, IsDone: false })
             {
-                InvokeProgress(location, handle, loadAssetUpdateCallback, userData).Forget();
+                InvokeProgress(location, handle, loadAssetUpdateCallback, userData, cancellationToken).Forget();
             }
         }
 

@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Text;
 using Cysharp.Text;
 using UnityEngine;
 using YooAsset;
@@ -66,8 +67,8 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         DecryptResult IDecryptionServices.LoadAssetBundleFallback(DecryptFileInfo fileInfo)
         {
-            byte[] fileData = File.ReadAllBytes(fileInfo.FileLoadPath);
-            var assetBundle = AssetBundle.LoadFromMemory(fileData);
+            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
+            var assetBundle = AssetBundle.LoadFromMemory(fileData, fileInfo.FileLoadCRC);
             DecryptResult decryptResult = new DecryptResult();
             decryptResult.Result = assetBundle;
             return decryptResult;
@@ -78,7 +79,13 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         byte[] IDecryptionServices.ReadFileData(DecryptFileInfo fileInfo)
         {
-            throw new System.NotImplementedException();
+            byte[] fileData = File.ReadAllBytes(fileInfo.FileLoadPath);
+            for (int i = 0; i < fileData.Length; i++)
+            {
+                fileData[i] ^= BundleStream.KEY;
+            }
+
+            return fileData;
         }
 
         /// <summary>
@@ -86,7 +93,8 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         string IDecryptionServices.ReadFileText(DecryptFileInfo fileInfo)
         {
-            throw new System.NotImplementedException();
+            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
+            return Encoding.UTF8.GetString(fileData);
         }
 
         private static uint GetManagedReadBufferSize()
@@ -129,7 +137,10 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         DecryptResult IDecryptionServices.LoadAssetBundleFallback(DecryptFileInfo fileInfo)
         {
-            return new DecryptResult();
+            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
+            DecryptResult decryptResult = new DecryptResult();
+            decryptResult.Result = AssetBundle.LoadFromMemory(fileData, fileInfo.FileLoadCRC);
+            return decryptResult;
         }
 
         /// <summary>
@@ -137,7 +148,17 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         byte[] IDecryptionServices.ReadFileData(DecryptFileInfo fileInfo)
         {
-            throw new System.NotImplementedException();
+            byte[] fileData = File.ReadAllBytes(fileInfo.FileLoadPath);
+            ulong fileOffset = GetFileOffset();
+            if ((ulong)fileData.Length <= fileOffset)
+            {
+                return System.Array.Empty<byte>();
+            }
+
+            int outputLength = fileData.Length - (int)fileOffset;
+            byte[] output = new byte[outputLength];
+            System.Buffer.BlockCopy(fileData, (int)fileOffset, output, 0, outputLength);
+            return output;
         }
 
         /// <summary>
@@ -145,7 +166,8 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         string IDecryptionServices.ReadFileText(DecryptFileInfo fileInfo)
         {
-            throw new System.NotImplementedException();
+            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
+            return Encoding.UTF8.GetString(fileData);
         }
 
         private static ulong GetFileOffset()
@@ -170,7 +192,8 @@ namespace AlicizaX.Resource.Runtime
         public override int Read(byte[] array, int offset, int count)
         {
             var index = base.Read(array, offset, count);
-            for (int i = 0; i < array.Length; i++)
+            int end = offset + index;
+            for (int i = offset; i < end; i++)
             {
                 array[i] ^= KEY;
             }

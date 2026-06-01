@@ -34,7 +34,6 @@ namespace AlicizaX.Resource.Runtime
             public int GameObjectId;
             public uint Generation;
             public int BindingHead;
-            public int PendingRequestHead;
             public int RegisteredTargetHead;
             public int BindingCount;
             public int RegisteredTargetCount;
@@ -204,7 +203,6 @@ namespace AlicizaX.Resource.Runtime
             slot.OwnerId = ownerIndex + 1;
             slot.GameObjectId = gameObjectId;
             slot.BindingHead = -1;
-            slot.PendingRequestHead = -1;
             slot.RegisteredTargetHead = -1;
             slot.Owner = owner;
             slot.State = 1;
@@ -348,7 +346,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            ResourceBindStatus status = BindSpriteSource(owner, image, key, ResourceBindingSlotType.ImageSprite);
+            ResourceBindStatus status = BindSpriteSource(owner, image, key, ResourceBindingSlotType.ImageSprite, options);
             if (status == ResourceBindStatus.Success && (options & ResourceBindingOptions.SetNativeSize) != 0)
             {
                 image.SetNativeSize();
@@ -364,7 +362,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return BindSpriteSource(owner, spriteRenderer, key, ResourceBindingSlotType.SpriteRendererSprite);
+            return BindSpriteSource(owner, spriteRenderer, key, ResourceBindingSlotType.SpriteRendererSprite, options);
         }
 
         public async UniTask<ResourceBindStatus> BindSubSpriteAsync(ResourceOwner owner, Image image, ResourceKey atlasKey, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
@@ -400,7 +398,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return BindMaterialSource(owner, image, key, ResourceBindingSlotType.ImageMaterial, createRuntimeInstance: false);
+            return BindMaterialSource(owner, image, key, ResourceBindingSlotType.ImageMaterial, createRuntimeInstance: false, options);
         }
 
         public async UniTask<ResourceBindStatus> BindImageMaterialAsync(ResourceOwner owner, Image image, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
@@ -410,7 +408,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return await BindMaterialSourceAsync(owner, image, key, ResourceBindingSlotType.ImageMaterial, false, cancellationToken);
+            return await BindMaterialSourceAsync(owner, image, key, ResourceBindingSlotType.ImageMaterial, false, options, cancellationToken);
         }
 
         public ResourceBindStatus BindSharedMaterial(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
@@ -420,7 +418,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return BindMaterialSource(owner, renderer, key, ResourceBindingSlotType.RendererSharedMaterial, createRuntimeInstance: false);
+            return BindMaterialSource(owner, renderer, key, ResourceBindingSlotType.RendererSharedMaterial, createRuntimeInstance: false, options);
         }
 
         public async UniTask<ResourceBindStatus> BindSharedMaterialAsync(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
@@ -430,7 +428,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return await BindMaterialSourceAsync(owner, renderer, key, ResourceBindingSlotType.RendererSharedMaterial, false, cancellationToken);
+            return await BindMaterialSourceAsync(owner, renderer, key, ResourceBindingSlotType.RendererSharedMaterial, false, options, cancellationToken);
         }
 
         public ResourceBindStatus BindMaterialInstance(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
@@ -440,7 +438,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return BindMaterialSource(owner, renderer, key, ResourceBindingSlotType.RendererMaterialInstance, createRuntimeInstance: true);
+            return BindMaterialSource(owner, renderer, key, ResourceBindingSlotType.RendererMaterialInstance, createRuntimeInstance: true, options);
         }
 
         public async UniTask<ResourceBindStatus> BindMaterialInstanceAsync(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
@@ -450,7 +448,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            return await BindMaterialSourceAsync(owner, renderer, key, ResourceBindingSlotType.RendererMaterialInstance, true, cancellationToken);
+            return await BindMaterialSourceAsync(owner, renderer, key, ResourceBindingSlotType.RendererMaterialInstance, true, options, cancellationToken);
         }
 
         public int GetOwnerInfos(ResourceOwnerInfo[] results, int startIndex, int maxCount)
@@ -526,22 +524,6 @@ namespace AlicizaX.Resource.Runtime
             return total;
         }
 
-        private ResourceBindStatus BindPlaceholder(ResourceOwner owner, Component target, ResourceBindingSlotType slotType)
-        {
-            ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
-            if (status != ResourceBindStatus.Success)
-            {
-                return status;
-            }
-
-            if (target == null)
-            {
-                return ResourceBindStatus.MissingTarget;
-            }
-
-            return ResourceBindStatus.NotImplemented;
-        }
-
         internal ResourceBindStatus RegisterPrefabSource(ResourceOwner owner, ResourceLeaseHandle lease, GameObject prefabSource)
         {
             ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
@@ -582,6 +564,8 @@ namespace AlicizaX.Resource.Runtime
             binding.ViewKeyId = 0;
             binding.Lease = lease;
             binding.SlotType = ResourceBindingSlotType.PrefabSource;
+            binding.Flags = (byte)ResourceBindingOptions.KeepAliveOnRelease;
+            _resourceService.SetLeaseOptions(lease, ResourceLeaseOptions.KeepAliveOnRelease);
             binding.Version++;
             if (oldLease.IsValid)
             {
@@ -591,7 +575,7 @@ namespace AlicizaX.Resource.Runtime
             return ResourceBindStatus.Success;
         }
 
-        private ResourceBindStatus BindMaterialSource(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType slotType, bool createRuntimeInstance)
+        private ResourceBindStatus BindMaterialSource(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType slotType, bool createRuntimeInstance, ResourceBindingOptions options)
         {
             ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
             if (status != ResourceBindStatus.Success)
@@ -638,7 +622,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.ApplyFailed;
             }
 
-            ResourceBindStatus registerStatus = RegisterMaterialSource(owner, target, newLease, appliedMaterial, runtimeMaterial, slotType);
+            ResourceBindStatus registerStatus = RegisterMaterialSource(owner, target, newLease, appliedMaterial, runtimeMaterial, slotType, options, 0);
             if (registerStatus != ResourceBindStatus.Success)
             {
                 ClearMaterialSlot(target, appliedMaterial, runtimeMaterial, slotType);
@@ -653,7 +637,7 @@ namespace AlicizaX.Resource.Runtime
             return registerStatus;
         }
 
-        private async UniTask<ResourceBindStatus> BindMaterialSourceAsync(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType slotType, bool createRuntimeInstance, CancellationToken cancellationToken)
+        private async UniTask<ResourceBindStatus> BindMaterialSourceAsync(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType slotType, bool createRuntimeInstance, ResourceBindingOptions options, CancellationToken cancellationToken)
         {
             ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
             if (status != ResourceBindStatus.Success)
@@ -737,7 +721,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.ApplyFailed;
             }
 
-            ResourceBindStatus registerStatus = RegisterMaterialSource(owner, target, newLease, appliedMaterial, runtimeMaterial, slotType, requestVersion);
+            ResourceBindStatus registerStatus = RegisterMaterialSource(owner, target, newLease, appliedMaterial, runtimeMaterial, slotType, options, requestVersion);
             if (registerStatus != ResourceBindStatus.Success)
             {
                 ClearMaterialSlot(target, appliedMaterial, runtimeMaterial, slotType);
@@ -754,10 +738,10 @@ namespace AlicizaX.Resource.Runtime
 
         internal ResourceBindStatus RegisterMaterialSource(ResourceOwner owner, Component target, ResourceLeaseHandle lease, Material appliedMaterial, Material runtimeMaterial, ResourceBindingSlotType slotType)
         {
-            return RegisterMaterialSource(owner, target, lease, appliedMaterial, runtimeMaterial, slotType, 0);
+            return RegisterMaterialSource(owner, target, lease, appliedMaterial, runtimeMaterial, slotType, ResourceBindingOptions.None, 0);
         }
 
-        private ResourceBindStatus RegisterMaterialSource(ResourceOwner owner, Component target, ResourceLeaseHandle lease, Material appliedMaterial, Material runtimeMaterial, ResourceBindingSlotType slotType, uint reservedVersion)
+        private ResourceBindStatus RegisterMaterialSource(ResourceOwner owner, Component target, ResourceLeaseHandle lease, Material appliedMaterial, Material runtimeMaterial, ResourceBindingSlotType slotType, ResourceBindingOptions options, uint reservedVersion)
         {
             ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
             if (status != ResourceBindStatus.Success)
@@ -803,6 +787,8 @@ namespace AlicizaX.Resource.Runtime
             binding.ViewKeyId = 0;
             binding.Lease = lease;
             binding.SlotType = slotType;
+            binding.Flags = (byte)options;
+            _resourceService.SetLeaseOptions(lease, ToLeaseOptions(options));
             if (reservedVersion != 0 && binding.Version == reservedVersion)
             {
                 binding.Version = reservedVersion;
@@ -825,7 +811,7 @@ namespace AlicizaX.Resource.Runtime
             return ResourceBindStatus.Success;
         }
 
-        private ResourceBindStatus BindSpriteSource(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType slotType)
+        private ResourceBindStatus BindSpriteSource(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType slotType, ResourceBindingOptions options)
         {
             ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
             if (status != ResourceBindStatus.Success)
@@ -859,15 +845,15 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.ApplyFailed;
             }
 
-            return RegisterSpriteSource(owner, target, newLease, sprite, slotType);
+            return RegisterSpriteSource(owner, target, newLease, sprite, slotType, options, 0);
         }
 
         internal ResourceBindStatus RegisterSpriteSource(ResourceOwner owner, Component target, ResourceLeaseHandle lease, Sprite sprite, ResourceBindingSlotType slotType)
         {
-            return RegisterSpriteSource(owner, target, lease, sprite, slotType, 0);
+            return RegisterSpriteSource(owner, target, lease, sprite, slotType, ResourceBindingOptions.None, 0);
         }
 
-        private ResourceBindStatus RegisterSpriteSource(ResourceOwner owner, Component target, ResourceLeaseHandle lease, Sprite sprite, ResourceBindingSlotType slotType, uint reservedVersion)
+        private ResourceBindStatus RegisterSpriteSource(ResourceOwner owner, Component target, ResourceLeaseHandle lease, Sprite sprite, ResourceBindingSlotType slotType, ResourceBindingOptions options, uint reservedVersion)
         {
             ResourceBindStatus status = EnsureOwner(owner, out int ownerIndex);
             if (status != ResourceBindStatus.Success)
@@ -912,6 +898,8 @@ namespace AlicizaX.Resource.Runtime
             binding.ViewKeyId = 0;
             binding.Lease = lease;
             binding.SlotType = slotType;
+            binding.Flags = (byte)options;
+            _resourceService.SetLeaseOptions(lease, ToLeaseOptions(options));
             if (reservedVersion != 0 && binding.Version == reservedVersion)
             {
                 binding.Version = reservedVersion;
@@ -978,7 +966,7 @@ namespace AlicizaX.Resource.Runtime
                 return reserveStatus;
             }
 
-            ResourceLeaseHandle newLease = await _resourceService.AcquireSubAssetsBindingAsync(atlasKey.Location, atlasKey.PackageName, cancellationToken);
+            ResourceLeaseHandle newLease = await _resourceService.AcquireSubAssetsBindingAsync(atlasKey.Location, atlasKey.PackageName, ToLeaseOptions(options), cancellationToken);
             if (!newLease.IsValid)
             {
                 CancelReservedBindingRequest(ownerId, ownerGeneration, slotKey, requestVersion);
@@ -1014,7 +1002,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.ApplyFailed;
             }
 
-            return RegisterSpriteSource(owner, target, newLease, sprite, slotType, requestVersion);
+            return RegisterSpriteSource(owner, target, newLease, sprite, slotType, options, requestVersion);
         }
 
         private ResourceBindStatus ReserveBindingRequest(int ownerIndex, Component target, ResourceBindingSlotType slotType,
@@ -1362,6 +1350,13 @@ namespace AlicizaX.Resource.Runtime
             return ((long)(uint)targetComponentId << 32) | ((long)slotType << 16) | subIndex;
         }
 
+        private static ResourceLeaseOptions ToLeaseOptions(ResourceBindingOptions options)
+        {
+            return (options & ResourceBindingOptions.KeepAliveOnRelease) != 0
+                ? ResourceLeaseOptions.KeepAliveOnRelease
+                : ResourceLeaseOptions.None;
+        }
+
         private int AllocateOwnerSlot()
         {
             int index;
@@ -1387,7 +1382,6 @@ namespace AlicizaX.Resource.Runtime
             slot = default;
             slot.Generation = generation;
             slot.BindingHead = -1;
-            slot.PendingRequestHead = -1;
             slot.RegisteredTargetHead = -1;
             slot.NextFree = -1;
             return index;
