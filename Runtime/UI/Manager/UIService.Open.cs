@@ -294,6 +294,22 @@ namespace AlicizaX.UI.Runtime
             }
 
             bool openResult = await meta.View.InternalOpen(cancellationToken);
+            if (openResult && meta.OperationVersion == operationVersion && meta.MetaInfo.FullScreen)
+            {
+                var layer = _openUI[meta.MetaInfo.UILayer];
+                int typeId = meta.MetaInfo.TypeId;
+                if ((uint)typeId < (uint)layer.TypeIdToIndex.Length)
+                {
+                    int idx = layer.TypeIdToIndex[typeId];
+                    if (idx >= 0 && idx > layer.LastFullscreenIndex)
+                    {
+                        int previousFullscreenIndex = layer.LastFullscreenIndex;
+                        layer.LastFullscreenIndex = idx;
+                        SortWindowVisible(meta.MetaInfo.UILayer, previousFullscreenIndex);
+                    }
+                }
+            }
+
             return openResult && meta.OperationVersion == operationVersion;
         }
 
@@ -310,7 +326,24 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
-            return meta.View.InternalOpenSync();
+            bool openResult = meta.View.InternalOpenSync();
+            if (openResult && meta.MetaInfo.FullScreen)
+            {
+                var layer = _openUI[meta.MetaInfo.UILayer];
+                int typeId = meta.MetaInfo.TypeId;
+                if ((uint)typeId < (uint)layer.TypeIdToIndex.Length)
+                {
+                    int idx = layer.TypeIdToIndex[typeId];
+                    if (idx >= 0 && idx > layer.LastFullscreenIndex)
+                    {
+                        int previousFullscreenIndex = layer.LastFullscreenIndex;
+                        layer.LastFullscreenIndex = idx;
+                        SortWindowVisible(meta.MetaInfo.UILayer, previousFullscreenIndex);
+                    }
+                }
+            }
+
+            return openResult;
         }
 
         private void SortWindowVisible(int layer, int previousFullscreenIndex = int.MinValue)
