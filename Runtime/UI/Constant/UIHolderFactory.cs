@@ -17,8 +17,7 @@ namespace AlicizaX.UI.Runtime
             if (UIResRegistry.TryGet(typeof(T).TypeHandle, out UIResRegistry.UIResInfo resInfo))
             {
                 GameObject obj = await LoadUIResourcesAsync(resInfo, parent);
-
-                return obj.GetComponent<T>();
+                return GetHolderOrDestroy<T>(obj, resInfo.Location);
             }
 
             return null;
@@ -29,8 +28,7 @@ namespace AlicizaX.UI.Runtime
             if (UIResRegistry.TryGet(typeof(T).TypeHandle, out UIResRegistry.UIResInfo resInfo))
             {
                 GameObject obj = LoadUIResourcesSync(resInfo, parent);
-
-                return obj.GetComponent<T>();
+                return GetHolderOrDestroy<T>(obj, resInfo.Location);
             }
 
             return null;
@@ -84,12 +82,22 @@ namespace AlicizaX.UI.Runtime
         private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent)
         {
             GameObject prefab = (GameObject)await Resources.LoadAsync<GameObject>(location);
+            if (!prefab)
+            {
+                return null;
+            }
+
             return Object.Instantiate(prefab, parent);
         }
 
         private static GameObject InstantiateResourceSync(string location, Transform parent)
         {
             GameObject prefab = Resources.Load<GameObject>(location);
+            if (!prefab)
+            {
+                return null;
+            }
+
             return Object.Instantiate(prefab, parent);
         }
 
@@ -107,13 +115,13 @@ namespace AlicizaX.UI.Runtime
         {
             if (!holderObject)
             {
-                Log.Error(ZString.Format("UI resource load failed: {0}", meta.ResInfo.Location));
+                Log.Error("UI resource load failed: {0}", meta.ResInfo.Location);
                 return false;
             }
 
             if (meta.View == null)
             {
-                Log.Error(ZString.Format("UI logic missing while binding holder: {0}", holderObject.name));
+                Log.Error("UI logic missing while binding holder: {0}", holderObject.name);
                 ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
                 DestroyObject(holderObject);
                 return false;
@@ -122,7 +130,7 @@ namespace AlicizaX.UI.Runtime
             var holder = (UIHolderObjectBase)holderObject.GetComponent(meta.View.UIHolderType);
             if (holder == null)
             {
-                Log.Error(ZString.Format("UI resource {0} missing holder component {1}", holderObject.name, meta.View.UIHolderType.FullName));
+                Log.Error("UI resource {0} missing holder component {1}", holderObject.name, meta.View.UIHolderType.FullName);
                 ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
                 DestroyObject(holderObject);
                 return false;
@@ -130,6 +138,26 @@ namespace AlicizaX.UI.Runtime
 
             meta.View.BindUIHolder(holder, owner);
             return true;
+        }
+
+        private static T GetHolderOrDestroy<T>(GameObject holderObject, string location) where T : UIHolderObjectBase
+        {
+            if (!holderObject)
+            {
+                Log.Error("UI holder resource load failed: {0}", location);
+                return null;
+            }
+
+            T holder = holderObject.GetComponent<T>();
+            if (holder != null)
+            {
+                return holder;
+            }
+
+            Log.Error("UI resource {0} missing holder component {1}", holderObject.name, typeof(T).FullName);
+            ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
+            DestroyObject(holderObject);
+            return null;
         }
 
         private static void DestroyObject(GameObject obj)

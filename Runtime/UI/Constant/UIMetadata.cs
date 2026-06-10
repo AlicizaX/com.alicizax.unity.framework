@@ -19,14 +19,6 @@ namespace AlicizaX.UI.Runtime
         public readonly bool IsValid;
 
         private CancellationTokenSource _cancellationTokenSource;
-        public CancellationToken CancellationToken
-        {
-            get
-            {
-                EnsureCancellationToken();
-                return _cancellationTokenSource.Token;
-            }
-        }
 
         public CancellationToken ExistingCancellationToken => _cancellationTokenSource?.Token ?? CancellationToken.None;
         private int _operationVersion;
@@ -53,53 +45,50 @@ namespace AlicizaX.UI.Runtime
         {
             if (View is null)
             {
-                if (!UIStateMachine.ValidateTransition(UILogicType.Name, UIState.Uninitialized, UIState.CreatedUI))
+                if (!UIStateMachine.ValidateTransition(UILogicTypeName, UIState.Uninitialized, UIState.CreatedUI))
                     return;
 
                 View = (UIBase)Utility.InstanceFactory.CreateInstanceOptimized(UILogicType);
                 if (View == null)
                 {
-                    Log.Error(ZString.Format("[UI] Failed to create UI instance: {0}", UILogicTypeName));
+                    Log.Error("[UI] Failed to create UI instance: {0}", UILogicTypeName);
                 }
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void EnsureCancellationToken()
-        {
-            if (_cancellationTokenSource == null)
-            {
-                _cancellationTokenSource = new CancellationTokenSource();
-            }
-        }
-
-        public bool BeginShowOperation()
+        public bool BeginShowOperation(bool createCancellationToken, out int operationVersion)
         {
             if (_showInProgress)
             {
+                operationVersion = -1;
                 return false;
             }
 
-            RequestCancelCurrentOperation();
-            _operationVersion++;
+            CancellationTokenSource previousCts = _cancellationTokenSource;
+            _cancellationTokenSource = createCancellationToken ? new CancellationTokenSource() : null;
+            operationVersion = ++_operationVersion;
             _cancelRequested = false;
             _showInProgress = true;
             _closeInProgress = false;
+            previousCts?.Cancel();
             return true;
         }
 
-        public bool BeginCloseOperation()
+        public bool BeginCloseOperation(bool createCancellationToken, out int operationVersion)
         {
             if (_closeInProgress)
             {
+                operationVersion = -1;
                 return false;
             }
 
-            RequestCancelCurrentOperation();
-            _operationVersion++;
+            CancellationTokenSource previousCts = _cancellationTokenSource;
+            _cancellationTokenSource = createCancellationToken ? new CancellationTokenSource() : null;
+            operationVersion = ++_operationVersion;
             _cancelRequested = false;
             _closeInProgress = true;
             _showInProgress = false;
+            previousCts?.Cancel();
             return true;
         }
 
@@ -121,28 +110,29 @@ namespace AlicizaX.UI.Runtime
 
         public void CancelAsyncOperations()
         {
-            RequestCancelCurrentOperation();
+            _cancelRequested = true;
             _operationVersion++;
             _showInProgress = false;
             _closeInProgress = false;
+            CancelTokenOnly();
         }
 
-        public void RequestCancelCurrentOperation()
+        private void CancelTokenOnly()
         {
-            _cancelRequested = true;
-            _cancellationTokenSource?.Cancel();
-            _cancellationTokenSource?.Dispose();
+            CancellationTokenSource cts = _cancellationTokenSource;
             _cancellationTokenSource = null;
+            cts?.Cancel();
         }
 
         internal void ResetRuntimeState()
         {
-            RequestCancelCurrentOperation();
-            View = null;
-            InCache = false;
             _cancelRequested = false;
+            _operationVersion++;
             _showInProgress = false;
             _closeInProgress = false;
+            View = null;
+            InCache = false;
+            CancelTokenOnly();
         }
 
         public void Dispose()
@@ -194,7 +184,7 @@ namespace AlicizaX.UI.Runtime
                 ResInfo = default;
                 UIHolderTypeName = string.Empty;
                 IsValid = false;
-                Log.Error(ZString.Format("[UI] Metadata not registered for {0}", UILogicType.FullName));
+                Log.Error("[UI] Metadata not registered for {0}", UILogicType.FullName);
                 return;
             }
 
@@ -202,7 +192,7 @@ namespace AlicizaX.UI.Runtime
             {
                 UIHolderTypeName = Type.GetTypeFromHandle(MetaInfo.HolderRuntimeTypeHandle)?.Name;
                 IsValid = false;
-                Log.Error(ZString.Format("[UI] Resource metadata not registered for holder of {0}", UILogicType.FullName));
+                Log.Error("[UI] Resource metadata not registered for holder of {0}", UILogicType.FullName);
                 return;
             }
 

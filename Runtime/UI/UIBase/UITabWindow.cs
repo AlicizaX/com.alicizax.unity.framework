@@ -16,13 +16,13 @@ namespace AlicizaX.UI.Runtime
         private readonly List<RuntimeTypeHandle> _typeOrder = new();
 
         // 页面缓存字典（类型 - 父节点）
-        private readonly Dictionary<RuntimeTypeHandle, Transform> _tabCache = new();
+        private readonly Dictionary<RuntimeTypeHandle, Transform> _tabCache = new(RuntimeTypeHandleComparer.Instance);
 
         // 已加载的Tab实例缓存
-        private readonly Dictionary<RuntimeTypeHandle, UIWidget> _loadedTabs = new();
+        private readonly Dictionary<RuntimeTypeHandle, UIWidget> _loadedTabs = new(RuntimeTypeHandleComparer.Instance);
 
         // 加载状态字典
-        private readonly Dictionary<RuntimeTypeHandle, bool> _loadingFlags = new();
+        private readonly Dictionary<RuntimeTypeHandle, bool> _loadingFlags = new(RuntimeTypeHandleComparer.Instance);
 
         protected T baseui => (T)Holder;
 
@@ -68,7 +68,18 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        // 无参重载：避免 params 产生空数组分配
+        public void SwitchTab(int index)
+        {
+            SwitchTabInternal(index, null);
+        }
+
         public void SwitchTab(int index, params System.Object[] userDatas)
+        {
+            SwitchTabInternal(index, userDatas);
+        }
+
+        private void SwitchTabInternal(int index, System.Object[] userDatas)
         {
             if (!ValidateIndex(index)) return;
 
@@ -84,26 +95,36 @@ namespace AlicizaX.UI.Runtime
             StartAsyncLoading(typeHandle, userDatas).Forget();
         }
 
-        private async UniTask StartAsyncLoading(RuntimeTypeHandle typeHandle, params System.Object[] userDatas)
+        private async UniTask StartAsyncLoading(RuntimeTypeHandle typeHandle, System.Object[] userDatas)
         {
             _loadingFlags[typeHandle] = true;
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata(typeHandle);
-            Transform parent = _tabCache[typeHandle];
+            try
+            {
+                UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata(typeHandle);
+                Transform parent = _tabCache[typeHandle];
 
-            UIBase widget = await CreateWidgetUIAsync(metadata, parent, false);
-            _loadingFlags.Remove(typeHandle);
-            if (widget is UIWidget tabWidget)
-            {
-                _loadedTabs[typeHandle] = tabWidget;
-                SwitchToLoadedTab(tabWidget, userDatas);
+                UIBase widget = await CreateWidgetUIAsync(metadata, parent, false);
+                if (widget is UIWidget tabWidget)
+                {
+                    _loadedTabs[typeHandle] = tabWidget;
+                    SwitchToLoadedTab(tabWidget, userDatas);
+                }
+                else
+                {
+                    Log.Error("Tab load failed: {0}", Type.GetTypeFromHandle(typeHandle)?.Name);
+                }
             }
-            else
+            catch (Exception exception)
             {
-                Debug.LogError(ZString.Format("Tab load failed: {0}", Type.GetTypeFromHandle(typeHandle)?.Name));
+                Log.Exception(exception);
+            }
+            finally
+            {
+                _loadingFlags.Remove(typeHandle);
             }
         }
 
-        private void SwitchToLoadedTab(UIWidget targetTab, params System.Object[] userDatas)
+        private void SwitchToLoadedTab(UIWidget targetTab, System.Object[] userDatas)
         {
             if (_activeTab == targetTab) return;
 
@@ -112,11 +133,36 @@ namespace AlicizaX.UI.Runtime
             targetTab.Open(userDatas);
         }
 
+        protected override void OnWidgetRemoved(UIBase widget)
+        {
+            if (_activeTab == widget)
+            {
+                _activeTab = null;
+            }
+
+            RuntimeTypeHandle removeKey = default;
+            bool found = false;
+            foreach (var pair in _loadedTabs)
+            {
+                if (pair.Value == widget)
+                {
+                    removeKey = pair.Key;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found)
+            {
+                _loadedTabs.Remove(removeKey);
+            }
+        }
+
         private bool ValidateIndex(int index)
         {
             if (index >= 0 && index < _typeOrder.Count) return true;
 
-            Debug.LogError(ZString.Format("Invalid tab index: {0}", index));
+            Log.Error("Invalid tab index: {0}", index);
             return false;
         }
     }

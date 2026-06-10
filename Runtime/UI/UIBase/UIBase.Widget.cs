@@ -8,9 +8,9 @@ namespace AlicizaX.UI.Runtime
 {
     public abstract partial class UIBase
     {
-        private UIMetadata[] _children = new UIMetadata[8];
+        private UIMetadata[] _children;
         private int _childCount;
-        private UIMetadata[] _updateableChildren = new UIMetadata[4];
+        private UIMetadata[] _updateableChildren;
         private int _updateableChildCount;
 
         private void UpdateChildren()
@@ -33,8 +33,9 @@ namespace AlicizaX.UI.Runtime
                 _children[_childCount] = null;
                 if (metadata.View.Visible)
                 {
+                    // 父窗口正在销毁：取消子级未完成的异步操作，关闭时跳过过渡动画
                     metadata.CancelAsyncOperations();
-                    await metadata.View.InternalClose(metadata.ExistingCancellationToken);
+                    await metadata.View.InternalClose(CancellationToken.None, skipTransition: true);
                 }
 
                 await metadata.DisposeAsync();
@@ -84,35 +85,46 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginShowOperation())
+            if (!metadata.BeginShowOperation(true, out int operationVersion))
             {
                 await metadata.DisposeAsync();
                 UIMetadataFactory.ReturnToPool(metadata);
                 return null;
             }
 
-            int operationVersion = metadata.OperationVersion;
-            await UIHolderFactory.CreateUIResourceAsync(metadata, parent, this);
+            CancellationToken cancellationToken = metadata.ExistingCancellationToken;
             UIBase result = null;
             bool shouldReturnToPool = false;
-            if (!IsWidgetCreateStillValid(metadata, operationVersion))
+            try
             {
+                await UIHolderFactory.CreateUIResourceAsync(metadata, parent, this);
+                if (!IsWidgetCreateStillValid(metadata, operationVersion))
+                {
+                    await RemoveFailedWidgetAsync(metadata);
+                    shouldReturnToPool = true;
+                }
+                else if (await ProcessWidget(metadata, visible, cancellationToken, operationVersion))
+                {
+                    result = (UIBase)metadata.View;
+                }
+                else
+                {
+                    shouldReturnToPool = true;
+                }
+            }
+            catch
+            {
+                shouldReturnToPool = true;
                 await RemoveFailedWidgetAsync(metadata);
-                shouldReturnToPool = true;
+                throw;
             }
-            else if (await ProcessWidget(metadata, visible, metadata.ExistingCancellationToken, operationVersion))
+            finally
             {
-                result = (UIBase)metadata.View;
-            }
-            else
-            {
-                shouldReturnToPool = true;
-            }
-
-            metadata.EndShowOperation(operationVersion);
-            if (shouldReturnToPool)
-            {
-                UIMetadataFactory.ReturnToPool(metadata);
+                metadata.EndShowOperation(operationVersion);
+                if (shouldReturnToPool)
+                {
+                    UIMetadataFactory.ReturnToPool(metadata);
+                }
             }
 
             return result;
@@ -133,30 +145,40 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginShowOperation())
+            if (!metadata.BeginShowOperation(false, out int operationVersion))
             {
                 metadata.DisposeImmediate();
                 UIMetadataFactory.ReturnToPool(metadata);
                 return null;
             }
 
-            int operationVersion = metadata.OperationVersion;
-            UIHolderFactory.CreateUIResourceSync(metadata, parent, this);
             UIBase result = null;
             bool shouldReturnToPool = false;
-            if (ProcessWidgetSync(metadata, visible, operationVersion))
+            try
             {
-                result = (UIBase)metadata.View;
+                UIHolderFactory.CreateUIResourceSync(metadata, parent, this);
+                if (ProcessWidgetSync(metadata, visible, operationVersion))
+                {
+                    result = (UIBase)metadata.View;
+                }
+                else
+                {
+                    shouldReturnToPool = true;
+                }
             }
-            else
+            catch
             {
                 shouldReturnToPool = true;
+                RemoveFailedWidgetImmediate(metadata);
+                throw;
             }
-
-            metadata.EndShowOperation(operationVersion);
-            if (shouldReturnToPool)
+            finally
             {
-                UIMetadataFactory.ReturnToPool(metadata);
+                metadata.EndShowOperation(operationVersion);
+                if (shouldReturnToPool)
+                {
+                    UIMetadataFactory.ReturnToPool(metadata);
+                }
             }
 
             return result;
@@ -192,31 +214,50 @@ namespace AlicizaX.UI.Runtime
             }
 
             metadata.CreateUI();
-            if (!metadata.BeginShowOperation())
+            if (metadata.View == null)
             {
                 await metadata.DisposeAsync();
                 UIMetadataFactory.ReturnToPool(metadata);
                 return null;
             }
 
-            int operationVersion = metadata.OperationVersion;
-            UIBase widget = (UIBase)metadata.View;
-            widget.BindUIHolder(holder, this);
-            T result = null;
-            bool shouldReturnToPool = false;
-            if (await ProcessWidget(metadata, true, metadata.ExistingCancellationToken, operationVersion))
+            if (!metadata.BeginShowOperation(true, out int operationVersion))
             {
-                result = (T)widget;
-            }
-            else
-            {
-                shouldReturnToPool = true;
+                await metadata.DisposeAsync();
+                UIMetadataFactory.ReturnToPool(metadata);
+                return null;
             }
 
-            metadata.EndShowOperation(operationVersion);
-            if (shouldReturnToPool)
+            CancellationToken cancellationToken = metadata.ExistingCancellationToken;
+            UIBase widget = null;
+            T result = null;
+            bool shouldReturnToPool = false;
+            try
             {
-                UIMetadataFactory.ReturnToPool(metadata);
+                widget = (UIBase)metadata.View;
+                widget.BindUIHolder(holder, this);
+                if (await ProcessWidget(metadata, true, cancellationToken, operationVersion))
+                {
+                    result = (T)widget;
+                }
+                else
+                {
+                    shouldReturnToPool = true;
+                }
+            }
+            catch
+            {
+                shouldReturnToPool = true;
+                await RemoveFailedWidgetAsync(metadata);
+                throw;
+            }
+            finally
+            {
+                metadata.EndShowOperation(operationVersion);
+                if (shouldReturnToPool)
+                {
+                    UIMetadataFactory.ReturnToPool(metadata);
+                }
             }
 
             return result;
@@ -253,31 +294,48 @@ namespace AlicizaX.UI.Runtime
             }
 
             metadata.CreateUI();
-            if (!metadata.BeginShowOperation())
+            if (metadata.View == null)
             {
                 metadata.DisposeImmediate();
                 UIMetadataFactory.ReturnToPool(metadata);
                 return null;
             }
 
-            int operationVersion = metadata.OperationVersion;
-            UIBase widget = (UIBase)metadata.View;
-            widget.BindUIHolder(holder, this);
-            T result = null;
-            bool shouldReturnToPool = false;
-            if (ProcessWidgetSync(metadata, true, operationVersion))
+            if (!metadata.BeginShowOperation(false, out int operationVersion))
             {
-                result = (T)widget;
-            }
-            else
-            {
-                shouldReturnToPool = true;
+                metadata.DisposeImmediate();
+                UIMetadataFactory.ReturnToPool(metadata);
+                return null;
             }
 
-            metadata.EndShowOperation(operationVersion);
-            if (shouldReturnToPool)
+            UIBase widget = (UIBase)metadata.View;
+            T result = null;
+            bool shouldReturnToPool = false;
+            try
             {
-                UIMetadataFactory.ReturnToPool(metadata);
+                widget.BindUIHolder(holder, this);
+                if (ProcessWidgetSync(metadata, true, operationVersion))
+                {
+                    result = (T)widget;
+                }
+                else
+                {
+                    shouldReturnToPool = true;
+                }
+            }
+            catch
+            {
+                shouldReturnToPool = true;
+                RemoveFailedWidgetImmediate(metadata);
+                throw;
+            }
+            finally
+            {
+                metadata.EndShowOperation(operationVersion);
+                if (shouldReturnToPool)
+                {
+                    UIMetadataFactory.ReturnToPool(metadata);
+                }
             }
 
             return result;
@@ -344,10 +402,13 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
+            OnWidgetRemoved(widget);
+
             if (meta != null)
             {
+                // 先取消挂起的异步操作（令牌已随之失效），再用默认令牌正常关闭（保留动画）
                 meta.CancelAsyncOperations();
-                await widget.InternalClose(meta.ExistingCancellationToken);
+                await widget.InternalClose();
 
                 if (meta.MetaInfo.NeedUpdate)
                 {
@@ -357,6 +418,10 @@ namespace AlicizaX.UI.Runtime
                 await meta.DisposeAsync();
                 UIMetadataFactory.ReturnToPool(meta);
             }
+        }
+
+        protected virtual void OnWidgetRemoved(UIBase widget)
+        {
         }
 
         private void RemoveUpdateableChild(UIMetadata meta)
@@ -506,6 +571,12 @@ namespace AlicizaX.UI.Runtime
 
         private void EnsureChildCapacity()
         {
+            if (_children == null)
+            {
+                _children = new UIMetadata[8];
+                return;
+            }
+
             if (_childCount < _children.Length)
             {
                 return;
@@ -516,6 +587,12 @@ namespace AlicizaX.UI.Runtime
 
         private void EnsureUpdateableChildCapacity()
         {
+            if (_updateableChildren == null)
+            {
+                _updateableChildren = new UIMetadata[4];
+                return;
+            }
+
             if (_updateableChildCount < _updateableChildren.Length)
             {
                 return;

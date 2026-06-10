@@ -117,6 +117,8 @@ namespace AlicizaX.UI.Editor
                 DrawPropertyRow("Orthographic", _isOrthographic);
             }
             EditorGUI.EndDisabledGroup();
+
+            DrawWarningOptionsRow();
             EditorGUILayout.EndVertical();
         }
 
@@ -240,6 +242,21 @@ namespace AlicizaX.UI.Editor
             Rect rect = new Rect(x, y, width, 20f);
             x += width + 4f;
             return GUI.Toggle(rect, value, label, value ? AlicizaEditorGUI.Styles.PillOn : AlicizaEditorGUI.Styles.PillOff);
+        }
+
+        private void DrawWarningOptionsRow()
+        {
+            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
+            EditorGUILayout.LabelField("Editor Warnings", _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
+            UIWarningSettings.OcclusionWarningsEnabled = DrawPillToggle("Occlusion Warn", UIWarningSettings.OcclusionWarningsEnabled, 112f);
+            UIWarningSettings.OtherWarningsEnabled = DrawPillToggle("Other Warn", UIWarningSettings.OtherWarningsEnabled, 92f);
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private static bool DrawPillToggle(string label, bool value, float width)
+        {
+            return GUILayout.Toggle(value, label, value ? AlicizaEditorGUI.Styles.PillOn : AlicizaEditorGUI.Styles.PillOff, GUILayout.Width(width), GUILayout.Height(20f));
         }
 
         private void DrawServiceSummary()
@@ -494,7 +511,7 @@ namespace AlicizaX.UI.Editor
 
         private static string GetStateLine(UIWindowDebugInfo info)
         {
-            return info.State + " | Visible " + info.Visible + " | Depth " + info.Depth + " | FullScreen " + info.FullScreen + " | " + info.StateDuration.ToString("F1") + "s";
+            return info.State + " | Visible " + info.Visible + " | Depth " + info.Depth + " | Occlusion " + info.OcclusionMode + " | " + info.StateDuration.ToString("F1") + "s";
         }
 
         private static string GetFlagLine(UIWindowDebugInfo info)
@@ -529,7 +546,7 @@ namespace AlicizaX.UI.Editor
                 return "HID";
             }
 
-            return info.FullScreen ? "FULL" : "UI";
+            return info.OcclusionMode == UIOcclusionMode.None ? "UI" : "OCC";
         }
 
         private GUIStyle GetWindowTitleStyle(UIWindowDebugInfo info, bool cached)

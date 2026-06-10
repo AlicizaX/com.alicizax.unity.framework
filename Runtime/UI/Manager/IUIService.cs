@@ -51,14 +51,24 @@ namespace AlicizaX.UI.Runtime
         // ───────────────────────────────────────────────
 
         /// <summary>
+        /// 异步显示 UI（无参重载，避免 params 空数组分配）
+        /// </summary>
+        UniTask<T> ShowUI<T>() where T : UIBase;
+
+        /// <summary>
         /// 异步显示 UI（推荐方式）
         /// </summary>
         UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIBase;
 
         /// <summary>
-        /// 异步显示 UI（使用字符串类型名）
+        /// 异步显示 UI（使用字符串类型名）。类型未注册或元数据无效时返回 null 结果。
         /// </summary>
-        UniTask<UIBase>? ShowUI(string type, params object[] userDatas);
+        UniTask<UIBase> ShowUI(string type, params object[] userDatas);
+
+        /// <summary>
+        /// 同步显示 UI（无参重载，避免 params 空数组分配）
+        /// </summary>
+        T ShowUISync<T>() where T : UIBase;
 
         /// <summary>
         /// 同步显示 UI（仅限资源已预加载时使用，避免死锁）

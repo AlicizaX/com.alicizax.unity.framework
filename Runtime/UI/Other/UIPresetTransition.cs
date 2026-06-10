@@ -46,7 +46,7 @@ namespace AlicizaX.UI.Runtime
         [SerializeField] private CanvasGroup canvasGroup;
         [SerializeField] private bool useUnscaledTime = true;
         [SerializeField] private bool initializeAsClosed = true;
-        [SerializeField] private bool disableInteractionWhilePlaying = true;
+        [SerializeField] private bool followAnimationInteractable = false;
         [SerializeField] [Min(0f)] private float openDuration = 0.22f;
         [SerializeField] [Min(0f)] private float closeDuration = 0.18f;
         [SerializeField] [Min(0f)] private float slideDistance = 120f;
@@ -89,6 +89,22 @@ namespace AlicizaX.UI.Runtime
             return PlayAsync(BuildClosedState(closePreset), closeDuration, closeEase, false, cancellationToken);
         }
 
+        public void ApplyOpenState()
+        {
+            EnsureInitialized(false);
+            _playVersion++;
+            ApplyVisualState(_openState);
+            RestoreInteractionState(true);
+        }
+
+        public void ApplyClosedState()
+        {
+            EnsureInitialized(false);
+            _playVersion++;
+            ApplyVisualState(BuildClosedState(GetClosedStatePreset()));
+            RestoreInteractionState(false);
+        }
+
         public void Stop()
         {
             _playVersion++;
@@ -103,7 +119,7 @@ namespace AlicizaX.UI.Runtime
             CancellationToken cancellationToken)
         {
             int playVersion = ++_playVersion;
-            RestoreInteractionState(!disableInteractionWhilePlaying);
+            RestoreInteractionState(false);
 
             VisualState currentState = CaptureCurrentState();
             if (duration <= 0f)
@@ -162,7 +178,7 @@ namespace AlicizaX.UI.Runtime
 
             if (applyClosedState)
             {
-                UITransitionPreset preset = closePreset != UITransitionPreset.None ? closePreset : openPreset;
+                UITransitionPreset preset = GetClosedStatePreset();
                 if (preset != UITransitionPreset.None)
                 {
                     ApplyVisualState(BuildClosedState(preset));
@@ -175,9 +191,14 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        private UITransitionPreset GetClosedStatePreset()
+        {
+            return closePreset != UITransitionPreset.None ? closePreset : openPreset;
+        }
+
         private bool RequiresCanvasGroup()
         {
-            return disableInteractionWhilePlaying || UsesAlpha(openPreset) || UsesAlpha(closePreset);
+            return followAnimationInteractable || UsesAlpha(openPreset) || UsesAlpha(closePreset);
         }
 
         private bool UsesAlpha(UITransitionPreset preset)
@@ -271,7 +292,7 @@ namespace AlicizaX.UI.Runtime
 
         private void RestoreInteractionState(bool enabled)
         {
-            if (!disableInteractionWhilePlaying || canvasGroup == null)
+            if (!followAnimationInteractable || canvasGroup == null)
             {
                 return;
             }
@@ -375,7 +396,7 @@ namespace AlicizaX.UI.Runtime
                 ? Lerp(closedState, _openState, easedProgress)
                 : Lerp(_openState, closedState, easedProgress));
 
-            if (canvasGroup != null && disableInteractionWhilePlaying)
+            if (canvasGroup != null && followAnimationInteractable)
             {
                 bool enabled = isOpening ? progress >= 0.999f : progress <= 0.001f;
                 canvasGroup.interactable = enabled;

@@ -3,6 +3,13 @@ using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
+    public enum UIOcclusionMode : byte
+    {
+        None,
+        Visible,
+        Lifecycle,
+    }
+
     [AttributeUsage(AttributeTargets.Class)]
     public class WindowAttribute : Attribute
     {
@@ -12,9 +19,9 @@ namespace AlicizaX.UI.Runtime
         public readonly UILayer WindowLayer;
 
         /// <summary>
-        /// 全屏窗口标记。
+        /// 遮挡模式。
         /// </summary>
-        public readonly bool FullScreen;
+        public readonly UIOcclusionMode OcclusionMode;
 
         /// <summary>
         /// 延时关闭
@@ -25,12 +32,12 @@ namespace AlicizaX.UI.Runtime
         ///
         /// </summary>
         /// <param name="windowLayer">显示层级</param>
-        /// <param name="fullScreen">是否全屏遮挡</param>
+        /// <param name="occlusionMode">遮挡模式</param>
         /// <param name="cacheTime">缓存时间/s  -1永久 0不 >=1生效</param>
-        public WindowAttribute(UILayer windowLayer, bool fullScreen = false, int cacheTime = 0)
+        public WindowAttribute(UILayer windowLayer, UIOcclusionMode occlusionMode = UIOcclusionMode.None, int cacheTime = 0)
         {
             WindowLayer = windowLayer;
-            FullScreen = fullScreen;
+            OcclusionMode = occlusionMode;
             CacheTime = cacheTime;
         }
     }

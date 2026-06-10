@@ -2,6 +2,7 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using AlicizaX;
+using AlicizaX.ObjectPool;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
@@ -45,59 +46,123 @@ namespace AlicizaX.UI.Runtime
         private async UniTask<UIBase> ShowUIImplAsync(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
-            if (!metaInfo.BeginShowOperation())
+            if (!metaInfo.BeginShowOperation(true, out int operationVersion))
             {
-                metaInfo.View?.RefreshParams(userDatas);
-                return metaInfo.View;
+#if UNITY_EDITOR
+                WarnUIOperation("Show skipped", metaInfo, metaInfo?.OperationVersion ?? -1, "BeginShowOperation returned false. Another show operation is already running, so this call only refreshes user data.");
+#endif
+                return RefreshAndGetOpenedView(metaInfo, userDatas);
             }
 
-            int operationVersion = metaInfo.OperationVersion;
+            // 在 Begin 之后只捕获一次令牌：后续新操作会替换 CTS，再读属性会拿到错误令牌 特别注意
+            CancellationToken cancellationToken = metaInfo.ExistingCancellationToken;
             bool showResult = false;
-            await UIHolderFactory.CreateUIResourceAsync(metaInfo, UICacheLayer);
-            if (operationVersion != metaInfo.OperationVersion || metaInfo.View == null || metaInfo.State == UIState.Uninitialized || metaInfo.State == UIState.Destroyed)
+            try
             {
-                showResult = false;
+                ReserveOpenSlot(metaInfo);
+                await UIHolderFactory.CreateUIResourceAsync(metaInfo, UICacheLayer);
+                if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
+                {
+#if UNITY_EDITOR
+                    if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show invalid after async resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
+#endif
+                    if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                    {
+                        await RollbackFailedShowAsync(metaInfo, operationVersion);
+                    }
+
+                    showResult = false;
+                }
+                else
+                {
+                    FinalizeShow(metaInfo, userDatas);
+                    showResult = await UpdateVisualState(metaInfo, operationVersion, cancellationToken);
+                    if (!showResult)
+                    {
+#if UNITY_EDITOR
+                        WarnUIOperation("Show visual state failed, rollback will run", metaInfo, operationVersion, "UpdateVisualState returned false. The UI did not reach a valid opened or occlusion-interrupted state.");
+#endif
+                        await RollbackFailedShowAsync(metaInfo, operationVersion);
+                    }
+                }
             }
-            else
+            catch (Exception exception)
             {
-                FinalizeShow(metaInfo, userDatas);
-                showResult = await UpdateVisualState(metaInfo, operationVersion, metaInfo.ExistingCancellationToken);
-                if (!showResult)
+#if UNITY_EDITOR
+                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show exception, rollback will run", metaInfo, operationVersion, $"Exception={exception.GetType().Name}: {exception.Message}");
+#endif
+                if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
                 {
                     await RollbackFailedShowAsync(metaInfo, operationVersion);
                 }
+
+                throw;
+            }
+            finally
+            {
+                metaInfo.EndShowOperation(operationVersion);
             }
 
-            metaInfo.EndShowOperation(operationVersion);
             return showResult ? metaInfo.View : null;
         }
         private UIBase ShowUIImplSync(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
-            if (!metaInfo.BeginShowOperation())
+            if (!metaInfo.BeginShowOperation(false, out int operationVersion))
             {
-                metaInfo.View?.RefreshParams(userDatas);
-                return metaInfo.View;
+#if UNITY_EDITOR
+                WarnUIOperation("ShowSync skipped", metaInfo, metaInfo?.OperationVersion ?? -1, "BeginShowOperation returned false. Another show operation is already running, so this call only refreshes user data.");
+#endif
+                return RefreshAndGetOpenedView(metaInfo, userDatas);
             }
 
-            int operationVersion = metaInfo.OperationVersion;
             bool showResult = false;
-            UIHolderFactory.CreateUIResourceSync(metaInfo, UICacheLayer);
-            if (operationVersion != metaInfo.OperationVersion || metaInfo.View == null || metaInfo.State == UIState.Uninitialized || metaInfo.State == UIState.Destroyed)
+            try
             {
-                showResult = false;
+                ReserveOpenSlot(metaInfo);
+                UIHolderFactory.CreateUIResourceSync(metaInfo, UICacheLayer);
+                if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
+                {
+#if UNITY_EDITOR
+                    if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("ShowSync invalid after resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
+#endif
+                    if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                    {
+                        RollbackFailedShow(metaInfo, operationVersion);
+                    }
+
+                    showResult = false;
+                }
+                else
+                {
+                    FinalizeShow(metaInfo, userDatas);
+                    showResult = UpdateVisualStateSync(metaInfo);
+                    if (!showResult)
+                    {
+#if UNITY_EDITOR
+                        WarnUIOperation("ShowSync visual state failed, rollback will run", metaInfo, operationVersion, "UpdateVisualStateSync returned false. The UI did not reach a valid opened state.");
+#endif
+                        RollbackFailedShow(metaInfo, operationVersion);
+                    }
+                }
             }
-            else
+            catch (Exception exception)
             {
-                FinalizeShow(metaInfo, userDatas);
-                showResult = UpdateVisualStateSync(metaInfo);
-                if (!showResult)
+#if UNITY_EDITOR
+                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("ShowSync exception, rollback will run", metaInfo, operationVersion, $"Exception={exception.GetType().Name}: {exception.Message}");
+#endif
+                if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
                 {
                     RollbackFailedShow(metaInfo, operationVersion);
                 }
+
+                throw;
+            }
+            finally
+            {
+                metaInfo.EndShowOperation(operationVersion);
             }
 
-            metaInfo.EndShowOperation(operationVersion);
             return showResult ? metaInfo.View : null;
         }
         private async UniTask CloseUIImpl(UIMetadata meta, bool force)
@@ -112,41 +177,62 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            if (!meta.BeginCloseOperation())
+            if (!meta.BeginCloseOperation(true, out int operationVersion))
             {
+#if UNITY_EDITOR
+                WarnUIOperation("Close skipped", meta, meta?.OperationVersion ?? -1, "BeginCloseOperation returned false. Another close operation is already running.");
+#endif
                 return;
             }
 
-            int operationVersion = meta.OperationVersion;
-            if (meta.State == UIState.CreatedUI)
+            CancellationToken cancellationToken = meta.ExistingCancellationToken;
+            try
             {
-                await meta.DisposeAsync();
-            }
-            else if (meta.State == UIState.Loaded || meta.State == UIState.Initialized)
-            {
-                var popResult = Pop(meta);
-                SortWindowVisible(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
-                SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
-                meta.View.Visible = false;
-                CacheWindow(meta, force);
-            }
-            else
-            {
-                bool closeResult = await meta.View.InternalClose(meta.ExistingCancellationToken);
-                if (closeResult && meta.State == UIState.Closed)
+                if (meta.State == UIState.CreatedUI)
                 {
-                    var closedPopResult = Pop(meta);
-                    SortWindowVisible(meta.MetaInfo.UILayer, closedPopResult.previousFullscreenIndex);
-                    SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex >= 0 ? closedPopResult.removedIndex : 0);
+#if UNITY_EDITOR
+                    WarnUIOperation("Close interrupted pending show", meta, operationVersion, "CloseUI was called before the UI resource finished loading. The reserved stack slot will be removed and the UI will be disposed.");
+#endif
+                    var popResult = Pop(meta);
+                    await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
+                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+                    await meta.DisposeAsync();
+                }
+                else if (meta.State == UIState.Loaded || meta.State == UIState.Initialized)
+                {
+                    var popResult = Pop(meta);
+                    await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
+                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+                    meta.View.Visible = false;
                     CacheWindow(meta, force);
                 }
+                else
+                {
+                    bool closeResult = await meta.View.InternalClose(cancellationToken);
+                    if (closeResult && meta.State == UIState.Closed)
+                    {
+                        var closedPopResult = Pop(meta);
+                        await SortWindowVisibleAsync(meta.MetaInfo.UILayer, closedPopResult.previousFullscreenIndex);
+                        SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex >= 0 ? closedPopResult.removedIndex : 0);
+                        CacheWindow(meta, force);
+                    }
+#if UNITY_EDITOR
+                    else
+                    {
+                        WarnUIOperation("Close interrupted", meta, operationVersion, "InternalClose returned false or the final state was not Closed. The UI was not popped or cached by this close operation.");
+                    }
+#endif
 
+                }
             }
-            meta.EndCloseOperation(operationVersion);
+            finally
+            {
+                meta.EndCloseOperation(operationVersion);
+            }
         }
         private UIBase GetUIImpl(UIMetadata meta)
         {
-            return meta.View;
+            return meta?.State == UIState.Opened ? meta.View : null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -160,6 +246,8 @@ namespace AlicizaX.UI.Runtime
             if (meta.InCache)
             {
                 RemoveFromCache(meta.MetaInfo.RuntimeTypeHandle);
+                // 缓存时关闭了 Canvas 渲染，重新显示前恢复
+                meta.View.SetCanvasEnabled(true);
                 Push(meta);
             }
             else
@@ -169,6 +257,7 @@ namespace AlicizaX.UI.Runtime
                     case UIState.Loaded:
                         Push(meta);
                         break;
+                    case UIState.Closed:
                     case UIState.Opening:
                     case UIState.Closing:
                     case UIState.Opened:
@@ -177,7 +266,44 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
+            UpdateLayerParent(meta);
             meta.View.RefreshParams(userDatas);
+        }
+
+        private static UIBase RefreshAndGetOpenedView(UIMetadata meta, object[] userDatas)
+        {
+            UIBase view = meta?.View;
+            view?.RefreshParams(userDatas);
+            return meta?.State == UIState.Opened ? view : null;
+        }
+
+        private void ReserveOpenSlot(UIMetadata meta)
+        {
+            if (meta?.State == UIState.CreatedUI)
+            {
+                Push(meta);
+            }
+        }
+
+        private bool IsShowValidAfterResourceCreation(UIMetadata meta, int operationVersion)
+        {
+            return meta != null
+                   && operationVersion == meta.OperationVersion
+                   && meta.View != null
+                   && meta.State != UIState.Uninitialized
+                   && meta.State != UIState.CreatedUI
+                   && meta.State != UIState.Destroyed;
+        }
+
+        private bool ShouldRollbackInvalidShow(UIMetadata meta, int operationVersion)
+        {
+            if (meta == null || operationVersion != meta.OperationVersion)
+            {
+                return false;
+            }
+
+            LayerData layer = _openUI[meta.MetaInfo.UILayer];
+            return GetOpenIndex(layer, meta) >= 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -192,12 +318,11 @@ namespace AlicizaX.UI.Runtime
                 int index = layer.Count++;
                 layer.Items[index] = meta;
                 layer.TypeIdToIndex[typeId] = index;
-                if (meta.MetaInfo.FullScreen)
+                if (IsOcclusionWindow(meta))
                 {
                     layer.LastFullscreenIndex = index;
                 }
 
-                UpdateLayerParent(meta);
                 AddUpdateableWindow(meta);
             }
         }
@@ -236,13 +361,24 @@ namespace AlicizaX.UI.Runtime
             return (-1, previousFullscreenIndex);
         }
 
+        private static int GetOpenIndex(LayerData layer, UIMetadata meta)
+        {
+            int typeId = meta.MetaInfo.TypeId;
+            if ((uint)typeId >= (uint)layer.TypeIdToIndex.Length)
+            {
+                return -1;
+            }
+
+            return layer.TypeIdToIndex[typeId];
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void UpdateLayerParent(UIMetadata meta)
         {
             if (meta.View?.Holder != null && meta.View.Holder.IsValid())
             {
                 var layerRect = GetLayerRect(meta.MetaInfo.UILayer);
-                meta.View.Holder.transform.SetParent(layerRect);
+                meta.View.Holder.transform.SetParent(layerRect, false);
             }
         }
 
@@ -270,89 +406,161 @@ namespace AlicizaX.UI.Runtime
                 layer.Items[lastIdx] = meta;
                 layer.TypeIdToIndex[typeId] = lastIdx;
                 UpdateFullscreenIndexAfterMove(layer, meta, currentIdx, lastIdx);
-
-                SortWindowDepth(meta.MetaInfo.UILayer, currentIdx);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private async UniTask<bool> UpdateVisualState(UIMetadata meta, int operationVersion, CancellationToken cancellationToken = default)
         {
-            SortWindowVisible(meta.MetaInfo.UILayer);
             SortWindowDepth(meta.MetaInfo.UILayer);
             if (meta.State == UIState.Loaded)
             {
                 if (!await meta.View.InternalInitlized(cancellationToken, meta, operationVersion))
                 {
+#if UNITY_EDITOR
+                    WarnUIOperation("Show initialization interrupted", meta, operationVersion, "InternalInitlized returned false. The show operation will be treated as failed.");
+#endif
                     return false;
                 }
 
                 if (meta.OperationVersion != operationVersion)
                 {
+#if UNITY_EDITOR
+                    WarnUIOperation("Show initialization version changed", meta, operationVersion, "The operation version changed after initialization. The show operation will be treated as failed.");
+#endif
                     return false;
                 }
             }
 
-            bool openResult = await meta.View.InternalOpen(cancellationToken);
-            if (openResult && meta.OperationVersion == operationVersion && meta.MetaInfo.FullScreen)
+            UniTask<bool> openTask = meta.View.InternalOpen(cancellationToken);
+            int previousFullscreenIndex = PromoteOcclusionWindow(meta);
+            await SortWindowVisibleAsync(meta.MetaInfo.UILayer, previousFullscreenIndex);
+            bool openResult = await openTask;
+
+            if (openResult)
             {
-                var layer = _openUI[meta.MetaInfo.UILayer];
-                int typeId = meta.MetaInfo.TypeId;
-                if ((uint)typeId < (uint)layer.TypeIdToIndex.Length)
+                bool versionMatched = meta.OperationVersion == operationVersion;
+#if UNITY_EDITOR
+                if (!versionMatched)
                 {
-                    int idx = layer.TypeIdToIndex[typeId];
-                    if (idx >= 0 && idx > layer.LastFullscreenIndex)
-                    {
-                        int previousFullscreenIndex = layer.LastFullscreenIndex;
-                        layer.LastFullscreenIndex = idx;
-                        SortWindowVisible(meta.MetaInfo.UILayer, previousFullscreenIndex);
-                    }
+                    WarnUIOperation("Show open version changed", meta, operationVersion, "InternalOpen returned true, but the operation version changed before completion. Rollback will run.");
                 }
+#endif
+                return versionMatched;
             }
 
-            return openResult && meta.OperationVersion == operationVersion;
+            return IsShowAcceptedAfterOpenInterruption(meta, operationVersion, cancellationToken);
+        }
+
+        private bool IsShowAcceptedAfterOpenInterruption(UIMetadata meta, int operationVersion, CancellationToken cancellationToken)
+        {
+            if (meta == null
+                || meta.OperationVersion != operationVersion
+                || cancellationToken.IsCancellationRequested
+                || meta.View == null)
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show open interruption rejected", meta, operationVersion, GetOpenInterruptionRejectReason(meta, operationVersion, cancellationToken));
+#endif
+                return false;
+            }
+
+            LayerData layer = _openUI[meta.MetaInfo.UILayer];
+            if (GetOpenIndex(layer, meta) < 0)
+            {
+#if UNITY_EDITOR
+                WarnUIOperation("Show open interruption rejected", meta, operationVersion, "InternalOpen returned false and the UI is no longer in the open stack. Rollback will run.");
+#endif
+                return false;
+            }
+
+            UIState state = meta.State;
+            bool accepted = UIStateMachine.IsDisplayActive(state) || state == UIState.Closed;
+#if UNITY_EDITOR
+            if (meta.View.WasLifecycleInterruptedByOcclusion(operationVersion))
+            {
+                WarnOcclusionInterruption(
+                    accepted ? "Show open interruption accepted" : "Show open interruption rejected",
+                    meta,
+                    operationVersion,
+                    accepted
+                        ? "InternalOpen returned false, but the UI is still in the open stack with a recoverable display state. This is treated as an occlusion/lifecycle interruption and rollback is skipped."
+                        : "InternalOpen returned false and the final state is not recoverable. Rollback will run.");
+            }
+            else
+            {
+                WarnUIOperation(
+                    accepted ? "Show open interruption accepted" : "Show open interruption rejected",
+                    meta,
+                    operationVersion,
+                    accepted
+                        ? "InternalOpen returned false, but the UI is still in the open stack with a recoverable display state. Rollback is skipped."
+                        : "InternalOpen returned false and the final state is not recoverable. Rollback will run.");
+            }
+#endif
+            return accepted;
         }
 
 
         private bool UpdateVisualStateSync(UIMetadata meta)
         {
-            SortWindowVisible(meta.MetaInfo.UILayer);
             SortWindowDepth(meta.MetaInfo.UILayer);
             if (meta.State == UIState.Loaded)
             {
                 if (!meta.View.InternalInitlizedSync())
                 {
+#if UNITY_EDITOR
+                    WarnUIOperation("ShowSync initialization failed", meta, meta?.OperationVersion ?? -1, "InternalInitlizedSync returned false. The show operation will rollback.");
+#endif
                     return false;
                 }
             }
 
             bool openResult = meta.View.InternalOpenSync();
-            if (openResult && meta.MetaInfo.FullScreen)
-            {
-                var layer = _openUI[meta.MetaInfo.UILayer];
-                int typeId = meta.MetaInfo.TypeId;
-                if ((uint)typeId < (uint)layer.TypeIdToIndex.Length)
-                {
-                    int idx = layer.TypeIdToIndex[typeId];
-                    if (idx >= 0 && idx > layer.LastFullscreenIndex)
-                    {
-                        int previousFullscreenIndex = layer.LastFullscreenIndex;
-                        layer.LastFullscreenIndex = idx;
-                        SortWindowVisible(meta.MetaInfo.UILayer, previousFullscreenIndex);
-                    }
-                }
-            }
+            int previousFullscreenIndex = PromoteOcclusionWindow(meta);
+            SortWindowVisibleSync(meta.MetaInfo.UILayer, previousFullscreenIndex);
 
+#if UNITY_EDITOR
+            if (!openResult)
+            {
+                WarnUIOperation("ShowSync open failed", meta, meta?.OperationVersion ?? -1, "InternalOpenSync returned false. The show operation will rollback.");
+            }
+#endif
             return openResult;
         }
 
-        private void SortWindowVisible(int layer, int previousFullscreenIndex = int.MinValue)
+        private int PromoteOcclusionWindow(UIMetadata meta)
+        {
+            if (meta == null || !IsOcclusionWindow(meta))
+            {
+                return int.MinValue;
+            }
+
+            LayerData layer = _openUI[meta.MetaInfo.UILayer];
+            int typeId = meta.MetaInfo.TypeId;
+            if ((uint)typeId >= (uint)layer.TypeIdToIndex.Length)
+            {
+                return int.MinValue;
+            }
+
+            int index = layer.TypeIdToIndex[typeId];
+            if (index < 0 || index <= layer.LastFullscreenIndex)
+            {
+                return int.MinValue;
+            }
+
+            int previousFullscreenIndex = layer.LastFullscreenIndex;
+            layer.LastFullscreenIndex = index;
+            return previousFullscreenIndex;
+        }
+
+        private async UniTask SortWindowVisibleAsync(int layer, int previousFullscreenIndex = int.MinValue)
         {
             var layerData = _openUI[layer];
             int count = layerData.Count;
 
             int fullscreenIdx = layerData.LastFullscreenIndex;
-            if (fullscreenIdx >= count || (fullscreenIdx >= 0 && !IsDisplayFullscreen(layerData.Items[fullscreenIdx])))
+            if (fullscreenIdx >= count || (fullscreenIdx >= 0 && !IsActiveOcclusionWindow(layerData.Items[fullscreenIdx])))
             {
                 fullscreenIdx = FindLastFullscreenIndex(layerData, count - 1);
                 layerData.LastFullscreenIndex = fullscreenIdx;
@@ -361,13 +569,13 @@ namespace AlicizaX.UI.Runtime
             int oldFullscreenIndex = previousFullscreenIndex == int.MinValue ? fullscreenIdx : previousFullscreenIndex;
             if (oldFullscreenIndex == fullscreenIdx)
             {
-                ApplyVisibilityRange(layerData, fullscreenIdx >= 0 ? fullscreenIdx : 0, count, fullscreenIdx);
+                await ApplyVisibilityRangeAsync(layerData, 0, count, fullscreenIdx);
                 return;
             }
 
             if (oldFullscreenIndex == -1 && fullscreenIdx == -1)
             {
-                ApplyVisibilityRange(layerData, 0, count, -1);
+                await ApplyVisibilityRangeAsync(layerData, 0, count, -1);
                 return;
             }
 
@@ -378,7 +586,42 @@ namespace AlicizaX.UI.Runtime
                 ? count
                 : Math.Max(oldFullscreenIndex, fullscreenIdx) + 1;
 
-            ApplyVisibilityRange(layerData, start, endExclusive, fullscreenIdx);
+            await ApplyVisibilityRangeAsync(layerData, start, endExclusive, fullscreenIdx);
+        }
+
+        private void SortWindowVisibleSync(int layer, int previousFullscreenIndex = int.MinValue)
+        {
+            var layerData = _openUI[layer];
+            int count = layerData.Count;
+
+            int fullscreenIdx = layerData.LastFullscreenIndex;
+            if (fullscreenIdx >= count || (fullscreenIdx >= 0 && !IsActiveOcclusionWindow(layerData.Items[fullscreenIdx])))
+            {
+                fullscreenIdx = FindLastFullscreenIndex(layerData, count - 1);
+                layerData.LastFullscreenIndex = fullscreenIdx;
+            }
+
+            int oldFullscreenIndex = previousFullscreenIndex == int.MinValue ? fullscreenIdx : previousFullscreenIndex;
+            if (oldFullscreenIndex == fullscreenIdx)
+            {
+                ApplyVisibilityRangeSync(layerData, 0, count, fullscreenIdx);
+                return;
+            }
+
+            if (oldFullscreenIndex == -1 && fullscreenIdx == -1)
+            {
+                ApplyVisibilityRangeSync(layerData, 0, count, -1);
+                return;
+            }
+
+            int start = oldFullscreenIndex < 0 || fullscreenIdx < 0
+                ? 0
+                : Math.Min(oldFullscreenIndex, fullscreenIdx);
+            int endExclusive = oldFullscreenIndex < 0 || fullscreenIdx < 0
+                ? count
+                : Math.Max(oldFullscreenIndex, fullscreenIdx) + 1;
+
+            ApplyVisibilityRangeSync(layerData, start, endExclusive, fullscreenIdx);
         }
 
         private void SortWindowDepth(int layer, int startIndex = 0)
@@ -397,16 +640,21 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private static bool IsDisplayFullscreen(UIMetadata meta)
+        private static bool IsOcclusionWindow(UIMetadata meta)
         {
-            return meta.MetaInfo.FullScreen && UIStateMachine.IsDisplayActive(meta.State);
+            return meta.MetaInfo.OcclusionMode != UIOcclusionMode.None;
+        }
+
+        private static bool IsActiveOcclusionWindow(UIMetadata meta)
+        {
+            return IsOcclusionWindow(meta) && (UIStateMachine.IsDisplayActive(meta.State) || meta.State == UIState.Closed);
         }
 
         private static int FindLastFullscreenIndex(LayerData layer, int startIndex)
         {
             for (int i = Math.Min(startIndex, layer.Count - 1); i >= 0; i--)
             {
-                if (IsDisplayFullscreen(layer.Items[i]))
+                if (IsActiveOcclusionWindow(layer.Items[i]))
                 {
                     return i;
                 }
@@ -415,7 +663,238 @@ namespace AlicizaX.UI.Runtime
             return -1;
         }
 
-        private static void ApplyVisibilityRange(LayerData layer, int startInclusive, int endExclusive, int fullscreenIdx)
+        private struct OcclusionWorkItem
+        {
+            public UIBase View;
+            public bool Visible;
+
+            public OcclusionWorkItem(UIBase view, bool visible)
+            {
+                View = view;
+                Visible = visible;
+            }
+        }
+
+        private static async UniTask ApplyVisibilityRangeAsync(LayerData layer, int startInclusive, int endExclusive, int fullscreenIdx)
+        {
+            NormalizeVisibilityRange(layer, ref startInclusive, ref endExclusive);
+
+            bool showAll = fullscreenIdx < 0;
+            UIOcclusionMode occlusionMode = GetOcclusionMode(layer, fullscreenIdx, showAll);
+
+            int asyncCount = 0;
+            for (int i = startInclusive; i < endExclusive; i++)
+            {
+                UIBase view = layer.Items[i]?.View;
+                if (view == null)
+                {
+                    continue;
+                }
+
+                bool visible = showAll || i >= fullscreenIdx;
+                if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                {
+                    asyncCount++;
+                }
+                else
+                {
+                    view.Visible = visible;
+                }
+            }
+
+            if (asyncCount == 0)
+            {
+                return;
+            }
+
+            if (asyncCount == 1)
+            {
+                for (int i = startInclusive; i < endExclusive; i++)
+                {
+                    UIBase view = layer.Items[i]?.View;
+                    if (view == null)
+                    {
+                        continue;
+                    }
+
+                    bool visible = showAll || i >= fullscreenIdx;
+                    if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                    {
+                        await ApplyWindowOcclusionAsync(view, visible, occlusionMode);
+                        return;
+                    }
+                }
+
+                return;
+            }
+
+            OcclusionWorkItem[] workItems = null;
+            UniTask[] tasks = null;
+            int n = 0;
+
+            try
+            {
+                workItems = SlotArrayPool<OcclusionWorkItem>.Rent(asyncCount);
+                for (int i = startInclusive; i < endExclusive && n < asyncCount; i++)
+                {
+                    UIBase view = layer.Items[i]?.View;
+                    if (view == null)
+                    {
+                        continue;
+                    }
+
+                    bool visible = showAll || i >= fullscreenIdx;
+                    if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                    {
+                        workItems[n++] = new OcclusionWorkItem(view, visible);
+                    }
+                }
+
+                if (n == 0)
+                {
+                    return;
+                }
+
+                if (n == 1)
+                {
+                    OcclusionWorkItem workItem = workItems[0];
+                    await ApplyWindowOcclusionAsync(workItem.View, workItem.Visible, occlusionMode);
+                    return;
+                }
+
+                tasks = SlotArrayPool<UniTask>.Rent(n);
+                if (tasks.Length > n)
+                {
+                    Array.Clear(tasks, n, tasks.Length - n);
+                }
+
+                for (int i = 0; i < n; i++)
+                {
+                    OcclusionWorkItem workItem = workItems[i];
+                    tasks[i] = ApplyWindowOcclusionAsync(workItem.View, workItem.Visible, occlusionMode);
+                }
+
+                await UniTask.WhenAll(tasks);
+            }
+            finally
+            {
+                if (tasks != null)
+                {
+                    Array.Clear(tasks, 0, n);
+                    SlotArrayPool<UniTask>.Return(tasks);
+                }
+
+                SlotArrayPool<OcclusionWorkItem>.Return(workItems, true);
+            }
+        }
+
+        private static void ApplyVisibilityRangeSync(LayerData layer, int startInclusive, int endExclusive, int fullscreenIdx)
+        {
+            NormalizeVisibilityRange(layer, ref startInclusive, ref endExclusive);
+
+            bool showAll = fullscreenIdx < 0;
+            UIOcclusionMode occlusionMode = GetOcclusionMode(layer, fullscreenIdx, showAll);
+
+            int asyncCount = 0;
+            for (int i = startInclusive; i < endExclusive; i++)
+            {
+                UIBase view = layer.Items[i]?.View;
+                if (view == null)
+                {
+                    continue;
+                }
+
+                bool visible = showAll || i >= fullscreenIdx;
+                if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                {
+                    asyncCount++;
+                }
+                else
+                {
+                    view.Visible = visible;
+                }
+            }
+
+            if (asyncCount == 0)
+            {
+                return;
+            }
+
+            if (asyncCount == 1)
+            {
+                for (int i = startInclusive; i < endExclusive; i++)
+                {
+                    UIBase view = layer.Items[i]?.View;
+                    if (view == null)
+                    {
+                        continue;
+                    }
+
+                    bool visible = showAll || i >= fullscreenIdx;
+                    if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                    {
+                        ApplyWindowOcclusionSync(view, visible, occlusionMode);
+                        return;
+                    }
+                }
+
+                return;
+            }
+
+            OcclusionWorkItem[] workItems = null;
+            int n = 0;
+
+            try
+            {
+                workItems = SlotArrayPool<OcclusionWorkItem>.Rent(asyncCount);
+                for (int i = startInclusive; i < endExclusive && n < asyncCount; i++)
+                {
+                    UIBase view = layer.Items[i]?.View;
+                    if (view == null)
+                    {
+                        continue;
+                    }
+
+                    bool visible = showAll || i >= fullscreenIdx;
+                    if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                    {
+                        workItems[n++] = new OcclusionWorkItem(view, visible);
+                    }
+                }
+
+                for (int i = 0; i < n; i++)
+                {
+                    OcclusionWorkItem workItem = workItems[i];
+                    ApplyWindowOcclusionSync(workItem.View, workItem.Visible, occlusionMode);
+                }
+            }
+            finally
+            {
+                SlotArrayPool<OcclusionWorkItem>.Return(workItems, true);
+            }
+        }
+
+        private static bool NeedsAsyncOcclusion(UIBase view, bool visible, UIOcclusionMode occlusionMode)
+        {
+            if (visible)
+            {
+                return view.State == UIState.Closed || view.State == UIState.Closing;
+            }
+
+            return occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening);
+        }
+
+        private static UIOcclusionMode GetOcclusionMode(LayerData layer, int fullscreenIdx, bool showAll)
+        {
+            if (showAll || fullscreenIdx < 0 || fullscreenIdx >= layer.Count)
+            {
+                return UIOcclusionMode.None;
+            }
+
+            return layer.Items[fullscreenIdx]?.MetaInfo.OcclusionMode ?? UIOcclusionMode.None;
+        }
+
+        private static void NormalizeVisibilityRange(LayerData layer, ref int startInclusive, ref int endExclusive)
         {
             if (startInclusive < 0)
             {
@@ -426,12 +905,90 @@ namespace AlicizaX.UI.Runtime
             {
                 endExclusive = layer.Count;
             }
+        }
 
-            bool showAll = fullscreenIdx < 0;
-            for (int i = startInclusive; i < endExclusive; i++)
+        private static async UniTask ApplyWindowOcclusionAsync(UIBase view, bool visible, UIOcclusionMode occlusionMode)
+        {
+            if (visible)
             {
-                layer.Items[i].View.Visible = showAll || i >= fullscreenIdx;
+                if (view.State == UIState.Closed || view.State == UIState.Closing)
+                {
+#if UNITY_EDITOR
+                    WarnOcclusionOperation("Occlusion reveal will reopen UI", view, visible, occlusionMode, "The window became visible while it was Closed or Closing. InternalOpen will be called; Closing means the close transition is being interrupted.");
+#endif
+                    bool openResult = await view.InternalOpen(causedByOcclusion: true);
+#if UNITY_EDITOR
+                    if (!openResult)
+                    {
+                        WarnOcclusionOperation("Occlusion reveal reopen failed", view, visible, occlusionMode, "InternalOpen returned false while restoring a previously occluded window.");
+                    }
+#endif
+                    return;
+                }
+
+                view.Visible = true;
+                return;
             }
+
+            if (occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening))
+            {
+#if UNITY_EDITOR
+                WarnOcclusionOperation("Lifecycle occlusion will close UI", view, visible, occlusionMode, "The occluding window requires Lifecycle mode. InternalClose will be called; Opening means the open transition is being interrupted.");
+#endif
+                // 被遮挡关闭：跳过关闭过渡动画（窗口已不可见，播放动画只是浪费时间） 如有透明背景会看到下层需要自己Fork改
+                bool closeResult = await view.InternalClose(causedByOcclusion: true, skipTransition: true);
+#if UNITY_EDITOR
+                if (!closeResult)
+                {
+                    WarnOcclusionOperation("Lifecycle occlusion close failed", view, visible, occlusionMode, "InternalClose returned false while hiding an occluded window.");
+                }
+#endif
+                return;
+            }
+
+            view.Visible = false;
+        }
+
+        private static void ApplyWindowOcclusionSync(UIBase view, bool visible, UIOcclusionMode occlusionMode)
+        {
+            if (visible)
+            {
+                if (view.State == UIState.Closed || view.State == UIState.Closing)
+                {
+#if UNITY_EDITOR
+                    WarnOcclusionOperation("Occlusion reveal will reopen UI sync", view, visible, occlusionMode, "The window became visible while it was Closed or Closing. InternalOpenSync will be called; Closing means the close transition is being interrupted.");
+#endif
+                    bool openResult = view.InternalOpenSync(causedByOcclusion: true);
+#if UNITY_EDITOR
+                    if (!openResult)
+                    {
+                        WarnOcclusionOperation("Occlusion reveal reopen sync failed", view, visible, occlusionMode, "InternalOpenSync returned false while restoring a previously occluded window.");
+                    }
+#endif
+                    return;
+                }
+
+                view.Visible = true;
+                return;
+            }
+
+            if (occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening))
+            {
+#if UNITY_EDITOR
+                WarnOcclusionOperation("Lifecycle occlusion will close UI sync", view, visible, occlusionMode, "The occluding window requires Lifecycle mode. InternalCloseSync will be called; Opening means the open transition is being interrupted.");
+#endif
+                // 被遮挡关闭：跳过关闭过渡动画（窗口已不可见，播放动画只是浪费时间） 如有透明背景会看到下层需要自己Fork改
+                bool closeResult = view.InternalCloseSync(causedByOcclusion: true, skipTransition: true);
+#if UNITY_EDITOR
+                if (!closeResult)
+                {
+                    WarnOcclusionOperation("Lifecycle occlusion close sync failed", view, visible, occlusionMode, "InternalCloseSync returned false while hiding an occluded window.");
+                }
+#endif
+                return;
+            }
+
+            view.Visible = false;
         }
 
         private static void UpdateFullscreenIndexAfterRemove(LayerData layer, UIMetadata removedMeta, int removedIndex)
@@ -442,7 +999,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            if (removedMeta.MetaInfo.FullScreen && layer.LastFullscreenIndex == removedIndex)
+            if (IsOcclusionWindow(removedMeta) && layer.LastFullscreenIndex == removedIndex)
             {
                 layer.LastFullscreenIndex = FindLastFullscreenIndex(layer, removedIndex - 1);
                 return;
@@ -462,7 +1019,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            if (!meta.MetaInfo.FullScreen)
+            if (!IsOcclusionWindow(meta))
             {
                 return;
             }
@@ -479,11 +1036,17 @@ namespace AlicizaX.UI.Runtime
         {
             if (meta == null || meta.OperationVersion != operationVersion)
             {
+#if UNITY_EDITOR
+                WarnUIOperation("Rollback skipped", meta, operationVersion, "RollbackFailedShowAsync was called, but the metadata was null or the operation version no longer matched.");
+#endif
                 return;
             }
 
+#if UNITY_EDITOR
+            WarnUIOperation("Rollback show async", meta, operationVersion, "The show operation failed and the UI will be popped, visibility will be recalculated, and the metadata will be disposed.");
+#endif
             var popResult = Pop(meta);
-            SortWindowVisible(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
+            await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
             SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
 
             await meta.DisposeAsync();
@@ -493,11 +1056,17 @@ namespace AlicizaX.UI.Runtime
         {
             if (meta == null || meta.OperationVersion != operationVersion)
             {
+#if UNITY_EDITOR
+                WarnUIOperation("Rollback skipped sync", meta, operationVersion, "RollbackFailedShow was called, but the metadata was null or the operation version no longer matched.");
+#endif
                 return;
             }
 
+#if UNITY_EDITOR
+            WarnUIOperation("Rollback show sync", meta, operationVersion, "The sync show operation failed and the UI will be popped, visibility will be recalculated, and the metadata will be disposed immediately.");
+#endif
             var popResult = Pop(meta);
-            SortWindowVisible(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
+            SortWindowVisibleSync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
             SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
 
             meta.DisposeImmediate();
@@ -547,5 +1116,113 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
         }
+
+#if UNITY_EDITOR
+        private static void WarnUIOperation(string title, UIMetadata meta, int expectedOperationVersion, string reason)
+        {
+            if (!UIWarningSettings.OtherWarningsEnabled)
+            {
+                return;
+            }
+
+            Log.Warning($"[UI] {title}. Reason: {reason} ExpectedVersion={expectedOperationVersion}. {FormatMetadata(meta)}");
+        }
+
+        private static void WarnOcclusionInterruption(string title, UIMetadata meta, int expectedOperationVersion, string reason)
+        {
+            if (!UIWarningSettings.OcclusionWarningsEnabled)
+            {
+                return;
+            }
+
+            Log.Warning($"[UI] {title}. Reason: {reason} ExpectedVersion={expectedOperationVersion}. {FormatMetadata(meta)}");
+        }
+
+        private static void WarnOcclusionOperation(string title, UIBase view, bool targetVisible, UIOcclusionMode occlusionMode, string reason)
+        {
+            if (!UIWarningSettings.OcclusionWarningsEnabled)
+            {
+                return;
+            }
+
+            Log.Warning($"[UI] {title}. Reason: {reason} TargetVisible={targetVisible}, OcclusionMode={occlusionMode}. {FormatView(view)}");
+        }
+
+        private static string GetInvalidShowReason(UIMetadata meta, int expectedOperationVersion)
+        {
+            if (meta == null)
+            {
+                return "Metadata is null after resource creation.";
+            }
+
+            if (meta.OperationVersion != expectedOperationVersion)
+            {
+                return $"Operation version changed while loading resources. ActualVersion={meta.OperationVersion}.";
+            }
+
+            if (meta.View == null)
+            {
+                return "View is null after resource creation.";
+            }
+
+            if (meta.State == UIState.Uninitialized || meta.State == UIState.Destroyed)
+            {
+                return $"State became {meta.State} after resource creation.";
+            }
+
+            if (meta.State == UIState.CreatedUI)
+            {
+                return "State is still CreatedUI after resource creation. The UI resource was not bound, so rollback will remove the reserved stack slot.";
+            }
+
+            return "Show operation became invalid after resource creation.";
+        }
+
+        private static string GetOpenInterruptionRejectReason(UIMetadata meta, int expectedOperationVersion, CancellationToken cancellationToken)
+        {
+            if (meta == null)
+            {
+                return "InternalOpen returned false and metadata is null. Rollback will run.";
+            }
+
+            if (meta.OperationVersion != expectedOperationVersion)
+            {
+                return $"InternalOpen returned false and the operation version changed. ActualVersion={meta.OperationVersion}. Rollback will run.";
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return "InternalOpen returned false because the show cancellation token was requested. Rollback will run.";
+            }
+
+            if (meta.View == null)
+            {
+                return "InternalOpen returned false and View is null. Rollback will run.";
+            }
+
+            return "InternalOpen returned false before a recoverable occlusion state could be confirmed. Rollback will run.";
+        }
+
+        private static string FormatMetadata(UIMetadata meta)
+        {
+            if (meta == null)
+            {
+                return "Meta=null.";
+            }
+
+            string viewState = meta.View == null ? "View=null" : $"ViewState={meta.View.State}, Visible={meta.View.Visible}, Depth={meta.View.Depth}";
+            return $"UI={meta.UILogicTypeName}, State={meta.State}, {viewState}, ActualVersion={meta.OperationVersion}, CancelRequested={meta.CancelRequested}, TokenCanceled={meta.ExistingCancellationToken.IsCancellationRequested}, ShowInProgress={meta.ShowInProgress}, CloseInProgress={meta.CloseInProgress}, InCache={meta.InCache}, Layer={(UILayer)meta.MetaInfo.UILayer}, TypeId={meta.MetaInfo.TypeId}, Occlusion={meta.MetaInfo.OcclusionMode}.";
+        }
+
+        private static string FormatView(UIBase view)
+        {
+            if (view == null)
+            {
+                return "View=null.";
+            }
+
+            return $"UI={view.GetType().Name}, State={view.State}, Visible={view.Visible}, Depth={view.Depth}.";
+        }
+#endif
     }
 }

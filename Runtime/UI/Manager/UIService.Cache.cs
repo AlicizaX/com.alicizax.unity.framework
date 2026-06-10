@@ -22,10 +22,12 @@ namespace AlicizaX.UI.Runtime
         private CacheEntry[] m_CacheWindow = new CacheEntry[8];
         private int[] m_CacheTypeIdToIndex = UITypeIndexArray.Create(8);
         private int m_CacheWindowCount;
+        private Action<UIMetadata> _onTimerDisposeWindow;
 
         private void CacheWindow(UIMetadata uiMetadata, bool force)
         {
-            if (uiMetadata?.View?.Holder == null)
+            UIBase view = uiMetadata?.View;
+            if (view == null || view.Holder == null || !view.Holder.IsValid())
             {
                 Log.Error("Cannot cache null UI metadata or holder");
                 return;
@@ -33,6 +35,7 @@ namespace AlicizaX.UI.Runtime
 
             if (force || uiMetadata.MetaInfo.CacheTime == 0)
             {
+                RemoveFromCache(uiMetadata.MetaInfo.TypeId);
                 uiMetadata.DisposeImmediate();
                 return;
             }
@@ -40,12 +43,17 @@ namespace AlicizaX.UI.Runtime
             RemoveFromCache(uiMetadata.MetaInfo.TypeId);
             ulong timerHandle = 0UL;
 
-            uiMetadata.View.Holder.transform.SetParent(UICacheLayer);
+            view.PauseEventListeners();
+            // 缓存期间释放用户数据引用，并关闭 Canvas 渲染（不触发网格重建）
+            view.ClearUserData();
+            view.SetCanvasEnabled(false);
+            view.Holder.transform.SetParent(UICacheLayer, false);
             if (uiMetadata.MetaInfo.CacheTime > 0)
             {
                 ITimerService timerService = GetTimerService();
+                _onTimerDisposeWindow ??= OnTimerDisposeWindow;
                 timerHandle = timerService.AddTimer(
-                    OnTimerDisposeWindow,
+                    _onTimerDisposeWindow,
                     uiMetadata,
                     uiMetadata.MetaInfo.CacheTime,
                     isLoop: false,
@@ -53,7 +61,14 @@ namespace AlicizaX.UI.Runtime
 
                 if (timerHandle == 0UL)
                 {
-                    Log.Warning(ZString.Format("Failed to create cache timer for {0}", uiMetadata.UILogicType.Name));
+#if UNITY_EDITOR
+                    if (UIWarningSettings.OtherWarningsEnabled)
+                    {
+                        Log.Warning("Failed to create cache timer for {0}", uiMetadata.UILogicTypeName);
+                    }
+#endif
+                    uiMetadata.DisposeImmediate();
+                    return;
                 }
             }
 

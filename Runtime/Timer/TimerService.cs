@@ -157,12 +157,18 @@ namespace AlicizaX.Timer.Runtime
         {
             if (callback == null)
             {
+#if UNITY_EDITOR
+                WarnAddTimerFailed("callback is null.");
+#endif
                 return 0UL;
             }
 
             int slotIndex = AcquireSlot();
             if (slotIndex < 0)
             {
+#if UNITY_EDITOR
+                WarnAddTimerFailed("no available timer slot.");
+#endif
                 return 0UL;
             }
 
@@ -183,12 +189,18 @@ namespace AlicizaX.Timer.Runtime
         {
             if (callback == null)
             {
+#if UNITY_EDITOR
+                WarnAddTimerFailed("callback is null.");
+#endif
                 return 0UL;
             }
 
             int slotIndex = AcquireSlot();
             if (slotIndex < 0)
             {
+#if UNITY_EDITOR
+                WarnAddTimerFailed("no available timer slot.");
+#endif
                 return 0UL;
             }
 
@@ -201,6 +213,14 @@ namespace AlicizaX.Timer.Runtime
             AddToQueue(slotIndex, isUnscaled);
             return GetHandle(slotIndex);
         }
+
+#if UNITY_EDITOR
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void WarnAddTimerFailed(string reason)
+        {
+            Log.Warning("[Timer] AddTimer failed: {0}", reason);
+        }
+#endif
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Stop(ulong timerHandle)

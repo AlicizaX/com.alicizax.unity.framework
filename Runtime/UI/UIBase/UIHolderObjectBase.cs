@@ -82,6 +82,28 @@ namespace AlicizaX.UI.Runtime
                 : UniTask.CompletedTask;
         }
 
+        internal void ApplyOpenTransitionState()
+        {
+            if (!_isAlive || this == null)
+            {
+                return;
+            }
+
+            IUITransitionPlayer transitionPlayer = TransitionPlayer;
+            transitionPlayer?.ApplyOpenState();
+        }
+
+        internal void ApplyClosedTransitionState()
+        {
+            if (!_isAlive || this == null)
+            {
+                return;
+            }
+
+            IUITransitionPlayer transitionPlayer = TransitionPlayer;
+            transitionPlayer?.ApplyClosedState();
+        }
+
         internal void StopTransition()
         {
             if (!_isAlive || this == null)

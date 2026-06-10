@@ -25,13 +25,34 @@ namespace AlicizaX.UI.Runtime
 
         public void Initialize(Transform root, bool isOrthographic)
         {
+            if (root == null)
+            {
+                Log.Error("[UI] Initialize failed: root is null.");
+                return;
+            }
+
             UIRoot = root;
             Object.DontDestroyOnLoad(root.gameObject);
 
             UIRoot.transform.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
 
             UICanvas = UIRoot.GetComponentInChildren<Canvas>();
+            if (UICanvas == null)
+            {
+                Log.Error("[UI] Initialize failed: Canvas is missing under UI root.");
+                UIRoot = null;
+                return;
+            }
+
             UICamera = UICanvas.worldCamera;
+            if (UICamera == null)
+            {
+                Log.Error("[UI] Initialize failed: Canvas worldCamera is missing.");
+                UICanvas = null;
+                UIRoot = null;
+                return;
+            }
+
             UICanvasRoot = UICanvas.transform;
 
             _isOrthographic = isOrthographic;
@@ -55,6 +76,12 @@ namespace AlicizaX.UI.Runtime
 
         public RectTransform GetLayer(UILayer layer)
         {
+            if ((uint)layer >= (uint)UILayer.All)
+            {
+                Log.Error("[UI] Invalid layer: {0}", layer);
+                return null;
+            }
+
             return m_AllWindowLayer[(int)layer];
         }
 
@@ -84,6 +111,12 @@ namespace AlicizaX.UI.Runtime
 
         public RectTransform GetLayerRect(int layer)
         {
+            if ((uint)layer >= (uint)m_AllWindowLayer.Length)
+            {
+                Log.Error("[UI] Invalid layer index: {0}", layer);
+                return null;
+            }
+
             return m_AllWindowLayer[layer];
         }
     }

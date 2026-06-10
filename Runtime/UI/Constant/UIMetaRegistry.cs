@@ -12,17 +12,17 @@ namespace AlicizaX.UI.Runtime
             public readonly RuntimeTypeHandle RuntimeTypeHandle;
             public readonly RuntimeTypeHandle HolderRuntimeTypeHandle;
             public readonly int UILayer;
-            public readonly bool FullScreen;
+            public readonly UIOcclusionMode OcclusionMode;
             public readonly int CacheTime;
             public readonly bool NeedUpdate;
             public readonly int TypeId;
 
-            public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle, UILayer windowLayer, bool fullScreen, int cacheTime, bool needUpdate, int typeId)
+            public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle, UILayer windowLayer, UIOcclusionMode occlusionMode, int cacheTime, bool needUpdate, int typeId)
             {
                 RuntimeTypeHandle = runtimeTypeHandle;
                 HolderRuntimeTypeHandle = holderRuntimeTypeHandle;
                 UILayer = (int)windowLayer;
-                FullScreen = fullScreen;
+                OcclusionMode = occlusionMode;
                 CacheTime = cacheTime;
                 NeedUpdate = needUpdate;
                 TypeId = typeId;
@@ -31,17 +31,19 @@ namespace AlicizaX.UI.Runtime
 
         private static readonly Dictionary<RuntimeTypeHandle, UIMetaInfo> _typeHandleMap = new();
         private static readonly Dictionary<string, RuntimeTypeHandle> _stringHandleMap = new();
+        private static readonly HashSet<string> _ambiguousTypeNames = new();
         private static int _nextTypeId;
         public static int TypeCount => _nextTypeId;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, bool fullScreen = false, int cacheTime = 0, bool needUpdate = false)
+        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, UIOcclusionMode occlusionMode = UIOcclusionMode.None, int cacheTime = 0, bool needUpdate = false)
         {
             RuntimeTypeHandle holderHandle = holderType.TypeHandle;
             RuntimeTypeHandle uiHandle = uiType.TypeHandle;
+            layer = SanitizeLayer(uiType, layer);
             int typeId = _typeHandleMap.TryGetValue(uiHandle, out UIMetaInfo oldInfo) ? oldInfo.TypeId : _nextTypeId++;
-            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, fullScreen, cacheTime, needUpdate, typeId);
-            _stringHandleMap[uiType.Name] = uiHandle;
+            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, occlusionMode, cacheTime, needUpdate, typeId);
+            RegisterTypeName(uiType, uiHandle);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -58,6 +60,13 @@ namespace AlicizaX.UI.Runtime
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool TryGet(string typeName, out UIMetaInfo info)
         {
+            if (_ambiguousTypeNames.Contains(typeName))
+            {
+                Log.Error($"[UI] Ambiguous UI type name '{typeName}'. Use the full type name instead.");
+                info = default;
+                return false;
+            }
+
             if (_stringHandleMap.TryGetValue(typeName, out RuntimeTypeHandle handle))
             {
                 return TryGet(handle, out info);
@@ -82,7 +91,12 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            Log.Warning($"[UI] UI not pre-registered: {uiType.FullName}, using reflection fallback.");
+#if UNITY_EDITOR
+            if (UIWarningSettings.OtherWarningsEnabled)
+            {
+                Log.Warning($"[UI] UI not pre-registered: {uiType.FullName}, using reflection fallback.");
+            }
+#endif
             return TryReflectAndRegisterInternal(uiType, out info);
         }
 
@@ -98,7 +112,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             UILayer layer = UILayer.UI;
-            bool fullScreen = false;
+            UIOcclusionMode occlusionMode = UIOcclusionMode.None;
             int cacheTime = 0;
             bool needUpdate = false;
 
@@ -112,17 +126,17 @@ namespace AlicizaX.UI.Runtime
                     IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
                     if (args.Count > 0)
                     {
-                        layer = (UILayer)(args[0].Value ?? UILayer.UI);
+                        layer = ReadLayerArgument(args[0].Value, UILayer.UI);
                     }
 
                     if (args.Count > 1)
                     {
-                        fullScreen = (bool)(args[1].Value ?? false);
+                        occlusionMode = ReadOcclusionModeArgument(args[1].Value, UIOcclusionMode.None);
                     }
 
                     if (args.Count > 2)
                     {
-                        cacheTime = (int)(args[2].Value ?? 0);
+                        cacheTime = ReadIntArgument(args[2].Value, 0);
                     }
                 }
                 else if (attributeName == nameof(UIUpdateAttribute))
@@ -131,9 +145,60 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
-            Register(uiType, holderType, layer, fullScreen, cacheTime, needUpdate);
+            Register(uiType, holderType, layer, occlusionMode, cacheTime, needUpdate);
             info = _typeHandleMap[uiType.TypeHandle];
             return true;
+        }
+
+        private static void RegisterTypeName(Type uiType, RuntimeTypeHandle uiHandle)
+        {
+            string fullName = uiType.FullName;
+            if (!string.IsNullOrEmpty(fullName))
+            {
+                _stringHandleMap[fullName] = uiHandle;
+            }
+
+            string shortName = uiType.Name;
+            if (string.IsNullOrEmpty(shortName) || _ambiguousTypeNames.Contains(shortName))
+            {
+                return;
+            }
+
+            if (_stringHandleMap.TryGetValue(shortName, out RuntimeTypeHandle existingHandle) && !existingHandle.Equals(uiHandle))
+            {
+                _stringHandleMap.Remove(shortName);
+                _ambiguousTypeNames.Add(shortName);
+                Log.Error($"[UI] Ambiguous UI type name '{shortName}' between '{Type.GetTypeFromHandle(existingHandle)?.FullName}' and '{fullName}'. Use the full type name instead.");
+                return;
+            }
+
+            _stringHandleMap[shortName] = uiHandle;
+        }
+
+        private static UILayer SanitizeLayer(Type uiType, UILayer layer)
+        {
+            if ((uint)layer < (uint)UILayer.All)
+            {
+                return layer;
+            }
+
+            Log.Error($"[UI] Invalid layer '{layer}' for UI type {uiType?.FullName}. UILayer.All is not a window layer; fallback to UILayer.UI.");
+            return UILayer.UI;
+        }
+
+        private static UILayer ReadLayerArgument(object value, UILayer fallback)
+        {
+            return value == null ? fallback : (UILayer)Convert.ToInt32(value);
+        }
+
+        private static UIOcclusionMode ReadOcclusionModeArgument(object value, UIOcclusionMode fallback)
+        {
+            return value == null ? fallback : (UIOcclusionMode)Convert.ToInt32(value);
+        }
+
+        private static int ReadIntArgument(object value, int fallback)
+        {
+            return value == null ? fallback : Convert.ToInt32(value);
         }
 
         private static Type ResolveHolderType(Type uiType)

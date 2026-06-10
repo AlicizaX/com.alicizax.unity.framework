@@ -9,6 +9,10 @@ namespace AlicizaX.UI.Runtime
 
         UniTask PlayCloseAsync(CancellationToken cancellationToken = default);
 
+        void ApplyOpenState();
+
+        void ApplyClosedState();
+
         void Stop();
     }
 }

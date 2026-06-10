@@ -4,6 +4,9 @@ using System.Threading;
 using AlicizaX;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 using UnityEngine;
 using UnityEngine.UI;
 using Object = UnityEngine.Object;
@@ -27,6 +30,7 @@ namespace AlicizaX.UI.Runtime
         internal UIState _state = UIState.Uninitialized;
         internal UIState State => _state;
 #if UNITY_EDITOR
+        private int _occlusionInterruptedLifecycleVersion = -1;
         private float _stateEnteredRealtime;
         internal float StateDuration => Time.realtimeSinceStartup - _stateEnteredRealtime;
 #endif
@@ -38,6 +42,9 @@ namespace AlicizaX.UI.Runtime
 
         private RuntimeTypeHandle _runtimeTypeHandle;
         private int _uiTypeId = -1;
+        private string _cachedTypeName;
+
+        internal string CachedTypeName => _cachedTypeName ??= GetType().Name;
 
         internal RuntimeTypeHandle RuntimeTypeHandler
         {
@@ -82,12 +89,26 @@ namespace AlicizaX.UI.Runtime
         }
 
         /// <summary>
+        /// 带取消令牌版本。令牌在显示/关闭操作被新操作打断时取消。
+        /// 默认转发到无参版本，保持旧子类兼容。
+        /// </summary>
+        protected virtual UniTask OnInitializeAsync(CancellationToken cancellationToken)
+        {
+            return OnInitializeAsync();
+        }
+
+        /// <summary>
         /// 如果重写当前方法 则同步OnOpen不会调用
         /// </summary>
         protected virtual UniTask OnOpenAsync()
         {
             OnOpen();
             return UniTask.CompletedTask;
+        }
+
+        protected virtual UniTask OnOpenAsync(CancellationToken cancellationToken)
+        {
+            return OnOpenAsync();
         }
 
         /// <summary>
@@ -97,6 +118,11 @@ namespace AlicizaX.UI.Runtime
         {
             OnClose();
             return UniTask.CompletedTask;
+        }
+
+        protected virtual UniTask OnCloseAsync(CancellationToken cancellationToken)
+        {
+            return OnCloseAsync();
         }
 
         /// <summary>
@@ -146,29 +172,75 @@ namespace AlicizaX.UI.Runtime
                     Object.Destroy(Holder.gameObject);
                 else
                     Object.DestroyImmediate(Holder.gameObject);
+
+                Holder = null;
             }
 
             _disposed = true;
         }
 
+        private bool _visible;
+
         internal bool Visible
         {
-            get => _canvas != null && _canvas.gameObject.layer == UIComponent.UIShowLayer;
+            get => _visible && _canvas != null;
 
             set
             {
-                if (_canvas != null)
+                if (_canvas == null)
                 {
-                    int setLayer = value ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
-                    if (_canvas.gameObject.layer == setLayer)
-                        return;
-
-                    _canvas.gameObject.layer = setLayer;
-                    ChildVisible(value);
-                    Interactable = value;
+                    return;
                 }
+
+                if (_visible == value)
+                {
+#if UNITY_EDITOR
+                    SetSceneViewVisible(value);
+#endif
+                    return;
+                }
+
+                _visible = value;
+                _canvas.gameObject.layer = value ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+                ChildVisible(value);
+                Interactable = value;
+#if UNITY_EDITOR
+                SetSceneViewVisible(value);
+#endif
             }
         }
+
+        internal void SetCanvasEnabled(bool value)
+        {
+            if (_canvas != null && _canvas.enabled != value)
+            {
+                _canvas.enabled = value;
+            }
+        }
+
+        internal void ClearUserData()
+        {
+            _userDatas = null;
+        }
+
+#if UNITY_EDITOR
+        private void SetSceneViewVisible(bool visible)
+        {
+            if (_canvas == null)
+            {
+                return;
+            }
+
+            if (visible)
+            {
+                SceneVisibilityManager.instance.Show(_canvas.gameObject, true);
+            }
+            else
+            {
+                SceneVisibilityManager.instance.Hide(_canvas.gameObject, true);
+            }
+        }
+#endif
 
         private bool Interactable
         {
@@ -203,6 +275,7 @@ namespace AlicizaX.UI.Runtime
         #region Event
 
         private EventListenerProxy _eventListenerProxy;
+        private bool _eventsRegistered;
 
         private EventListenerProxy EventListenerProxy => _eventListenerProxy ??= MemoryPool.Acquire<EventListenerProxy>();
 
@@ -213,6 +286,29 @@ namespace AlicizaX.UI.Runtime
                 MemoryPool.Release(_eventListenerProxy);
                 _eventListenerProxy = null;
             }
+
+            _eventsRegistered = false;
+        }
+
+        private void RegisterEventListenersIfNeeded()
+        {
+            if (_eventsRegistered)
+            {
+                return;
+            }
+
+            OnRegisterEvent(EventListenerProxy);
+            _eventsRegistered = true;
+        }
+
+        internal void PauseEventListeners()
+        {
+            if (!_eventsRegistered)
+            {
+                return;
+            }
+
+            ReleaseEventListenerProxy();
         }
 
         #endregion
@@ -232,6 +328,9 @@ namespace AlicizaX.UI.Runtime
             {
                 _canvas.overrideSorting = overrideSorting;
             }
+
+            // 与预制体实际层保持同步，避免缓存的可见标记与真实状态脱节
+            _visible = _canvas != null && _canvas.gameObject.layer == UIComponent.UIShowLayer;
 
             _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
             if (stretchToParent)
@@ -254,7 +353,7 @@ namespace AlicizaX.UI.Runtime
             if (!TryBeginInitialize())
                 return false;
 
-            await OnInitializeAsync();
+            await OnInitializeAsync(cancellationToken);
             if (!IsInitializeStillValid(cancellationToken, metadata, operationVersion))
                 return false;
 
@@ -272,14 +371,22 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        internal async UniTask<bool> InternalOpen(CancellationToken cancellationToken = default)
+        internal async UniTask<bool> InternalOpen(CancellationToken cancellationToken = default, bool causedByOcclusion = false)
         {
-            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult))
+            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open skipped", $"TryBeginOpen returned false. SkippedResult={skippedResult}.");
+#endif
                 return skippedResult;
+            }
 
-            await OnOpenAsync();
+            await OnOpenAsync(cancellationToken);
             if (IsOpeningCanceled(lifecycleVersion, cancellationToken))
             {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open interrupted after OnOpenAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
             }
@@ -287,52 +394,115 @@ namespace AlicizaX.UI.Runtime
             bool openCanceled = await Holder.PlayOpenTransitionAsync(cancellationToken).SuppressCancellationThrow();
             if (openCanceled || cancellationToken.IsCancellationRequested)
             {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open transition interrupted", $"Open transition canceled={openCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
             }
 
-            return CompleteOpenTransition(lifecycleVersion);
+            bool completed = CompleteOpenTransition(lifecycleVersion);
+#if UNITY_EDITOR
+            if (!completed)
+            {
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+            }
+#endif
+            return completed;
         }
 
-        internal bool InternalOpenSync()
+        internal bool InternalOpenSync(bool causedByOcclusion = false)
         {
-            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult))
+            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync skipped", $"TryBeginOpen returned false. SkippedResult={skippedResult}.");
+#endif
                 return skippedResult;
+            }
 
             OnOpen();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
                 return false;
+            }
 
             FireAndForgetOpenTransition(lifecycleVersion).Forget();
             return true;
         }
 
-        internal async UniTask<bool> InternalClose(CancellationToken cancellationToken = default)
+        internal async UniTask<bool> InternalClose(CancellationToken cancellationToken = default, bool causedByOcclusion = false, bool skipTransition = false)
         {
-            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult))
+            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close skipped", $"TryBeginClose returned false. SkippedResult={skippedResult}.");
+#endif
                 return skippedResult;
+            }
 
-            await OnCloseAsync();
+            await OnCloseAsync(cancellationToken);
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after OnCloseAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
                 return false;
+            }
+
+            if (skipTransition)
+            {
+                // 跳过关闭动画：窗口已不可见（被全屏窗口遮挡或正在销毁），直接进入 Closed 透明层有需要则自己Fork框架到本地改就行
+                Holder.ApplyClosedTransitionState();
+                return CompleteCloseTransition(lifecycleVersion);
+            }
 
             bool closeCanceled = await Holder.PlayCloseTransitionAsync(cancellationToken).SuppressCancellationThrow();
             if (closeCanceled || cancellationToken.IsCancellationRequested)
             {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close transition interrupted", $"Close transition canceled={closeCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
                 return false;
             }
 
-            return CompleteCloseTransition(lifecycleVersion);
+            bool completed = CompleteCloseTransition(lifecycleVersion);
+#if UNITY_EDITOR
+            if (!completed)
+            {
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+            }
+#endif
+            return completed;
         }
 
-        internal bool InternalCloseSync()
+        internal bool InternalCloseSync(bool causedByOcclusion = false, bool skipTransition = false)
         {
-            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult))
+            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync skipped", $"TryBeginClose returned false. SkippedResult={skippedResult}.");
+#endif
                 return skippedResult;
+            }
 
             OnClose();
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync interrupted after OnClose", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
                 return false;
+            }
+
+            if (skipTransition)
+            {
+                Holder.ApplyClosedTransitionState();
+                return CompleteCloseTransition(lifecycleVersion);
+            }
 
             FireAndForgetCloseTransition(lifecycleVersion).Forget();
             return true;
@@ -340,14 +510,14 @@ namespace AlicizaX.UI.Runtime
 
         internal void InternalUpdate()
         {
-            if (_state != UIState.Opened) return;
+            if (_state != UIState.Opened || !Visible) return;
             OnUpdate();
             UpdateChildren();
         }
 
         internal async UniTask InternalDestroy()
         {
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Destroying))
+            if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Destroying))
                 return;
 
             InterruptLifecycleTransition();
@@ -362,7 +532,7 @@ namespace AlicizaX.UI.Runtime
 
         internal void InternalDestroyImmediate()
         {
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Destroying))
+            if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Destroying))
             {
                 return;
             }
@@ -382,15 +552,15 @@ namespace AlicizaX.UI.Runtime
             this._userDatas = userDatas;
         }
 
-        private int BeginLifecycleTransition()
+        private int BeginLifecycleTransition(bool causedByOcclusion = false)
         {
-            InterruptLifecycleTransition();
+            InterruptLifecycleTransition(causedByOcclusion);
             return _lifecycleVersion;
         }
 
         private bool TryBeginInitialize()
         {
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Initialized))
+            if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Initialized))
                 return false;
 
             SetState(UIState.Initialized);
@@ -406,10 +576,10 @@ namespace AlicizaX.UI.Runtime
 
         private void CompleteInitialize()
         {
-            OnRegisterEvent(EventListenerProxy);
+            RegisterEventListenersIfNeeded();
         }
 
-        private bool TryBeginOpen(out int lifecycleVersion, out bool skippedResult)
+        private bool TryBeginOpen(out int lifecycleVersion, out bool skippedResult, bool causedByOcclusion = false)
         {
             lifecycleVersion = 0;
             skippedResult = false;
@@ -419,10 +589,10 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Opening))
+            if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Opening))
                 return false;
 
-            lifecycleVersion = BeginLifecycleTransition();
+            lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
             SetState(UIState.Opening);
             Visible = true;
             Holder.OnWindowBeforeShowEvent?.Invoke();
@@ -441,11 +611,12 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             SetState(UIState.Opened);
+            RegisterEventListenersIfNeeded();
             Holder.OnWindowAfterShowEvent?.Invoke();
             return true;
         }
 
-        private bool TryBeginClose(out int lifecycleVersion, out bool skippedResult)
+        private bool TryBeginClose(out int lifecycleVersion, out bool skippedResult, bool causedByOcclusion = false)
         {
             lifecycleVersion = 0;
             skippedResult = false;
@@ -455,10 +626,10 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!UIStateMachine.ValidateTransition(GetType().Name, _state, UIState.Closing))
+            if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Closing))
                 return false;
 
-            lifecycleVersion = BeginLifecycleTransition();
+            lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
             SetState(UIState.Closing);
             Holder.OnWindowBeforeClosedEvent?.Invoke();
             return true;
@@ -472,12 +643,16 @@ namespace AlicizaX.UI.Runtime
             Visible = false;
             SetState(UIState.Closed);
             Holder.OnWindowAfterClosedEvent?.Invoke();
+            PauseEventListeners();
             return true;
         }
 
-        private void InterruptLifecycleTransition()
+        private void InterruptLifecycleTransition(bool causedByOcclusion = false)
         {
             _lifecycleVersion++;
+#if UNITY_EDITOR
+            _occlusionInterruptedLifecycleVersion = causedByOcclusion ? _lifecycleVersion - 1 : -1;
+#endif
             Holder?.StopTransition();
         }
 
@@ -497,7 +672,12 @@ namespace AlicizaX.UI.Runtime
         private void RollbackOpeningState(int lifecycleVersion)
         {
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open rollback skipped", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
                 return;
+            }
 
             Visible = false;
             SetState(UIState.Initialized);
@@ -507,7 +687,12 @@ namespace AlicizaX.UI.Runtime
         {
             bool canceled = await Holder.PlayOpenTransitionAsync().SuppressCancellationThrow();
             if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Fire-and-forget open transition interrupted", $"Transition canceled={canceled}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
                 return;
+            }
 
             CompleteOpenTransition(lifecycleVersion);
         }
@@ -516,10 +701,55 @@ namespace AlicizaX.UI.Runtime
         {
             bool canceled = await Holder.PlayCloseTransitionAsync().SuppressCancellationThrow();
             if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Fire-and-forget close transition interrupted", $"Transition canceled={canceled}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, CancellationToken.None)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
                 return;
+            }
 
             CompleteCloseTransition(lifecycleVersion);
         }
+
+#if UNITY_EDITOR
+        private void WarnLifecycleOperation(string title, string reason, bool occlusionWarning = false)
+        {
+            if (occlusionWarning)
+            {
+                if (!UIWarningSettings.OcclusionWarningsEnabled)
+                {
+                    return;
+                }
+            }
+            else if (!UIWarningSettings.OtherWarningsEnabled)
+            {
+                return;
+            }
+
+            Log.Warning($"[UI] {title}. Reason: {reason} UI={CachedTypeName}, State={_state}, Visible={Visible}, Depth={Depth}, LifecycleVersion={_lifecycleVersion}.");
+        }
+
+        private string FormatLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState, CancellationToken cancellationToken)
+        {
+            return $"ExpectedState={expectedState}, ActualState={_state}, ExpectedLifecycleVersion={expectedLifecycleVersion}, ActualLifecycleVersion={_lifecycleVersion}, TokenCanceled={cancellationToken.IsCancellationRequested}.";
+        }
+
+        private bool IsOcclusionLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState)
+        {
+            if (_occlusionInterruptedLifecycleVersion != expectedLifecycleVersion || expectedLifecycleVersion == _lifecycleVersion)
+            {
+                return false;
+            }
+
+            return expectedState == UIState.Opening && (_state == UIState.Closing || _state == UIState.Closed)
+                   || expectedState == UIState.Closing && (_state == UIState.Opening || _state == UIState.Opened);
+        }
+
+        internal bool WasLifecycleInterruptedByOcclusion(int lifecycleVersion)
+        {
+            return _occlusionInterruptedLifecycleVersion == lifecycleVersion;
+        }
+#endif
 
         #endregion
     }

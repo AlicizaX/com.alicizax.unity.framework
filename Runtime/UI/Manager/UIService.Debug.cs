@@ -136,7 +136,7 @@ namespace AlicizaX.UI.Runtime
             info.HolderTypeName = metadata.UIHolderTypeName;
             info.State = metadata.State;
             info.Visible = view != null && view.Visible;
-            info.FullScreen = metadata.MetaInfo.FullScreen;
+            info.OcclusionMode = metadata.MetaInfo.OcclusionMode;
             info.InCache = metadata.InCache;
             info.NeedUpdate = metadata.MetaInfo.NeedUpdate;
             info.ShowInProgress = metadata.ShowInProgress;

@@ -34,7 +34,7 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty _canvasGroup;
         private SerializedProperty _useUnscaledTime;
         private SerializedProperty _initializeAsClosed;
-        private SerializedProperty _disableInteractionWhilePlaying;
+        private SerializedProperty _followAnimationInteractable;
         private SerializedProperty _openDuration;
         private SerializedProperty _closeDuration;
         private SerializedProperty _slideDistance;
@@ -60,7 +60,7 @@ namespace AlicizaX.UI.Editor
             _canvasGroup = serializedObject.FindProperty("canvasGroup");
             _useUnscaledTime = serializedObject.FindProperty("useUnscaledTime");
             _initializeAsClosed = serializedObject.FindProperty("initializeAsClosed");
-            _disableInteractionWhilePlaying = serializedObject.FindProperty("disableInteractionWhilePlaying");
+            _followAnimationInteractable = serializedObject.FindProperty("followAnimationInteractable");
             _openDuration = serializedObject.FindProperty("openDuration");
             _closeDuration = serializedObject.FindProperty("closeDuration");
             _slideDistance = serializedObject.FindProperty("slideDistance");
@@ -123,7 +123,7 @@ namespace AlicizaX.UI.Editor
 
             DrawBoolRow(_useUnscaledTime);
             DrawBoolRow(_initializeAsClosed);
-            DrawBoolRow(_disableInteractionWhilePlaying);
+            DrawBoolRow(_followAnimationInteractable);
 
 
             EditorGUILayout.EndVertical();
@@ -236,6 +236,11 @@ namespace AlicizaX.UI.Editor
 
         private void DrawField(SerializedProperty property)
         {
+            if (property == null)
+            {
+                return;
+            }
+
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
             EditorGUILayout.PropertyField(property, GUIContent.none, true);
@@ -244,6 +249,11 @@ namespace AlicizaX.UI.Editor
 
         private void DrawEnumField(SerializedProperty property)
         {
+            if (property == null)
+            {
+                return;
+            }
+
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
 
@@ -263,6 +273,11 @@ namespace AlicizaX.UI.Editor
 
         private void DrawBoolRow(SerializedProperty property)
         {
+            if (property == null)
+            {
+                return;
+            }
+
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
 
@@ -322,7 +337,9 @@ namespace AlicizaX.UI.Editor
 
         private bool RequiresCanvasGroup()
         {
-            if (!_disableInteractionWhilePlaying.hasMultipleDifferentValues && _disableInteractionWhilePlaying.boolValue)
+            if (_followAnimationInteractable != null
+                && !_followAnimationInteractable.hasMultipleDifferentValues
+                && _followAnimationInteractable.boolValue)
             {
                 return true;
             }
@@ -332,6 +349,11 @@ namespace AlicizaX.UI.Editor
 
         private static bool UsesAlpha(SerializedProperty property)
         {
+            if (property == null)
+            {
+                return false;
+            }
+
             if (property.hasMultipleDifferentValues)
             {
                 return false;

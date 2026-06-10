@@ -28,7 +28,7 @@ namespace AlicizaX.UI.Runtime
             if (IsValidTransition(from, to))
                 return true;
 
-            Log.Error(Cysharp.Text.ZString.Format("[UI] Invalid state transition for {0}: {1} -> {2}", uiName, from, to));
+            Log.Error("[UI] Invalid state transition for {0}: {1} -> {2}", uiName, from, to);
             return false;
         }
 

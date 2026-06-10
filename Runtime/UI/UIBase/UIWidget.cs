@@ -1,5 +1,4 @@
 ﻿using System;
-using AlicizaX;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime

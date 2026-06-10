@@ -5,9 +5,21 @@ using AlicizaX.ObjectPool;
 
 namespace AlicizaX.UI.Runtime
 {
+
+    internal sealed class RuntimeTypeHandleComparer : IEqualityComparer<RuntimeTypeHandle>
+    {
+        public static readonly RuntimeTypeHandleComparer Instance = new();
+
+        public bool Equals(RuntimeTypeHandle x, RuntimeTypeHandle y) => x.Value == y.Value;
+
+        public int GetHashCode(RuntimeTypeHandle obj) => obj.Value.GetHashCode();
+    }
+
     internal static class UIMetadataFactory
     {
-        private static readonly Dictionary<RuntimeTypeHandle, UIMetadata> UIWindowMetadata = new();
+        private static readonly Dictionary<RuntimeTypeHandle, UIMetadata> UIWindowMetadata = new(RuntimeTypeHandleComparer.Instance);
+
+        private static readonly Dictionary<Type, string> TypeFullNameCache = new();
 
         private static readonly IObjectPool<UIMetadataObject> m_UIMetadataPool;
 
@@ -18,7 +30,7 @@ namespace AlicizaX.UI.Runtime
                     name: "UI Metadata Pool",
                     allowMultiSpawn: false,
                     autoReleaseInterval: 60,
-                    capacity: 16,
+                    capacity: 32,
                     expireTime: 60f,
                     priority: 0));
         }
@@ -44,6 +56,16 @@ namespace AlicizaX.UI.Runtime
             return meta;
         }
 
+        /// <summary>
+        /// 仅查询，不创建。用于 CloseUI/GetUI 等不应隐式创建元数据的路径。 强调后续自己fork改框架 非必要尽量都只用仅查询
+        /// </summary>
+        /// <param name="handle"></param>
+        /// <returns></returns>
+        internal static UIMetadata TryGetWindowMetadata(RuntimeTypeHandle handle)
+        {
+            return UIWindowMetadata.TryGetValue(handle, out var meta) ? meta : null;
+        }
+
         internal static UIMetadata GetWidgetMetadata<T>()
         {
             return GetWidgetMetadata(typeof(T).TypeHandle);
@@ -58,8 +80,11 @@ namespace AlicizaX.UI.Runtime
         {
             if (type == null) return null;
 
-
-            string typeHandleKey = type.FullName;
+            if (!TypeFullNameCache.TryGetValue(type, out string typeHandleKey))
+            {
+                typeHandleKey = type.FullName;
+                TypeFullNameCache[type] = typeHandleKey;
+            }
 
 
             UIMetadataObject metadataObj = m_UIMetadataPool.Spawn(typeHandleKey);

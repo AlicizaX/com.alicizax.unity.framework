@@ -46,74 +46,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   uiRoot: {fileID: 4612363183729467837, guid: 9368ff38b2090b2468f8358242026e4b, type: 3}
   _isOrthographic: 1
---- !u!1 &1516812642607394282
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 7231588671532407876}
-  - component: {fileID: 8897508624174186059}
-  m_Layer: 0
-  m_Name: Debugger
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &7231588671532407876
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1516812642607394282}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 425597497363353001}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &8897508624174186059
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1516812642607394282}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f05eaceeebe870a4595e51f998ed518b, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  m_ActiveWindow: 0
-  m_ShowFullWindow: 0
-  m_WindowOpacity: 0.8
-  m_EnableFloatingToggleSnap: 1
-  m_PanelSettings: {fileID: 11400000, guid: 66471f1a850eadc4eb6821c730bfce50, type: 2}
-  m_ConsoleWindow:
-    m_LockScroll: 1
-    m_MaxLine: 100
-    m_InfoFilter: 1
-    m_WarningFilter: 1
-    m_ErrorFilter: 1
-    m_FatalFilter: 1
-    m_InfoColor:
-      serializedVersion: 2
-      rgba: 4294967295
-    m_WarningColor:
-      serializedVersion: 2
-      rgba: 4278512639
-    m_ErrorColor:
-      serializedVersion: 2
-      rgba: 4278190335
-    m_FatalColor:
-      serializedVersion: 2
-      rgba: 4281545650
 --- !u!1 &2077363682113217780
 GameObject:
   m_ObjectHideFlags: 0
@@ -202,7 +134,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 61474d279eb27214d9178822796f3b88, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_EnableStrictCheck: 0
+  m_ShortDecayStartFrames: 1800
+  m_LongDecayStartFrames: 7200
+  m_UnscheduleIdleFrames: 18000
+  m_ZeroFreeReserveStartFrames: 7200
+  m_AutoTrimNativeMetadataFrames: 18000
+  m_SoftFreeReserveLimit: 128
+  m_HardFreeReserveLimit: 512
+  m_Phase: 2
 --- !u!1 &5472542677182214335
 GameObject:
   m_ObjectHideFlags: 0
@@ -237,7 +176,6 @@ Transform:
   - {fileID: 1933965801183527639}
   - {fileID: 1316740771005759728}
   - {fileID: 424925309774805088}
-  - {fileID: 7231588671532407876}
   - {fileID: 1640076400431107710}
   - {fileID: 9160912643551877041}
   - {fileID: 9144434048949093429}
@@ -277,7 +215,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   resourceComponent: {fileID: 7354290124713579766}
-  debuggerComponent: {fileID: 8897508624174186059}
   localizationComponent: {fileID: 1599215827984154130}
 --- !u!1 &6519989611955579811
 GameObject:
@@ -289,7 +226,6 @@ GameObject:
   m_Component:
   - component: {fileID: 424925309774805088}
   - component: {fileID: 7354290124713579766}
-  - component: {fileID: 555190332568712345}
   m_Layer: 0
   m_Name: Resources
   m_TagString: Untagged
@@ -330,31 +266,17 @@ MonoBehaviour:
   minGCCollectInterval: 30
   decryptionServices: 
   autoUnloadBundleWhenUnused: 0
-  _playMode: 0
+  _playMode: 1
   packageName: DefaultPackage
   milliseconds: 30
   downloadingMaxNum: 10
   failedTryAgain: 3
-  assetAutoReleaseInterval: 60
-  assetCapacity: 64
-  assetExpireTime: 60
-  assetPriority: 0
---- !u!114 &555190332568712345
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 6519989611955579811}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e3adf1e69b12944448c9fe6ae10983cb, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  checkCanReleaseInterval: 30
-  autoReleaseInterval: 60
-  maxProcessPerFrame: 50
-  releaseCheckThreshold: 16
+  assetRecordCapacity: 64
+  assetLeaseCapacity: 128
+  bindingOwnerCapacity: 64
+  bindingSlotCapacity: 128
+  registeredTargetCapacity: 128
+  idleAssetExpireTime: 60
 --- !u!1 &6601518982324708866
 GameObject:
   m_ObjectHideFlags: 0

@@ -7,6 +7,7 @@ namespace AlicizaX.UI.Runtime
     {
         private GameObject m_LayerBlock;
         private ulong m_LastCountDownHandle;
+        private TimerHandlerNoArgs _onBlockCountDown;
 
         private void InitUIBlock()
         {
@@ -33,7 +34,12 @@ namespace AlicizaX.UI.Runtime
             }
 
             SetLayerBlockOption(true);
-            m_LastCountDownHandle = timerService.AddTimer(OnBlockCountDown, timeDuration);
+            _onBlockCountDown ??= OnBlockCountDown;
+            m_LastCountDownHandle = timerService.AddTimer(_onBlockCountDown, timeDuration);
+            if (m_LastCountDownHandle == 0UL)
+            {
+                SetLayerBlockOption(false);
+            }
         }
 
         /// <summary>
