@@ -88,7 +88,7 @@ namespace AlicizaX.Resource.Runtime
         /// <summary>
         /// 卸载资源。
         /// </summary>
-        /// <param name="asset">要卸载的资源。</param>
+        /// <param name="asset">要卸载的资源。每次成功调用直接返回资源的 LoadAsset 接口后，都需要成对调用一次。</param>
         void UnloadAsset(object asset);
 
         /// <summary>
@@ -119,6 +119,42 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="handle">资源租约句柄。</param>
         void Release(ResourceLeaseHandle handle);
+
+        /// <summary>
+        /// 同步加载资源并返回资源租约。调用方必须在不再使用资源时调用 Dispose 释放租约。
+        /// </summary>
+        /// <param name="key">资源 Key。</param>
+        /// <typeparam name="T">资源类型。</typeparam>
+        /// <returns>资源租约，失败时返回无效租约。</returns>
+        ResourceAssetLease<T> LoadLease<T>(ResourceKey key) where T : UnityEngine.Object;
+
+        /// <summary>
+        /// 同步加载资源并返回资源租约。调用方必须在不再使用资源时调用 Dispose 释放租约。
+        /// </summary>
+        /// <param name="location">资源定位地址。</param>
+        /// <param name="packageName">指定资源包的名称。不传使用默认资源包。</param>
+        /// <typeparam name="T">资源类型。</typeparam>
+        /// <returns>资源租约，失败时返回无效租约。</returns>
+        ResourceAssetLease<T> LoadLease<T>(string location, string packageName = "") where T : UnityEngine.Object;
+
+        /// <summary>
+        /// 异步加载资源并返回资源租约。调用方必须在不再使用资源时调用 Dispose 释放租约。
+        /// </summary>
+        /// <param name="key">资源 Key。</param>
+        /// <param name="cancellationToken">取消操作 Token。</param>
+        /// <typeparam name="T">资源类型。</typeparam>
+        /// <returns>资源租约，失败时返回无效租约。</returns>
+        UniTask<ResourceAssetLease<T>> LoadLeaseAsync<T>(ResourceKey key, CancellationToken cancellationToken = default) where T : UnityEngine.Object;
+
+        /// <summary>
+        /// 异步加载资源并返回资源租约。调用方必须在不再使用资源时调用 Dispose 释放租约。
+        /// </summary>
+        /// <param name="location">资源定位地址。</param>
+        /// <param name="cancellationToken">取消操作 Token。</param>
+        /// <param name="packageName">指定资源包的名称。不传使用默认资源包。</param>
+        /// <typeparam name="T">资源类型。</typeparam>
+        /// <returns>资源租约，失败时返回无效租约。</returns>
+        UniTask<ResourceAssetLease<T>> LoadLeaseAsync<T>(string location, CancellationToken cancellationToken = default, string packageName = "") where T : UnityEngine.Object;
 
         /// <summary>
         /// 尝试从资源租约中读取 Unity 资源对象。
@@ -209,7 +245,7 @@ namespace AlicizaX.Resource.Runtime
         UniTask LoadAssetAsync(string location, Type assetType, int priority, LoadAssetCallbacks loadAssetCallbacks, object userData, string packageName = "");
 
         /// <summary>
-        /// 同步加载资源。
+        /// 同步加载资源。每次成功返回资源后，调用方必须在不再使用时成对调用 UnloadAsset。
         /// </summary>
         /// <param name="location">资源的定位地址。</param>
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包</param>
@@ -228,7 +264,7 @@ namespace AlicizaX.Resource.Runtime
         GameObject LoadGameObject(string location, Transform parent = null, string packageName = "");
 
         /// <summary>
-        /// 异步加载资源。
+        /// 异步加载资源。每次成功回调资源后，调用方必须在不再使用时成对调用 UnloadAsset。
         /// </summary>
         /// <param name="location">资源的定位地址。</param>
         /// <param name="callback">回调函数。</param>
@@ -237,7 +273,7 @@ namespace AlicizaX.Resource.Runtime
         UniTask LoadAsset<T>(string location, Action<T> callback, string packageName = "") where T : UnityEngine.Object;
 
         /// <summary>
-        /// 异步加载资源。
+        /// 异步加载资源。每次成功返回资源后，调用方必须在不再使用时成对调用 UnloadAsset。
         /// </summary>
         /// <param name="location">资源定位地址。</param>
         /// <param name="cancellationToken">取消操作Token。</param>

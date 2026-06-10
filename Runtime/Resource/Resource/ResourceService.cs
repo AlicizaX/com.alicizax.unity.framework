@@ -118,6 +118,12 @@ namespace AlicizaX.Resource.Runtime
 
         private int _nextResourceTypeId = 1;
 
+        private readonly Stack<int> _freeResourcePackageIds = new Stack<int>();
+
+        private readonly Stack<int> _freeResourceLocationIds = new Stack<int>();
+
+        private readonly Stack<int> _freeResourceTypeIds = new Stack<int>();
+
         private const float ProgressCallbackThreshold = 0.01f;
 
         private const int ResourceKeyHandleBits = 4;
@@ -831,7 +837,7 @@ namespace AlicizaX.Resource.Runtime
                 return id;
             }
 
-            id = AllocateResourceId(ref _nextResourcePackageId, ResourceKeyPackageMax);
+            id = AllocateResourceId(ref _nextResourcePackageId, ResourceKeyPackageMax, _freeResourcePackageIds);
             _resourcePackageIds.Add(packageName, id);
             EnsureResourceNameSlot(ref _resourcePackagesById, ref _resourcePackageRefCounts, id);
             _resourcePackagesById[id] = packageName;
@@ -846,7 +852,7 @@ namespace AlicizaX.Resource.Runtime
                 return id;
             }
 
-            id = AllocateResourceId(ref _nextResourceLocationId, ResourceKeyLocationMax);
+            id = AllocateResourceId(ref _nextResourceLocationId, ResourceKeyLocationMax, _freeResourceLocationIds);
             _resourceLocationIds.Add(location, id);
             EnsureResourceNameSlot(ref _resourceLocationsById, ref _resourceLocationRefCounts, id);
             _resourceLocationsById[id] = location;
@@ -861,7 +867,7 @@ namespace AlicizaX.Resource.Runtime
                 return id;
             }
 
-            id = AllocateResourceId(ref _nextResourceTypeId, ResourceKeyTypeMax);
+            id = AllocateResourceId(ref _nextResourceTypeId, ResourceKeyTypeMax, _freeResourceTypeIds);
             _resourceTypeIds.Add(assetType, id);
             EnsureResourceTypeSlot(id);
             _resourceTypesById[id] = assetType;
@@ -879,6 +885,9 @@ namespace AlicizaX.Resource.Runtime
             _resourcePackageRefCounts = null;
             _resourceLocationRefCounts = null;
             _resourceTypeRefCounts = null;
+            _freeResourcePackageIds.Clear();
+            _freeResourceLocationIds.Clear();
+            _freeResourceTypeIds.Clear();
             _nextResourcePackageId = 1;
             _nextResourceLocationId = 1;
             _nextResourceTypeId = 1;
@@ -938,6 +947,7 @@ namespace AlicizaX.Resource.Runtime
             {
                 _resourcePackageIds.Remove(value);
                 _resourcePackagesById[id] = null;
+                _freeResourcePackageIds.Push(id);
             }
         }
 
@@ -953,6 +963,7 @@ namespace AlicizaX.Resource.Runtime
             {
                 _resourceLocationIds.Remove(value);
                 _resourceLocationsById[id] = null;
+                _freeResourceLocationIds.Push(id);
             }
         }
 
@@ -968,6 +979,7 @@ namespace AlicizaX.Resource.Runtime
             {
                 _resourceTypeIds.Remove(value);
                 _resourceTypesById[id] = null;
+                _freeResourceTypeIds.Push(id);
             }
         }
 
@@ -1035,8 +1047,17 @@ namespace AlicizaX.Resource.Runtime
             Array.Resize(ref array, Math.Max(index + 1, array.Length << 1));
         }
 
-        private static int AllocateResourceId(ref int nextId, int maxId)
+        private static int AllocateResourceId(ref int nextId, int maxId, Stack<int> freeIds)
         {
+            while (freeIds != null && freeIds.Count > 0)
+            {
+                int freeId = freeIds.Pop();
+                if (freeId > 0 && freeId <= maxId)
+                {
+                    return freeId;
+                }
+            }
+
             if (nextId <= 0 || nextId > maxId)
             {
                 throw new GameFrameworkException("Resource key id range exceeded.");
@@ -1201,6 +1222,62 @@ namespace AlicizaX.Resource.Runtime
             TryAddLegacyDirectRef(assetId, slot.Generation);
 
             return ret;
+        }
+
+        public ResourceAssetLease<T> LoadLease<T>(ResourceKey key) where T : UnityEngine.Object
+        {
+            ResourceKey typedKey = key.AssetType == null && !key.HasResolvedIds
+                ? new ResourceKey(key.Location, key.PackageName, typeof(T), InferAssetKind(typeof(T)))
+                : key;
+            ResourceLeaseHandle handle = AcquireDirect(typedKey);
+            if (!handle.IsValid)
+            {
+                return default;
+            }
+
+            if (!TryGetLeaseAsset(handle, out UnityEngine.Object asset) || asset is not T typedAsset)
+            {
+                Release(handle);
+                return default;
+            }
+
+            return new ResourceAssetLease<T>(this, handle, typedAsset);
+        }
+
+        public ResourceAssetLease<T> LoadLease<T>(string location, string packageName = "") where T : UnityEngine.Object
+        {
+            return LoadLease<T>(new ResourceKey(location, packageName, typeof(T), InferAssetKind(typeof(T))));
+        }
+
+        public async UniTask<ResourceAssetLease<T>> LoadLeaseAsync<T>(ResourceKey key, CancellationToken cancellationToken = default) where T : UnityEngine.Object
+        {
+            ResourceKey typedKey = key.AssetType == null && !key.HasResolvedIds
+                ? new ResourceKey(key.Location, key.PackageName, typeof(T), InferAssetKind(typeof(T)))
+                : key;
+            ResourceLeaseHandle handle = await AcquireDirectAsync(typedKey, cancellationToken);
+            if (!handle.IsValid)
+            {
+                return default;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Release(handle);
+                return default;
+            }
+
+            if (!TryGetLeaseAsset(handle, out UnityEngine.Object asset) || asset is not T typedAsset)
+            {
+                Release(handle);
+                return default;
+            }
+
+            return new ResourceAssetLease<T>(this, handle, typedAsset);
+        }
+
+        public UniTask<ResourceAssetLease<T>> LoadLeaseAsync<T>(string location, CancellationToken cancellationToken = default, string packageName = "") where T : UnityEngine.Object
+        {
+            return LoadLeaseAsync<T>(new ResourceKey(location, packageName, typeof(T), InferAssetKind(typeof(T))), cancellationToken);
         }
 
         public GameObject LoadGameObject(string location, Transform parent = null, string packageName = "")

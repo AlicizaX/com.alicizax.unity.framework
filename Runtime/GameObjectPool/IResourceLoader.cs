@@ -16,75 +16,97 @@ namespace AlicizaX
 
     public class UnityResourcesLoader : IResourceLoader
     {
+        private static bool _unloadUnusedAssetsRequested;
+        private static bool _unloadUnusedAssetsRunning;
+
         public GameObject LoadPrefab(string location)
         {
-            if (TryGetResourceService(out var resourceService))
-            {
-                var prefab = resourceService.LoadAsset<GameObject>(location);
-                if (prefab != null)
-                {
-                    return prefab;
-                }
-            }
-
-            return null;
+            string resourceLocation = NormalizeResourceLocation(location);
+            return string.IsNullOrEmpty(resourceLocation) ? null : Resources.Load<GameObject>(resourceLocation);
         }
 
         public async UniTask<GameObject> LoadPrefabAsync(string location, CancellationToken cancellationToken = default)
         {
-            if (TryGetResourceService(out var resourceService))
+            string resourceLocation = NormalizeResourceLocation(location);
+            if (string.IsNullOrEmpty(resourceLocation) || cancellationToken.IsCancellationRequested)
             {
-                var prefab = await resourceService.LoadAssetAsync<GameObject>(location, cancellationToken);
-                if (prefab != null)
-                {
-                    return prefab;
-                }
+                return null;
             }
 
-            return null;
+            ResourceRequest request = Resources.LoadAsync<GameObject>(resourceLocation);
+            try
+            {
+                UnityEngine.Object asset = await request.ToUniTask(cancellationToken: cancellationToken);
+                return asset as GameObject;
+            }
+            catch (System.OperationCanceledException)
+            {
+                return null;
+            }
         }
 
         public GameObject LoadGameObject(string location, Transform parent = null)
         {
-            if (TryGetResourceService(out var resourceService))
+            GameObject prefab = LoadPrefab(location);
+            if (prefab == null)
             {
-                var managedObject = resourceService.LoadGameObject(location, parent);
-                if (managedObject != null)
-                {
-                    return managedObject;
-                }
+                return null;
             }
 
-            return null;
+            return UnityEngine.Object.Instantiate(prefab, parent);
         }
 
         public async UniTask<GameObject> LoadGameObjectAsync(string location, Transform parent = null, CancellationToken cancellationToken = default)
         {
-            if (TryGetResourceService(out var resourceService))
+            GameObject prefab = await LoadPrefabAsync(location, cancellationToken);
+            if (prefab == null || cancellationToken.IsCancellationRequested)
             {
-                var managedObject = await resourceService.LoadGameObjectAsync(location, parent, cancellationToken);
-                if (managedObject != null)
-                {
-                    return managedObject;
-                }
+                return null;
             }
 
-            return null;
+            return UnityEngine.Object.Instantiate(prefab, parent);
         }
 
         public void UnloadAsset(GameObject gameObject)
         {
-            // Resources.UnloadAsset cannot unload GameObjects.
-            // The prefab reference is nulled by the caller; Unity handles cleanup via UnloadUnusedAssets.
+            if (gameObject == null)
+            {
+                return;
+            }
+
+            RequestUnloadUnusedAssets();
         }
 
-        private static bool TryGetResourceService(out IResourceService resourceService)
+        private static string NormalizeResourceLocation(string location)
         {
-            if (AppServices.HasWorld)
-                return AppServices.App.TryGet(out resourceService);
+            return PoolEntry.NormalizeConfigAssetPath(location, PoolResourceLoaderType.Resources);
+        }
 
-            resourceService = null;
-            return false;
+        private static void RequestUnloadUnusedAssets()
+        {
+            _unloadUnusedAssetsRequested = true;
+            if (!_unloadUnusedAssetsRunning)
+            {
+                RunUnloadUnusedAssetsAsync().Forget();
+            }
+        }
+
+        private static async UniTask RunUnloadUnusedAssetsAsync()
+        {
+            _unloadUnusedAssetsRunning = true;
+            try
+            {
+                do
+                {
+                    _unloadUnusedAssetsRequested = false;
+                    await UniTask.Yield(PlayerLoopTiming.LastPostLateUpdate);
+                    await Resources.UnloadUnusedAssets().ToUniTask();
+                } while (_unloadUnusedAssetsRequested);
+            }
+            finally
+            {
+                _unloadUnusedAssetsRunning = false;
+            }
         }
     }
 

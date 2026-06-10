@@ -116,6 +116,10 @@ namespace AlicizaX.Resource.Runtime
 
         [SerializeField] private float idleAssetExpireTime = 60f;
 
+        [SerializeField] private int expireProcessCountPerFrame = 16;
+
+        [SerializeField] private int expireProcessCountWhenUnloading = 256;
+
         public int AssetRecordCapacity
         {
             get => _resourceService.AssetRecordCapacity;
@@ -151,6 +155,18 @@ namespace AlicizaX.Resource.Runtime
             get => _resourceService.IdleAssetExpireTime;
             set => _resourceService.IdleAssetExpireTime = idleAssetExpireTime = value;
         }
+
+        public int ExpireProcessCountPerFrame
+        {
+            get => expireProcessCountPerFrame;
+            set => expireProcessCountPerFrame = Mathf.Max(0, value);
+        }
+
+        public int ExpireProcessCountWhenUnloading
+        {
+            get => expireProcessCountWhenUnloading;
+            set => expireProcessCountWhenUnloading = Mathf.Max(expireProcessCountPerFrame, value);
+        }
         #endregion
 
         internal void SetPlayMode(int playMode)
@@ -161,6 +177,12 @@ namespace AlicizaX.Resource.Runtime
         internal void SetDecryptionServices(string decryption)
         {
             decryptionServices = decryption;
+        }
+
+        private void OnValidate()
+        {
+            expireProcessCountPerFrame = Mathf.Max(0, expireProcessCountPerFrame);
+            expireProcessCountWhenUnloading = Mathf.Max(expireProcessCountPerFrame, expireProcessCountWhenUnloading);
         }
 
 
@@ -214,15 +236,22 @@ namespace AlicizaX.Resource.Runtime
 
         private void Update()
         {
+            bool shouldUnloadUnusedAssets = _asyncOperation == null &&
+                                            (_forceUnloadUnusedAssets ||
+                                             _lastUnloadUnusedAssetsOperationElapseSeconds >= maxUnloadUnusedAssetsInterval ||
+                                             _preorderUnloadUnusedAssets && _lastUnloadUnusedAssetsOperationElapseSeconds >= minUnloadUnusedAssetsInterval);
+
             if (_resourceService is ResourceService resourceService)
             {
-                resourceService.ProcessKeepAlive(Time.unscaledTime);
+                int expireProcessCount = shouldUnloadUnusedAssets
+                    ? Mathf.Max(expireProcessCountPerFrame, expireProcessCountWhenUnloading)
+                    : Mathf.Max(0, expireProcessCountPerFrame);
+                resourceService.ProcessKeepAlive(Time.unscaledTime, expireProcessCount);
             }
 
             _lastUnloadUnusedAssetsOperationElapseSeconds += Time.unscaledDeltaTime;
             _lastGCCollectElapseSeconds += Time.unscaledDeltaTime;
-            if (_asyncOperation == null && (_forceUnloadUnusedAssets || _lastUnloadUnusedAssetsOperationElapseSeconds >= maxUnloadUnusedAssetsInterval ||
-                                            _preorderUnloadUnusedAssets && _lastUnloadUnusedAssetsOperationElapseSeconds >= minUnloadUnusedAssetsInterval))
+            if (shouldUnloadUnusedAssets)
             {
                 bool useSystemUnload = _forceSystemUnloadUnusedAssets && useSystemUnloadUnusedAssets;
                 _forceUnloadUnusedAssets = false;

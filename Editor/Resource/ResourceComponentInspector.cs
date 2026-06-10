@@ -44,6 +44,8 @@ namespace AlicizaX.Resource.Editor
         private SerializedProperty _bindingSlotCapacity = null;
         private SerializedProperty _registeredTargetCapacity = null;
         private SerializedProperty _idleAssetExpireTime = null;
+        private SerializedProperty _expireProcessCountPerFrame = null;
+        private SerializedProperty _expireProcessCountWhenUnloading = null;
         private SerializedProperty _downloadingMaxNum = null;
         private SerializedProperty _failedTryAgain = null;
         private SerializedProperty _packageName = null;
@@ -100,6 +102,8 @@ namespace AlicizaX.Resource.Editor
             _bindingSlotCapacity = serializedObject.FindProperty("bindingSlotCapacity");
             _registeredTargetCapacity = serializedObject.FindProperty("registeredTargetCapacity");
             _idleAssetExpireTime = serializedObject.FindProperty("idleAssetExpireTime");
+            _expireProcessCountPerFrame = serializedObject.FindProperty("expireProcessCountPerFrame");
+            _expireProcessCountWhenUnloading = serializedObject.FindProperty("expireProcessCountWhenUnloading");
             _downloadingMaxNum = serializedObject.FindProperty("downloadingMaxNum");
             _failedTryAgain = serializedObject.FindProperty("failedTryAgain");
             _packageName = serializedObject.FindProperty("packageName");
@@ -214,6 +218,32 @@ namespace AlicizaX.Resource.Editor
                 else
                 {
                     _maxUnloadUnusedAssetsInterval.floatValue = maxUnloadUnusedAssetsInterval;
+                }
+            }
+
+            int expireProcessCountPerFrame = _expireProcessCountPerFrame.intValue;
+            if (DrawDelayedIntRow("Expire Process Count Per Frame", expireProcessCountPerFrame, out expireProcessCountPerFrame))
+            {
+                if (EditorApplication.isPlaying)
+                {
+                    component.ExpireProcessCountPerFrame = expireProcessCountPerFrame;
+                }
+                else
+                {
+                    _expireProcessCountPerFrame.intValue = Mathf.Max(0, expireProcessCountPerFrame);
+                }
+            }
+
+            int expireProcessCountWhenUnloading = _expireProcessCountWhenUnloading.intValue;
+            if (DrawDelayedIntRow("Expire Process Count When Unloading", expireProcessCountWhenUnloading, out expireProcessCountWhenUnloading))
+            {
+                if (EditorApplication.isPlaying)
+                {
+                    component.ExpireProcessCountWhenUnloading = expireProcessCountWhenUnloading;
+                }
+                else
+                {
+                    _expireProcessCountWhenUnloading.intValue = Mathf.Max(_expireProcessCountPerFrame.intValue, expireProcessCountWhenUnloading);
                 }
             }
 

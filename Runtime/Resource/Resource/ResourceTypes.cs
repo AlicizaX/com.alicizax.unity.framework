@@ -2,6 +2,38 @@ using System;
 
 namespace AlicizaX.Resource.Runtime
 {
+    public struct ResourceAssetLease<T> : IDisposable where T : UnityEngine.Object
+    {
+        private IResourceService _resourceService;
+        private ResourceLeaseHandle _handle;
+
+        public ResourceAssetLease(IResourceService resourceService, ResourceLeaseHandle handle, T asset)
+        {
+            _resourceService = resourceService;
+            _handle = handle;
+            Asset = asset;
+        }
+
+        public T Asset { get; private set; }
+
+        public ResourceLeaseHandle Handle => _handle;
+
+        public bool IsValid => _handle.IsValid && Asset != null;
+
+        public void Dispose()
+        {
+            if (!_handle.IsValid)
+            {
+                return;
+            }
+
+            _resourceService?.Release(_handle);
+            _resourceService = null;
+            _handle = ResourceLeaseHandle.Invalid;
+            Asset = null;
+        }
+    }
+
     public readonly struct ResourceLeaseHandle
     {
         public static readonly ResourceLeaseHandle Invalid = new ResourceLeaseHandle(-1, 0);

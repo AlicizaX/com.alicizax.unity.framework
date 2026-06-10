@@ -26,6 +26,8 @@ namespace AlicizaX.Resource.Runtime
         private int _loadKeyNextId;
         private int _assetSlotFreeHead;
         private int _leaseSlotFreeHead;
+        private int[] _unusedAssetCandidates;
+        private int _unusedAssetCandidateCount;
         private int _lastKeepAliveProcessTick;
         private int _lastIdleProcessTick;
         private readonly ResourceUlongIntMap _assetRecordsByKey = new ResourceUlongIntMap();
@@ -54,6 +56,7 @@ namespace AlicizaX.Resource.Runtime
             public int IdleExpireTick;
             public int ExpireQueuePrev;
             public int ExpireQueueNext;
+            public int UnusedCandidateIndex;
             public int NextFree;
             public ResourceAssetKind AssetKind;
             public ResourceHandleKind HandleKind;
@@ -92,6 +95,8 @@ namespace AlicizaX.Resource.Runtime
             _loadKeyNextId = 1;
             _assetSlotFreeHead = -1;
             _leaseSlotFreeHead = -1;
+            _unusedAssetCandidates = null;
+            _unusedAssetCandidateCount = 0;
             _lastKeepAliveProcessTick = -1;
             _lastIdleProcessTick = -1;
             _assetRecordsByKey.Clear();
@@ -141,6 +146,8 @@ namespace AlicizaX.Resource.Runtime
                             continue;
                         }
 
+                        int assetId = (page << RecordPageBits) + offset;
+                        RemoveUnusedAssetCandidate(assetId, ref slot);
                         DisposeAssetSlotHandle(ref slot);
                         ClearAssetSlot(ref slot, preserveGeneration: false);
                     }
@@ -154,6 +161,8 @@ namespace AlicizaX.Resource.Runtime
             TrimResourceKeyRegistryIfUnused();
             _assetSlotPages = null;
             _leaseSlotPages = null;
+            _unusedAssetCandidates = null;
+            _unusedAssetCandidateCount = 0;
             _keepAliveBuckets = null;
             _idleBuckets = null;
             _assetSlotNextIndex = 0;
@@ -706,23 +715,38 @@ namespace AlicizaX.Resource.Runtime
         internal int ReleaseAllUnusedAssetRecords()
         {
             int releasedCount = 0;
-            int total = _assetSlotNextIndex;
-            for (int i = 0; i < total; i++)
+            int index = 0;
+            while (index < _unusedAssetCandidateCount)
             {
-                ref AssetSlot slot = ref GetAssetSlotRef(i);
+                int assetId = _unusedAssetCandidates[index];
+                if (!IsValidAssetId(assetId))
+                {
+                    RemoveUnusedAssetCandidateAt(index);
+                    continue;
+                }
+
+                ref AssetSlot slot = ref GetAssetSlotRef(assetId);
                 if (slot.Generation == 0 || slot.State == ResourceAssetState.Released || !IsSlotHandleValid(ref slot))
                 {
+                    RemoveUnusedAssetCandidateAt(index);
                     continue;
                 }
 
                 if (!HasNoResourceRefs(ref slot))
                 {
+                    RemoveUnusedAssetCandidate(assetId, ref slot);
                     continue;
                 }
 
                 slot.IdleReleaseRequested = 1;
                 uint generation = slot.Generation;
-                ReleaseAssetStorage(i, generation);
+                int previousCandidateCount = _unusedAssetCandidateCount;
+                ReleaseAssetStorage(assetId, generation);
+                if (_unusedAssetCandidateCount == previousCandidateCount && index < _unusedAssetCandidateCount && _unusedAssetCandidates[index] == assetId)
+                {
+                    RemoveUnusedAssetCandidateAt(index);
+                }
+
                 releasedCount++;
             }
 
@@ -741,6 +765,7 @@ namespace AlicizaX.Resource.Runtime
                 }
 
                 RemoveFromExpiryQueue(i, ref slot);
+                RemoveUnusedAssetCandidate(i, ref slot);
                 DisposeAssetSlotHandle(ref slot);
                 UnlinkAssetByUnityObject(i, ref slot);
                 ClearAssetSlot(ref slot, preserveGeneration: true);
@@ -751,6 +776,7 @@ namespace AlicizaX.Resource.Runtime
             _assetRecordsByKey.Clear();
             _assetRecordByLoadKeyId.Clear();
             _assetRecordHeadByUnityObjectId.Clear();
+            _unusedAssetCandidateCount = 0;
 
             _leaseSlotNextIndex = 0;
             _leaseSlotFreeHead = -1;
@@ -811,6 +837,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             asset.IdleReleaseRequested = 0;
+            RemoveUnusedAssetCandidate(assetId, ref asset);
             RemoveFromExpiryQueue(assetId, ref asset);
             if (asset.KeepAliveRefCount > 0)
             {
@@ -1103,6 +1130,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             RemoveFromExpiryQueue(assetId, ref slot);
+            RemoveUnusedAssetCandidate(assetId, ref slot);
             DisposeAssetSlotHandle(ref slot);
             UnlinkAssetByUnityObject(assetId, ref slot);
             ulong key = slot.Key;
@@ -1206,12 +1234,18 @@ namespace AlicizaX.Resource.Runtime
             if (slot.State == ResourceAssetState.Idle)
             {
                 slot.IdleReleaseRequested = 0;
+                AddUnusedAssetCandidate(assetId, ref slot);
                 EnterIdle(assetId, ref slot);
             }
             else if (slot.ExpireQueueKind == 2)
             {
                 RemoveFromIdleBucket(assetId, ref slot);
                 slot.IdleReleaseRequested = 0;
+                RemoveUnusedAssetCandidate(assetId, ref slot);
+            }
+            else
+            {
+                RemoveUnusedAssetCandidate(assetId, ref slot);
             }
         }
 
@@ -1360,6 +1394,81 @@ namespace AlicizaX.Resource.Runtime
             slot.ExpireQueueKind = 0;
         }
 
+        private void AddUnusedAssetCandidate(int assetId, ref AssetSlot slot)
+        {
+            if (slot.UnusedCandidateIndex >= 0)
+            {
+                return;
+            }
+
+            if (_unusedAssetCandidates == null)
+            {
+                _unusedAssetCandidates = new int[Math.Max(16, _assetRecordCapacity)];
+            }
+            else if (_unusedAssetCandidateCount >= _unusedAssetCandidates.Length)
+            {
+                Array.Resize(ref _unusedAssetCandidates, _unusedAssetCandidates.Length << 1);
+            }
+
+            slot.UnusedCandidateIndex = _unusedAssetCandidateCount;
+            _unusedAssetCandidates[_unusedAssetCandidateCount++] = assetId;
+        }
+
+        private void RemoveUnusedAssetCandidate(int assetId, ref AssetSlot slot)
+        {
+            int index = slot.UnusedCandidateIndex;
+            if (index < 0 || index >= _unusedAssetCandidateCount)
+            {
+                slot.UnusedCandidateIndex = -1;
+                return;
+            }
+
+            if (_unusedAssetCandidates[index] != assetId)
+            {
+                for (int i = 0; i < _unusedAssetCandidateCount; i++)
+                {
+                    if (_unusedAssetCandidates[i] == assetId)
+                    {
+                        RemoveUnusedAssetCandidateAt(i);
+                        return;
+                    }
+                }
+
+                slot.UnusedCandidateIndex = -1;
+                return;
+            }
+
+            RemoveUnusedAssetCandidateAt(index);
+        }
+
+        private void RemoveUnusedAssetCandidateAt(int index)
+        {
+            if (index < 0 || index >= _unusedAssetCandidateCount)
+            {
+                return;
+            }
+
+            int removedAssetId = _unusedAssetCandidates[index];
+            int lastIndex = --_unusedAssetCandidateCount;
+            int movedAssetId = _unusedAssetCandidates[lastIndex];
+            _unusedAssetCandidates[lastIndex] = 0;
+            if (index != lastIndex)
+            {
+                _unusedAssetCandidates[index] = movedAssetId;
+                if (IsValidAssetId(movedAssetId))
+                {
+                    ref AssetSlot movedSlot = ref GetAssetSlotRef(movedAssetId);
+                    movedSlot.UnusedCandidateIndex = index;
+                }
+            }
+
+            if (IsValidAssetId(removedAssetId))
+            {
+                ref AssetSlot removedSlot = ref GetAssetSlotRef(removedAssetId);
+                removedSlot.UnusedCandidateIndex = -1;
+            }
+        }
+
         private static int ToKeepAliveTick(float unscaledTime)
         {
             return Mathf.Max(0, Mathf.FloorToInt(unscaledTime));
@@ -1400,6 +1509,7 @@ namespace AlicizaX.Resource.Runtime
             slot.NextFree = -1;
             slot.ExpireQueuePrev = -1;
             slot.ExpireQueueNext = -1;
+            slot.UnusedCandidateIndex = -1;
             slot.State = ResourceAssetState.Released;
         }
 
@@ -1488,6 +1598,7 @@ namespace AlicizaX.Resource.Runtime
             slot.NextFree = -1;
             slot.ExpireQueuePrev = -1;
             slot.ExpireQueueNext = -1;
+            slot.UnusedCandidateIndex = -1;
             slot.State = ResourceAssetState.Released;
             return index;
         }
