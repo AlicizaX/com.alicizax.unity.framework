@@ -11,6 +11,8 @@ namespace AlicizaX.UI.Runtime
     /// </summary>
     public interface IUIService : IService
     {
+        IUIRouter Router { get; }
+
         /// <summary>
         /// 初始化 UI 模块。
         /// </summary>
@@ -66,6 +68,11 @@ namespace AlicizaX.UI.Runtime
         UniTask<UIBase> ShowUI(string type, params object[] userDatas);
 
         /// <summary>
+        /// 异步显示 UI（使用运行时类型句柄）。类型无效或元数据无效时返回 null 结果。
+        /// </summary>
+        UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas);
+
+        /// <summary>
         /// 同步显示 UI（无参重载，避免 params 空数组分配）
         /// </summary>
         T ShowUISync<T>() where T : UIBase;
@@ -90,9 +97,38 @@ namespace AlicizaX.UI.Runtime
         void CloseUI(RuntimeTypeHandle handle, bool force = false);
 
         /// <summary>
+        /// 异步关闭指定类型 UI，并返回是否完成关闭。
+        /// </summary>
+        UniTask<bool> CloseUIAsync<T>(bool force = false) where T : UIBase;
+
+        /// <summary>
+        /// 异步关闭指定类型 UI，并返回是否完成关闭。
+        /// </summary>
+        UniTask<bool> CloseUIAsync(RuntimeTypeHandle handle, bool force = false);
+
+        /// <summary>
+        /// 指定类型 UI 当前是否处于稳定打开状态。
+        /// </summary>
+        bool IsOpen<T>() where T : UIBase;
+
+        /// <summary>
+        /// 指定类型 UI 当前是否处于稳定打开状态。
+        /// </summary>
+        bool IsOpen(RuntimeTypeHandle handle);
+
+        /// <summary>
+        /// 关闭当前最上层且满足谓词的 UI。
+        /// </summary>
+        UniTask<bool> TryCloseTopAsync(Predicate<RuntimeTypeHandle> predicate, bool force = false);
+
+        /// <summary>
+        /// UI 打开请求事件。用于诊断直接 ShowUI 调用。
+        /// </summary>
+        event Action<RuntimeTypeHandle> OnShowUIRequested;
+
+        /// <summary>
         /// 获取当前已打开的指定类型 UI。
         /// </summary>
         T GetUI<T>() where T : UIBase;
-
     }
 }

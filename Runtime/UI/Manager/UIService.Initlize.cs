@@ -23,6 +23,8 @@ namespace AlicizaX.UI.Runtime
         private RectTransform UICacheLayer;
         private bool _isOrthographic;
 
+        public IUIRouter Router { get; private set; }
+
         public void Initialize(Transform root, bool isOrthographic)
         {
             if (root == null)
@@ -72,6 +74,7 @@ namespace AlicizaX.UI.Runtime
             AddLayer((int)UILayer.All);
             InitUIBlock();
             _timerService = AppServices.App.Require<ITimerService>();
+            Router = new UIRouter(this);
         }
 
         public RectTransform GetLayer(UILayer layer)

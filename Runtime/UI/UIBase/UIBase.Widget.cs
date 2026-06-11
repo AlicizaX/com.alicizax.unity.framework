@@ -406,7 +406,6 @@ namespace AlicizaX.UI.Runtime
 
             if (meta != null)
             {
-                // 先取消挂起的异步操作（令牌已随之失效），再用默认令牌正常关闭（保留动画）
                 meta.CancelAsyncOperations();
                 await widget.InternalClose();
 

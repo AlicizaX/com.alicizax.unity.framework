@@ -24,6 +24,8 @@ namespace AlicizaX.UI.Editor
         private readonly UIServiceDebugInfo _serviceInfo = new UIServiceDebugInfo();
         private readonly UILayerDebugInfo _layerInfo = new UILayerDebugInfo();
         private readonly UIWindowDebugInfo _windowInfo = new UIWindowDebugInfo();
+        private readonly UIRouteDebugInfo _routeInfo = new UIRouteDebugInfo();
+        private readonly UIRouteWarningInfo _routeWarningInfo = new UIRouteWarningInfo();
         private readonly UIWindowDebugInfo[] _cacheInfos = new UIWindowDebugInfo[CacheDebugInfoCapacity];
         private readonly System.Collections.Generic.List<string> _alerts = new System.Collections.Generic.List<string>(16);
         private readonly System.Collections.Generic.Dictionary<int, int> _visibleDepths = new System.Collections.Generic.Dictionary<int, int>(32);
@@ -31,11 +33,15 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty uiRoot;
         private SerializedProperty _isOrthographic;
         private bool _showRuntimeDebug = true;
+        private bool _showRouterRuntimeDebug = true;
         private bool _showReferences;
         private bool _showLayers = true;
         private bool _showCache = true;
         private bool _showEmptyLayers;
+        private bool _showRouterHistory = true;
+        private bool _showRouterWarnings = true;
         private Vector2 _runtimeScroll;
+        private Vector2 _routerRuntimeScroll;
         private GUIStyle _panelStyle;
         private GUIStyle _entryBodyStyle;
         private GUIStyle _fieldRowStyle;
@@ -58,6 +64,7 @@ namespace AlicizaX.UI.Editor
             serializedObject.ApplyModifiedProperties();
 
             DrawRuntimeDebugInfo();
+            DrawRouterRuntimeDebugInfo();
             if (EditorApplication.isPlaying)
             {
                 Repaint();
@@ -167,7 +174,7 @@ namespace AlicizaX.UI.Editor
         {
             EditorGUILayout.Space(4f);
             EditorGUILayout.BeginVertical(_panelStyle);
-            _showRuntimeDebug = DrawFoldoutToolbar("Runtime Debug", _showRuntimeDebug);
+            _showRuntimeDebug = DrawFoldoutToolbar("UI RuntimeDebug", _showRuntimeDebug);
             if (!_showRuntimeDebug)
             {
                 EditorGUILayout.EndVertical();
@@ -198,6 +205,43 @@ namespace AlicizaX.UI.Editor
             DrawReferences();
             DrawLayerDebugInfo(debugService);
             DrawCacheDebugInfo(debugService);
+            GUILayout.EndScrollView();
+            EditorGUILayout.EndVertical();
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawRouterRuntimeDebugInfo()
+        {
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.BeginVertical(_panelStyle);
+            _showRouterRuntimeDebug = DrawFoldoutToolbar("Router RuntimeDebug", _showRouterRuntimeDebug);
+            if (!_showRouterRuntimeDebug)
+            {
+                EditorGUILayout.EndVertical();
+                return;
+            }
+
+            if (!EditorApplication.isPlaying)
+            {
+                EditorUtils.TrHelpIconText("Enter Play Mode to inspect runtime UI Router state.", MessageType.Info);
+                EditorGUILayout.EndVertical();
+                return;
+            }
+
+            if (!AppServices.HasWorld || !AppServices.App.TryGet<IUIService>(out IUIService uiService) || uiService.Router is not IUIRouterDebug debug)
+            {
+                EditorUtils.TrHelpIconText("UI Router is not initialized.", MessageType.Warning);
+                EditorGUILayout.EndVertical();
+                return;
+            }
+
+            DrawRouterSummary(debug);
+            DrawRouterRuntimeOptions(debug);
+
+            EditorGUILayout.BeginVertical(_entryBodyStyle);
+            _routerRuntimeScroll = GUILayout.BeginScrollView(_routerRuntimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(220f), GUILayout.MaxHeight(560f));
+            DrawRouterHistory(debug);
+            DrawRouterWarnings(debug);
             GUILayout.EndScrollView();
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndVertical();
@@ -276,6 +320,144 @@ namespace AlicizaX.UI.Editor
             DrawCounter("Block Timer", _serviceInfo.BlockTimerHandle.ToString(), _serviceInfo.BlockTimerHandle != 0UL ? _warningLabelStyle : _mutedLabelStyle);
             EditorGUILayout.EndHorizontal();
             DrawSectionEnd();
+        }
+
+        private void DrawRouterSummary(IUIRouterDebug debug)
+        {
+            DrawSectionBegin("Router Summary");
+            EditorGUILayout.BeginHorizontal();
+            DrawCounter("Current", debug.Current?.Name ?? "None", debug.Current == null ? _mutedLabelStyle : _rowLabelStyle);
+            DrawCounter("Can Back", debug.CanBack ? "Yes" : "No", debug.CanBack ? _rowLabelStyle : _mutedLabelStyle);
+            DrawCounter("Dirty", debug.IsDirty ? "Yes" : "No", debug.IsDirty ? _warningLabelStyle : _rowLabelStyle);
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+            DrawCounter("History", debug.HistoryCount.ToString(), debug.HistoryCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
+            DrawCounter("Warnings", debug.WarningCount.ToString(), debug.WarningCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
+            EditorGUILayout.EndHorizontal();
+
+            if (debug.IsDirty)
+            {
+                EditorUtils.TrHelpIconText("Router history is dirty. Use ResetTo, ResetHistory, or SyncFromCurrentUI to recover.", MessageType.Warning);
+            }
+
+            DrawSectionEnd();
+        }
+
+        private void DrawRouterRuntimeOptions(IUIRouterDebug debug)
+        {
+            Rect toolbarRect = GUILayoutUtility.GetRect(1f, RuntimeToolbarHeight, GUILayout.ExpandWidth(true));
+            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
+
+            float x = toolbarRect.x + 6f;
+            float y = toolbarRect.y + 3f;
+            _showRouterHistory = DrawToolbarToggle(ref x, y, 64f, "History", _showRouterHistory);
+            _showRouterWarnings = DrawToolbarToggle(ref x, y, 76f, "Warnings", _showRouterWarnings);
+
+            Rect clearRect = new Rect(toolbarRect.xMax - 106f, y, 100f, 20f);
+            EditorGUI.BeginDisabledGroup(debug.WarningCount == 0);
+            if (GUI.Button(clearRect, "Clear Warnings", AlicizaEditorGUI.Styles.PillOff))
+            {
+                debug.ClearWarnings();
+            }
+            EditorGUI.EndDisabledGroup();
+        }
+
+        private void DrawRouterHistory(IUIRouterDebug debug)
+        {
+            if (!_showRouterHistory)
+            {
+                return;
+            }
+
+            DrawSectionBegin("History");
+            if (debug.HistoryCount == 0)
+            {
+                DrawEmptyLabel("No route history.");
+            }
+
+            for (int i = 0; i < debug.HistoryCount; i++)
+            {
+                if (debug.FillHistoryInfo(i, _routeInfo))
+                {
+                    DrawRouteInfo(_routeInfo, "HIS");
+                }
+            }
+
+            DrawSectionEnd();
+        }
+
+        private void DrawRouterWarnings(IUIRouterDebug debug)
+        {
+            if (!_showRouterWarnings)
+            {
+                return;
+            }
+
+            DrawSectionBegin("Warnings");
+            if (debug.WarningCount == 0)
+            {
+                DrawEmptyLabel("No router warnings.");
+            }
+
+            for (int i = 0; i < debug.WarningCount; i++)
+            {
+                if (debug.FillWarningInfo(i, _routeWarningInfo))
+                {
+                    DrawRouteWarningInfo(_routeWarningInfo);
+                }
+            }
+
+            DrawSectionEnd();
+        }
+
+        private void DrawRouteInfo(UIRouteDebugInfo info, string badge)
+        {
+            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
+            bool hovered = rowRect.Contains(Event.current.mousePosition);
+            AlicizaEditorGUI.DrawListItemBackground(rowRect, info.IsRoot, hovered);
+
+            Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 48f, 18f);
+            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.36f)), 18f);
+            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
+            GUI.Label(kindRect, badge, _kindBadgeStyle);
+            GUI.Label(titleRect, "#" + info.Index + " " + (info.UITypeName ?? "Unknown"), _rowLabelStyle);
+            GUI.Label(summaryRect, GetRouteSummary(info), _mutedMiniLabelStyle);
+
+            if (!string.IsNullOrEmpty(info.ArgsPreview))
+            {
+                EditorGUILayout.BeginVertical(_entryBodyStyle);
+                DrawDebugRow("Args", info.ArgsPreview ?? string.Empty);
+                EditorGUILayout.EndVertical();
+            }
+        }
+
+        private void DrawRouteWarningInfo(UIRouteWarningInfo info)
+        {
+            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
+            bool hovered = rowRect.Contains(Event.current.mousePosition);
+            AlicizaEditorGUI.DrawListItemBackground(rowRect, true, hovered);
+
+            Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 48f, 18f);
+            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.36f)), 18f);
+            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
+            GUI.Label(kindRect, "WARN", _kindBadgeStyle);
+            GUI.Label(titleRect, "#" + info.Sequence + " " + (info.UITypeName ?? "Unknown"), _warningLabelStyle);
+            GUI.Label(summaryRect, string.Empty, _mutedMiniLabelStyle);
+
+            EditorGUILayout.BeginVertical(_entryBodyStyle);
+            DrawDebugRow("Message", info.Message ?? string.Empty, _warningLabelStyle);
+            EditorGUILayout.EndVertical();
+        }
+
+        private static string GetRouteSummary(UIRouteDebugInfo info)
+        {
+            if (info.Sequence > 0)
+            {
+                return "Root " + info.IsRoot + " | Seq " + info.Sequence;
+            }
+
+            return string.Empty;
         }
 
         private void DrawReferences()

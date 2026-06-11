@@ -165,16 +165,16 @@ namespace AlicizaX.UI.Runtime
 
             return showResult ? metaInfo.View : null;
         }
-        private async UniTask CloseUIImpl(UIMetadata meta, bool force)
+        private async UniTask<bool> CloseUIImpl(UIMetadata meta, bool force)
         {
-            await CloseUIImplCore(meta, force);
+            return await CloseUIImplCore(meta, force);
         }
 
-        private async UniTask CloseUIImplCore(UIMetadata meta, bool force)
+        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
         {
-            if (meta.State == UIState.Uninitialized)
+            if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying)
             {
-                return;
+                return false;
             }
 
             if (!meta.BeginCloseOperation(true, out int operationVersion))
@@ -182,10 +182,11 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
                 WarnUIOperation("Close skipped", meta, meta?.OperationVersion ?? -1, "BeginCloseOperation returned false. Another close operation is already running.");
 #endif
-                return;
+                return false;
             }
 
             CancellationToken cancellationToken = meta.ExistingCancellationToken;
+            bool closeCompleted = false;
             try
             {
                 if (meta.State == UIState.CreatedUI)
@@ -194,27 +195,45 @@ namespace AlicizaX.UI.Runtime
                     WarnUIOperation("Close interrupted pending show", meta, operationVersion, "CloseUI was called before the UI resource finished loading. The reserved stack slot will be removed and the UI will be disposed.");
 #endif
                     var popResult = Pop(meta);
+                    if (popResult.removedIndex < 0)
+                    {
+                        return false;
+                    }
+
                     await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
-                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex);
                     await meta.DisposeAsync();
+                    closeCompleted = true;
                 }
                 else if (meta.State == UIState.Loaded || meta.State == UIState.Initialized)
                 {
                     var popResult = Pop(meta);
+                    if (popResult.removedIndex < 0)
+                    {
+                        return false;
+                    }
+
                     await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
-                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex);
                     meta.View.Visible = false;
                     CacheWindow(meta, force);
+                    closeCompleted = true;
                 }
                 else
                 {
                     bool closeResult = await meta.View.InternalClose(cancellationToken);
-                    if (closeResult && meta.State == UIState.Closed)
+                    if (closeResult && meta.State == UIState.Closed && meta.OperationVersion == operationVersion)
                     {
                         var closedPopResult = Pop(meta);
+                        if (closedPopResult.removedIndex < 0)
+                        {
+                            return false;
+                        }
+
                         await SortWindowVisibleAsync(meta.MetaInfo.UILayer, closedPopResult.previousFullscreenIndex);
-                        SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex >= 0 ? closedPopResult.removedIndex : 0);
+                        SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex);
                         CacheWindow(meta, force);
+                        closeCompleted = true;
                     }
 #if UNITY_EDITOR
                     else
@@ -229,10 +248,66 @@ namespace AlicizaX.UI.Runtime
             {
                 meta.EndCloseOperation(operationVersion);
             }
+
+            return closeCompleted;
         }
         private UIBase GetUIImpl(UIMetadata meta)
         {
             return meta?.State == UIState.Opened ? meta.View : null;
+        }
+
+        private static bool IsOpenImpl(UIMetadata meta)
+        {
+            return meta != null && meta.State == UIState.Opened;
+        }
+
+        public async UniTask<bool> TryCloseTopAsync(Predicate<RuntimeTypeHandle> predicate, bool force = false)
+        {
+            if (predicate == null)
+            {
+                return false;
+            }
+
+            for (int layerIndex = _openUI.Length - 1; layerIndex >= 0; layerIndex--)
+            {
+                LayerData layer = _openUI[layerIndex];
+                if (layer == null)
+                {
+                    continue;
+                }
+
+                for (int i = layer.Count - 1; i >= 0; i--)
+                {
+                    UIMetadata metadata = layer.Items[i];
+                    if (metadata == null
+                        || metadata.State == UIState.Uninitialized
+                        || metadata.State == UIState.Destroying
+                        || metadata.CloseInProgress)
+                    {
+                        continue;
+                    }
+
+                    RuntimeTypeHandle handle = metadata.MetaInfo.RuntimeTypeHandle;
+                    bool matched;
+                    try
+                    {
+                        matched = predicate(handle);
+                    }
+                    catch (Exception)
+                    {
+                        matched = false;
+                    }
+
+                    if (!matched)
+                    {
+                        continue;
+                    }
+
+                    return await CloseUIAsync(handle, force);
+                }
+            }
+
+            return false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
