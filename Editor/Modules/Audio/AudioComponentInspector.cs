@@ -14,7 +14,7 @@ namespace AlicizaX.Audio.Editor
         private const float RowLabelWidth = 132f;
         private const float ConfigHeaderHeight = 24f;
         private const float ConfigButtonSize = 20f;
-        private const string DefaultAudioMixerPath = "Packages/com.alicizax.unity.framework/Runtime/Audio/Resources/AudioMixer.mixer";
+        private const string DefaultAudioMixerPath = "Packages/com.alicizax.unity.framework/Runtime/Modules/Audio/Resources/AudioMixer.mixer";
 
         private readonly AudioServiceDebugInfo _serviceInfo = new AudioServiceDebugInfo();
         private readonly AudioCategoryDebugInfo _categoryInfo = new AudioCategoryDebugInfo();
