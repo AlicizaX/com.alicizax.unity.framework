@@ -55,13 +55,19 @@ namespace AlicizaX.UI.Runtime
         }
 #endif
 
-        public UniTask<bool> NavigateTo<T>(params object[] args) where T : UIBase
+        public UniTask<bool> NavigateTo<T>() where T : UIBase
         {
-            return NavigateTo<T>(UIRouteOptionsPreset.Page, args);
+            return NavigateToInternal<T>(Array.Empty<object>());
         }
 
-        public async UniTask<bool> NavigateTo<T>(UIRouteOptions options, params object[] args) where T : UIBase
+        public UniTask<bool> NavigateTo<T>(params object[] args) where T : UIBase
         {
+            return NavigateToInternal<T>(args);
+        }
+
+        private async UniTask<bool> NavigateToInternal<T>(object[] args) where T : UIBase
+        {
+            bool navigationExited = false;
             await EnterNavigation();
             try
             {
@@ -71,12 +77,13 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 RuntimeTypeHandle handle = typeof(T).TypeHandle;
-                if (!TryCreateEntry(handle, args, false, out UIRouteEntry entry))
+                bool isRoot = _history.Count == 0;
+                if (!TryCreateEntry<T>(args, isRoot, out UIRouteEntry entry))
                 {
                     return false;
                 }
 
-                if (options.SuppressDuplicate && IsSameRoute(GetCurrentInternal(), entry))
+                if (IsSameRoute(GetCurrentInternal(), entry))
                 {
                     UIBase refreshed = await ShowByRouter(handle, entry.Args);
                     if (refreshed == null)
@@ -85,43 +92,62 @@ namespace AlicizaX.UI.Runtime
                     }
 
                     UIRouteEntry current = GetCurrentInternal();
-                    current.Args = UIRouteEntry.CopyArgs(entry.Args);
+                    current.Args = entry.Args;
                     return true;
                 }
 
                 UIRouteEntry oldCurrent = GetCurrentInternal();
-                UIRouteEntry existingTarget = FindLastHistoryEntry(handle);
-                UIBase opened = await ShowByRouter(handle, entry.Args);
+                UniTask<UIBase> openTask = ShowByRouter(handle, entry.Args);
+                if (ShouldCompleteNavigateAfterShowStarted(oldCurrent, handle))
+                {
+                    _history.Add(entry);
+                    TrimHistory();
+                    ExitNavigation();
+                    navigationExited = true;
+                    return await CompletePendingRouteShow(entry, openTask);
+                }
+
+                UIBase opened = await openTask;
                 if (opened == null)
                 {
                     return false;
                 }
 
-                if (options.CloseCurrent && oldCurrent != null && !RuntimeTypeHandleComparer.Instance.Equals(oldCurrent.TypeHandle, handle))
+                if (oldCurrent != null && !RuntimeTypeHandleComparer.Instance.Equals(oldCurrent.TypeHandle, handle))
                 {
                     bool closeResult = await _uiService.CloseUIAsync(oldCurrent.TypeHandle);
                     if (!closeResult)
                     {
-                        await RollbackNavigateOpen(entry, existingTarget, oldCurrent);
+                        await RollbackNavigateOpen(entry, oldCurrent);
                         return false;
                     }
                 }
 
-                if (options.AddToHistory)
-                {
-                    _history.Add(entry);
-                    TrimHistory();
-                }
+                _history.Add(entry);
+                TrimHistory();
 
                 return true;
             }
             finally
             {
-                ExitNavigation();
+                if (!navigationExited)
+                {
+                    ExitNavigation();
+                }
             }
         }
 
-        public async UniTask<bool> Replace<T>(params object[] args) where T : UIBase
+        public UniTask<bool> Replace<T>() where T : UIBase
+        {
+            return ReplaceInternal<T>(Array.Empty<object>());
+        }
+
+        public UniTask<bool> Replace<T>(params object[] args) where T : UIBase
+        {
+            return ReplaceInternal<T>(args);
+        }
+
+        private async UniTask<bool> ReplaceInternal<T>(object[] args) where T : UIBase
         {
             await EnterNavigation();
             try
@@ -132,13 +158,13 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 RuntimeTypeHandle handle = typeof(T).TypeHandle;
-                if (!TryCreateEntry(handle, args, _history.Count == 0, out UIRouteEntry entry))
+                UIRouteEntry oldCurrent = GetCurrentInternal();
+                bool isRoot = oldCurrent?.IsRoot ?? true;
+                if (!TryCreateEntry<T>(args, isRoot, out UIRouteEntry entry))
                 {
                     return false;
                 }
 
-                UIRouteEntry oldCurrent = GetCurrentInternal();
-                UIRouteEntry existingTarget = FindLastHistoryEntry(handle);
                 UIBase opened = await ShowByRouter(handle, entry.Args);
                 if (opened == null)
                 {
@@ -150,7 +176,7 @@ namespace AlicizaX.UI.Runtime
                     bool closeResult = await _uiService.CloseUIAsync(oldCurrent.TypeHandle);
                     if (!closeResult)
                     {
-                        await RollbackNavigateOpen(entry, existingTarget, oldCurrent);
+                        await RollbackNavigateOpen(entry, oldCurrent);
                         return false;
                     }
                 }
@@ -190,6 +216,12 @@ namespace AlicizaX.UI.Runtime
                     return false;
                 }
 
+                if (IsAdjacentRouteOpenAfterCurrentClose(current, target, true))
+                {
+                    _history.RemoveAt(_history.Count - 1);
+                    return true;
+                }
+
                 UIBase opened = await ShowByRouter(target.TypeHandle, target.Args);
                 if (opened == null)
                 {
@@ -224,6 +256,9 @@ namespace AlicizaX.UI.Runtime
                 int targetIndex = FindLastRootIndex();
                 if (targetIndex < 0)
                 {
+#if UNITY_EDITOR
+                    AddWarning(Current?.TypeHandle ?? default, "BackToRoot found no root entry; fallback to history index 0.");
+#endif
                     targetIndex = 0;
                 }
 
@@ -238,6 +273,11 @@ namespace AlicizaX.UI.Runtime
             {
                 ExitNavigation();
             }
+        }
+
+        public UniTask<bool> BackTo<T>() where T : UIBase
+        {
+            return BackTo<T>(true, Array.Empty<object>());
         }
 
         public async UniTask<bool> BackTo<T>(bool openIfMissing = true, params object[] args) where T : UIBase
@@ -259,7 +299,7 @@ namespace AlicizaX.UI.Runtime
                         return false;
                     }
 
-                    return await ResetToLocked(handle, args);
+                    return await ResetToLocked<T>(args);
                 }
 
                 return await BackToIndexLocked(targetIndex, "BackTo");
@@ -270,12 +310,22 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        public async UniTask<bool> ResetTo<T>(params object[] args) where T : UIBase
+        public UniTask<bool> ResetTo<T>() where T : UIBase
+        {
+            return ResetToInternal<T>(Array.Empty<object>());
+        }
+
+        public UniTask<bool> ResetTo<T>(params object[] args) where T : UIBase
+        {
+            return ResetToInternal<T>(args);
+        }
+
+        private async UniTask<bool> ResetToInternal<T>(object[] args) where T : UIBase
         {
             await EnterNavigation();
             try
             {
-                return await ResetToLocked(typeof(T).TypeHandle, args);
+                return await ResetToLocked<T>(args);
             }
             finally
             {
@@ -360,45 +410,27 @@ namespace AlicizaX.UI.Runtime
         }
 #endif
 
-        private async UniTask<bool> ResetToLocked(RuntimeTypeHandle handle, object[] args)
+        private async UniTask<bool> ResetToLocked<T>(object[] args) where T : UIBase
         {
-            if (!TryCreateEntry(handle, args, true, out UIRouteEntry entry))
+            RuntimeTypeHandle handle = typeof(T).TypeHandle;
+            if (!TryCreateEntry<T>(args, true, out UIRouteEntry entry))
             {
                 return false;
             }
 
-            List<UIRouteEntry> oldHistory = new List<UIRouteEntry>(_history);
-            bool targetExisted = ContainsHistory(oldHistory, handle);
+            UIRouteEntry oldCurrent = GetCurrentInternal();
             UIBase opened = await ShowByRouter(handle, entry.Args);
             if (opened == null)
             {
                 return false;
             }
 
-            for (int i = oldHistory.Count - 1; i >= 0; i--)
+            if (oldCurrent != null && !RuntimeTypeHandleComparer.Instance.Equals(oldCurrent.TypeHandle, handle))
             {
-                UIRouteEntry oldEntry = oldHistory[i];
-                if (RuntimeTypeHandleComparer.Instance.Equals(oldEntry.TypeHandle, handle))
-                {
-                    continue;
-                }
-
-                bool closeResult = await _uiService.CloseUIAsync(oldEntry.TypeHandle);
+                bool closeResult = await _uiService.CloseUIAsync(oldCurrent.TypeHandle);
                 if (!closeResult)
                 {
-                    if (targetExisted)
-                    {
-                        MarkDirty(handle, "ResetTo failed after old page close failed while target page already existed in history.");
-                    }
-                    else
-                    {
-                        bool rollbackResult = await RollbackOpenedEntry(entry);
-                        if (!rollbackResult)
-                        {
-                            MarkDirty(handle, "ResetTo rollback failed after old page close failed.");
-                        }
-                    }
-
+                    await RollbackNavigateOpen(entry, oldCurrent);
                     return false;
                 }
             }
@@ -407,6 +439,12 @@ namespace AlicizaX.UI.Runtime
             _history.Add(entry);
             _dirty = false;
             return true;
+        }
+
+        private bool TryCreateEntry<T>(object[] args, bool isRoot, out UIRouteEntry entry) where T : UIBase
+        {
+            Type uiType = typeof(T);
+            return CreateEntry(uiType, uiType.TypeHandle, args, isRoot, out entry);
         }
 
         private bool TryCreateEntry(RuntimeTypeHandle handle, object[] args, bool isRoot, out UIRouteEntry entry)
@@ -421,6 +459,11 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
+            return CreateEntry(uiType, handle, args, isRoot, out entry);
+        }
+
+        private bool CreateEntry(Type uiType, RuntimeTypeHandle handle, object[] args, bool isRoot, out UIRouteEntry entry)
+        {
             object[] argsCopy = UIRouteEntry.CopyArgs(args);
             entry = new UIRouteEntry
             {
@@ -431,6 +474,29 @@ namespace AlicizaX.UI.Runtime
                 Sequence = ++_sequence,
             };
             return true;
+        }
+
+        private static bool ShouldClosePreviousRoute(UIRouteEntry previousRoute, RuntimeTypeHandle targetHandle)
+        {
+            if (previousRoute == null || RuntimeTypeHandleComparer.Instance.Equals(previousRoute.TypeHandle, targetHandle))
+            {
+                return false;
+            }
+
+            return !IsLifecycleOcclusionWindow(targetHandle);
+        }
+
+        private static bool ShouldCompleteNavigateAfterShowStarted(UIRouteEntry previousRoute, RuntimeTypeHandle targetHandle)
+        {
+            return previousRoute != null
+                   && !RuntimeTypeHandleComparer.Instance.Equals(previousRoute.TypeHandle, targetHandle)
+                   && IsLifecycleOcclusionWindow(targetHandle);
+        }
+
+        private static bool IsLifecycleOcclusionWindow(RuntimeTypeHandle handle)
+        {
+            return UIMetaRegistry.TryGet(handle, out UIMetaRegistry.UIMetaInfo metaInfo)
+                   && metaInfo.OcclusionMode == UIOcclusionMode.Lifecycle;
         }
 
         private static bool IsSameRoute(UIRouteEntry left, UIRouteEntry right)
@@ -466,12 +532,6 @@ namespace AlicizaX.UI.Runtime
             return -1;
         }
 
-        private UIRouteEntry FindLastHistoryEntry(RuntimeTypeHandle handle)
-        {
-            int index = FindLastHistoryIndex(handle);
-            return index < 0 ? null : _history[index];
-        }
-
         private int FindLastRootIndex()
         {
             for (int i = _history.Count - 1; i >= 0; i--)
@@ -485,48 +545,36 @@ namespace AlicizaX.UI.Runtime
             return -1;
         }
 
-        private static bool ContainsHistory(List<UIRouteEntry> entries, RuntimeTypeHandle handle)
-        {
-            for (int i = 0; i < entries.Count; i++)
-            {
-                if (RuntimeTypeHandleComparer.Instance.Equals(entries[i].TypeHandle, handle))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         private async UniTask<bool> BackToIndexLocked(int targetIndex, string operationName)
         {
             UIRouteEntry target = _history[targetIndex];
-            List<UIRouteEntry> closedEntries = new List<UIRouteEntry>();
-            for (int i = _history.Count - 1; i > targetIndex; i--)
+            UIRouteEntry current = GetCurrentInternal();
+            if (current != null && !RuntimeTypeHandleComparer.Instance.Equals(current.TypeHandle, target.TypeHandle))
             {
-                UIRouteEntry entry = _history[i];
-                bool closeResult = await _uiService.CloseUIAsync(entry.TypeHandle);
+                bool closeResult = await _uiService.CloseUIAsync(current.TypeHandle);
                 if (!closeResult)
                 {
-                    bool rollbackResult = await RestoreClosedEntries(closedEntries);
-                    if (!rollbackResult)
-                    {
-                        MarkDirty(entry.TypeHandle, operationName + " rollback failed after close failed.");
-                    }
-
                     return false;
                 }
+            }
 
-                closedEntries.Add(entry);
+            bool targetWasDirectlyBelowCurrent = targetIndex == _history.Count - 2;
+            if (IsAdjacentRouteOpenAfterCurrentClose(current, target, targetWasDirectlyBelowCurrent))
+            {
+                _history.RemoveRange(targetIndex + 1, _history.Count - targetIndex - 1);
+                return true;
             }
 
             UIBase opened = await ShowByRouter(target.TypeHandle, target.Args);
             if (opened == null)
             {
-                bool rollbackResult = await RestoreClosedEntries(closedEntries);
-                if (!rollbackResult)
+                if (current != null && !RuntimeTypeHandleComparer.Instance.Equals(current.TypeHandle, target.TypeHandle))
                 {
-                    MarkDirty(target.TypeHandle, operationName + " rollback failed after target page restore failed.");
+                    bool rollbackResult = await ShowByRouter(current.TypeHandle, current.Args) != null;
+                    if (!rollbackResult)
+                    {
+                        MarkDirty(target.TypeHandle, operationName + " rollback failed after target page restore failed.");
+                    }
                 }
 
                 return false;
@@ -534,6 +582,15 @@ namespace AlicizaX.UI.Runtime
 
             _history.RemoveRange(targetIndex + 1, _history.Count - targetIndex - 1);
             return true;
+        }
+
+        private bool IsAdjacentRouteOpenAfterCurrentClose(UIRouteEntry current, UIRouteEntry target, bool targetWasDirectlyBelowCurrent)
+        {
+            return targetWasDirectlyBelowCurrent
+                   && current != null
+                   && target != null
+                   && !RuntimeTypeHandleComparer.Instance.Equals(current.TypeHandle, target.TypeHandle)
+                   && _uiService.IsOpen(target.TypeHandle);
         }
 
         private void TrimHistory()
@@ -554,9 +611,48 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private async UniTask<UIBase> ShowByRouter(RuntimeTypeHandle handle, object[] args)
+        private UniTask<UIBase> ShowByRouter(RuntimeTypeHandle handle, object[] args)
         {
-            return await _uiService.ShowUI(handle, args);
+            return _uiService.ShowUI(handle, args);
+        }
+
+        private async UniTask<bool> CompletePendingRouteShow(UIRouteEntry entry, UniTask<UIBase> openTask)
+        {
+            UIBase opened;
+            try
+            {
+                opened = await openTask;
+            }
+            catch
+            {
+                await RemovePendingRouteIfCurrent(entry);
+                throw;
+            }
+
+            if (opened != null)
+            {
+                return true;
+            }
+
+            await RemovePendingRouteIfCurrent(entry);
+            return false;
+        }
+
+        private async UniTask RemovePendingRouteIfCurrent(UIRouteEntry entry)
+        {
+            await EnterNavigation();
+            try
+            {
+                int lastIndex = _history.Count - 1;
+                if (lastIndex >= 0 && ReferenceEquals(_history[lastIndex], entry))
+                {
+                    _history.RemoveAt(lastIndex);
+                }
+            }
+            finally
+            {
+                ExitNavigation();
+            }
         }
 
         private async UniTask<bool> RollbackOpenedEntry(UIRouteEntry entry)
@@ -570,18 +666,12 @@ namespace AlicizaX.UI.Runtime
             return rollbackResult;
         }
 
-        private async UniTask<bool> RollbackNavigateOpen(UIRouteEntry openedEntry, UIRouteEntry existingTarget, UIRouteEntry oldCurrent)
+        private async UniTask<bool> RollbackNavigateOpen(UIRouteEntry openedEntry, UIRouteEntry oldCurrent)
         {
-            if (existingTarget == null)
+            bool rollbackSucceeded = true;
+            if (oldCurrent == null || !RuntimeTypeHandleComparer.Instance.Equals(openedEntry.TypeHandle, oldCurrent.TypeHandle))
             {
-                return await RollbackOpenedEntry(openedEntry);
-            }
-
-            UIBase targetRestored = await ShowByRouter(existingTarget.TypeHandle, existingTarget.Args);
-            if (targetRestored == null)
-            {
-                MarkDirty(openedEntry.TypeHandle, "Rollback failed to restore existing target route.");
-                return false;
+                rollbackSucceeded = await RollbackOpenedEntry(openedEntry);
             }
 
             if (oldCurrent != null)
@@ -594,22 +684,7 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
-            return true;
-        }
-
-        private async UniTask<bool> RestoreClosedEntries(List<UIRouteEntry> closedEntries)
-        {
-            for (int i = closedEntries.Count - 1; i >= 0; i--)
-            {
-                UIRouteEntry entry = closedEntries[i];
-                UIBase restored = await ShowByRouter(entry.TypeHandle, entry.Args);
-                if (restored == null)
-                {
-                    return false;
-                }
-            }
-
-            return true;
+            return rollbackSucceeded;
         }
 
         private void MarkDirty(RuntimeTypeHandle handle, string message)

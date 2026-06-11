@@ -54,6 +54,7 @@ namespace AlicizaX.UI.Runtime
         [SerializeField] [Range(0.5f, 1f)] private float closedScale = 0.94f;
 
         private bool _initialized;
+        private bool _initialClosedStatePending;
         private int _playVersion;
         private VisualState _openState;
 
@@ -80,6 +81,7 @@ namespace AlicizaX.UI.Runtime
         public UniTask PlayOpenAsync(CancellationToken cancellationToken = default)
         {
             EnsureInitialized(false);
+            PrepareInitialClosedStateForOpen();
             return PlayAsync(_openState, openDuration, openEase, true, cancellationToken);
         }
 
@@ -92,6 +94,7 @@ namespace AlicizaX.UI.Runtime
         public void ApplyOpenState()
         {
             EnsureInitialized(false);
+            _initialClosedStatePending = false;
             _playVersion++;
             ApplyVisualState(_openState);
             RestoreInteractionState(true);
@@ -100,6 +103,7 @@ namespace AlicizaX.UI.Runtime
         public void ApplyClosedState()
         {
             EnsureInitialized(false);
+            _initialClosedStatePending = false;
             _playVersion++;
             ApplyVisualState(BuildClosedState(GetClosedStatePreset()));
             RestoreInteractionState(false);
@@ -182,6 +186,7 @@ namespace AlicizaX.UI.Runtime
                 if (preset != UITransitionPreset.None)
                 {
                     ApplyVisualState(BuildClosedState(preset));
+                    _initialClosedStatePending = true;
                     RestoreInteractionState(false);
                 }
             }
@@ -189,6 +194,35 @@ namespace AlicizaX.UI.Runtime
             {
                 RestoreInteractionState(true);
             }
+        }
+
+        private void PrepareInitialClosedStateForOpen()
+        {
+            if (!_initialClosedStatePending)
+            {
+                return;
+            }
+
+            _initialClosedStatePending = false;
+
+            UITransitionPreset preset = GetClosedStatePreset();
+            if (preset == UITransitionPreset.None)
+            {
+                return;
+            }
+
+            VisualState expectedClosedState = BuildClosedState(preset);
+            VisualState currentState = CaptureCurrentState();
+            bool transformStateChanged = !Approximately(currentState.AnchoredPosition, expectedClosedState.AnchoredPosition)
+                                         || !Approximately(currentState.Scale, expectedClosedState.Scale);
+            if (transformStateChanged)
+            {
+                _openState.AnchoredPosition = currentState.AnchoredPosition;
+                _openState.Scale = currentState.Scale;
+            }
+
+            ApplyVisualState(BuildClosedState(preset));
+            RestoreInteractionState(false);
         }
 
         private UITransitionPreset GetClosedStatePreset()
@@ -314,6 +348,16 @@ namespace AlicizaX.UI.Runtime
                 Scale = Vector3.LerpUnclamped(from.Scale, to.Scale, t),
                 Alpha = Mathf.LerpUnclamped(from.Alpha, to.Alpha, t),
             };
+        }
+
+        private static bool Approximately(Vector2 lhs, Vector2 rhs)
+        {
+            return (lhs - rhs).sqrMagnitude <= 0.000001f;
+        }
+
+        private static bool Approximately(Vector3 lhs, Vector3 rhs)
+        {
+            return (lhs - rhs).sqrMagnitude <= 0.000001f;
         }
 
         private float Evaluate(UITransitionEase ease, float t)

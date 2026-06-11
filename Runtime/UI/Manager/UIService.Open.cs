@@ -64,7 +64,7 @@ namespace AlicizaX.UI.Runtime
                 if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
                 {
 #if UNITY_EDITOR
-                    if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show invalid after async resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
+                    if (!IsStaleShowOperation(metaInfo, operationVersion) && UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show invalid after async resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
 #endif
                     if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
                     {
@@ -79,10 +79,13 @@ namespace AlicizaX.UI.Runtime
                     showResult = await UpdateVisualState(metaInfo, operationVersion, cancellationToken);
                     if (!showResult)
                     {
+                        if (!IsStaleShowOperation(metaInfo, operationVersion))
+                        {
 #if UNITY_EDITOR
-                        WarnUIOperation("Show visual state failed, rollback will run", metaInfo, operationVersion, "UpdateVisualState returned false. The UI did not reach a valid opened or occlusion-interrupted state.");
+                            WarnUIOperation("Show visual state failed, rollback will run", metaInfo, operationVersion, "UpdateVisualState returned false. The UI did not reach a valid opened or occlusion-interrupted state.");
 #endif
-                        await RollbackFailedShowAsync(metaInfo, operationVersion);
+                            await RollbackFailedShowAsync(metaInfo, operationVersion);
+                        }
                     }
                 }
             }
@@ -514,14 +517,7 @@ namespace AlicizaX.UI.Runtime
 
             if (openResult)
             {
-                bool versionMatched = meta.OperationVersion == operationVersion;
-#if UNITY_EDITOR
-                if (!versionMatched)
-                {
-                    WarnUIOperation("Show open version changed", meta, operationVersion, "InternalOpen returned true, but the operation version changed before completion. Rollback will run.");
-                }
-#endif
-                return versionMatched;
+                return !IsStaleShowOperation(meta, operationVersion);
             }
 
             return IsShowAcceptedAfterOpenInterruption(meta, operationVersion, cancellationToken);
@@ -529,8 +525,12 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsShowAcceptedAfterOpenInterruption(UIMetadata meta, int operationVersion, CancellationToken cancellationToken)
         {
+            if (IsStaleShowOperation(meta, operationVersion))
+            {
+                return false;
+            }
+
             if (meta == null
-                || meta.OperationVersion != operationVersion
                 || cancellationToken.IsCancellationRequested
                 || meta.View == null)
             {
@@ -574,6 +574,11 @@ namespace AlicizaX.UI.Runtime
             }
 #endif
             return accepted;
+        }
+
+        private static bool IsStaleShowOperation(UIMetadata meta, int operationVersion)
+        {
+            return meta != null && meta.OperationVersion != operationVersion;
         }
 
 

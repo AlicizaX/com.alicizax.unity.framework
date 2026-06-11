@@ -381,21 +381,32 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            await OnOpenAsync(cancellationToken);
+            UniTask<bool> openTransitionTask = Holder.PlayOpenTransitionAsync(cancellationToken).SuppressCancellationThrow();
+
+            try
+            {
+                await OnOpenAsync(cancellationToken);
+            }
+            catch
+            {
+                Holder.StopTransition();
+                throw;
+            }
+
             if (IsOpeningCanceled(lifecycleVersion, cancellationToken))
             {
 #if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open interrupted after OnOpenAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenInterruption(lifecycleVersion, cancellationToken)) WarnLifecycleOperation("Open interrupted after OnOpenAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
             }
 
-            bool openCanceled = await Holder.PlayOpenTransitionAsync(cancellationToken).SuppressCancellationThrow();
+            bool openCanceled = await openTransitionTask;
             if (openCanceled || cancellationToken.IsCancellationRequested)
             {
 #if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open transition interrupted", $"Open transition canceled={openCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenInterruption(lifecycleVersion, cancellationToken)) WarnLifecycleOperation("Open transition interrupted", $"Open transition canceled={openCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -444,27 +455,36 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
+            if (skipTransition)
+            {
+                // 跳过关闭动画：窗口已不可见（被全屏窗口遮挡或正在销毁），直接进入 Closed 透明层有需要则自己Fork框架到本地改就行
+                Holder.ApplyClosedTransitionState();
+            }
+            else
+            {
+                bool closeCanceled = await Holder.PlayCloseTransitionAsync(cancellationToken).SuppressCancellationThrow();
+                if (closeCanceled || cancellationToken.IsCancellationRequested)
+                {
+#if UNITY_EDITOR
+                    if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close transition interrupted", $"Close transition canceled={closeCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
+                    return false;
+                }
+            }
+
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
+                return false;
+            }
+
             await OnCloseAsync(cancellationToken);
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
             {
 #if UNITY_EDITOR
                 if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after OnCloseAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-#endif
-                return false;
-            }
-
-            if (skipTransition)
-            {
-                // 跳过关闭动画：窗口已不可见（被全屏窗口遮挡或正在销毁），直接进入 Closed 透明层有需要则自己Fork框架到本地改就行
-                Holder.ApplyClosedTransitionState();
-                return CompleteCloseTransition(lifecycleVersion);
-            }
-
-            bool closeCanceled = await Holder.PlayCloseTransitionAsync(cancellationToken).SuppressCancellationThrow();
-            if (closeCanceled || cancellationToken.IsCancellationRequested)
-            {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close transition interrupted", $"Close transition canceled={closeCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
 #endif
                 return false;
             }
@@ -595,6 +615,7 @@ namespace AlicizaX.UI.Runtime
             lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
             SetState(UIState.Opening);
             Visible = true;
+            Interactable = true;
             Holder.OnWindowBeforeShowEvent?.Invoke();
             return true;
         }
@@ -631,6 +652,7 @@ namespace AlicizaX.UI.Runtime
 
             lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
             SetState(UIState.Closing);
+            Interactable = false;
             Holder.OnWindowBeforeClosedEvent?.Invoke();
             return true;
         }
@@ -674,11 +696,12 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open rollback skipped", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenRollbackSkipped(lifecycleVersion)) WarnLifecycleOperation("Open rollback skipped", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 return;
             }
 
+            Holder?.StopTransition();
             Visible = false;
             SetState(UIState.Initialized);
         }
@@ -748,6 +771,17 @@ namespace AlicizaX.UI.Runtime
         internal bool WasLifecycleInterruptedByOcclusion(int lifecycleVersion)
         {
             return _occlusionInterruptedLifecycleVersion == lifecycleVersion;
+        }
+
+        private bool ShouldWarnOpenInterruption(int lifecycleVersion, CancellationToken cancellationToken)
+        {
+            return UIWarningSettings.AnyWarningsEnabled
+                   && (!cancellationToken.IsCancellationRequested || IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+        }
+
+        private bool ShouldWarnOpenRollbackSkipped(int lifecycleVersion)
+        {
+            return UIWarningSettings.AnyWarningsEnabled && IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening);
         }
 #endif
 

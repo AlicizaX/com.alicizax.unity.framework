@@ -10,7 +10,15 @@ namespace AlicizaX.UI.Runtime
     public interface IUIRouter
     {
         /// <summary>
-        /// 使用默认 Page 策略导航到指定 UI 页面。
+        /// 使用默认 Page 策略无参导航到指定 UI 页面，避免 params 空数组分配。
+        /// 默认会加入 history、关闭当前页面、合并重复当前页面。
+        /// </summary>
+        /// <typeparam name="T">目标 UI 页面类型。</typeparam>
+        /// <returns>导航成功返回 true；业务拒绝、目标打开失败等可恢复失败返回 false。</returns>
+        UniTask<bool> NavigateTo<T>() where T : UIBase;
+
+        /// <summary>
+        /// 使用默认 Page 策略携带参数导航到指定 UI 页面。
         /// 默认会加入 history、关闭当前页面、合并重复当前页面。
         /// </summary>
         /// <typeparam name="T">目标 UI 页面类型。</typeparam>
@@ -19,17 +27,15 @@ namespace AlicizaX.UI.Runtime
         UniTask<bool> NavigateTo<T>(params object[] args) where T : UIBase;
 
         /// <summary>
-        /// 使用指定路由选项导航到指定 UI 页面。
-        /// 特殊 Page 导航行为如保留当前页面、禁用重复合并时使用此接口。
+        /// 无参打开目标页面并替换 history 当前项，避免 params 空数组分配。
+        /// 目标打开失败时不修改 history；当前页关闭失败时按事务规则回滚或进入 dirty。
         /// </summary>
         /// <typeparam name="T">目标 UI 页面类型。</typeparam>
-        /// <param name="options">导航选项，控制是否进 history、是否关闭当前页面、是否合并重复页面。</param>
-        /// <param name="args">传递给目标 UI 的业务参数。参数会被浅拷贝到 history。</param>
-        /// <returns>导航成功返回 true；业务拒绝、目标打开失败等可恢复失败返回 false。</returns>
-        UniTask<bool> NavigateTo<T>(UIRouteOptions options, params object[] args) where T : UIBase;
+        /// <returns>替换成功返回 true；业务拒绝或事务失败返回 false。</returns>
+        UniTask<bool> Replace<T>() where T : UIBase;
 
         /// <summary>
-        /// 打开目标页面并替换 history 当前项。
+        /// 携带参数打开目标页面并替换 history 当前项。
         /// 目标打开失败时不修改 history；当前页关闭失败时按事务规则回滚或进入 dirty。
         /// </summary>
         /// <typeparam name="T">目标 UI 页面类型。</typeparam>
@@ -39,21 +45,29 @@ namespace AlicizaX.UI.Runtime
 
         /// <summary>
         /// 返回上一条 Router history。
-        /// 不处理弹窗优先关闭；弹窗关闭应由业务 Router 在调用本接口前编排。
+        /// 不处理弹窗优先关闭；弹窗关闭应由具体业务、输入系统或弹窗机制编排。
         /// </summary>
         /// <returns>返回成功返回 true；没有上一页、Router dirty、关闭或恢复失败返回 false。</returns>
         UniTask<bool> Back();
 
         /// <summary>
         /// 返回当前导航流程的 root 页面。
-        /// 会关闭 root 之上的所有 Page，并恢复 root entry 记录的参数；已经位于 root 时返回 true。
+        /// 会关闭当前实际 Page，移除 root 之上的 history，并恢复 root entry 记录的参数；已经位于 root 时返回 true。
         /// </summary>
         /// <returns>返回 root 成功返回 true；history 为空、Router dirty、关闭或恢复失败返回 false。</returns>
         UniTask<bool> BackToRoot();
 
         /// <summary>
         /// 回退到 history 中最近的指定类型页面。
-        /// 命中 history 时恢复旧 entry 参数；未命中且 openIfMissing 为 true 时执行 ResetTo。
+        /// 命中 history 时关闭当前实际 Page、移除目标之上的 history，并恢复旧 entry 参数；未命中且 openIfMissing 为 true 时执行 ResetTo。
+        /// </summary>
+        /// <typeparam name="T">目标 UI 页面类型。</typeparam>
+        /// <returns>回退或重建成功返回 true；未命中且不允许打开、Router dirty、事务失败返回 false。</returns>
+        UniTask<bool> BackTo<T>() where T : UIBase;
+
+        /// <summary>
+        /// 回退到 history 中最近的指定类型页面，并可在未命中时用参数重建目标页面。
+        /// 命中 history 时关闭当前实际 Page、移除目标之上的 history，并恢复旧 entry 参数；未命中且 openIfMissing 为 true 时执行 ResetTo。
         /// </summary>
         /// <typeparam name="T">目标 UI 页面类型。</typeparam>
         /// <param name="openIfMissing">history 未命中时是否重建到目标页面。</param>
@@ -62,7 +76,15 @@ namespace AlicizaX.UI.Runtime
         UniTask<bool> BackTo<T>(bool openIfMissing = true, params object[] args) where T : UIBase;
 
         /// <summary>
-        /// 重建导航栈，只保留目标页面作为 root entry。
+        /// 无参重建导航栈，只保留目标页面作为 root entry，避免 params 空数组分配。
+        /// 目标打开失败时不破坏旧页面和旧 history。
+        /// </summary>
+        /// <typeparam name="T">目标 UI 页面类型。</typeparam>
+        /// <returns>重建成功返回 true；目标打开失败或旧页面关闭失败返回 false。</returns>
+        UniTask<bool> ResetTo<T>() where T : UIBase;
+
+        /// <summary>
+        /// 携带参数重建导航栈，只保留目标页面作为 root entry。
         /// 目标打开失败时不破坏旧页面和旧 history。
         /// </summary>
         /// <typeparam name="T">目标 UI 页面类型。</typeparam>
@@ -141,7 +163,7 @@ namespace AlicizaX.UI.Runtime
 
         /// <summary>
         /// Router history 是否已被标记为不可信。
-        /// dirty 状态通常由绕过 Router 打开 Page 或事务回滚失败触发。
+        /// dirty 状态通常由导航事务回滚失败触发。
         /// </summary>
         bool IsDirty { get; }
 
