@@ -18,9 +18,10 @@ namespace AlicizaX.UI.Runtime
             for (int i = 0; i < _updateableChildCount; i++)
             {
                 var meta = _updateableChildren[i];
-                if (meta.View.State == UIState.Opened)
+                UIBase view = meta?.View;
+                if (view != null && view.State == UIState.Opened)
                 {
-                    meta.View.InternalUpdate();
+                    view.InternalUpdate();
                 }
             }
         }
@@ -31,15 +32,19 @@ namespace AlicizaX.UI.Runtime
             {
                 UIMetadata metadata = _children[--_childCount];
                 _children[_childCount] = null;
-                if (metadata.View.Visible)
+                UIBase view = metadata?.View;
+                if (view != null && view.Visible)
                 {
                     // 父窗口正在销毁：取消子级未完成的异步操作，关闭时跳过过渡动画
                     metadata.CancelAsyncOperations();
-                    await metadata.View.InternalClose(CancellationToken.None, skipTransition: true);
+                    await view.InternalClose(skipTransition: true);
                 }
 
-                await metadata.DisposeAsync();
-                UIMetadataFactory.ReturnToPool(metadata);
+                if (metadata != null)
+                {
+                    await metadata.DisposeAsync();
+                    UIMetadataFactory.ReturnToPool(metadata);
+                }
             }
 
             _updateableChildCount = 0;
@@ -51,8 +56,11 @@ namespace AlicizaX.UI.Runtime
             {
                 UIMetadata metadata = _children[--_childCount];
                 _children[_childCount] = null;
-                metadata.DisposeImmediate();
-                UIMetadataFactory.ReturnToPool(metadata);
+                if (metadata != null)
+                {
+                    metadata.DisposeImmediate();
+                    UIMetadataFactory.ReturnToPool(metadata);
+                }
             }
 
             _updateableChildCount = 0;
@@ -85,25 +93,25 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginShowOperation(true, out int operationVersion))
+            if (!metadata.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource))
             {
                 await metadata.DisposeAsync();
                 UIMetadataFactory.ReturnToPool(metadata);
                 return null;
             }
 
-            CancellationToken cancellationToken = metadata.ExistingCancellationToken;
+            CancellationToken cancellationToken = loadCts.Token;
             UIBase result = null;
             bool shouldReturnToPool = false;
             try
             {
-                await UIHolderFactory.CreateUIResourceAsync(metadata, parent, this);
+                await UIHolderFactory.CreateUIResourceAsync(metadata, parent, cancellationToken, this);
                 if (!IsWidgetCreateStillValid(metadata, operationVersion))
                 {
                     await RemoveFailedWidgetAsync(metadata);
                     shouldReturnToPool = true;
                 }
-                else if (await ProcessWidget(metadata, visible, cancellationToken, operationVersion))
+                else if (await ProcessWidget(metadata, visible, operationVersion))
                 {
                     result = (UIBase)metadata.View;
                 }
@@ -120,7 +128,9 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                metadata.EndShowOperation(operationVersion);
+                metadata.EndShowOperation(operationVersion, loadCts);
+                metadata.CompleteShowOperation(showCompletionSource, result);
+                loadCts.Dispose();
                 if (shouldReturnToPool)
                 {
                     UIMetadataFactory.ReturnToPool(metadata);
@@ -137,6 +147,11 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
+            if (!ValidateSyncWidgetMetadata(metadata))
+            {
+                return null;
+            }
+
             metadata.CreateUI();
             if (metadata.View == null)
             {
@@ -145,7 +160,7 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginShowOperation(false, out int operationVersion))
+            if (!metadata.BeginShowOperationSync(out int operationVersion))
             {
                 metadata.DisposeImmediate();
                 UIMetadataFactory.ReturnToPool(metadata);
@@ -157,7 +172,12 @@ namespace AlicizaX.UI.Runtime
             try
             {
                 UIHolderFactory.CreateUIResourceSync(metadata, parent, this);
-                if (ProcessWidgetSync(metadata, visible, operationVersion))
+                if (!IsWidgetCreateStillValid(metadata, operationVersion))
+                {
+                    RemoveFailedWidgetImmediate(metadata);
+                    shouldReturnToPool = true;
+                }
+                else if (ProcessWidgetSync(metadata, visible, operationVersion))
                 {
                     result = (UIBase)metadata.View;
                 }
@@ -174,7 +194,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                metadata.EndShowOperation(operationVersion);
+                metadata.EndShowOperationSync(operationVersion);
                 if (shouldReturnToPool)
                 {
                     UIMetadataFactory.ReturnToPool(metadata);
@@ -221,14 +241,13 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginShowOperation(true, out int operationVersion))
+            if (!metadata.BeginShowOperationSync(out int operationVersion))
             {
                 await metadata.DisposeAsync();
                 UIMetadataFactory.ReturnToPool(metadata);
                 return null;
             }
 
-            CancellationToken cancellationToken = metadata.ExistingCancellationToken;
             UIBase widget = null;
             T result = null;
             bool shouldReturnToPool = false;
@@ -236,7 +255,7 @@ namespace AlicizaX.UI.Runtime
             {
                 widget = (UIBase)metadata.View;
                 widget.BindUIHolder(holder, this);
-                if (await ProcessWidget(metadata, true, cancellationToken, operationVersion))
+                if (await ProcessWidget(metadata, true, operationVersion))
                 {
                     result = (T)widget;
                 }
@@ -253,7 +272,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                metadata.EndShowOperation(operationVersion);
+                metadata.EndShowOperationSync(operationVersion);
                 if (shouldReturnToPool)
                 {
                     UIMetadataFactory.ReturnToPool(metadata);
@@ -293,6 +312,11 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
+            if (!ValidateSyncWidgetMetadata(metadata))
+            {
+                return null;
+            }
+
             metadata.CreateUI();
             if (metadata.View == null)
             {
@@ -301,7 +325,7 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginShowOperation(false, out int operationVersion))
+            if (!metadata.BeginShowOperationSync(out int operationVersion))
             {
                 metadata.DisposeImmediate();
                 UIMetadataFactory.ReturnToPool(metadata);
@@ -331,7 +355,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                metadata.EndShowOperation(operationVersion);
+                metadata.EndShowOperationSync(operationVersion);
                 if (shouldReturnToPool)
                 {
                     UIMetadataFactory.ReturnToPool(metadata);
@@ -345,8 +369,20 @@ namespace AlicizaX.UI.Runtime
 
         #endregion
 
+        private static bool ValidateSyncWidgetMetadata(UIMetadata metadata)
+        {
+            if (!metadata.HasAsyncInitialize)
+            {
+                return true;
+            }
 
-        private async UniTask<bool> ProcessWidget(UIMetadata meta, bool visible, CancellationToken cancellationToken, int operationVersion)
+            Log.Error("[UI] {0} uses async initialize and cannot be created by sync widget API.", metadata.UILogicTypeName);
+            UIMetadataFactory.ReturnToPool(metadata);
+            return false;
+        }
+
+
+        private async UniTask<bool> ProcessWidget(UIMetadata meta, bool visible, int operationVersion)
         {
             if (!AddWidget(meta))
             {
@@ -354,16 +390,40 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!await meta.View.InternalInitlized(cancellationToken, meta, operationVersion))
+            if (!await meta.View.InternalInitlized(meta, operationVersion))
             {
                 await RemoveFailedWidgetAsync(meta);
                 return false;
             }
 
             meta.View.Visible = visible;
-            if (meta.View.Visible && !await meta.View.InternalOpen(cancellationToken))
+            if (meta.View.Visible && !await meta.View.InternalOpen())
             {
                 await RemoveFailedWidgetAsync(meta);
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool ProcessWidgetSync(UIMetadata meta, bool visible, int operationVersion)
+        {
+            if (!AddWidget(meta))
+            {
+                meta.DisposeImmediate();
+                return false;
+            }
+
+            if (!meta.View.InternalInitlizedSync(meta, operationVersion))
+            {
+                RemoveFailedWidgetImmediate(meta);
+                return false;
+            }
+
+            meta.View.Visible = visible;
+            if (meta.View.Visible && !meta.View.InternalOpenSync())
+            {
+                RemoveFailedWidgetImmediate(meta);
                 return false;
             }
 
@@ -407,7 +467,10 @@ namespace AlicizaX.UI.Runtime
             if (meta != null)
             {
                 meta.CancelAsyncOperations();
-                await widget.InternalClose();
+                if (UIStateMachine.IsDisplayActive(widget.State))
+                {
+                    await widget.InternalClose();
+                }
 
                 if (meta.MetaInfo.NeedUpdate)
                 {
@@ -438,30 +501,6 @@ namespace AlicizaX.UI.Runtime
                 _updateableChildCount = lastIndex;
                 return;
             }
-        }
-
-        private bool ProcessWidgetSync(UIMetadata meta, bool visible, int operationVersion)
-        {
-            if (!AddWidget(meta))
-            {
-                meta.DisposeImmediate();
-                return false;
-            }
-
-            if (!meta.View.InternalInitlizedSync())
-            {
-                RemoveFailedWidgetImmediate(meta);
-                return false;
-            }
-
-            meta.View.Visible = visible;
-            if (meta.View.Visible && !meta.View.InternalOpenSync())
-            {
-                RemoveFailedWidgetImmediate(meta);
-                return false;
-            }
-
-            return true;
         }
 
         private bool TryRemoveChild(UIBase widget, out UIMetadata meta)

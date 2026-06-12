@@ -16,12 +16,6 @@ namespace AlicizaX.UI.Runtime
         private UIMetadata[] _updateableWindows = new UIMetadata[8];
         private int _updateableWindowCount;
 
-        public event Action<RuntimeTypeHandle> OnShowUIRequested;
-
-        protected override void OnInitialize()
-        {
-        }
-
         protected override void OnDestroyService()
         {
             DestroyAllManagedUI();
@@ -37,88 +31,102 @@ namespace AlicizaX.UI.Runtime
         }
 
 
-        public UniTask<UIBase> ShowUI(string type, params object[] userDatas)
+        public async UniTask<UIBase> ShowUI(string type, params object[] userDatas)
+        {
+            UIShowResult result = await ShowUIResult(type, userDatas);
+            return result.View;
+        }
+
+        public UniTask<UIShowResult> ShowUIResult(string type, params object[] userDatas)
         {
             if (UIMetaRegistry.TryGet(type, out var metaRegistry))
             {
                 UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(metaRegistry.RuntimeTypeHandle);
                 if (metadata == null)
                 {
-                    return UniTask.FromResult<UIBase>(null);
+                    return UniTask.FromResult(UIShowResult.Failed);
                 }
 
-                RaiseShowUIRequested(metaRegistry.RuntimeTypeHandle);
                 return ShowUIImplAsync(metadata, userDatas);
             }
 
-            return UniTask.FromResult<UIBase>(null);
+            return UniTask.FromResult(UIShowResult.Failed);
         }
 
-        public UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas)
+        public async UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas)
+        {
+            UIShowResult result = await ShowUIResult(handle, userDatas);
+            return result.View;
+        }
+
+        public UniTask<UIShowResult> ShowUIResult(RuntimeTypeHandle handle, params object[] userDatas)
         {
             if (handle.Value == IntPtr.Zero)
             {
-                return UniTask.FromResult<UIBase>(null);
+                return UniTask.FromResult(UIShowResult.Failed);
             }
 
             Type uiType = Type.GetTypeFromHandle(handle);
             if (uiType == null || !typeof(UIBase).IsAssignableFrom(uiType))
             {
-                return UniTask.FromResult<UIBase>(null);
+                return UniTask.FromResult(UIShowResult.Failed);
             }
 
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(handle);
             if (metadata == null)
             {
-                return UniTask.FromResult<UIBase>(null);
+                return UniTask.FromResult(UIShowResult.Failed);
             }
 
-            RaiseShowUIRequested(handle);
             return ShowUIImplAsync(metadata, userDatas);
         }
 
         public T ShowUISync<T>() where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata != null)
-            {
-                RaiseShowUIRequested(typeof(T).TypeHandle);
-            }
-
             return metadata == null ? null : (T)ShowUIImplSync(metadata, null);
         }
 
         public T ShowUISync<T>(params object[] userDatas) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata != null)
-            {
-                RaiseShowUIRequested(typeof(T).TypeHandle);
-            }
-
             return metadata == null ? null : (T)ShowUIImplSync(metadata, userDatas);
         }
 
         public async UniTask<T> ShowUI<T>() where T : UIBase
         {
+            UIShowResult<T> result = await ShowUIResult<T>();
+            return result.View;
+        }
+
+        public async UniTask<UIShowResult<T>> ShowUIResult<T>() where T : UIBase
+        {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata != null)
+            if (metadata == null)
             {
-                RaiseShowUIRequested(typeof(T).TypeHandle);
+                return new UIShowResult<T>(null, UIShowResultState.Failed);
             }
 
-            return metadata == null ? null : (T)await ShowUIImplAsync(metadata, null);
+            UIShowResult result = await ShowUIImplAsync(metadata, null);
+            return new UIShowResult<T>((T)result.View, result.State);
         }
 
         public async UniTask<T> ShowUI<T>(params System.Object[] userDatas) where T : UIBase
         {
+            UIShowResult<T> result = await ShowUIResult<T>(userDatas);
+            return result.View;
+        }
+
+        public async UniTask<UIShowResult<T>> ShowUIResult<T>(params System.Object[] userDatas) where T : UIBase
+        {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata != null)
+            if (metadata == null)
             {
-                RaiseShowUIRequested(typeof(T).TypeHandle);
+                return new UIShowResult<T>(null, UIShowResultState.Failed);
             }
 
-            return metadata == null ? null : (T)await ShowUIImplAsync(metadata, userDatas);
+            UIShowResult result = await ShowUIImplAsync(metadata, userDatas);
+            return new UIShowResult<T>((T)result.View, result.State);
         }
 
 
@@ -165,28 +173,6 @@ namespace AlicizaX.UI.Runtime
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
             return IsOpenImpl(metadata);
         }
-
-        private void RaiseShowUIRequested(RuntimeTypeHandle handle)
-        {
-            Action<RuntimeTypeHandle> handlers = OnShowUIRequested;
-            if (handlers == null)
-            {
-                return;
-            }
-
-            foreach (Delegate handler in handlers.GetInvocationList())
-            {
-                try
-                {
-                    ((Action<RuntimeTypeHandle>)handler)(handle);
-                }
-                catch (Exception)
-                {
-                    // Diagnostic listeners must not break ShowUI.
-                }
-            }
-        }
-
 
         private void DestroyAllManagedUI()
         {

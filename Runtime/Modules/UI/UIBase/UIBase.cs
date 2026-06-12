@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Threading;
 using AlicizaX;
 using AlicizaX.Resource.Runtime;
@@ -26,6 +25,8 @@ namespace AlicizaX.UI.Runtime
 
         internal GraphicRaycaster _raycaster;
         private int _lifecycleVersion;
+        private UIState _openingPreviousState;
+        private UIState _closingPreviousState;
 
         internal UIState _state = UIState.Uninitialized;
         internal UIState State => _state;
@@ -59,10 +60,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        protected virtual void OnInitialize()
-        {
-        }
-
         protected virtual void OnDestroy()
         {
         }
@@ -77,52 +74,6 @@ namespace AlicizaX.UI.Runtime
 
         protected virtual void OnUpdate()
         {
-        }
-
-        /// <summary>
-        /// 如果重写当前方法 则同步OnInitialize不会调用
-        /// </summary>
-        protected virtual UniTask OnInitializeAsync()
-        {
-            OnInitialize();
-            return UniTask.CompletedTask;
-        }
-
-        /// <summary>
-        /// 带取消令牌版本。令牌在显示/关闭操作被新操作打断时取消。
-        /// 默认转发到无参版本，保持旧子类兼容。
-        /// </summary>
-        protected virtual UniTask OnInitializeAsync(CancellationToken cancellationToken)
-        {
-            return OnInitializeAsync();
-        }
-
-        /// <summary>
-        /// 如果重写当前方法 则同步OnOpen不会调用
-        /// </summary>
-        protected virtual UniTask OnOpenAsync()
-        {
-            OnOpen();
-            return UniTask.CompletedTask;
-        }
-
-        protected virtual UniTask OnOpenAsync(CancellationToken cancellationToken)
-        {
-            return OnOpenAsync();
-        }
-
-        /// <summary>
-        /// 如果重写当前方法 则同步OnClose不会调用
-        /// </summary>
-        protected virtual UniTask OnCloseAsync()
-        {
-            OnClose();
-            return UniTask.CompletedTask;
-        }
-
-        protected virtual UniTask OnCloseAsync(CancellationToken cancellationToken)
-        {
-            return OnCloseAsync();
         }
 
         /// <summary>
@@ -348,30 +299,78 @@ namespace AlicizaX.UI.Runtime
             SetState(UIState.Loaded);
         }
 
-        internal async UniTask<bool> InternalInitlized(CancellationToken cancellationToken, UIMetadata metadata, int operationVersion)
+        internal async UniTask<bool> InternalInitlized(UIMetadata metadata, int operationVersion)
         {
             if (!TryBeginInitialize())
                 return false;
 
-            await OnInitializeAsync(cancellationToken);
-            if (!IsInitializeStillValid(cancellationToken, metadata, operationVersion))
+            if (metadata.HasAsyncInitialize)
+            {
+                try
+                {
+                    await ((IUIAsyncInitialize)this).OnInitializeAsync();
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("[UI] Async initialize failed for {0}.", CachedTypeName);
+                    Log.Exception(exception);
+                    return false;
+                }
+            }
+            else if (metadata.HasSyncInitialize)
+            {
+                try
+                {
+                    ((IUISyncInitialize)this).OnInitialize();
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("[UI] Sync initialize failed for {0}.", CachedTypeName);
+                    Log.Exception(exception);
+                    return false;
+                }
+            }
+
+            if (!IsInitializeStillValid(metadata, operationVersion))
                 return false;
 
             CompleteInitialize();
             return true;
         }
 
-        internal bool InternalInitlizedSync()
+        internal bool InternalInitlizedSync(UIMetadata metadata, int operationVersion)
         {
+            if (metadata.HasAsyncInitialize)
+            {
+                Log.Error("[UI] {0} uses async initialize and cannot be initialized by sync API.", CachedTypeName);
+                return false;
+            }
+
             if (!TryBeginInitialize())
                 return false;
 
-            OnInitialize();
+            if (metadata.HasSyncInitialize)
+            {
+                try
+                {
+                    ((IUISyncInitialize)this).OnInitialize();
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("[UI] Sync initialize failed for {0}.", CachedTypeName);
+                    Log.Exception(exception);
+                    return false;
+                }
+            }
+
+            if (!IsInitializeStillValid(metadata, operationVersion))
+                return false;
+
             CompleteInitialize();
             return true;
         }
 
-        internal async UniTask<bool> InternalOpen(CancellationToken cancellationToken = default, bool causedByOcclusion = false)
+        internal async UniTask<bool> InternalOpen(bool causedByOcclusion = false)
         {
             if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
             {
@@ -381,32 +380,37 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            UniTask<bool> openTransitionTask = Holder.PlayOpenTransitionAsync(cancellationToken).SuppressCancellationThrow();
-
-            try
+            if (!TryInvokeOnOpen())
             {
-                await OnOpenAsync(cancellationToken);
-            }
-            catch
-            {
-                Holder.StopTransition();
-                throw;
+                RollbackOpeningState(lifecycleVersion);
+                return false;
             }
 
-            if (IsOpeningCanceled(lifecycleVersion, cancellationToken))
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenInterruption(lifecycleVersion, cancellationToken)) WarnLifecycleOperation("Open interrupted after OnOpenAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
             }
 
-            bool openCanceled = await openTransitionTask;
-            if (openCanceled || cancellationToken.IsCancellationRequested)
+            try
+            {
+                await Holder.PlayOpenTransitionAsync();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Open transition failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                RollbackOpeningState(lifecycleVersion);
+                return false;
+            }
+
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenInterruption(lifecycleVersion, cancellationToken)) WarnLifecycleOperation("Open transition interrupted", $"Open transition canceled={openCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -416,7 +420,7 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
             if (!completed)
             {
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
             }
 #endif
             return completed;
@@ -432,20 +436,61 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            OnOpen();
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            if (!TryInvokeOnOpen())
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
-#endif
+                RollbackOpeningState(lifecycleVersion);
                 return false;
             }
 
-            FireAndForgetOpenTransition(lifecycleVersion).Forget();
-            return true;
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
+                RollbackOpeningState(lifecycleVersion);
+                return false;
+            }
+
+            try
+            {
+                Holder.ApplyOpenTransitionState();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] OpenSync transition state failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                RollbackOpeningState(lifecycleVersion);
+                return false;
+            }
+
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync interrupted after transition state", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+#endif
+                RollbackOpeningState(lifecycleVersion);
+                return false;
+            }
+
+            bool completed = CompleteOpenTransition(lifecycleVersion);
+#if UNITY_EDITOR
+            if (!completed)
+            {
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+            }
+#endif
+            return completed;
         }
 
-        internal async UniTask<bool> InternalClose(CancellationToken cancellationToken = default, bool causedByOcclusion = false, bool skipTransition = false)
+        internal void InternalRefreshOpened()
+        {
+            if (_state == UIState.Opened)
+            {
+                TryInvokeOnOpen();
+            }
+        }
+
+        internal async UniTask<bool> InternalClose(bool causedByOcclusion = false, bool skipTransition = false)
         {
             if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
             {
@@ -458,48 +503,54 @@ namespace AlicizaX.UI.Runtime
             if (skipTransition)
             {
                 // 跳过关闭动画：窗口已不可见（被全屏窗口遮挡或正在销毁），直接进入 Closed 透明层有需要则自己Fork框架到本地改就行
-                Holder.ApplyClosedTransitionState();
+                try
+                {
+                    Holder.ApplyClosedTransitionState();
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("[UI] Close transition state failed for {0}.", CachedTypeName);
+                    Log.Exception(exception);
+                    RollbackClosingState(lifecycleVersion);
+                    return false;
+                }
             }
             else
             {
-                bool closeCanceled = await Holder.PlayCloseTransitionAsync(cancellationToken).SuppressCancellationThrow();
-                if (closeCanceled || cancellationToken.IsCancellationRequested)
+                try
                 {
-#if UNITY_EDITOR
-                    if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close transition interrupted", $"Close transition canceled={closeCanceled}, tokenCanceled={cancellationToken.IsCancellationRequested}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-#endif
+                    await Holder.PlayCloseTransitionAsync();
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("[UI] Close transition failed for {0}.", CachedTypeName);
+                    Log.Exception(exception);
+                    RollbackClosingState(lifecycleVersion);
                     return false;
                 }
             }
 
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
             {
 #if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
 #endif
+                RollbackClosingState(lifecycleVersion);
                 return false;
             }
 
-            await OnCloseAsync(cancellationToken);
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing) || cancellationToken.IsCancellationRequested)
-            {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after OnCloseAsync", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-#endif
-                return false;
-            }
-
+            InvokeOnCloseSafely();
             bool completed = CompleteCloseTransition(lifecycleVersion);
 #if UNITY_EDITOR
             if (!completed)
             {
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, cancellationToken), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
             }
 #endif
             return completed;
         }
 
-        internal bool InternalCloseSync(bool causedByOcclusion = false, bool skipTransition = false)
+        internal bool InternalCloseSync(bool causedByOcclusion = false)
         {
             if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
             {
@@ -509,23 +560,36 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            OnClose();
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            try
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync interrupted after OnClose", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-#endif
+                Holder.ApplyClosedTransitionState();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] CloseSync transition state failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                RollbackClosingState(lifecycleVersion);
                 return false;
             }
 
-            if (skipTransition)
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
             {
-                Holder.ApplyClosedTransitionState();
-                return CompleteCloseTransition(lifecycleVersion);
+#if UNITY_EDITOR
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync interrupted after transition state", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+#endif
+                RollbackClosingState(lifecycleVersion);
+                return false;
             }
 
-            FireAndForgetCloseTransition(lifecycleVersion).Forget();
-            return true;
+            InvokeOnCloseSafely();
+            bool completed = CompleteCloseTransition(lifecycleVersion);
+#if UNITY_EDITOR
+            if (!completed)
+            {
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+            }
+#endif
+            return completed;
         }
 
         internal void InternalUpdate()
@@ -588,10 +652,11 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private bool IsInitializeStillValid(CancellationToken cancellationToken, UIMetadata metadata, int operationVersion)
+        private bool IsInitializeStillValid(UIMetadata metadata, int operationVersion)
         {
-            return !cancellationToken.IsCancellationRequested
-                   && (metadata == null || metadata.OperationVersion == operationVersion);
+            // Business initialization is intentionally not cancellable. The framework
+            // validates the operation version after initialization and rolls back stale shows.
+            return metadata != null && metadata.OperationVersion == operationVersion;
         }
 
         private void CompleteInitialize()
@@ -612,18 +677,13 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Opening))
                 return false;
 
+            _openingPreviousState = _state;
             lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
             SetState(UIState.Opening);
             Visible = true;
             Interactable = true;
             Holder.OnWindowBeforeShowEvent?.Invoke();
             return true;
-        }
-
-        private bool IsOpeningCanceled(int lifecycleVersion, CancellationToken cancellationToken)
-        {
-            return !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening)
-                   || cancellationToken.IsCancellationRequested;
         }
 
         private bool CompleteOpenTransition(int lifecycleVersion)
@@ -650,6 +710,7 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Closing))
                 return false;
 
+            _closingPreviousState = _state;
             lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
             SetState(UIState.Closing);
             Interactable = false;
@@ -667,6 +728,34 @@ namespace AlicizaX.UI.Runtime
             Holder.OnWindowAfterClosedEvent?.Invoke();
             PauseEventListeners();
             return true;
+        }
+
+        private bool TryInvokeOnOpen()
+        {
+            try
+            {
+                OnOpen();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] OnOpen failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                return false;
+            }
+        }
+
+        private void InvokeOnCloseSafely()
+        {
+            try
+            {
+                OnClose();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] OnClose failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+            }
         }
 
         private void InterruptLifecycleTransition(bool causedByOcclusion = false)
@@ -696,42 +785,88 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenRollbackSkipped(lifecycleVersion)) WarnLifecycleOperation("Open rollback skipped", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenRollbackSkipped(lifecycleVersion)) WarnLifecycleOperation("Open rollback skipped", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 return;
             }
 
             Holder?.StopTransition();
+            ApplyRollbackState(NormalizeOpeningRollbackState(_openingPreviousState));
+        }
+
+        private void RollbackClosingState(int lifecycleVersion)
+        {
+            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            {
+                return;
+            }
+
+            Holder?.StopTransition();
+            ApplyRollbackState(NormalizeClosingRollbackState(_closingPreviousState));
+        }
+
+        private static UIState NormalizeOpeningRollbackState(UIState previousState)
+        {
+            return previousState == UIState.Closed || previousState == UIState.Closing
+                ? UIState.Closed
+                : UIState.Initialized;
+        }
+
+        private static UIState NormalizeClosingRollbackState(UIState previousState)
+        {
+            return previousState == UIState.Opened
+                ? UIState.Opened
+                : UIState.Initialized;
+        }
+
+        private void ApplyRollbackState(UIState targetState)
+        {
+            if (targetState == UIState.Opened)
+            {
+                Visible = true;
+                ApplyOpenTransitionStateSafely();
+                Interactable = true;
+                SetState(UIState.Opened);
+                RegisterEventListenersIfNeeded();
+                return;
+            }
+
+            ApplyClosedTransitionStateSafely();
             Visible = false;
+            if (targetState == UIState.Closed)
+            {
+                SetState(UIState.Closed);
+                PauseEventListeners();
+                return;
+            }
+
             SetState(UIState.Initialized);
         }
 
-        private async UniTaskVoid FireAndForgetOpenTransition(int lifecycleVersion)
+        private void ApplyOpenTransitionStateSafely()
         {
-            bool canceled = await Holder.PlayOpenTransitionAsync().SuppressCancellationThrow();
-            if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            try
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Fire-and-forget open transition interrupted", $"Transition canceled={canceled}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Opening, CancellationToken.None)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
-#endif
-                return;
+                Holder.ApplyOpenTransitionState();
             }
-
-            CompleteOpenTransition(lifecycleVersion);
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Rollback open transition state failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+            }
         }
 
-        private async UniTaskVoid FireAndForgetCloseTransition(int lifecycleVersion)
+        private void ApplyClosedTransitionStateSafely()
         {
-            bool canceled = await Holder.PlayCloseTransitionAsync().SuppressCancellationThrow();
-            if (canceled || !IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            try
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Fire-and-forget close transition interrupted", $"Transition canceled={canceled}. {FormatLifecycleInterruption(lifecycleVersion, UIState.Closing, CancellationToken.None)}", IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-#endif
-                return;
+                Holder.ApplyClosedTransitionState();
             }
-
-            CompleteCloseTransition(lifecycleVersion);
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Rollback closed transition state failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+            }
         }
 
 #if UNITY_EDITOR
@@ -752,9 +887,9 @@ namespace AlicizaX.UI.Runtime
             Log.Warning($"[UI] {title}. Reason: {reason} UI={CachedTypeName}, State={_state}, Visible={Visible}, Depth={Depth}, LifecycleVersion={_lifecycleVersion}.");
         }
 
-        private string FormatLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState, CancellationToken cancellationToken)
+        private string FormatLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState)
         {
-            return $"ExpectedState={expectedState}, ActualState={_state}, ExpectedLifecycleVersion={expectedLifecycleVersion}, ActualLifecycleVersion={_lifecycleVersion}, TokenCanceled={cancellationToken.IsCancellationRequested}.";
+            return $"ExpectedState={expectedState}, ActualState={_state}, ExpectedLifecycleVersion={expectedLifecycleVersion}, ActualLifecycleVersion={_lifecycleVersion}.";
         }
 
         private bool IsOcclusionLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState)
@@ -773,10 +908,9 @@ namespace AlicizaX.UI.Runtime
             return _occlusionInterruptedLifecycleVersion == lifecycleVersion;
         }
 
-        private bool ShouldWarnOpenInterruption(int lifecycleVersion, CancellationToken cancellationToken)
+        private bool ShouldWarnOpenInterruption(int lifecycleVersion)
         {
-            return UIWarningSettings.AnyWarningsEnabled
-                   && (!cancellationToken.IsCancellationRequested || IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+            return UIWarningSettings.AnyWarningsEnabled;
         }
 
         private bool ShouldWarnOpenRollbackSkipped(int lifecycleVersion)

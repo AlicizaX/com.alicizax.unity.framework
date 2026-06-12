@@ -10,18 +10,45 @@ namespace AlicizaX.UI.Runtime
 
         public void Open(params System.Object[] userDatas)
         {
+            OpenAsync(userDatas).Forget(LogWidgetException);
+        }
+
+        public async UniTask<bool> OpenAsync(params System.Object[] userDatas)
+        {
             RefreshParams(userDatas);
-            InternalOpenSync();
+            if (State == UIState.Opened)
+            {
+                InternalRefreshOpened();
+                return true;
+            }
+
+            return await InternalOpen();
         }
 
         public void Close()
         {
-            InternalCloseSync();
+            CloseAsync().Forget(LogWidgetException);
+        }
+
+        public UniTask<bool> CloseAsync()
+        {
+            return State == UIState.Closed || State == UIState.Closing
+                ? UniTask.FromResult(State == UIState.Closed)
+                : InternalClose();
         }
 
         public void Destroy()
         {
-            Parent.RemoveWidget(this).Forget();
+            if (Parent != null)
+            {
+                Parent.RemoveWidget(this).Forget(LogWidgetException);
+            }
+        }
+
+        private void LogWidgetException(Exception exception)
+        {
+            Log.Error("[UI] Widget async operation failed for {0}.", CachedTypeName);
+            Log.Exception(exception);
         }
     }
 

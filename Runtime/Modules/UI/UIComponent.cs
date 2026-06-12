@@ -1,6 +1,4 @@
-using System.Runtime.CompilerServices;
 using AlicizaX;
-using AlicizaX.Timer.Runtime;
 using UnityEngine;
 using UnityEngine.UI;
 using Object = UnityEngine.Object;
@@ -15,7 +13,6 @@ namespace AlicizaX.UI.Runtime
     {
         [SerializeField] private GameObject uiRoot = null;
         [SerializeField] private bool _isOrthographic = true;
-        private Transform _instanceRoot = null;
         private const string CanvasScalerMissingMessage = "Not found CanvasScaler !";
 
         private IUIService _uiService;
@@ -26,7 +23,6 @@ namespace AlicizaX.UI.Runtime
 
         private void Awake()
         {
-            _uiService = AppServices.App.Register<IUIService>(new UIService());
             if (uiRoot == null)
             {
                 Log.Error("UIRoot Prefab is invalid.");
@@ -35,9 +31,10 @@ namespace AlicizaX.UI.Runtime
 
             GameObject obj = Instantiate(uiRoot, Vector3.zero, Quaternion.identity);
             obj.name = "------UI Root------";
-            _instanceRoot = obj.transform;
-            Object.DontDestroyOnLoad(_instanceRoot);
-            _uiService.Initialize(_instanceRoot, _isOrthographic);
+            Transform instanceRoot = obj.transform;
+            Object.DontDestroyOnLoad(instanceRoot);
+            _uiService = AppServices.App.Register<IUIService>(new UIService());
+            _uiService.Initialize(instanceRoot, _isOrthographic);
         }
 
 

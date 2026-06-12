@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using AlicizaX.Resource.Runtime;
 using AlicizaX;
 using Cysharp.Text;
@@ -16,7 +17,7 @@ namespace AlicizaX.UI.Runtime
         {
             if (UIResRegistry.TryGet(typeof(T).TypeHandle, out UIResRegistry.UIResInfo resInfo))
             {
-                GameObject obj = await LoadUIResourcesAsync(resInfo, parent);
+                GameObject obj = await LoadUIResourcesAsync(resInfo, parent, CancellationToken.None);
                 return GetHolderOrDestroy<T>(obj, resInfo.Location);
             }
 
@@ -35,11 +36,11 @@ namespace AlicizaX.UI.Runtime
         }
 
 
-        internal static async UniTask<GameObject> LoadUIResourcesAsync(UIResRegistry.UIResInfo resInfo, Transform parent)
+        internal static async UniTask<GameObject> LoadUIResourcesAsync(UIResRegistry.UIResInfo resInfo, Transform parent, CancellationToken cancellationToken)
         {
             return resInfo.LoadType == EUIResLoadType.AssetBundle
-                ? await ResourceService.LoadGameObjectAsync(resInfo.Location, parent)
-                : await LoadResourceWithFallbackAsync(resInfo.Location, parent);
+                ? await ResourceService.LoadGameObjectAsync(resInfo.Location, parent, cancellationToken)
+                : await LoadResourceWithFallbackAsync(resInfo.Location, parent, cancellationToken);
         }
 
         internal static GameObject LoadUIResourcesSync(UIResRegistry.UIResInfo resInfo, Transform parent)
@@ -50,17 +51,16 @@ namespace AlicizaX.UI.Runtime
         }
 
 
-        internal static async UniTask CreateUIResourceAsync(UIMetadata meta, Transform parent, UIBase owner = null)
+        internal static async UniTask CreateUIResourceAsync(UIMetadata meta, Transform parent, CancellationToken cancellationToken, UIBase owner = null)
         {
             if (meta.State != UIState.CreatedUI) return;
             int operationVersion = meta.OperationVersion;
-            GameObject obj = await LoadUIResourcesAsync(meta.ResInfo, parent);
-            if (operationVersion != meta.OperationVersion || meta.ExistingCancellationToken.IsCancellationRequested || meta.View == null || meta.State != UIState.CreatedUI)
+            GameObject obj = await LoadUIResourcesAsync(meta.ResInfo, parent, cancellationToken);
+            if (operationVersion != meta.OperationVersion || cancellationToken.IsCancellationRequested || meta.View == null || meta.State != UIState.CreatedUI)
             {
                 if (obj != null)
                 {
-                    ResourceOwner.ReleaseBindingsInHierarchy(obj);
-                    DestroyObject(obj);
+                    DestroyLoadedObject(obj);
                 }
 
                 return;
@@ -79,15 +79,31 @@ namespace AlicizaX.UI.Runtime
             ValidateAndBind(meta, obj, owner);
         }
 
-        private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent)
+        private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent, CancellationToken cancellationToken)
         {
-            GameObject prefab = (GameObject)await Resources.LoadAsync<GameObject>(location);
-            if (!prefab)
+            GameObject prefab;
+            try
+            {
+                prefab = (GameObject)await Resources.LoadAsync<GameObject>(location).ToUniTask(cancellationToken: cancellationToken);
+            }
+            catch (OperationCanceledException)
             {
                 return null;
             }
 
-            return Object.Instantiate(prefab, parent);
+            if (!prefab || cancellationToken.IsCancellationRequested)
+            {
+                return null;
+            }
+
+            GameObject instance = Object.Instantiate(prefab, parent);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                DestroyLoadedObject(instance);
+                return null;
+            }
+
+            return instance;
         }
 
         private static GameObject InstantiateResourceSync(string location, Transform parent)
@@ -101,9 +117,9 @@ namespace AlicizaX.UI.Runtime
             return Object.Instantiate(prefab, parent);
         }
 
-        private static async UniTask<GameObject> LoadResourceWithFallbackAsync(string location, Transform parent)
+        private static async UniTask<GameObject> LoadResourceWithFallbackAsync(string location, Transform parent, CancellationToken cancellationToken)
         {
-            return await InstantiateResourceAsync(location, parent);
+            return await InstantiateResourceAsync(location, parent, cancellationToken);
         }
 
         private static GameObject LoadResourceWithFallbackSync(string location, Transform parent)
@@ -122,8 +138,7 @@ namespace AlicizaX.UI.Runtime
             if (meta.View == null)
             {
                 Log.Error("UI logic missing while binding holder: {0}", holderObject.name);
-                ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
-                DestroyObject(holderObject);
+                DestroyLoadedObject(holderObject);
                 return false;
             }
 
@@ -131,8 +146,7 @@ namespace AlicizaX.UI.Runtime
             if (holder == null)
             {
                 Log.Error("UI resource {0} missing holder component {1}", holderObject.name, meta.View.UIHolderType.FullName);
-                ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
-                DestroyObject(holderObject);
+                DestroyLoadedObject(holderObject);
                 return false;
             }
 
@@ -155,9 +169,19 @@ namespace AlicizaX.UI.Runtime
             }
 
             Log.Error("UI resource {0} missing holder component {1}", holderObject.name, typeof(T).FullName);
-            ResourceOwner.ReleaseBindingsInHierarchy(holderObject);
-            DestroyObject(holderObject);
+            DestroyLoadedObject(holderObject);
             return null;
+        }
+
+        private static void DestroyLoadedObject(GameObject obj)
+        {
+            if (obj == null)
+            {
+                return;
+            }
+
+            ResourceOwner.ReleaseBindingsInHierarchy(obj);
+            DestroyObject(obj);
         }
 
         private static void DestroyObject(GameObject obj)

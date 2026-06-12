@@ -1,5 +1,4 @@
 using Cysharp.Text;
-using System.Collections.Generic;
 using AlicizaX.Timer.Runtime;
 using UnityEngine;
 
@@ -13,7 +12,6 @@ namespace AlicizaX.UI.Runtime
         public Transform UIRoot;
 
         private const int UI_ROOT_OFFSET = 1000;
-        private const int LAYER_DISTANCE = 1000;
 
         private const int LAYER_DEEP = 2000;
         private const int WINDOW_DEEP = 100;
@@ -99,7 +97,6 @@ namespace AlicizaX.UI.Runtime
             rect.anchorMin = Vector2.zero;
             rect.sizeDelta = Vector2.zero;
             rect.localRotation = Quaternion.identity;
-            // rect.localPosition = new Vector3(0, 0, layer * (_isOrthographic ? LAYER_DISTANCE : 0));
             rect.localPosition = Vector3.zero;
             if (layer == (int)UILayer.All)
             {

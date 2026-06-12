@@ -30,6 +30,7 @@ namespace AlicizaX.UI.Runtime
             if (view == null || view.Holder == null || !view.Holder.IsValid())
             {
                 Log.Error("Cannot cache null UI metadata or holder");
+                uiMetadata?.DisposeImmediate();
                 return;
             }
 

@@ -1,5 +1,6 @@
 using AlicizaX.Timer.Runtime;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -8,12 +9,19 @@ namespace AlicizaX.UI.Runtime
         private GameObject m_LayerBlock;
         private ulong m_LastCountDownHandle;
         private TimerHandlerNoArgs _onBlockCountDown;
+        private const int UI_BLOCK_SORTING_ORDER = short.MaxValue;
 
         private void InitUIBlock()
         {
             m_LayerBlock = new GameObject("LayerBlock");
             RectTransform rect = m_LayerBlock.AddComponent<RectTransform>();
-            m_LayerBlock.AddComponent<CanvasRenderer>();
+            Canvas canvas = m_LayerBlock.AddComponent<Canvas>();
+            canvas.renderMode = UICanvas.renderMode;
+            canvas.worldCamera = UICamera;
+            canvas.planeDistance = UICanvas.planeDistance;
+            canvas.overrideSorting = true;
+            canvas.sortingOrder = UI_BLOCK_SORTING_ORDER;
+            m_LayerBlock.AddComponent<GraphicRaycaster>();
             m_LayerBlock.AddComponent<UIBlock>();
             rect.SetParent(UICanvasRoot);
             rect.SetAsLastSibling();

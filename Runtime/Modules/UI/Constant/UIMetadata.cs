@@ -1,8 +1,7 @@
-﻿using System;
+using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using AlicizaX;
-using Cysharp.Text;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
@@ -15,12 +14,15 @@ namespace AlicizaX.UI.Runtime
         public readonly Type UILogicType;
         public readonly string UILogicTypeName;
         public readonly string UIHolderTypeName;
+        public readonly bool HasSyncInitialize;
+        public readonly bool HasAsyncInitialize;
         public bool InCache = false;
         public readonly bool IsValid;
 
-        private CancellationTokenSource _cancellationTokenSource;
-
-        public CancellationToken ExistingCancellationToken => _cancellationTokenSource?.Token ?? CancellationToken.None;
+        private CancellationTokenSource _loadCancellationTokenSource;
+        private UniTaskCompletionSource<UIBase> _showCompletionSource;
+        private System.Object[] _pendingShowUserDatas;
+        private bool _hasPendingShowUserDatas;
         private int _operationVersion;
         private bool _cancelRequested;
         private bool _showInProgress;
@@ -56,7 +58,29 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        public bool BeginShowOperation(bool createCancellationToken, out int operationVersion)
+        public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource)
+        {
+            if (_showInProgress)
+            {
+                operationVersion = -1;
+                loadCts = null;
+                showCompletionSource = null;
+                return false;
+            }
+
+            _loadCancellationTokenSource?.Cancel();
+            loadCts = new CancellationTokenSource();
+            _loadCancellationTokenSource = loadCts;
+            showCompletionSource = new UniTaskCompletionSource<UIBase>();
+            _showCompletionSource = showCompletionSource;
+            operationVersion = ++_operationVersion;
+            _cancelRequested = false;
+            _showInProgress = true;
+            _closeInProgress = false;
+            return true;
+        }
+
+        public bool BeginShowOperationSync(out int operationVersion)
         {
             if (_showInProgress)
             {
@@ -64,17 +88,16 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            CancellationTokenSource previousCts = _cancellationTokenSource;
-            _cancellationTokenSource = createCancellationToken ? new CancellationTokenSource() : null;
+            _loadCancellationTokenSource?.Cancel();
+            _loadCancellationTokenSource = null;
             operationVersion = ++_operationVersion;
             _cancelRequested = false;
             _showInProgress = true;
             _closeInProgress = false;
-            previousCts?.Cancel();
             return true;
         }
 
-        public bool BeginCloseOperation(bool createCancellationToken, out int operationVersion)
+        public bool BeginCloseOperation(out int operationVersion)
         {
             if (_closeInProgress)
             {
@@ -82,17 +105,29 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            CancellationTokenSource previousCts = _cancellationTokenSource;
-            _cancellationTokenSource = createCancellationToken ? new CancellationTokenSource() : null;
+            _loadCancellationTokenSource?.Cancel();
+            _loadCancellationTokenSource = null;
             operationVersion = ++_operationVersion;
             _cancelRequested = false;
             _closeInProgress = true;
             _showInProgress = false;
-            previousCts?.Cancel();
             return true;
         }
 
-        public void EndShowOperation(int operationVersion)
+        public void EndShowOperation(int operationVersion, CancellationTokenSource loadCts)
+        {
+            if (_operationVersion == operationVersion)
+            {
+                _showInProgress = false;
+            }
+
+            if (ReferenceEquals(_loadCancellationTokenSource, loadCts))
+            {
+                _loadCancellationTokenSource = null;
+            }
+        }
+
+        public void EndShowOperationSync(int operationVersion)
         {
             if (_operationVersion == operationVersion)
             {
@@ -110,29 +145,77 @@ namespace AlicizaX.UI.Runtime
 
         public void CancelAsyncOperations()
         {
+            _loadCancellationTokenSource?.Cancel();
+            _loadCancellationTokenSource = null;
             _cancelRequested = true;
             _operationVersion++;
             _showInProgress = false;
             _closeInProgress = false;
-            CancelTokenOnly();
+            CompleteCurrentShowOperation(null);
         }
 
-        private void CancelTokenOnly()
+        public void SetPendingShowUserDatas(System.Object[] userDatas)
         {
-            CancellationTokenSource cts = _cancellationTokenSource;
-            _cancellationTokenSource = null;
-            cts?.Cancel();
+            _pendingShowUserDatas = userDatas;
+            _hasPendingShowUserDatas = true;
+            View?.RefreshParams(userDatas);
+        }
+
+        public System.Object[] GetPendingShowUserDatas(System.Object[] fallback)
+        {
+            return _hasPendingShowUserDatas ? _pendingShowUserDatas : fallback;
+        }
+
+        public UniTask<UIBase> WaitForShowOperationAsync()
+        {
+            return _showCompletionSource != null
+                ? _showCompletionSource.Task
+                : UniTask.FromResult(State == UIState.Opened ? View : null);
+        }
+
+        public void CompleteShowOperation(UniTaskCompletionSource<UIBase> showCompletionSource, UIBase result)
+        {
+            showCompletionSource?.TrySetResult(result);
+            ClearShowCompletionIfCurrent(showCompletionSource);
+        }
+
+        public void FailShowOperation(UniTaskCompletionSource<UIBase> showCompletionSource, Exception exception)
+        {
+            showCompletionSource?.TrySetException(exception);
+            ClearShowCompletionIfCurrent(showCompletionSource);
+        }
+
+        private void CompleteCurrentShowOperation(UIBase result)
+        {
+            UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
+            _showCompletionSource = null;
+            ClearPendingShowUserDatas();
+            showCompletionSource?.TrySetResult(result);
+        }
+
+        private void ClearShowCompletionIfCurrent(UniTaskCompletionSource<UIBase> showCompletionSource)
+        {
+            if (ReferenceEquals(_showCompletionSource, showCompletionSource))
+            {
+                _showCompletionSource = null;
+                ClearPendingShowUserDatas();
+            }
+        }
+
+        private void ClearPendingShowUserDatas()
+        {
+            _pendingShowUserDatas = null;
+            _hasPendingShowUserDatas = false;
         }
 
         internal void ResetRuntimeState()
         {
+            CancelAsyncOperations();
             _cancelRequested = false;
-            _operationVersion++;
             _showInProgress = false;
             _closeInProgress = false;
             View = null;
             InCache = false;
-            CancelTokenOnly();
         }
 
         public void Dispose()
@@ -178,6 +261,18 @@ namespace AlicizaX.UI.Runtime
 
             UILogicType = uiType;
             UILogicTypeName = uiType.Name;
+            HasSyncInitialize = typeof(IUISyncInitialize).IsAssignableFrom(uiType);
+            HasAsyncInitialize = typeof(IUIAsyncInitialize).IsAssignableFrom(uiType);
+
+            if (HasSyncInitialize && HasAsyncInitialize)
+            {
+                MetaInfo = default;
+                ResInfo = default;
+                UIHolderTypeName = string.Empty;
+                IsValid = false;
+                Log.Error("[UI] {0} cannot implement both IUISyncInitialize and IUIAsyncInitialize.", uiType.FullName);
+                return;
+            }
 
             if (!UIMetaRegistry.TryGet(UILogicType.TypeHandle, out MetaInfo))
             {

@@ -213,7 +213,7 @@ namespace AlicizaX.Resource.Runtime
             _resourceService.RegisteredTargetCapacity = registeredTargetCapacity;
             _resourceService.IdleAssetExpireTime = idleAssetExpireTime;
             _resourceService.SetForceUnloadUnusedAssetsAction(ForceUnloadUnusedAssets);
-            Log.Info(ZString.Format("ResourceModule Run Mode {0}", _playMode));
+            Log.Info("ResourceModule Run Mode {0}", _playMode);
         }
 
         private void OnApplicationQuit()

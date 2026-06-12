@@ -58,9 +58,19 @@ namespace AlicizaX.UI.Runtime
         UniTask<T> ShowUI<T>() where T : UIBase;
 
         /// <summary>
+        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// </summary>
+        UniTask<UIShowResult<T>> ShowUIResult<T>() where T : UIBase;
+
+        /// <summary>
         /// 异步显示 UI（推荐方式）
         /// </summary>
         UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIBase;
+
+        /// <summary>
+        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// </summary>
+        UniTask<UIShowResult<T>> ShowUIResult<T>(params object[] userDatas) where T : UIBase;
 
         /// <summary>
         /// 异步显示 UI（使用字符串类型名）。类型未注册或元数据无效时返回 null 结果。
@@ -68,17 +78,27 @@ namespace AlicizaX.UI.Runtime
         UniTask<UIBase> ShowUI(string type, params object[] userDatas);
 
         /// <summary>
+        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// </summary>
+        UniTask<UIShowResult> ShowUIResult(string type, params object[] userDatas);
+
+        /// <summary>
         /// 异步显示 UI（使用运行时类型句柄）。类型无效或元数据无效时返回 null 结果。
         /// </summary>
         UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas);
 
         /// <summary>
-        /// 同步显示 UI（无参重载，避免 params 空数组分配）
+        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// </summary>
+        UniTask<UIShowResult> ShowUIResult(RuntimeTypeHandle handle, params object[] userDatas);
+
+        /// <summary>
+        /// 同步显示 UI（无参重载，避免 params 空数组分配）。异步初始化 UI 会返回 null；打开过渡直接应用最终状态。
         /// </summary>
         T ShowUISync<T>() where T : UIBase;
 
         /// <summary>
-        /// 同步显示 UI（仅限资源已预加载时使用，避免死锁）
+        /// 同步显示 UI（仅限资源已预加载时使用）。异步初始化 UI 会返回 null；打开过渡直接应用最终状态。
         /// </summary>
         T ShowUISync<T>(params object[] userDatas) where T : UIBase;
 
@@ -120,11 +140,6 @@ namespace AlicizaX.UI.Runtime
         /// 关闭当前最上层且满足谓词的 UI。
         /// </summary>
         UniTask<bool> TryCloseTopAsync(Predicate<RuntimeTypeHandle> predicate, bool force = false);
-
-        /// <summary>
-        /// UI 打开请求事件。用于诊断直接 ShowUI 调用。
-        /// </summary>
-        event Action<RuntimeTypeHandle> OnShowUIRequested;
 
         /// <summary>
         /// 获取当前已打开的指定类型 UI。

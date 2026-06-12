@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -56,7 +55,7 @@ namespace AlicizaX.UI.Runtime
             return this != null && _isAlive;
         }
 
-        internal UniTask PlayOpenTransitionAsync(CancellationToken cancellationToken = default)
+        internal UniTask PlayOpenTransitionAsync()
         {
             if (!_isAlive || this == null)
             {
@@ -65,11 +64,11 @@ namespace AlicizaX.UI.Runtime
 
             IUITransitionPlayer transitionPlayer = TransitionPlayer;
             return transitionPlayer != null
-                ? transitionPlayer.PlayOpenAsync(cancellationToken)
+                ? transitionPlayer.PlayOpenAsync()
                 : UniTask.CompletedTask;
         }
 
-        internal UniTask PlayCloseTransitionAsync(CancellationToken cancellationToken = default)
+        internal UniTask PlayCloseTransitionAsync()
         {
             if (!_isAlive || this == null)
             {
@@ -78,7 +77,7 @@ namespace AlicizaX.UI.Runtime
 
             IUITransitionPlayer transitionPlayer = TransitionPlayer;
             return transitionPlayer != null
-                ? transitionPlayer.PlayCloseAsync(cancellationToken)
+                ? transitionPlayer.PlayCloseAsync()
                 : UniTask.CompletedTask;
         }
 

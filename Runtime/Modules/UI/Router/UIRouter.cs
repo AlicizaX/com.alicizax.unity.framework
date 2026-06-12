@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 #if UNITY_EDITOR
 using System.Text;
+using UnityEngine;
 #endif
 using Cysharp.Threading.Tasks;
 
@@ -26,8 +27,10 @@ namespace AlicizaX.UI.Runtime
         private int _sequence;
 #if UNITY_EDITOR
         private int _warningSequence;
+        private const float NavigationWaitWarningSeconds = 1f;
 #endif
         private bool _navigating;
+        private UniTaskCompletionSource _navigationWaiter;
         private bool _dirty;
 
         public UIRouter(IUIService uiService)
@@ -335,9 +338,21 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask EnterNavigation()
         {
+#if UNITY_EDITOR
+            float waitStartTime = Time.realtimeSinceStartup;
+            bool waitWarningLogged = false;
+#endif
             while (_navigating)
             {
-                await UniTask.Yield();
+#if UNITY_EDITOR
+                if (!waitWarningLogged && Time.realtimeSinceStartup - waitStartTime >= NavigationWaitWarningSeconds)
+                {
+                    waitWarningLogged = true;
+                    AddWarning(Current?.TypeHandle ?? default, "Navigation waited more than 1 second for the current navigation operation to finish.");
+                }
+#endif
+                _navigationWaiter ??= new UniTaskCompletionSource();
+                await _navigationWaiter.Task;
             }
 
             _navigating = true;
@@ -346,6 +361,9 @@ namespace AlicizaX.UI.Runtime
         private void ExitNavigation()
         {
             _navigating = false;
+            UniTaskCompletionSource waiter = _navigationWaiter;
+            _navigationWaiter = null;
+            waiter?.TrySetResult();
         }
 
         public void ResetHistory()
@@ -474,16 +492,6 @@ namespace AlicizaX.UI.Runtime
                 Sequence = ++_sequence,
             };
             return true;
-        }
-
-        private static bool ShouldClosePreviousRoute(UIRouteEntry previousRoute, RuntimeTypeHandle targetHandle)
-        {
-            if (previousRoute == null || RuntimeTypeHandleComparer.Instance.Equals(previousRoute.TypeHandle, targetHandle))
-            {
-                return false;
-            }
-
-            return !IsLifecycleOcclusionWindow(targetHandle);
         }
 
         private static bool ShouldCompleteNavigateAfterShowStarted(UIRouteEntry previousRoute, RuntimeTypeHandle targetHandle)

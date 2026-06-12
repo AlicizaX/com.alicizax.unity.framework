@@ -1,18 +1,20 @@
-using System.Threading;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
 {
     public interface IUITransitionPlayer
     {
-        UniTask PlayOpenAsync(CancellationToken cancellationToken = default);
+        UniTask PlayOpenAsync();
 
-        UniTask PlayCloseAsync(CancellationToken cancellationToken = default);
+        UniTask PlayCloseAsync();
 
         void ApplyOpenState();
 
         void ApplyClosedState();
 
+        /// <summary>
+        /// Stops any running transition. After Stop/ApplyOpenState/ApplyClosedState, an older transition must not continue writing visuals.
+        /// </summary>
         void Stop();
     }
 }

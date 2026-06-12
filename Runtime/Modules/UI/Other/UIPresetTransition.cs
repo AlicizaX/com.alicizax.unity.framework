@@ -1,4 +1,3 @@
-using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -78,17 +77,17 @@ namespace AlicizaX.UI.Runtime
 #endif
         }
 
-        public UniTask PlayOpenAsync(CancellationToken cancellationToken = default)
+        public UniTask PlayOpenAsync()
         {
             EnsureInitialized(false);
             PrepareInitialClosedStateForOpen();
-            return PlayAsync(_openState, openDuration, openEase, true, cancellationToken);
+            return PlayAsync(_openState, openDuration, openEase, true);
         }
 
-        public UniTask PlayCloseAsync(CancellationToken cancellationToken = default)
+        public UniTask PlayCloseAsync()
         {
             EnsureInitialized(false);
-            return PlayAsync(BuildClosedState(closePreset), closeDuration, closeEase, false, cancellationToken);
+            return PlayAsync(BuildClosedState(closePreset), closeDuration, closeEase, false);
         }
 
         public void ApplyOpenState()
@@ -119,8 +118,7 @@ namespace AlicizaX.UI.Runtime
             VisualState targetState,
             float duration,
             UITransitionEase ease,
-            bool isOpening,
-            CancellationToken cancellationToken)
+            bool isOpening)
         {
             int playVersion = ++_playVersion;
             RestoreInteractionState(false);
@@ -136,7 +134,7 @@ namespace AlicizaX.UI.Runtime
             float elapsed = 0f;
             while (elapsed < duration)
             {
-                if (playVersion != _playVersion || cancellationToken.IsCancellationRequested)
+                if (playVersion != _playVersion)
                 {
                     return;
                 }
@@ -147,7 +145,7 @@ namespace AlicizaX.UI.Runtime
                 await UniTask.Yield(PlayerLoopTiming.Update);
             }
 
-            if (playVersion != _playVersion || cancellationToken.IsCancellationRequested)
+            if (playVersion != _playVersion)
             {
                 return;
             }

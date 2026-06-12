@@ -18,6 +18,7 @@ namespace AlicizaX.UI.Editor
         private const float RuntimeMinHeight = 260f;
         private const float RuntimeMaxHeight = 720f;
         private const float OperationStuckSeconds = 5f;
+        private const double RuntimeDebugRepaintInterval = 0.1d;
         private const int UpdateWindowWarningCount = 8;
         private const int CacheWindowWarningCount = 16;
 
@@ -32,8 +33,8 @@ namespace AlicizaX.UI.Editor
 
         private SerializedProperty uiRoot;
         private SerializedProperty _isOrthographic;
-        private bool _showRuntimeDebug = true;
-        private bool _showRouterRuntimeDebug = true;
+        private bool _showRuntimeDebug;
+        private bool _showRouterRuntimeDebug;
         private bool _showReferences;
         private bool _showLayers = true;
         private bool _showCache = true;
@@ -53,6 +54,7 @@ namespace AlicizaX.UI.Editor
         private GUIStyle _kindBadgeStyle;
         private GUIStyle _emptyStateStyle;
         private GUIContent _setDefaultContent;
+        private double _nextRuntimeDebugRepaintTime;
 
         public override void OnInspectorGUI()
         {
@@ -65,14 +67,13 @@ namespace AlicizaX.UI.Editor
 
             DrawRuntimeDebugInfo();
             DrawRouterRuntimeDebugInfo();
-            if (EditorApplication.isPlaying)
-            {
-                Repaint();
-            }
         }
 
         private void OnEnable()
         {
+            EditorApplication.update -= OnEditorUpdate;
+            EditorApplication.update += OnEditorUpdate;
+
             uiRoot = serializedObject.FindProperty("uiRoot");
             _isOrthographic = serializedObject.FindProperty("_isOrthographic");
             for (int i = 0; i < _cacheInfos.Length; i++)
@@ -81,6 +82,29 @@ namespace AlicizaX.UI.Editor
             }
 
             InitializeContents();
+        }
+
+        private void OnDisable()
+        {
+            EditorApplication.update -= OnEditorUpdate;
+        }
+
+        private void OnEditorUpdate()
+        {
+            if (!EditorApplication.isPlaying || (!_showRuntimeDebug && !_showRouterRuntimeDebug))
+            {
+                _nextRuntimeDebugRepaintTime = 0d;
+                return;
+            }
+
+            double time = EditorApplication.timeSinceStartup;
+            if (time < _nextRuntimeDebugRepaintTime)
+            {
+                return;
+            }
+
+            _nextRuntimeDebugRepaintTime = time + RuntimeDebugRepaintInterval;
+            Repaint();
         }
 
         private void InitializeContents()
