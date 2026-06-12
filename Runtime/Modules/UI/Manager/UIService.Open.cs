@@ -44,6 +44,60 @@ namespace AlicizaX.UI.Runtime
     internal sealed partial class UIService
     {
         private readonly LayerData[] _openUI = new LayerData[(int)UILayer.All];
+        private readonly bool[] _layerMutationBusy = new bool[(int)UILayer.All];
+        private readonly bool[] _layerVisualDirty = new bool[(int)UILayer.All];
+
+        private bool IsLayerBlockedForMutation(int layer)
+        {
+            return (uint)layer >= (uint)_openUI.Length
+                   || _layerMutationBusy[layer]
+                   || _layerVisualDirty[layer];
+        }
+
+        private UICloseFailureReason GetLayerBlockedReason(int layer)
+        {
+            return (uint)layer < (uint)_layerVisualDirty.Length && _layerVisualDirty[layer]
+                ? UICloseFailureReason.LayerVisualDirty
+                : UICloseFailureReason.LayerTransactionBusy;
+        }
+
+        private bool TryBeginLayerMutation(int layer)
+        {
+            if (IsLayerBlockedForMutation(layer))
+            {
+                return false;
+            }
+
+            _layerMutationBusy[layer] = true;
+            return true;
+        }
+
+        private void EndLayerMutation(int layer)
+        {
+            if ((uint)layer < (uint)_layerMutationBusy.Length)
+            {
+                _layerMutationBusy[layer] = false;
+            }
+        }
+
+        private void MarkLayerVisualDirty(int layer)
+        {
+            if ((uint)layer < (uint)_layerVisualDirty.Length)
+            {
+                _layerVisualDirty[layer] = true;
+            }
+        }
+
+        private bool IsMetaInOpenStack(UIMetadata meta)
+        {
+            if (meta == null)
+            {
+                return false;
+            }
+
+            LayerData layer = _openUI[meta.MetaInfo.UILayer];
+            return layer != null && GetOpenIndex(layer, meta) >= 0;
+        }
 
         private readonly struct VisualStateUpdateResult
         {
@@ -60,6 +114,12 @@ namespace AlicizaX.UI.Runtime
         private async UniTask<UIShowResult> ShowUIImplAsync(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
+            int layerIndex = metaInfo.MetaInfo.UILayer;
+            if (IsLayerBlockedForMutation(layerIndex) && !metaInfo.ShowInProgress)
+            {
+                return UIShowResult.Failed;
+            }
+
             if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource))
             {
 #if UNITY_EDITOR
@@ -71,6 +131,14 @@ namespace AlicizaX.UI.Runtime
             }
 
             // 在 Begin 之后只捕获一次令牌：后续新操作会替换 CTS，再读属性会拿到错误令牌 特别注意
+            if (!TryBeginLayerMutation(layerIndex))
+            {
+                metaInfo.EndShowOperation(operationVersion, loadCts);
+                metaInfo.CompleteShowOperation(showCompletionSource, null);
+                loadCts.Dispose();
+                return UIShowResult.Failed;
+            }
+
             CancellationToken cancellationToken = loadCts.Token;
             UIShowResult showResult = UIShowResult.Failed;
             int rollbackPreviousFullscreenIndex = int.MinValue;
@@ -127,6 +195,7 @@ namespace AlicizaX.UI.Runtime
             {
                 UIBase result = showResult.IsAccepted ? metaInfo.View : null;
                 metaInfo.EndShowOperation(operationVersion, loadCts);
+                EndLayerMutation(layerIndex);
                 if (!exceptionThrown)
                 {
                     metaInfo.CompleteShowOperation(showCompletionSource, result);
@@ -145,12 +214,24 @@ namespace AlicizaX.UI.Runtime
             }
 
             CreateMetaUI(metaInfo);
+            int layerIndex = metaInfo.MetaInfo.UILayer;
+            if (IsLayerBlockedForMutation(layerIndex) && !metaInfo.ShowInProgress)
+            {
+                return null;
+            }
+
             if (!metaInfo.BeginShowOperationSync(out int operationVersion))
             {
 #if UNITY_EDITOR
                 WarnUIOperation("ShowSync skipped", metaInfo, metaInfo?.OperationVersion ?? -1, "BeginShowOperation returned false. Another show operation is already running, so this call only refreshes user data.");
 #endif
                 return RefreshAndGetOpenedView(metaInfo, userDatas);
+            }
+
+            if (!TryBeginLayerMutation(layerIndex))
+            {
+                metaInfo.EndShowOperationSync(operationVersion);
+                return null;
             }
 
             bool showResult = false;
@@ -198,6 +279,7 @@ namespace AlicizaX.UI.Runtime
             finally
             {
                 metaInfo.EndShowOperationSync(operationVersion);
+                EndLayerMutation(layerIndex);
             }
 
             return showResult ? metaInfo.View : null;
@@ -209,71 +291,57 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
+            if (IsLayerBlockedForMutation(meta.MetaInfo.UILayer))
+            {
+                return false;
+            }
+
+            int layerIndex = meta.MetaInfo.UILayer;
+            if (!TryBeginLayerMutation(layerIndex))
+            {
+                return false;
+            }
+
             bool interruptedShow = meta.ShowInProgress;
             if (!meta.BeginCloseOperation(out int operationVersion))
             {
 #if UNITY_EDITOR
                 WarnUIOperation("Close skipped", meta, meta?.OperationVersion ?? -1, "BeginCloseOperation returned false. Another close operation is already running.");
 #endif
+                EndLayerMutation(layerIndex);
                 return false;
             }
 
             bool closeCompleted = false;
             try
             {
-                if (meta.State == UIState.CreatedUI)
+                UIState state = meta.State;
+                UIFinalizeClosedMode finalizeMode = GetFinalizeModeForExplicitClose(meta, interruptedShow);
+                if (state == UIState.CreatedUI)
                 {
 #if UNITY_EDITOR
                     WarnUIOperation("Close interrupted pending show", meta, operationVersion, "CloseUI was called before the UI resource finished loading. The reserved stack slot will be removed and the UI will be disposed.");
 #endif
-                    var popResult = Pop(meta);
-                    if (popResult.removedIndex < 0)
-                    {
-                        return false;
-                    }
-
-                    await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
-                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex);
-                    await meta.DisposeAsync();
-                    closeCompleted = true;
+                    UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
+                    closeCompleted = finalizeResult.Success;
                 }
-                else if (meta.State == UIState.Loaded || meta.State == UIState.Initialized)
+                else if (state == UIState.Loaded || state == UIState.Initialized || state == UIState.Closed)
                 {
-                    var popResult = Pop(meta);
-                    if (popResult.removedIndex < 0)
+                    if (meta.View != null)
                     {
-                        return false;
+                        meta.View.Visible = false;
                     }
 
-                    await SortWindowVisibleAsync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
-                    SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex);
-                    meta.View.Visible = false;
-                    if (interruptedShow)
-                    {
-                        await meta.DisposeAsync();
-                    }
-                    else
-                    {
-                        CacheWindow(meta, force);
-                    }
-
-                    closeCompleted = true;
+                    UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
+                    closeCompleted = finalizeResult.Success;
                 }
                 else
                 {
                     bool closeResult = await meta.View.InternalClose();
                     if (closeResult && meta.State == UIState.Closed && meta.OperationVersion == operationVersion)
                     {
-                        var closedPopResult = Pop(meta);
-                        if (closedPopResult.removedIndex < 0)
-                        {
-                            return false;
-                        }
-
-                        await SortWindowVisibleAsync(meta.MetaInfo.UILayer, closedPopResult.previousFullscreenIndex);
-                        SortWindowDepth(meta.MetaInfo.UILayer, closedPopResult.removedIndex);
-                        CacheWindow(meta, force);
-                        closeCompleted = true;
+                        UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
+                        closeCompleted = finalizeResult.Success;
                     }
 #if UNITY_EDITOR
                     else
@@ -287,9 +355,70 @@ namespace AlicizaX.UI.Runtime
             finally
             {
                 meta.EndCloseOperation(operationVersion);
+                EndLayerMutation(layerIndex);
             }
 
             return closeCompleted;
+        }
+
+        private async UniTask<UIFinalizeClosedResult> FinalizeClosedWindowAsync(
+            UIMetadata meta,
+            bool force,
+            UIFinalizeClosedMode mode,
+            bool refreshVisual)
+        {
+            if (meta == null)
+            {
+                return UIFinalizeClosedResult.Fail(int.MinValue, UICloseFailureReason.FinalizeFailed);
+            }
+
+            int layerIndex = meta.MetaInfo.UILayer;
+            var popResult = Pop(meta);
+            if (popResult.removedIndex < 0)
+            {
+                return UIFinalizeClosedResult.Fail(popResult.previousFullscreenIndex, UICloseFailureReason.FinalizeFailed);
+            }
+
+            if (refreshVisual)
+            {
+                try
+                {
+                    await SortWindowVisibleAsync(layerIndex, popResult.previousFullscreenIndex);
+                    SortWindowDepth(layerIndex, popResult.removedIndex);
+                }
+                catch
+                {
+                    MarkLayerVisualDirty(layerIndex);
+                    return new UIFinalizeClosedResult(false, popResult.removedIndex, popResult.previousFullscreenIndex, UICloseFailureReason.VisibilityRefreshFailed);
+                }
+            }
+
+            if (mode == UIFinalizeClosedMode.Dispose)
+            {
+                await meta.DisposeAsync();
+            }
+            else
+            {
+                CacheWindow(meta, force);
+            }
+
+            return new UIFinalizeClosedResult(true, popResult.removedIndex, popResult.previousFullscreenIndex, UICloseFailureReason.None);
+        }
+
+        private static UIFinalizeClosedMode GetFinalizeModeForExplicitClose(UIMetadata meta, bool interruptedShow)
+        {
+            if (meta == null)
+            {
+                return UIFinalizeClosedMode.Dispose;
+            }
+
+            UIState state = meta.State;
+            if (state == UIState.CreatedUI || interruptedShow)
+            {
+                return UIFinalizeClosedMode.Dispose;
+            }
+
+            return UIFinalizeClosedMode.Cache;
         }
         private UIBase GetUIImpl(UIMetadata meta)
         {
@@ -310,6 +439,11 @@ namespace AlicizaX.UI.Runtime
 
             for (int layerIndex = _openUI.Length - 1; layerIndex >= 0; layerIndex--)
             {
+                if (IsLayerBlockedForMutation(layerIndex))
+                {
+                    return false;
+                }
+
                 LayerData layer = _openUI[layerIndex];
                 if (layer == null)
                 {
@@ -809,12 +943,12 @@ namespace AlicizaX.UI.Runtime
 
         private struct OcclusionWorkItem
         {
-            public UIBase View;
+            public UIMetadata Meta;
             public bool Visible;
 
-            public OcclusionWorkItem(UIBase view, bool visible)
+            public OcclusionWorkItem(UIMetadata meta, bool visible)
             {
-                View = view;
+                Meta = meta;
                 Visible = visible;
             }
         }
@@ -838,14 +972,21 @@ namespace AlicizaX.UI.Runtime
                     return;
                 }
 
-                UIBase view = layer.Items[i]?.View;
+                UIMetadata meta = layer.Items[i];
+                UIBase view = meta?.View;
                 if (view == null)
                 {
                     continue;
                 }
 
                 bool visible = showAll || i >= fullscreenIdx;
-                if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                if (meta.StackRemovalPending)
+                {
+                    view.Visible = false;
+                    continue;
+                }
+
+                if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
                 {
                     asyncCount++;
                 }
@@ -869,16 +1010,11 @@ namespace AlicizaX.UI.Runtime
                         return;
                     }
 
-                    UIBase view = layer.Items[i]?.View;
-                    if (view == null)
-                    {
-                        continue;
-                    }
-
+                    UIMetadata meta = layer.Items[i];
                     bool visible = showAll || i >= fullscreenIdx;
-                    if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                    if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
                     {
-                        await ApplyWindowOcclusionAsync(layer, visibilityVersion, view, visible, occlusionMode);
+                        await ApplyWindowOcclusionAsync(layer, visibilityVersion, meta, visible, occlusionMode);
                         return;
                     }
                 }
@@ -900,16 +1036,11 @@ namespace AlicizaX.UI.Runtime
                         return;
                     }
 
-                    UIBase view = layer.Items[i]?.View;
-                    if (view == null)
-                    {
-                        continue;
-                    }
-
+                    UIMetadata meta = layer.Items[i];
                     bool visible = showAll || i >= fullscreenIdx;
-                    if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                    if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
                     {
-                        workItems[n++] = new OcclusionWorkItem(view, visible);
+                        workItems[n++] = new OcclusionWorkItem(meta, visible);
                     }
                 }
 
@@ -921,7 +1052,7 @@ namespace AlicizaX.UI.Runtime
                 if (n == 1)
                 {
                     OcclusionWorkItem workItem = workItems[0];
-                    await ApplyWindowOcclusionAsync(layer, visibilityVersion, workItem.View, workItem.Visible, occlusionMode);
+                    await ApplyWindowOcclusionAsync(layer, visibilityVersion, workItem.Meta, workItem.Visible, occlusionMode);
                     return;
                 }
 
@@ -934,7 +1065,7 @@ namespace AlicizaX.UI.Runtime
                 for (int i = 0; i < n; i++)
                 {
                     OcclusionWorkItem workItem = workItems[i];
-                    tasks[i] = ApplyWindowOcclusionAsync(layer, visibilityVersion, workItem.View, workItem.Visible, occlusionMode);
+                    tasks[i] = ApplyWindowOcclusionAsync(layer, visibilityVersion, workItem.Meta, workItem.Visible, occlusionMode);
                 }
 
                 await UniTask.WhenAll(tasks);
@@ -960,16 +1091,23 @@ namespace AlicizaX.UI.Runtime
 
             for (int i = startInclusive; i < endExclusive; i++)
             {
-                UIBase view = layer.Items[i]?.View;
+                UIMetadata meta = layer.Items[i];
+                UIBase view = meta?.View;
                 if (view == null)
                 {
                     continue;
                 }
 
                 bool visible = showAll || i >= fullscreenIdx;
-                if (NeedsAsyncOcclusion(view, visible, occlusionMode))
+                if (meta.StackRemovalPending)
                 {
-                    ApplyWindowOcclusionSync(view, visible, occlusionMode);
+                    view.Visible = false;
+                    continue;
+                }
+
+                if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
+                {
+                    ApplyWindowOcclusionSync(meta, visible, occlusionMode);
                 }
                 else
                 {
@@ -978,8 +1116,14 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private static bool NeedsAsyncOcclusion(UIBase view, bool visible, UIOcclusionMode occlusionMode)
+        private static bool NeedsAsyncOcclusion(UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
         {
+            UIBase view = meta?.View;
+            if (view == null || meta.StackRemovalPending)
+            {
+                return false;
+            }
+
             if (visible)
             {
                 return view.State == UIState.Closed || view.State == UIState.Closing;
@@ -1016,9 +1160,15 @@ namespace AlicizaX.UI.Runtime
             return layer != null && layer.VisibilityVersion == visibilityVersion;
         }
 
-        private static async UniTask ApplyWindowOcclusionAsync(LayerData layer, int visibilityVersion, UIBase view, bool visible, UIOcclusionMode occlusionMode)
+        private static async UniTask ApplyWindowOcclusionAsync(LayerData layer, int visibilityVersion, UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
         {
-            if (!IsVisibilityVersionCurrent(layer, visibilityVersion))
+            if (!IsVisibilityVersionCurrent(layer, visibilityVersion) || meta == null || meta.StackRemovalPending)
+            {
+                return;
+            }
+
+            UIBase view = meta.View;
+            if (view == null)
             {
                 return;
             }
@@ -1063,8 +1213,19 @@ namespace AlicizaX.UI.Runtime
             view.Visible = false;
         }
 
-        private static void ApplyWindowOcclusionSync(UIBase view, bool visible, UIOcclusionMode occlusionMode)
+        private static void ApplyWindowOcclusionSync(UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
         {
+            if (meta == null || meta.StackRemovalPending)
+            {
+                return;
+            }
+
+            UIBase view = meta.View;
+            if (view == null)
+            {
+                return;
+            }
+
             if (visible)
             {
                 if (view.State == UIState.Closed || view.State == UIState.Closing)
@@ -1147,7 +1308,7 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask RollbackFailedShowAsync(UIMetadata meta, int operationVersion, int previousFullscreenIndex = int.MinValue)
         {
-            if (meta == null || meta.OperationVersion != operationVersion)
+            if (!CanRollbackShow(meta, operationVersion))
             {
 #if UNITY_EDITOR
                 WarnUIOperation("Rollback skipped", meta, operationVersion, "RollbackFailedShowAsync was called, but the metadata was null or the operation version no longer matched.");
@@ -1170,7 +1331,7 @@ namespace AlicizaX.UI.Runtime
 
         private void RollbackFailedShow(UIMetadata meta, int operationVersion)
         {
-            if (meta == null || meta.OperationVersion != operationVersion)
+            if (!CanRollbackShow(meta, operationVersion))
             {
 #if UNITY_EDITOR
                 WarnUIOperation("Rollback skipped sync", meta, operationVersion, "RollbackFailedShow was called, but the metadata was null or the operation version no longer matched.");
@@ -1186,6 +1347,66 @@ namespace AlicizaX.UI.Runtime
             SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
 
             meta.DisposeImmediate();
+        }
+
+        private bool CanRollbackShow(UIMetadata meta, int operationVersion)
+        {
+            return meta != null
+                   && meta.OperationVersion == operationVersion
+                   && IsMetaInOpenStack(meta);
+        }
+
+        internal async UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
+        {
+            int layerIndex = (int)layer;
+            if ((uint)layerIndex >= (uint)_openUI.Length || _layerMutationBusy[layerIndex])
+            {
+                return false;
+            }
+
+            _layerMutationBusy[layerIndex] = true;
+            try
+            {
+                LayerData layerData = _openUI[layerIndex];
+                if (layerData == null)
+                {
+                    _layerVisualDirty[layerIndex] = false;
+                    return true;
+                }
+
+                layerData.LastFullscreenIndex = FindLastFullscreenIndex(layerData, layerData.Count - 1);
+                ClearStackRemovalPendingOnLayer(layerData);
+                await SortWindowVisibleAsync(layerIndex, int.MinValue);
+                SortWindowDepth(layerIndex, 0);
+                _layerVisualDirty[layerIndex] = false;
+                return true;
+            }
+            catch
+            {
+                _layerVisualDirty[layerIndex] = true;
+                return false;
+            }
+            finally
+            {
+                _layerMutationBusy[layerIndex] = false;
+            }
+        }
+
+        private static void ClearStackRemovalPendingOnLayer(LayerData layerData)
+        {
+            if (layerData == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < layerData.Count; i++)
+            {
+                UIMetadata meta = layerData.Items[i];
+                if (meta != null)
+                {
+                    meta.StackRemovalPending = false;
+                }
+            }
         }
 
         private void AddUpdateableWindow(UIMetadata meta)

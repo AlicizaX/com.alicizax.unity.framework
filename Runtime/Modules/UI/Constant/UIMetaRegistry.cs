@@ -58,6 +58,12 @@ namespace AlicizaX.UI.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool TryGetRegisteredOnly(RuntimeTypeHandle handle, out UIMetaInfo info)
+        {
+            return _typeHandleMap.TryGetValue(handle, out info);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool TryGet(string typeName, out UIMetaInfo info)
         {
             if (_ambiguousTypeNames.Contains(typeName))

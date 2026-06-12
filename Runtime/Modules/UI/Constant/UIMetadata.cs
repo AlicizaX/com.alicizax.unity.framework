@@ -17,6 +17,7 @@ namespace AlicizaX.UI.Runtime
         public readonly bool HasSyncInitialize;
         public readonly bool HasAsyncInitialize;
         public bool InCache = false;
+        public bool StackRemovalPending;
         public readonly bool IsValid;
 
         private CancellationTokenSource _loadCancellationTokenSource;
@@ -219,6 +220,7 @@ namespace AlicizaX.UI.Runtime
             _cancelRequested = false;
             _showInProgress = false;
             _closeInProgress = false;
+            StackRemovalPending = false;
             View = null;
             InCache = false;
         }

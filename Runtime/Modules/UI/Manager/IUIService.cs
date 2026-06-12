@@ -127,6 +127,11 @@ namespace AlicizaX.UI.Runtime
         UniTask<bool> CloseUIAsync(RuntimeTypeHandle handle, bool force = false);
 
         /// <summary>
+        /// 以一次 UIService 栈事务关闭多个 UI。modes 与 handles 一一对应。
+        /// </summary>
+        UniTask<UICloseManyResult> CloseManyAsync(RuntimeTypeHandle[] handles, UICloseManyMode[] modes, int count, bool force = false);
+
+        /// <summary>
         /// 指定类型 UI 当前是否处于稳定打开状态。
         /// </summary>
         bool IsOpen<T>() where T : UIBase;
