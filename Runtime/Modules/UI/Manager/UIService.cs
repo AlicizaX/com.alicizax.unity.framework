@@ -160,7 +160,7 @@ namespace AlicizaX.UI.Runtime
                 return UniTask.FromResult(false);
             }
 
-            return CloseUIImpl(metadata, force);
+            return CloseUIImplCore(metadata, force);
         }
 
         public bool IsOpen<T>() where T : UIBase

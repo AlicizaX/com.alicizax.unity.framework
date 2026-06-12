@@ -151,6 +151,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             meta.View.BindUIHolder(holder, owner);
+            meta.View.SetDestroyHolderOnDispose(true);
             return true;
         }
 

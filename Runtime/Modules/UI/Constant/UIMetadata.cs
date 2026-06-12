@@ -33,6 +33,11 @@ namespace AlicizaX.UI.Runtime
         public bool ShowInProgress => _showInProgress;
         public bool CloseInProgress => _closeInProgress;
 
+        public bool IsOperationCurrent(int operationVersion)
+        {
+            return _operationVersion == operationVersion;
+        }
+
         public UIState State
         {
             get

@@ -202,11 +202,6 @@ namespace AlicizaX.UI.Runtime
 
             return showResult ? metaInfo.View : null;
         }
-        private async UniTask<bool> CloseUIImpl(UIMetadata meta, bool force)
-        {
-            return await CloseUIImplCore(meta, force);
-        }
-
         private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
         {
             if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying)

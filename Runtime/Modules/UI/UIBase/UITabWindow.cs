@@ -22,13 +22,16 @@ namespace AlicizaX.UI.Runtime
 
         // 加载状态字典
         private readonly Dictionary<RuntimeTypeHandle, bool> _loadingFlags = new(RuntimeTypeHandleComparer.Instance);
-        private sealed class TabSwitchRequest
+        private struct TabSwitchRequest
         {
             public RuntimeTypeHandle TypeHandle;
             public System.Object[] UserDatas;
+            public int Version;
         }
 
-        private TabSwitchRequest _currentRequest;
+        private int _currentRequestVersion;
+        private RuntimeTypeHandle _currentRequestTypeHandle;
+        private System.Object[] _currentRequestUserDatas;
 
         protected T baseui => (T)Holder;
 
@@ -90,21 +93,16 @@ namespace AlicizaX.UI.Runtime
             if (!ValidateIndex(index)) return;
 
             RuntimeTypeHandle typeHandle = _typeOrder[index];
-            var request = new TabSwitchRequest
-            {
-                TypeHandle = typeHandle,
-                UserDatas = userDatas,
-            };
-            _currentRequest = request;
+            SetCurrentRequest(typeHandle, userDatas);
             if (_loadingFlags.TryGetValue(typeHandle, out var isLoading) && isLoading) return;
 
             if (_loadedTabs.TryGetValue(typeHandle, out var loadedTab))
             {
-                SwitchToLoadedTab(request, loadedTab).Forget();
+                SwitchToLoadedTab(GetCurrentRequest(), loadedTab).Forget();
                 return;
             }
 
-            StartAsyncLoading(request).Forget();
+            StartAsyncLoading(GetCurrentRequest()).Forget();
         }
 
         private async UniTask StartAsyncLoading(TabSwitchRequest request)
@@ -120,9 +118,9 @@ namespace AlicizaX.UI.Runtime
                 if (widget is UIWidget tabWidget)
                 {
                     _loadedTabs[typeHandle] = tabWidget;
-                    if (ReferenceEquals(_currentRequest, request))
+                    if (IsCurrentRequestType(typeHandle))
                     {
-                        SwitchToLoadedTab(request, tabWidget).Forget();
+                        SwitchToLoadedTab(GetCurrentRequest(), tabWidget).Forget();
                     }
                 }
                 else
@@ -142,7 +140,7 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTaskVoid SwitchToLoadedTab(TabSwitchRequest request, UIWidget targetTab)
         {
-            if (!ReferenceEquals(_currentRequest, request)) return;
+            if (!IsCurrentRequest(request)) return;
 
             if (_activeTab == targetTab)
             {
@@ -157,12 +155,39 @@ namespace AlicizaX.UI.Runtime
                 await previousTab.CloseAsync();
             }
 
-            if (!ReferenceEquals(_currentRequest, request) || _activeTab != targetTab)
+            if (!IsCurrentRequest(request) || _activeTab != targetTab)
             {
                 return;
             }
 
             await targetTab.OpenAsync(request.UserDatas);
+        }
+
+        private bool IsCurrentRequest(TabSwitchRequest request)
+        {
+            return request.Version == _currentRequestVersion;
+        }
+
+        private bool IsCurrentRequestType(RuntimeTypeHandle typeHandle)
+        {
+            return typeHandle.Value == _currentRequestTypeHandle.Value;
+        }
+
+        private void SetCurrentRequest(RuntimeTypeHandle typeHandle, System.Object[] userDatas)
+        {
+            _currentRequestTypeHandle = typeHandle;
+            _currentRequestUserDatas = userDatas;
+            _currentRequestVersion++;
+        }
+
+        private TabSwitchRequest GetCurrentRequest()
+        {
+            return new TabSwitchRequest
+            {
+                TypeHandle = _currentRequestTypeHandle,
+                UserDatas = _currentRequestUserDatas,
+                Version = _currentRequestVersion,
+            };
         }
 
         protected override void OnWidgetRemoved(UIBase widget)

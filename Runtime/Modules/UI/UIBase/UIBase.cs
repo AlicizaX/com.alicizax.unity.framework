@@ -44,6 +44,7 @@ namespace AlicizaX.UI.Runtime
         private RuntimeTypeHandle _runtimeTypeHandle;
         private int _uiTypeId = -1;
         private string _cachedTypeName;
+        private bool _destroyHolderOnDispose = true;
 
         internal string CachedTypeName => _cachedTypeName ??= GetType().Name;
 
@@ -115,18 +116,21 @@ namespace AlicizaX.UI.Runtime
 
             _userDatas = null;
 
-            // 非托管资源释放
-            if (Holder != null)
+            UIHolderObjectBase holder = Holder;
+            if (!ReferenceEquals(holder, null))
             {
-                ResourceOwner.ReleaseBindingsInHierarchy(Holder.gameObject);
-                if (Application.isPlaying)
-                    Object.Destroy(Holder.gameObject);
-                else
-                    Object.DestroyImmediate(Holder.gameObject);
+                if (_destroyHolderOnDispose && holder.IsValid())
+                {
+                    ResourceOwner.ReleaseBindingsInHierarchy(holder.gameObject);
+                    if (Application.isPlaying)
+                        Object.Destroy(holder.gameObject);
+                    else
+                        Object.DestroyImmediate(holder.gameObject);
+                }
 
-                Holder = null;
             }
 
+            Holder = null;
             _disposed = true;
         }
 
@@ -219,6 +223,7 @@ namespace AlicizaX.UI.Runtime
                 {
                     // 设置父类
                     _canvas.sortingOrder = value;
+                    SyncChildDepth();
                 }
             }
         }
@@ -270,6 +275,11 @@ namespace AlicizaX.UI.Runtime
         internal abstract Type UIHolderType { get; }
 
         internal abstract void BindUIHolder(UIHolderObjectBase holder, UIBase owner);
+
+        internal void SetDestroyHolderOnDispose(bool value)
+        {
+            _destroyHolderOnDispose = value;
+        }
 
         protected void BindHolderCommon(UIHolderObjectBase holder, bool overrideSorting, bool stretchToParent)
         {
@@ -374,6 +384,11 @@ namespace AlicizaX.UI.Runtime
         {
             if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
             {
+                if (skippedResult)
+                {
+                    InternalRefreshOpened();
+                }
+
 #if UNITY_EDITOR
                 if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open skipped", $"TryBeginOpen returned false. SkippedResult={skippedResult}.");
 #endif
@@ -430,6 +445,11 @@ namespace AlicizaX.UI.Runtime
         {
             if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
             {
+                if (skippedResult)
+                {
+                    InternalRefreshOpened();
+                }
+
 #if UNITY_EDITOR
                 if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync skipped", $"TryBeginOpen returned false. SkippedResult={skippedResult}.");
 #endif
