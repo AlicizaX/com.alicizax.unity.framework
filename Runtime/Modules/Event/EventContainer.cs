@@ -8,7 +8,7 @@ namespace AlicizaX
     [Il2CppSetOption(Option.NullChecks, false)]
     [Il2CppSetOption(Option.DivideByZeroChecks, false)]
     [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
-    public static class EventContainer<TPayload> where TPayload : struct, IEventArgs
+    public static class EventContainer<TPayload> where TPayload : struct, IPayloadEventArgs
     {
         private enum PendingOperationKind : byte
         {
@@ -60,6 +60,9 @@ namespace AlicizaX
 
         static EventContainer()
         {
+#if UNITY_EDITOR
+            EventArgsGuard.ThrowIfDualEventKind<TPayload>();
+#endif
             TypeId = UnsubscribeRegistry.Register(Unsubscribe);
 
             _callbacks = new InEventHandler<TPayload>[InitialSize];
@@ -435,33 +438,13 @@ namespace AlicizaX
                     _freeSlots[_freeCount++] = i;
                 }
 
-#if UNITY_EDITOR
-                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
-                {
-                    Log.Warning($"EventContainer<{typeof(TPayload).Name}> Slot resized to {capacity}. 建议调整 Prewarm 为 {capacity} size.");
-                }
-#endif
             }
 
             if (_packedCallbacks.Length < capacity)
             {
                 Array.Resize(ref _packedCallbacks, capacity);
                 Array.Resize(ref _packedSlots, capacity);
-
-#if UNITY_EDITOR
-                if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
-                {
-                    Log.Warning($"EventContainer<{typeof(TPayload).Name}> Packed resized to {capacity}. 建议调整 Prewarm 为 {capacity} size.");
-                }
-#endif
             }
-
-#if UNITY_EDITOR
-            if (!EventDebugRegistry.BenchmarkReleaseLikeMode)
-            {
-                EventDebugRegistry.RecordResize<TPayload>(_packedCount, _callbacks.Length);
-            }
-#endif
         }
 
         public static void Clear()

@@ -9,7 +9,7 @@ namespace AlicizaX
         [Il2CppSetOption(Option.DivideByZeroChecks, false)]
         [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Publish<T>(in T evt) where T : struct, IEventArgs
+        public static void Publish<T>(in T evt) where T : struct, IPayloadEventArgs
         {
             EventContainer<T>.SafePublish(in evt);
         }
@@ -18,7 +18,7 @@ namespace AlicizaX
         [Il2CppSetOption(Option.DivideByZeroChecks, false)]
         [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Publish<T>() where T : struct, IEventArgs
+        public static void Publish<T>() where T : struct, IEmptyEventArgs
         {
             EmptyEventContainer<T>.SafePublish();
         }

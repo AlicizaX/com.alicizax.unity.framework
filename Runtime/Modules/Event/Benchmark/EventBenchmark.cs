@@ -80,8 +80,8 @@ namespace AlicizaX
             ClearCapturedConsoleOutput();
             ClearBenchmarkEvents();
             EnsureBuffers(Math.Max(subscriberCount, loopCount));
-            EventBus.EnsureCapacity<BenchmarkPayloadEvent>(Math.Max(prewarmCapacity, subscriberCount));
-            EventBus.EnsureCapacity<BenchmarkEmptyEvent>(Math.Max(prewarmCapacity, subscriberCount));
+            EventBus.EnsurePayloadCapacity<BenchmarkPayloadEvent>(Math.Max(prewarmCapacity, subscriberCount));
+            EventBus.EnsureEmptyCapacity<BenchmarkEmptyEvent>(Math.Max(prewarmCapacity, subscriberCount));
             m_FailCount = 0;
             m_CaseCount = 0;
 
@@ -244,7 +244,7 @@ namespace AlicizaX
                 for (int i = 0; i < subscriberCount; i++)
                     m_Handles[i] = EventBus.Subscribe<BenchmarkPayloadEvent>(m_PayloadHandlers[i]);
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkPayloadEvent>(), subscriberCount, "payload subscribe count mismatch");
+                AssertEqual(EventBus.GetPayloadSubscriberCount<BenchmarkPayloadEvent>(), subscriberCount, "payload subscribe count mismatch");
             }
         }
 
@@ -258,7 +258,7 @@ namespace AlicizaX
                     m_Handles[i] = default;
                 }
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkPayloadEvent>(), 0, "payload unsubscribe count mismatch");
+                AssertEqual(EventBus.GetPayloadSubscriberCount<BenchmarkPayloadEvent>(), 0, "payload unsubscribe count mismatch");
             }
         }
 
@@ -272,7 +272,7 @@ namespace AlicizaX
                     handle.Dispose();
                 }
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkPayloadEvent>(), 0, "payload subscribe unsubscribe loop count mismatch");
+                AssertEqual(EventBus.GetPayloadSubscriberCount<BenchmarkPayloadEvent>(), 0, "payload subscribe unsubscribe loop count mismatch");
             }
         }
 
@@ -284,7 +284,7 @@ namespace AlicizaX
                 for (int i = 0; i < publishLoopCount; i++)
                     EventBus.Publish(in evt);
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkPayloadEvent>(), subscriberCount, "payload publish subscriber count mismatch");
+                AssertEqual(EventBus.GetPayloadSubscriberCount<BenchmarkPayloadEvent>(), subscriberCount, "payload publish subscriber count mismatch");
             }
         }
 
@@ -295,7 +295,7 @@ namespace AlicizaX
                 for (int i = 0; i < subscriberCount; i++)
                     m_Handles[i] = EventBus.Subscribe<BenchmarkEmptyEvent>(m_EmptyHandlers[i]);
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkEmptyEvent>(), subscriberCount, "empty subscribe count mismatch");
+                AssertEqual(EventBus.GetEmptySubscriberCount<BenchmarkEmptyEvent>(), subscriberCount, "empty subscribe count mismatch");
             }
         }
 
@@ -309,7 +309,7 @@ namespace AlicizaX
                     m_Handles[i] = default;
                 }
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkEmptyEvent>(), 0, "empty unsubscribe count mismatch");
+                AssertEqual(EventBus.GetEmptySubscriberCount<BenchmarkEmptyEvent>(), 0, "empty unsubscribe count mismatch");
             }
         }
 
@@ -323,7 +323,7 @@ namespace AlicizaX
                     handle.Dispose();
                 }
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkEmptyEvent>(), 0, "empty subscribe unsubscribe loop count mismatch");
+                AssertEqual(EventBus.GetEmptySubscriberCount<BenchmarkEmptyEvent>(), 0, "empty subscribe unsubscribe loop count mismatch");
             }
         }
 
@@ -334,38 +334,38 @@ namespace AlicizaX
                 for (int i = 0; i < publishLoopCount; i++)
                     EventBus.Publish<BenchmarkEmptyEvent>();
 
-                AssertEqual(EventBus.GetSubscriberCount<BenchmarkEmptyEvent>(), subscriberCount, "empty publish subscriber count mismatch");
+                AssertEqual(EventBus.GetEmptySubscriberCount<BenchmarkEmptyEvent>(), subscriberCount, "empty publish subscriber count mismatch");
             }
         }
 
         private void EnsurePayloadSubscribers()
         {
-            EventBus.Clear<BenchmarkPayloadEvent>();
+            EventBus.ClearPayload<BenchmarkPayloadEvent>();
             for (int i = 0; i < subscriberCount; i++)
                 m_Handles[i] = EventBus.Subscribe<BenchmarkPayloadEvent>(m_PayloadHandlers[i]);
         }
 
         private void EnsureEmptySubscribers()
         {
-            EventBus.Clear<BenchmarkEmptyEvent>();
+            EventBus.ClearEmpty<BenchmarkEmptyEvent>();
             for (int i = 0; i < subscriberCount; i++)
                 m_Handles[i] = EventBus.Subscribe<BenchmarkEmptyEvent>(m_EmptyHandlers[i]);
         }
 
         private void ClearBenchmarkEvents()
         {
-            EventBus.Clear<BenchmarkPayloadEvent>();
-            EventBus.Clear<BenchmarkEmptyEvent>();
+            EventBus.ClearPayload<BenchmarkPayloadEvent>();
+            EventBus.ClearEmpty<BenchmarkEmptyEvent>();
         }
 
         private void ClearPayloadEvent()
         {
-            EventBus.Clear<BenchmarkPayloadEvent>();
+            EventBus.ClearPayload<BenchmarkPayloadEvent>();
         }
 
         private void ClearEmptyEvent()
         {
-            EventBus.Clear<BenchmarkEmptyEvent>();
+            EventBus.ClearEmpty<BenchmarkEmptyEvent>();
         }
 
         private void EnsureBuffers(int count)
@@ -412,7 +412,7 @@ namespace AlicizaX
             }
         }
 
-        private readonly struct BenchmarkPayloadEvent : IEventArgs
+        private readonly struct BenchmarkPayloadEvent : IPayloadEventArgs
         {
             public readonly int Value;
 
@@ -422,7 +422,7 @@ namespace AlicizaX
             }
         }
 
-        private readonly struct BenchmarkEmptyEvent : IEventArgs
+        private readonly struct BenchmarkEmptyEvent : IEmptyEventArgs
         {
         }
 
