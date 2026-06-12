@@ -27,16 +27,6 @@ namespace AlicizaX
         [Il2CppSetOption(Option.DivideByZeroChecks, false)]
         [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void AddUIEvent<T>(Action<T> handler) where T : struct, IEventArgs
-        {
-            EventRuntimeHandle handle = EventContainer<T>.Subscribe(handler);
-            _eventHandles.Add(handle);
-        }
-
-        [Il2CppSetOption(Option.NullChecks, false)]
-        [Il2CppSetOption(Option.DivideByZeroChecks, false)]
-        [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AddUIEvent<T>(InEventHandler<T> handler) where T : struct, IEventArgs
         {
             EventRuntimeHandle handle = EventContainer<T>.Subscribe(handler);

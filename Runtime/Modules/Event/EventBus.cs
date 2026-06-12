@@ -42,6 +42,24 @@ namespace AlicizaX
             EmptyEventContainer<T>.Publish();
         }
 
+        [Il2CppSetOption(Option.NullChecks, false)]
+        [Il2CppSetOption(Option.DivideByZeroChecks, false)]
+        [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void SafePublish<T>(in T evt) where T : struct, IEventArgs
+        {
+            EventContainer<T>.SafePublish(in evt);
+        }
+
+        [Il2CppSetOption(Option.NullChecks, false)]
+        [Il2CppSetOption(Option.DivideByZeroChecks, false)]
+        [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void SafePublish<T>() where T : struct, IEventArgs
+        {
+            EmptyEventContainer<T>.SafePublish();
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetSubscriberCount<T>() where T : struct, IEventArgs
         {

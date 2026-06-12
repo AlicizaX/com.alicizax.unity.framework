@@ -10,9 +10,13 @@ namespace AlicizaX
         Subscribe,
         Unsubscribe,
         Publish,
+        SafePublish,
         Resize,
         Clear,
-        MutationRejected
+        MutationRejected,
+        HandlerException,
+        DeferredMutation,
+        Flush
     }
 
     internal readonly struct EventDebugSummary
@@ -23,14 +27,18 @@ namespace AlicizaX
         internal readonly int PeakSubscriberCount;
         internal readonly int Capacity;
         internal readonly int EmptySubscriberCount;
-        internal readonly int ValueSubscriberCount;
         internal readonly int InSubscriberCount;
         internal readonly long PublishCount;
+        internal readonly long SafePublishCount;
         internal readonly long SubscribeCount;
         internal readonly long UnsubscribeCount;
         internal readonly int ResizeCount;
         internal readonly int ClearCount;
         internal readonly long MutationRejectedCount;
+        internal readonly long HandlerExceptionCount;
+        internal readonly long DeferredMutationCount;
+        internal readonly int FlushCount;
+        internal readonly int PeakPendingCount;
         internal readonly int LastOperationFrame;
         internal readonly long LastOperationTicksUtc;
 
@@ -41,14 +49,18 @@ namespace AlicizaX
             int peakSubscriberCount,
             int capacity,
             int emptySubscriberCount,
-            int valueSubscriberCount,
             int inSubscriberCount,
             long publishCount,
+            long safePublishCount,
             long subscribeCount,
             long unsubscribeCount,
             int resizeCount,
             int clearCount,
             long mutationRejectedCount,
+            long handlerExceptionCount,
+            long deferredMutationCount,
+            int flushCount,
+            int peakPendingCount,
             int lastOperationFrame,
             long lastOperationTicksUtc)
         {
@@ -58,14 +70,18 @@ namespace AlicizaX
             PeakSubscriberCount = peakSubscriberCount;
             Capacity = capacity;
             EmptySubscriberCount = emptySubscriberCount;
-            ValueSubscriberCount = valueSubscriberCount;
             InSubscriberCount = inSubscriberCount;
             PublishCount = publishCount;
+            SafePublishCount = safePublishCount;
             SubscribeCount = subscribeCount;
             UnsubscribeCount = unsubscribeCount;
             ResizeCount = resizeCount;
             ClearCount = clearCount;
             MutationRejectedCount = mutationRejectedCount;
+            HandlerExceptionCount = handlerExceptionCount;
+            DeferredMutationCount = deferredMutationCount;
+            FlushCount = flushCount;
+            PeakPendingCount = peakPendingCount;
             LastOperationFrame = lastOperationFrame;
             LastOperationTicksUtc = lastOperationTicksUtc;
         }
@@ -82,7 +98,6 @@ namespace AlicizaX
         internal readonly bool IsStatic;
         internal readonly bool IsUnityObjectDestroyed;
         internal readonly bool IsParameterless;
-        internal readonly bool UsesInParameter;
         internal readonly bool IsCompilerGeneratedTarget;
         internal readonly bool IsCompilerGeneratedMethod;
 
@@ -96,7 +111,6 @@ namespace AlicizaX
             bool isStatic,
             bool isUnityObjectDestroyed,
             bool isParameterless,
-            bool usesInParameter,
             bool isCompilerGeneratedTarget,
             bool isCompilerGeneratedMethod)
         {
@@ -109,7 +123,6 @@ namespace AlicizaX
             IsStatic = isStatic;
             IsUnityObjectDestroyed = isUnityObjectDestroyed;
             IsParameterless = isParameterless;
-            UsesInParameter = usesInParameter;
             IsCompilerGeneratedTarget = isCompilerGeneratedTarget;
             IsCompilerGeneratedMethod = isCompilerGeneratedMethod;
         }
@@ -150,7 +163,6 @@ namespace AlicizaX
             internal readonly Type EventType;
             internal Func<int> PayloadSubscriberCountProvider;
             internal Func<int> PayloadCapacityProvider;
-            internal Func<int> ValueSubscriberCountProvider;
             internal Func<int> InSubscriberCountProvider;
             internal Func<EventDebugSubscriberInfo[]> PayloadSubscribersProvider;
             internal Func<int> EmptySubscriberCountProvider;
@@ -159,11 +171,16 @@ namespace AlicizaX
 
             internal int PeakSubscriberCount;
             internal long PublishCount;
+            internal long SafePublishCount;
             internal long SubscribeCount;
             internal long UnsubscribeCount;
             internal int ResizeCount;
             internal int ClearCount;
             internal long MutationRejectedCount;
+            internal long HandlerExceptionCount;
+            internal long DeferredMutationCount;
+            internal int FlushCount;
+            internal int PeakPendingCount;
             internal int LastOperationFrame;
             internal long LastOperationTicksUtc;
 
@@ -202,7 +219,6 @@ namespace AlicizaX
         internal static void RegisterPayloadContainer<T>(
             Func<int> subscriberCountProvider,
             Func<int> capacityProvider,
-            Func<int> valueSubscriberCountProvider,
             Func<int> inSubscriberCountProvider,
             Func<EventDebugSubscriberInfo[]> subscribersProvider)
             where T : struct, IEventArgs
@@ -210,7 +226,6 @@ namespace AlicizaX
             State state = GetOrCreateState(typeof(T));
             state.PayloadSubscriberCountProvider = subscriberCountProvider;
             state.PayloadCapacityProvider = capacityProvider;
-            state.ValueSubscriberCountProvider = valueSubscriberCountProvider;
             state.InSubscriberCountProvider = inSubscriberCountProvider;
             state.PayloadSubscribersProvider = subscribersProvider;
             state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCountProvider());
@@ -254,6 +269,16 @@ namespace AlicizaX
             }
         }
 
+        internal static void RecordSafePublish<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        {
+            State state = GetState<T>();
+            state.SafePublishCount++;
+            if (DetailedHistoryEnabled)
+            {
+                MarkOperation(state, EventDebugOperationKind.SafePublish, subscriberCount, capacity, true);
+            }
+        }
+
         internal static void RecordResize<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
         {
             State state = GetState<T>();
@@ -273,6 +298,29 @@ namespace AlicizaX
             State state = GetState<T>();
             state.MutationRejectedCount++;
             MarkOperation(state, EventDebugOperationKind.MutationRejected, subscriberCount, capacity, true);
+        }
+
+        internal static void RecordHandlerException<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        {
+            State state = GetState<T>();
+            state.HandlerExceptionCount++;
+            MarkOperation(state, EventDebugOperationKind.HandlerException, subscriberCount, capacity, true);
+        }
+
+        internal static void RecordDeferredMutation<T>(int pendingCount, int subscriberCount, int capacity) where T : struct, IEventArgs
+        {
+            State state = GetState<T>();
+            state.DeferredMutationCount++;
+            state.PeakPendingCount = Math.Max(state.PeakPendingCount, pendingCount);
+            MarkOperation(state, EventDebugOperationKind.DeferredMutation, subscriberCount, capacity, DetailedHistoryEnabled);
+        }
+
+        internal static void RecordFlush<T>(int flushedCount, int subscriberCount, int capacity) where T : struct, IEventArgs
+        {
+            State state = GetState<T>();
+            state.FlushCount++;
+            state.PeakPendingCount = Math.Max(state.PeakPendingCount, flushedCount);
+            MarkOperation(state, EventDebugOperationKind.Flush, subscriberCount, capacity, DetailedHistoryEnabled);
         }
 
         internal static EventDebugSummary[] GetSummaries()
@@ -320,11 +368,16 @@ namespace AlicizaX
                 State state = _states[eventType];
                 state.PeakSubscriberCount = GetSubscriberCount(state);
                 state.PublishCount = 0;
+                state.SafePublishCount = 0;
                 state.SubscribeCount = 0;
                 state.UnsubscribeCount = 0;
                 state.ResizeCount = 0;
                 state.ClearCount = 0;
                 state.MutationRejectedCount = 0;
+                state.HandlerExceptionCount = 0;
+                state.DeferredMutationCount = 0;
+                state.FlushCount = 0;
+                state.PeakPendingCount = 0;
                 state.LastOperationFrame = 0;
                 state.LastOperationTicksUtc = 0;
             }
@@ -361,7 +414,6 @@ namespace AlicizaX
             int subscriberCount = GetSubscriberCount(state);
             int capacity = GetCapacity(state);
             int emptySubscriberCount = state.EmptySubscriberCountProvider?.Invoke() ?? 0;
-            int valueSubscriberCount = state.ValueSubscriberCountProvider?.Invoke() ?? 0;
             int inSubscriberCount = state.InSubscriberCountProvider?.Invoke() ?? 0;
 
             return new EventDebugSummary(
@@ -371,14 +423,18 @@ namespace AlicizaX
                 state.PeakSubscriberCount,
                 capacity,
                 emptySubscriberCount,
-                valueSubscriberCount,
                 inSubscriberCount,
                 state.PublishCount,
+                state.SafePublishCount,
                 state.SubscribeCount,
                 state.UnsubscribeCount,
                 state.ResizeCount,
                 state.ClearCount,
                 state.MutationRejectedCount,
+                state.HandlerExceptionCount,
+                state.DeferredMutationCount,
+                state.FlushCount,
+                state.PeakPendingCount,
                 state.LastOperationFrame,
                 state.LastOperationTicksUtc);
         }
