@@ -3,10 +3,10 @@ using System.Runtime.CompilerServices;
 
 namespace AlicizaX.ObjectPool
 {
-    internal struct TypeNamePairOpenHashMap
+    internal struct ObjectPoolKeyOpenHashMap
     {
         private int[] m_Buckets;
-        private TypeNamePair[] m_Keys;
+        private ObjectPoolKey[] m_Keys;
         private int[] m_Values;
         private int[] m_Next;
         private int m_Count;
@@ -18,12 +18,12 @@ namespace AlicizaX.ObjectPool
 
         public int Count => m_Count;
 
-        public TypeNamePairOpenHashMap(int capacity)
+        public ObjectPoolKeyOpenHashMap(int capacity)
         {
             int cap = NextPowerOf2(Math.Max(capacity, MinCapacity));
             m_Mask = cap - 1;
             m_Buckets = SlotArrayPool<int>.Rent(cap);
-            m_Keys = SlotArrayPool<TypeNamePair>.Rent(cap);
+            m_Keys = SlotArrayPool<ObjectPoolKey>.Rent(cap);
             m_Values = SlotArrayPool<int>.Rent(cap);
             m_Next = SlotArrayPool<int>.Rent(cap);
             Array.Clear(m_Buckets, 0, m_Buckets.Length);
@@ -36,7 +36,7 @@ namespace AlicizaX.ObjectPool
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool TryGetValue(TypeNamePair key, out int value)
+        public bool TryGetValue(ObjectPoolKey key, out int value)
         {
             if (m_Buckets == null) { value = -1; return false; }
             int hash = key.GetHashCode() & 0x7FFFFFFF;
@@ -52,10 +52,10 @@ namespace AlicizaX.ObjectPool
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool ContainsKey(TypeNamePair key) => TryGetValue(key, out _);
+        public bool ContainsKey(ObjectPoolKey key) => TryGetValue(key, out _);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void AddOrUpdate(TypeNamePair key, int value)
+        public void AddOrUpdate(ObjectPoolKey key, int value)
         {
             if (m_Count >= ((m_Mask + 1) * 3 >> 2))
                 Grow();
@@ -89,7 +89,7 @@ namespace AlicizaX.ObjectPool
             m_Count++;
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Remove(TypeNamePair key)
+        public bool Remove(ObjectPoolKey key)
         {
             if (m_Buckets == null) return false;
             int hash = key.GetHashCode() & 0x7FFFFFFF;
@@ -135,7 +135,7 @@ namespace AlicizaX.ObjectPool
             if (newCap < MinCapacity) newCap = MinCapacity;
             int newMask = newCap - 1;
             var newBuckets = SlotArrayPool<int>.Rent(newCap);
-            var newKeys = SlotArrayPool<TypeNamePair>.Rent(newCap);
+            var newKeys = SlotArrayPool<ObjectPoolKey>.Rent(newCap);
             var newValues = SlotArrayPool<int>.Rent(newCap);
             var newNext = SlotArrayPool<int>.Rent(newCap);
             Array.Clear(newBuckets, 0, newBuckets.Length);
@@ -163,7 +163,7 @@ namespace AlicizaX.ObjectPool
             }
 
             SlotArrayPool<int>.Return(m_Buckets, true);
-            SlotArrayPool<TypeNamePair>.Return(m_Keys, true);
+            SlotArrayPool<ObjectPoolKey>.Return(m_Keys, true);
             SlotArrayPool<int>.Return(m_Values, true);
             SlotArrayPool<int>.Return(m_Next, true);
 
@@ -179,7 +179,7 @@ namespace AlicizaX.ObjectPool
         public void Dispose()
         {
             SlotArrayPool<int>.Return(m_Buckets, true);
-            SlotArrayPool<TypeNamePair>.Return(m_Keys, true);
+            SlotArrayPool<ObjectPoolKey>.Return(m_Keys, true);
             SlotArrayPool<int>.Return(m_Values, true);
             SlotArrayPool<int>.Return(m_Next, true);
             m_Buckets = null;

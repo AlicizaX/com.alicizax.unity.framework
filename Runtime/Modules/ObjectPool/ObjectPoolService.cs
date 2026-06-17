@@ -12,7 +12,7 @@ namespace AlicizaX.ObjectPool
         private const float DefaultExpireTime = float.MaxValue;
         private const int InitPoolArrayCapacity = 8;
 
-        private TypeNamePairOpenHashMap m_PoolMap;
+        private ObjectPoolKeyOpenHashMap m_PoolMap;
         private ReferenceOpenHashMap m_PoolRefMap;
         private ObjectPoolBase[] m_Pools;
         private int m_PoolCount;
@@ -21,7 +21,7 @@ namespace AlicizaX.ObjectPool
 
         public ObjectPoolService()
         {
-            m_PoolMap = new TypeNamePairOpenHashMap(InitPoolArrayCapacity);
+            m_PoolMap = new ObjectPoolKeyOpenHashMap(InitPoolArrayCapacity);
             m_PoolRefMap = new ReferenceOpenHashMap(InitPoolArrayCapacity);
             m_Pools = new ObjectPoolBase[InitPoolArrayCapacity];
             m_PoolCount = 0;
@@ -60,18 +60,18 @@ namespace AlicizaX.ObjectPool
         // ========== Has ==========
 
         public bool HasObjectPool<T>() where T : ObjectBase
-            => m_PoolMap.ContainsKey(new TypeNamePair(typeof(T)));
+            => m_PoolMap.ContainsKey(new ObjectPoolKey(typeof(T)));
 
         public bool HasObjectPool<T>(string name) where T : ObjectBase
-            => m_PoolMap.ContainsKey(new TypeNamePair(typeof(T), name));
+            => m_PoolMap.ContainsKey(new ObjectPoolKey(typeof(T), name));
 
         // ========== Get ==========
 
         public IObjectPool<T> GetObjectPool<T>() where T : ObjectBase
-            => (IObjectPool<T>)InternalGet(new TypeNamePair(typeof(T)));
+            => (IObjectPool<T>)InternalGet(new ObjectPoolKey(typeof(T)));
 
         public IObjectPool<T> GetObjectPool<T>(string name) where T : ObjectBase
-            => (IObjectPool<T>)InternalGet(new TypeNamePair(typeof(T), name));
+            => (IObjectPool<T>)InternalGet(new ObjectPoolKey(typeof(T), name));
 
         // ========== GetAll ==========
 
@@ -103,7 +103,7 @@ namespace AlicizaX.ObjectPool
 
         public IObjectPool<T> CreatePool<T>(ObjectPoolCreateOptions options = default) where T : ObjectBase
         {
-            var key = new TypeNamePair(typeof(T), options.Name);
+            var key = new ObjectPoolKey(typeof(T), options.Name);
             if (m_PoolMap.ContainsKey(key))
             {
 #if UNITY_EDITOR
@@ -137,10 +137,10 @@ namespace AlicizaX.ObjectPool
         // ========== Destroy ==========
 
         public bool DestroyObjectPool<T>() where T : ObjectBase
-            => InternalDestroy(new TypeNamePair(typeof(T)));
+            => InternalDestroy(new ObjectPoolKey(typeof(T)));
 
         public bool DestroyObjectPool<T>(string name) where T : ObjectBase
-            => InternalDestroy(new TypeNamePair(typeof(T), name));
+            => InternalDestroy(new ObjectPoolKey(typeof(T), name));
 
         public bool DestroyObjectPool<T>(IObjectPool<T> objectPool) where T : ObjectBase
         {
@@ -161,7 +161,7 @@ namespace AlicizaX.ObjectPool
 #endif
                 return false;
             }
-            return InternalDestroy(new TypeNamePair(typeof(T), objectPool.Name));
+            return InternalDestroy(new ObjectPoolKey(typeof(T), objectPool.Name));
         }
 
         // ========== Release ==========
@@ -190,14 +190,14 @@ namespace AlicizaX.ObjectPool
 
         // ========== Internal ==========
 
-        private ObjectPoolBase InternalGet(TypeNamePair key)
+        private ObjectPoolBase InternalGet(ObjectPoolKey key)
         {
             if (m_PoolMap.TryGetValue(key, out int idx))
                 return m_Pools[idx];
             return null;
         }
 
-        private bool InternalDestroy(TypeNamePair key)
+        private bool InternalDestroy(ObjectPoolKey key)
         {
             if (!m_PoolMap.TryGetValue(key, out int idx))
                 return false;
@@ -211,7 +211,7 @@ namespace AlicizaX.ObjectPool
                 var lastPool = m_Pools[lastIndex];
                 m_Pools[idx] = lastPool;
                 m_PoolRefMap.AddOrUpdate(lastPool, idx);
-                var lastKey = new TypeNamePair(lastPool.ObjectType, lastPool.Name);
+                var lastKey = new ObjectPoolKey(lastPool.ObjectType, lastPool.Name);
                 m_PoolMap.AddOrUpdate(lastKey, idx);
             }
             m_Pools[lastIndex] = null;

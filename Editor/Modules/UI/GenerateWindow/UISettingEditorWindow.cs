@@ -2,8 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Xml;
 using AlicizaX.UI.Runtime;
-using Newtonsoft.Json;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
@@ -15,6 +15,12 @@ namespace AlicizaX.UI.Editor
         private const float ToolbarButtonWidth = 36f;
 
         private static List<string> cacheFilterType;
+
+        [Serializable]
+        private class UIElementRegexDataList
+        {
+            public List<UIEelementRegexData> items;
+        }
 
         [MenuItem("AlicizaX/UISetting Window", false, 211)]
         private static void OpenWindow()
@@ -623,7 +629,7 @@ namespace AlicizaX.UI.Editor
             }
 
             string text = File.ReadAllText(defaultPath);
-            var list = JsonConvert.DeserializeObject<List<UIEelementRegexData>>(text);
+            var list = FromJsonArray(text);
             ReplaceRegexConfigs(list, "Load Default UI Element Config");
         }
 
@@ -631,7 +637,7 @@ namespace AlicizaX.UI.Editor
         {
             try
             {
-                var list = JsonConvert.DeserializeObject<List<UIEelementRegexData>>(text.text);
+                var list = FromJsonArray(text.text);
                 ReplaceRegexConfigs(list, "Import UI Element Config");
             }
             catch (Exception exception)
@@ -665,7 +671,7 @@ namespace AlicizaX.UI.Editor
         {
             serializedConfig.ApplyModifiedProperties();
 
-            string json = JsonConvert.SerializeObject(uiGenerateConfiguration.UIElementRegexConfigs, Formatting.Indented);
+            string json = ToJsonArray(uiGenerateConfiguration.UIElementRegexConfigs);
             string path = EditorUtility.SaveFilePanel("Export UI Element Config", Application.dataPath, "uielementconfig", "txt");
             if (string.IsNullOrEmpty(path))
             {
@@ -675,6 +681,47 @@ namespace AlicizaX.UI.Editor
             File.WriteAllText(path, json);
             AssetDatabase.Refresh();
             EditorUtility.DisplayDialog("Export Complete", "Config exported.", "OK");
+        }
+
+        private static List<UIEelementRegexData> FromJsonArray(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new List<UIEelementRegexData>();
+            }
+
+            string trimmedJson = json.Trim();
+            string wrappedJson = trimmedJson.StartsWith("[", StringComparison.Ordinal)
+                ? "{\"items\":" + trimmedJson + "}"
+                : trimmedJson;
+            var wrapper = JsonUtility.FromJson<UIElementRegexDataList>(wrappedJson);
+            return wrapper?.items ?? new List<UIEelementRegexData>();
+        }
+
+        private static string ToJsonArray(IReadOnlyList<UIEelementRegexData> list)
+        {
+            if (list == null || list.Count == 0)
+            {
+                return "[]";
+            }
+
+            var builder = new System.Text.StringBuilder();
+            builder.AppendLine("[");
+            for (int i = 0; i < list.Count; i++)
+            {
+                string itemJson = JsonUtility.ToJson(list[i] ?? new UIEelementRegexData(), true);
+                builder.Append("  ");
+                builder.Append(itemJson.Replace("\n", "\n  "));
+                if (i < list.Count - 1)
+                {
+                    builder.Append(',');
+                }
+
+                builder.AppendLine();
+            }
+
+            builder.Append(']');
+            return builder.ToString();
         }
 
         private void ReloadConfiguration()

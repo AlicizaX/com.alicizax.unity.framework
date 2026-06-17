@@ -1,5 +1,5 @@
 ﻿using System;
-using Newtonsoft.Json;
+using UnityEngine;
 
 namespace AlicizaX
 {
@@ -19,7 +19,7 @@ namespace AlicizaX
             {
                 try
                 {
-                    return JsonConvert.SerializeObject(obj);
+                    return JsonUtility.ToJson(obj, false);
                 }
                 catch (Exception exception)
                 {
@@ -42,7 +42,7 @@ namespace AlicizaX
             {
                 try
                 {
-                    return JsonConvert.DeserializeObject<T>(json);
+                    return JsonUtility.FromJson<T>(json);
                 }
                 catch (Exception exception)
                 {
@@ -70,7 +70,7 @@ namespace AlicizaX
 
                 try
                 {
-                    return JsonConvert.DeserializeObject(json, objectType);
+                    return JsonUtility.FromJson(json, objectType);
                 }
                 catch (Exception exception)
                 {
