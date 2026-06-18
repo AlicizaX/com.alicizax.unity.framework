@@ -469,6 +469,68 @@ namespace AlicizaX.UI.Runtime
             return false;
         }
 
+        public bool TryGetTopVisibleHolder(Predicate<UIHolderObjectBase> predicate, out UIHolderObjectBase holder)
+        {
+            holder = null;
+
+            for (int layerIndex = _openUI.Length - 1; layerIndex >= 0; layerIndex--)
+            {
+                LayerData layer = _openUI[layerIndex];
+                if (layer == null)
+                {
+                    continue;
+                }
+
+                for (int i = layer.Count - 1; i >= 0; i--)
+                {
+                    UIMetadata metadata = layer.Items[i];
+                    if (!IsTopVisibleHolderCandidate(metadata))
+                    {
+                        continue;
+                    }
+
+                    UIHolderObjectBase candidate = metadata.View.Holder;
+                    if (candidate == null || !candidate.IsValid())
+                    {
+                        continue;
+                    }
+
+                    bool accepted;
+                    try
+                    {
+                        accepted = predicate == null || predicate(candidate);
+                    }
+                    catch (Exception)
+                    {
+                        accepted = false;
+                    }
+
+                    if (!accepted)
+                    {
+                        continue;
+                    }
+
+                    holder = candidate;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsTopVisibleHolderCandidate(UIMetadata metadata)
+        {
+            if (metadata == null
+                || metadata.View == null
+                || metadata.StackRemovalPending
+                || !UIStateMachine.IsDisplayActive(metadata.State))
+            {
+                return false;
+            }
+
+            return metadata.View.Visible;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void CreateMetaUI(UIMetadata meta)
         {

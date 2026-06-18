@@ -147,6 +147,11 @@ namespace AlicizaX.UI.Runtime
         UniTask<bool> TryCloseTopAsync(Predicate<RuntimeTypeHandle> predicate, bool force = false);
 
         /// <summary>
+        /// 从最高显示层开始查找当前可见且满足谓词的 UI Holder。
+        /// </summary>
+        bool TryGetTopVisibleHolder(Predicate<UIHolderObjectBase> predicate, out UIHolderObjectBase holder);
+
+        /// <summary>
         /// 获取当前已打开的指定类型 UI。
         /// </summary>
         T GetUI<T>() where T : UIBase;
