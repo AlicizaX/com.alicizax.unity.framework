@@ -33,7 +33,22 @@ namespace AlicizaX.UI.Runtime
 #endif
         private bool _navigating;
         private UniTaskCompletionSource _navigationWaiter;
+        private int _pendingRouteShowCount;
         private bool _dirty;
+
+        private readonly struct TrimmedRouteEntry
+        {
+            public readonly bool HasValue;
+            public readonly int Index;
+            public readonly UIRouteEntry Entry;
+
+            public TrimmedRouteEntry(int index, UIRouteEntry entry)
+            {
+                HasValue = true;
+                Index = index;
+                Entry = entry;
+            }
+        }
 
         public UIRouter(IUIService uiService)
         {
@@ -106,10 +121,11 @@ namespace AlicizaX.UI.Runtime
                 if (ShouldCompleteNavigateAfterShowStarted(oldCurrent, handle))
                 {
                     _history.Add(entry);
-                    TrimHistory();
+                    TrimmedRouteEntry trimmedEntry = TrimHistory();
+                    _pendingRouteShowCount++;
                     ExitNavigation();
                     navigationExited = true;
-                    return await CompletePendingRouteShow(entry, openTask);
+                    return await CompletePendingRouteShow(entry, openTask, trimmedEntry);
                 }
 
                 UIBase opened = await openTask;
@@ -381,6 +397,11 @@ namespace AlicizaX.UI.Runtime
 
         public void ResetHistory()
         {
+            if (RejectHistoryMutationDuringNavigation("ResetHistory", Current?.TypeHandle ?? default))
+            {
+                return;
+            }
+
             _history.Clear();
             _dirty = false;
         }
@@ -397,6 +418,11 @@ namespace AlicizaX.UI.Runtime
 
         public void SyncFromCurrentUI(RuntimeTypeHandle handle, params object[] args)
         {
+            if (RejectHistoryMutationDuringNavigation("SyncFromCurrentUI", handle))
+            {
+                return;
+            }
+
             if (!TryCreateEntry(handle, args, true, out UIRouteEntry entry))
             {
                 return;
@@ -511,13 +537,10 @@ namespace AlicizaX.UI.Runtime
         {
             return previousRoute != null
                    && !RuntimeTypeHandleComparer.Instance.Equals(previousRoute.TypeHandle, targetHandle)
-                   && IsLifecycleOcclusionWindow(targetHandle);
-        }
-
-        private static bool IsLifecycleOcclusionWindow(RuntimeTypeHandle handle)
-        {
-            return UIMetaRegistry.TryGet(handle, out UIMetaRegistry.UIMetaInfo metaInfo)
-                   && metaInfo.OcclusionMode == UIOcclusionMode.Lifecycle;
+                   && UIMetaRegistry.TryGet(previousRoute.TypeHandle, out UIMetaRegistry.UIMetaInfo previousMetaInfo)
+                   && UIMetaRegistry.TryGet(targetHandle, out UIMetaRegistry.UIMetaInfo targetMetaInfo)
+                   && previousMetaInfo.UILayer == targetMetaInfo.UILayer
+                   && targetMetaInfo.OcclusionMode == UIOcclusionMode.Lifecycle;
         }
 
         private static bool IsSameRoute(UIRouteEntry left, UIRouteEntry right)
@@ -646,6 +669,11 @@ namespace AlicizaX.UI.Runtime
 
                 if (!closeResult.Success)
                 {
+                    if (IsTransientCloseManyBusyFailure(closeResult))
+                    {
+                        return false;
+                    }
+
                     RuntimeTypeHandle dirtyHandle = closeResult.FailedHandle.Value == IntPtr.Zero
                         ? target.TypeHandle
                         : closeResult.FailedHandle;
@@ -688,6 +716,12 @@ namespace AlicizaX.UI.Runtime
             return batchClosedRoutes
                    && target != null
                    && _uiService.IsOpen(target.TypeHandle);
+        }
+
+        private static bool IsTransientCloseManyBusyFailure(UICloseManyResult result)
+        {
+            return result.ClosedCount == 0
+                   && result.FailureReason == UICloseFailureReason.LayerTransactionBusy;
         }
 
         private int BuildDeepBackCloseHandles(
@@ -747,8 +781,9 @@ namespace AlicizaX.UI.Runtime
                    && _uiService.IsOpen(target.TypeHandle);
         }
 
-        private void TrimHistory()
+        private TrimmedRouteEntry TrimHistory()
         {
+            TrimmedRouteEntry trimmedEntry = default;
             while (_history.Count > MaxHistoryCount)
             {
                 int removeIndex = 0;
@@ -761,8 +796,15 @@ namespace AlicizaX.UI.Runtime
                     }
                 }
 
+                UIRouteEntry removedEntry = _history[removeIndex];
                 _history.RemoveAt(removeIndex);
+                if (!trimmedEntry.HasValue)
+                {
+                    trimmedEntry = new TrimmedRouteEntry(removeIndex, removedEntry);
+                }
             }
+
+            return trimmedEntry;
         }
 
         private UniTask<UIBase> ShowByRouter(RuntimeTypeHandle handle, object[] args)
@@ -777,29 +819,36 @@ namespace AlicizaX.UI.Runtime
                 : _uiService.CloseUIAsync(handle, force);
         }
 
-        private async UniTask<bool> CompletePendingRouteShow(UIRouteEntry entry, UniTask<UIBase> openTask)
+        private async UniTask<bool> CompletePendingRouteShow(UIRouteEntry entry, UniTask<UIBase> openTask, TrimmedRouteEntry trimmedEntry)
         {
-            UIBase opened;
             try
             {
-                opened = await openTask;
-            }
-            catch
-            {
-                await RemovePendingRouteIfCurrent(entry);
-                throw;
-            }
+                UIBase opened;
+                try
+                {
+                    opened = await openTask;
+                }
+                catch
+                {
+                    await RemovePendingRouteIfCurrent(entry, trimmedEntry);
+                    throw;
+                }
 
-            if (opened != null)
-            {
-                return true;
-            }
+                if (opened != null)
+                {
+                    return true;
+                }
 
-            await RemovePendingRouteIfCurrent(entry);
-            return false;
+                await RemovePendingRouteIfCurrent(entry, trimmedEntry);
+                return false;
+            }
+            finally
+            {
+                _pendingRouteShowCount--;
+            }
         }
 
-        private async UniTask RemovePendingRouteIfCurrent(UIRouteEntry entry)
+        private async UniTask RemovePendingRouteIfCurrent(UIRouteEntry entry, TrimmedRouteEntry trimmedEntry)
         {
             await EnterNavigation();
             try
@@ -812,7 +861,11 @@ namespace AlicizaX.UI.Runtime
 
                 bool wasTop = index == _history.Count - 1;
                 _history.RemoveAt(index);
-                if (!wasTop)
+                if (wasTop)
+                {
+                    RestoreTrimmedRoute(trimmedEntry);
+                }
+                else
                 {
                     MarkDirty(entry.TypeHandle, "Pending lifecycle route completed after newer navigation; removed non-top pending entry and marked router history dirty.");
                 }
@@ -821,6 +874,26 @@ namespace AlicizaX.UI.Runtime
             {
                 ExitNavigation();
             }
+        }
+
+        private void RestoreTrimmedRoute(TrimmedRouteEntry trimmedEntry)
+        {
+            if (!trimmedEntry.HasValue || trimmedEntry.Entry == null)
+            {
+                return;
+            }
+
+            int insertIndex = trimmedEntry.Index;
+            if (insertIndex < 0)
+            {
+                insertIndex = 0;
+            }
+            else if (insertIndex > _history.Count)
+            {
+                insertIndex = _history.Count;
+            }
+
+            _history.Insert(insertIndex, trimmedEntry.Entry);
         }
 
         private int FindHistoryEntryReferenceIndex(UIRouteEntry entry)
@@ -874,6 +947,19 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
             AddWarning(handle, message);
 #endif
+        }
+
+        private bool RejectHistoryMutationDuringNavigation(string operationName, RuntimeTypeHandle handle)
+        {
+            if (!_navigating && _pendingRouteShowCount == 0)
+            {
+                return false;
+            }
+
+#if UNITY_EDITOR
+            AddWarning(handle, operationName + " ignored while navigation is in progress or a pending route show has not completed.");
+#endif
+            return true;
         }
 
 #if UNITY_EDITOR

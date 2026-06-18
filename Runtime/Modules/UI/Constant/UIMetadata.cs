@@ -14,8 +14,6 @@ namespace AlicizaX.UI.Runtime
         public readonly Type UILogicType;
         public readonly string UILogicTypeName;
         public readonly string UIHolderTypeName;
-        public readonly bool HasSyncInitialize;
-        public readonly bool HasAsyncInitialize;
         public bool InCache = false;
         public bool StackRemovalPending;
         public readonly bool IsValid;
@@ -86,23 +84,6 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        public bool BeginShowOperationSync(out int operationVersion)
-        {
-            if (_showInProgress)
-            {
-                operationVersion = -1;
-                return false;
-            }
-
-            _loadCancellationTokenSource?.Cancel();
-            _loadCancellationTokenSource = null;
-            operationVersion = ++_operationVersion;
-            _cancelRequested = false;
-            _showInProgress = true;
-            _closeInProgress = false;
-            return true;
-        }
-
         public bool BeginCloseOperation(out int operationVersion)
         {
             if (_closeInProgress)
@@ -133,14 +114,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        public void EndShowOperationSync(int operationVersion)
-        {
-            if (_operationVersion == operationVersion)
-            {
-                _showInProgress = false;
-            }
-        }
-
         public void EndCloseOperation(int operationVersion)
         {
             if (_operationVersion == operationVersion)
@@ -165,6 +138,7 @@ namespace AlicizaX.UI.Runtime
             _pendingShowUserDatas = userDatas;
             _hasPendingShowUserDatas = true;
             View?.RefreshParams(userDatas);
+            View?.InternalRefreshAfterInitialize();
         }
 
         public System.Object[] GetPendingShowUserDatas(System.Object[] fallback)
@@ -268,18 +242,6 @@ namespace AlicizaX.UI.Runtime
 
             UILogicType = uiType;
             UILogicTypeName = uiType.Name;
-            HasSyncInitialize = typeof(IUISyncInitialize).IsAssignableFrom(uiType);
-            HasAsyncInitialize = typeof(IUIAsyncInitialize).IsAssignableFrom(uiType);
-
-            if (HasSyncInitialize && HasAsyncInitialize)
-            {
-                MetaInfo = default;
-                ResInfo = default;
-                UIHolderTypeName = string.Empty;
-                IsValid = false;
-                Log.Error("[UI] {0} cannot implement both IUISyncInitialize and IUIAsyncInitialize.", uiType.FullName);
-                return;
-            }
 
             if (!UIMetaRegistry.TryGet(UILogicType.TypeHandle, out MetaInfo))
             {

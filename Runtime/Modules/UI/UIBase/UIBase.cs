@@ -65,7 +65,21 @@ namespace AlicizaX.UI.Runtime
         {
         }
 
+        protected virtual void OnInitialize()
+        {
+        }
+
+        protected virtual UniTask OnInitializeAsync()
+        {
+            OnInitialize();
+            return UniTask.CompletedTask;
+        }
+
         protected virtual void OnOpen()
+        {
+        }
+
+        protected virtual void OnRefresh()
         {
         }
 
@@ -77,10 +91,6 @@ namespace AlicizaX.UI.Runtime
         {
         }
 
-        /// <summary>
-        /// 事件在窗口销毁后会自动移除
-        /// </summary>
-        /// <param name="proxy"></param>
         protected virtual void OnRegisterEvent(EventListenerProxy proxy)
         {
         }
@@ -109,7 +119,6 @@ namespace AlicizaX.UI.Runtime
 
             if (disposing)
             {
-                // 托管资源释放
                 _canvas = null;
                 _raycaster = null;
             }
@@ -210,9 +219,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        /// <summary>
-        /// 窗口深度值。
-        /// </summary>
         internal int Depth
         {
             get => _canvas != null ? _canvas.sortingOrder : 0;
@@ -221,7 +227,6 @@ namespace AlicizaX.UI.Runtime
             {
                 if (_canvas != null && _canvas.sortingOrder != value)
                 {
-                    // 设置父类
                     _canvas.sortingOrder = value;
                     SyncChildDepth();
                 }
@@ -269,7 +274,6 @@ namespace AlicizaX.UI.Runtime
 
         #endregion
 
-        #region 管理器内部调用
 
         internal UIHolderObjectBase Holder;
         internal abstract Type UIHolderType { get; }
@@ -290,7 +294,6 @@ namespace AlicizaX.UI.Runtime
                 _canvas.overrideSorting = overrideSorting;
             }
 
-            // 与预制体实际层保持同步，避免缓存的可见标记与真实状态脱节
             _visible = _canvas != null && _canvas.gameObject.layer == UIComponent.UIShowLayer;
 
             _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
@@ -314,31 +317,15 @@ namespace AlicizaX.UI.Runtime
             if (!TryBeginInitialize())
                 return false;
 
-            if (metadata.HasAsyncInitialize)
+            try
             {
-                try
-                {
-                    await ((IUIAsyncInitialize)this).OnInitializeAsync();
-                }
-                catch (Exception exception)
-                {
-                    Log.Error("[UI] Async initialize failed for {0}.", CachedTypeName);
-                    Log.Exception(exception);
-                    return false;
-                }
+                await OnInitializeAsync();
             }
-            else if (metadata.HasSyncInitialize)
+            catch (Exception exception)
             {
-                try
-                {
-                    ((IUISyncInitialize)this).OnInitialize();
-                }
-                catch (Exception exception)
-                {
-                    Log.Error("[UI] Sync initialize failed for {0}.", CachedTypeName);
-                    Log.Exception(exception);
-                    return false;
-                }
+                Log.Error("[UI] Async initialize failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                return false;
             }
 
             if (!IsInitializeStillValid(metadata, operationVersion))
@@ -350,27 +337,18 @@ namespace AlicizaX.UI.Runtime
 
         internal bool InternalInitlizedSync(UIMetadata metadata, int operationVersion)
         {
-            if (metadata.HasAsyncInitialize)
-            {
-                Log.Error("[UI] {0} uses async initialize and cannot be initialized by sync API.", CachedTypeName);
-                return false;
-            }
-
             if (!TryBeginInitialize())
                 return false;
 
-            if (metadata.HasSyncInitialize)
+            try
             {
-                try
-                {
-                    ((IUISyncInitialize)this).OnInitialize();
-                }
-                catch (Exception exception)
-                {
-                    Log.Error("[UI] Sync initialize failed for {0}.", CachedTypeName);
-                    Log.Exception(exception);
-                    return false;
-                }
+                OnInitialize();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Sync initialize failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                return false;
             }
 
             if (!IsInitializeStillValid(metadata, operationVersion))
@@ -389,9 +367,6 @@ namespace AlicizaX.UI.Runtime
                     InternalRefreshOpened();
                 }
 
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open skipped", $"TryBeginOpen returned false. SkippedResult={skippedResult}.");
-#endif
                 return skippedResult;
             }
 
@@ -441,72 +416,23 @@ namespace AlicizaX.UI.Runtime
             return completed;
         }
 
-        internal bool InternalOpenSync(bool causedByOcclusion = false)
-        {
-            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
-            {
-                if (skippedResult)
-                {
-                    InternalRefreshOpened();
-                }
-
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync skipped", $"TryBeginOpen returned false. SkippedResult={skippedResult}.");
-#endif
-                return skippedResult;
-            }
-
-            if (!TryInvokeOnOpen())
-            {
-                RollbackOpeningState(lifecycleVersion);
-                return false;
-            }
-
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
-            {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
-#endif
-                RollbackOpeningState(lifecycleVersion);
-                return false;
-            }
-
-            try
-            {
-                Holder.ApplyOpenTransitionState();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] OpenSync transition state failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-                RollbackOpeningState(lifecycleVersion);
-                return false;
-            }
-
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
-            {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync interrupted after transition state", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
-#endif
-                RollbackOpeningState(lifecycleVersion);
-                return false;
-            }
-
-            bool completed = CompleteOpenTransition(lifecycleVersion);
-#if UNITY_EDITOR
-            if (!completed)
-            {
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("OpenSync completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
-            }
-#endif
-            return completed;
-        }
-
         internal void InternalRefreshOpened()
         {
             if (_state == UIState.Opened)
             {
-                TryInvokeOnOpen();
+                TryInvokeOnRefresh();
+            }
+        }
+
+        internal void InternalRefreshAfterInitialize()
+        {
+            if (_state == UIState.Initialized
+                || _state == UIState.Opening
+                || _state == UIState.Opened
+                || _state == UIState.Closing
+                || _state == UIState.Closed)
+            {
+                TryInvokeOnRefresh();
             }
         }
 
@@ -514,15 +440,11 @@ namespace AlicizaX.UI.Runtime
         {
             if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close skipped", $"TryBeginClose returned false. SkippedResult={skippedResult}.");
-#endif
                 return skippedResult;
             }
 
             if (skipTransition)
             {
-                // 跳过关闭动画：窗口已不可见（被全屏窗口遮挡或正在销毁），直接进入 Closed 透明层有需要则自己Fork框架到本地改就行
                 try
                 {
                     Holder.ApplyClosedTransitionState();
@@ -565,48 +487,6 @@ namespace AlicizaX.UI.Runtime
             if (!completed)
             {
                 if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-            }
-#endif
-            return completed;
-        }
-
-        internal bool InternalCloseSync(bool causedByOcclusion = false)
-        {
-            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
-            {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync skipped", $"TryBeginClose returned false. SkippedResult={skippedResult}.");
-#endif
-                return skippedResult;
-            }
-
-            try
-            {
-                Holder.ApplyClosedTransitionState();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] CloseSync transition state failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-                RollbackClosingState(lifecycleVersion);
-                return false;
-            }
-
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
-            {
-#if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync interrupted after transition state", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
-#endif
-                RollbackClosingState(lifecycleVersion);
-                return false;
-            }
-
-            InvokeOnCloseSafely();
-            bool completed = CompleteCloseTransition(lifecycleVersion);
-#if UNITY_EDITOR
-            if (!completed)
-            {
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("CloseSync completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
             }
 #endif
             return completed;
@@ -765,6 +645,21 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        private bool TryInvokeOnRefresh()
+        {
+            try
+            {
+                OnRefresh();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] OnRefresh failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                return false;
+            }
+        }
+
         private void InvokeOnCloseSafely()
         {
             try
@@ -804,9 +699,6 @@ namespace AlicizaX.UI.Runtime
         {
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
-#if UNITY_EDITOR
-                if (ShouldWarnOpenRollbackSkipped(lifecycleVersion)) WarnLifecycleOperation("Open rollback skipped", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
-#endif
                 return;
             }
 
@@ -933,12 +825,7 @@ namespace AlicizaX.UI.Runtime
             return UIWarningSettings.AnyWarningsEnabled;
         }
 
-        private bool ShouldWarnOpenRollbackSkipped(int lifecycleVersion)
-        {
-            return UIWarningSettings.AnyWarningsEnabled && IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening);
-        }
 #endif
 
-        #endregion
     }
 }

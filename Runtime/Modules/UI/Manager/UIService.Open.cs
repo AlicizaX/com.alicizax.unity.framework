@@ -99,18 +99,6 @@ namespace AlicizaX.UI.Runtime
             return layer != null && GetOpenIndex(layer, meta) >= 0;
         }
 
-        private readonly struct VisualStateUpdateResult
-        {
-            public readonly UIShowResult ShowResult;
-            public readonly int PreviousFullscreenIndex;
-
-            public VisualStateUpdateResult(UIShowResult showResult, int previousFullscreenIndex)
-            {
-                ShowResult = showResult;
-                PreviousFullscreenIndex = previousFullscreenIndex;
-            }
-        }
-
         private async UniTask<UIShowResult> ShowUIImplAsync(UIMetadata metaInfo, object[] userDatas)
         {
             CreateMetaUI(metaInfo);
@@ -122,15 +110,12 @@ namespace AlicizaX.UI.Runtime
 
             if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource))
             {
-#if UNITY_EDITOR
-                WarnUIOperation("Show joined", metaInfo, metaInfo?.OperationVersion ?? -1, "BeginShowOperation returned false. Another show operation is already running, so this call refreshes user data and waits for the running show.");
-#endif
                 metaInfo.SetPendingShowUserDatas(userDatas);
                 UIBase joinedView = await metaInfo.WaitForShowOperationAsync();
                 return CreateShowResultFromView(joinedView);
             }
 
-            // 在 Begin 之后只捕获一次令牌：后续新操作会替换 CTS，再读属性会拿到错误令牌 特别注意
+            // 鍦?Begin 涔嬪悗鍙崟鑾蜂竴娆′护鐗岋細鍚庣画鏂版搷浣滀細鏇挎崲 CTS锛屽啀璇诲睘鎬т細鎷垮埌閿欒浠ょ墝 鐗瑰埆娉ㄦ剰
             if (!TryBeginLayerMutation(layerIndex))
             {
                 metaInfo.EndShowOperation(operationVersion, loadCts);
@@ -141,8 +126,8 @@ namespace AlicizaX.UI.Runtime
 
             CancellationToken cancellationToken = loadCts.Token;
             UIShowResult showResult = UIShowResult.Failed;
-            int rollbackPreviousFullscreenIndex = int.MinValue;
             bool exceptionThrown = false;
+            bool visualStarted = false;
             try
             {
                 ReserveOpenSlot(metaInfo);
@@ -162,19 +147,28 @@ namespace AlicizaX.UI.Runtime
                 else
                 {
                     FinalizeShow(metaInfo, metaInfo.GetPendingShowUserDatas(userDatas));
-                    VisualStateUpdateResult visualStateResult = await UpdateVisualState(metaInfo, operationVersion);
-                    showResult = visualStateResult.ShowResult;
-                    rollbackPreviousFullscreenIndex = visualStateResult.PreviousFullscreenIndex;
-                    if (!showResult.IsAccepted)
+                    SortWindowDepth(metaInfo.MetaInfo.UILayer);
+                    if (metaInfo.State == UIState.Loaded && !await metaInfo.View.InternalInitlized(metaInfo, operationVersion))
                     {
-                        if (!IsStaleShowOperation(metaInfo, operationVersion))
-                        {
 #if UNITY_EDITOR
-                            WarnUIOperation("Show visual state failed, rollback will run", metaInfo, operationVersion, "UpdateVisualState returned false. The UI did not reach a valid opened or occlusion-interrupted state.");
+                        WarnUIOperation("Show initialization interrupted", metaInfo, operationVersion, "InternalInitlized returned false. The show operation will be treated as failed.");
 #endif
-                            await RollbackFailedShowAsync(metaInfo, operationVersion, rollbackPreviousFullscreenIndex);
-                        }
+                        showResult = UIShowResult.Failed;
                     }
+                    else if (metaInfo.OperationVersion != operationVersion)
+                    {
+                        showResult = UIShowResult.Cancelled;
+                    }
+                    else
+                    {
+                        visualStarted = true;
+                        return await RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex);
+                    }
+                }
+
+                if (!showResult.IsAccepted && !IsStaleShowOperation(metaInfo, operationVersion) && ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                {
+                    await RollbackFailedShowAsync(metaInfo, operationVersion);
                 }
             }
             catch (Exception exception)
@@ -185,7 +179,7 @@ namespace AlicizaX.UI.Runtime
 #endif
                 if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
                 {
-                    await RollbackFailedShowAsync(metaInfo, operationVersion, rollbackPreviousFullscreenIndex);
+                    await RollbackFailedShowAsync(metaInfo, operationVersion);
                 }
 
                 metaInfo.FailShowOperation(showCompletionSource, exception);
@@ -193,26 +187,23 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                UIBase result = showResult.IsAccepted ? metaInfo.View : null;
-                metaInfo.EndShowOperation(operationVersion, loadCts);
-                EndLayerMutation(layerIndex);
-                if (!exceptionThrown)
+                if (!visualStarted)
                 {
-                    metaInfo.CompleteShowOperation(showCompletionSource, result);
+                    UIBase result = showResult.IsAccepted ? metaInfo.View : null;
+                    metaInfo.EndShowOperation(operationVersion, loadCts);
+                    EndLayerMutation(layerIndex);
+                    if (!exceptionThrown)
+                    {
+                        metaInfo.CompleteShowOperation(showCompletionSource, result);
+                    }
+                    loadCts.Dispose();
                 }
-                loadCts.Dispose();
             }
 
             return showResult;
         }
         private UIBase ShowUIImplSync(UIMetadata metaInfo, object[] userDatas)
         {
-            if (metaInfo.HasAsyncInitialize)
-            {
-                Log.Error("[UI] {0} uses async initialize and cannot be shown by sync API.", metaInfo.UILogicTypeName);
-                return null;
-            }
-
             CreateMetaUI(metaInfo);
             int layerIndex = metaInfo.MetaInfo.UILayer;
             if (IsLayerBlockedForMutation(layerIndex) && !metaInfo.ShowInProgress)
@@ -220,49 +211,52 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metaInfo.BeginShowOperationSync(out int operationVersion))
+            if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource))
             {
-#if UNITY_EDITOR
-                WarnUIOperation("ShowSync skipped", metaInfo, metaInfo?.OperationVersion ?? -1, "BeginShowOperation returned false. Another show operation is already running, so this call only refreshes user data.");
-#endif
-                return RefreshAndGetOpenedView(metaInfo, userDatas);
+                metaInfo.SetPendingShowUserDatas(userDatas);
+                return metaInfo.View;
             }
 
             if (!TryBeginLayerMutation(layerIndex))
             {
-                metaInfo.EndShowOperationSync(operationVersion);
+                metaInfo.EndShowOperation(operationVersion, loadCts);
+                metaInfo.CompleteShowOperation(showCompletionSource, null);
+                loadCts.Dispose();
                 return null;
             }
 
-            bool showResult = false;
             try
             {
-                ReserveOpenSlot(metaInfo);
                 UIHolderFactory.CreateUIResourceSync(metaInfo, UICacheLayer);
                 if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
                 {
 #if UNITY_EDITOR
                     if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("ShowSync invalid after resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
 #endif
-                    if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
-                    {
-                        RollbackFailedShow(metaInfo, operationVersion);
-                    }
+                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex);
+                    return null;
+                }
 
-                    showResult = false;
-                }
-                else
+                FinalizeShow(metaInfo, userDatas);
+                SortWindowDepth(metaInfo.MetaInfo.UILayer);
+                if (metaInfo.State == UIState.Loaded && !metaInfo.View.InternalInitlizedSync(metaInfo, operationVersion))
                 {
-                    FinalizeShow(metaInfo, userDatas);
-                    showResult = UpdateVisualStateSync(metaInfo, operationVersion);
-                    if (!showResult)
-                    {
 #if UNITY_EDITOR
-                        WarnUIOperation("ShowSync visual state failed, rollback will run", metaInfo, operationVersion, "UpdateVisualStateSync returned false. The UI did not reach a valid opened state.");
+                    WarnUIOperation("ShowSync initialization failed", metaInfo, operationVersion, "InternalInitlizedSync returned false. The show operation will rollback.");
 #endif
-                        RollbackFailedShow(metaInfo, operationVersion);
-                    }
+                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                    return null;
                 }
+
+                if (metaInfo.OperationVersion != operationVersion)
+                {
+                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                    return null;
+                }
+
+                UIBase view = metaInfo.View;
+                RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                return view;
             }
             catch (Exception exception)
             {
@@ -271,18 +265,15 @@ namespace AlicizaX.UI.Runtime
 #endif
                 if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
                 {
-                    RollbackFailedShow(metaInfo, operationVersion);
+                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                }
+                else
+                {
+                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex);
                 }
 
                 throw;
             }
-            finally
-            {
-                metaInfo.EndShowOperationSync(operationVersion);
-                EndLayerMutation(layerIndex);
-            }
-
-            return showResult ? metaInfo.View : null;
         }
         private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
         {
@@ -305,9 +296,6 @@ namespace AlicizaX.UI.Runtime
             bool interruptedShow = meta.ShowInProgress;
             if (!meta.BeginCloseOperation(out int operationVersion))
             {
-#if UNITY_EDITOR
-                WarnUIOperation("Close skipped", meta, meta?.OperationVersion ?? -1, "BeginCloseOperation returned false. Another close operation is already running.");
-#endif
                 EndLayerMutation(layerIndex);
                 return false;
             }
@@ -319,9 +307,6 @@ namespace AlicizaX.UI.Runtime
                 UIFinalizeClosedMode finalizeMode = GetFinalizeModeForExplicitClose(meta, interruptedShow);
                 if (state == UIState.CreatedUI)
                 {
-#if UNITY_EDITOR
-                    WarnUIOperation("Close interrupted pending show", meta, operationVersion, "CloseUI was called before the UI resource finished loading. The reserved stack slot will be removed and the UI will be disposed.");
-#endif
                     UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
                     closeCompleted = finalizeResult.Success;
                 }
@@ -495,7 +480,7 @@ namespace AlicizaX.UI.Runtime
             if (meta.InCache)
             {
                 RemoveFromCache(meta.MetaInfo.RuntimeTypeHandle);
-                // 缓存时关闭了 Canvas 渲染，重新显示前恢复
+                // 缂撳瓨鏃跺叧闂簡 Canvas 娓叉煋锛岄噸鏂版樉绀哄墠鎭㈠
                 meta.View.SetCanvasEnabled(true);
                 Push(meta);
             }
@@ -517,13 +502,6 @@ namespace AlicizaX.UI.Runtime
 
             UpdateLayerParent(meta);
             meta.View.RefreshParams(userDatas);
-        }
-
-        private static UIBase RefreshAndGetOpenedView(UIMetadata meta, object[] userDatas)
-        {
-            UIBase view = meta?.View;
-            view?.RefreshParams(userDatas);
-            return meta?.State == UIState.Opened ? view : null;
         }
 
         private void ReserveOpenSlot(UIMetadata meta)
@@ -658,46 +636,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private async UniTask<VisualStateUpdateResult> UpdateVisualState(UIMetadata meta, int operationVersion)
-        {
-            int previousFullscreenIndex = int.MinValue;
-            SortWindowDepth(meta.MetaInfo.UILayer);
-            if (meta.State == UIState.Loaded)
-            {
-                if (!await meta.View.InternalInitlized(meta, operationVersion))
-                {
-#if UNITY_EDITOR
-                    WarnUIOperation("Show initialization interrupted", meta, operationVersion, "InternalInitlized returned false. The show operation will be treated as failed.");
-#endif
-                    return new VisualStateUpdateResult(UIShowResult.Failed, previousFullscreenIndex);
-                }
-
-                if (meta.OperationVersion != operationVersion)
-                {
-#if UNITY_EDITOR
-                    WarnUIOperation("Show initialization version changed", meta, operationVersion, "The operation version changed after initialization. The show operation will be treated as failed.");
-#endif
-                    return new VisualStateUpdateResult(UIShowResult.Cancelled, previousFullscreenIndex);
-                }
-            }
-
-            UniTask<bool> openTask = meta.View.InternalOpen();
-            previousFullscreenIndex = PromoteOcclusionWindow(meta);
-            await SortWindowVisibleAsync(meta.MetaInfo.UILayer, previousFullscreenIndex);
-            bool openResult = await openTask;
-
-            if (openResult)
-            {
-                UIShowResult openedResult = IsStaleShowOperation(meta, operationVersion)
-                    ? UIShowResult.Cancelled
-                    : new UIShowResult(meta.View, UIShowResultState.Opened);
-                return new VisualStateUpdateResult(openedResult, previousFullscreenIndex);
-            }
-
-            return new VisualStateUpdateResult(IsShowAcceptedAfterOpenInterruption(meta, operationVersion), previousFullscreenIndex);
-        }
-
         private UIShowResult IsShowAcceptedAfterOpenInterruption(UIMetadata meta, int operationVersion)
         {
             if (IsStaleShowOperation(meta, operationVersion))
@@ -769,42 +707,6 @@ namespace AlicizaX.UI.Runtime
                 : new UIShowResult(view, UIShowResultState.Opened);
         }
 
-
-        private bool UpdateVisualStateSync(UIMetadata meta, int operationVersion)
-        {
-            SortWindowDepth(meta.MetaInfo.UILayer);
-            if (meta.State == UIState.Loaded)
-            {
-                if (!meta.View.InternalInitlizedSync(meta, operationVersion))
-                {
-#if UNITY_EDITOR
-                    WarnUIOperation("ShowSync initialization failed", meta, operationVersion, "InternalInitlizedSync returned false. The show operation will rollback.");
-#endif
-                    return false;
-                }
-
-                if (meta.OperationVersion != operationVersion)
-                {
-#if UNITY_EDITOR
-                    WarnUIOperation("ShowSync initialization version changed", meta, operationVersion, "The operation version changed after initialization. The show operation will rollback.");
-#endif
-                    return false;
-                }
-            }
-
-            bool openResult = meta.View.InternalOpenSync();
-            int previousFullscreenIndex = PromoteOcclusionWindow(meta);
-            SortWindowVisibleSync(meta.MetaInfo.UILayer, previousFullscreenIndex);
-
-#if UNITY_EDITOR
-            if (!openResult)
-            {
-                WarnUIOperation("ShowSync open failed", meta, operationVersion, "InternalOpenSync returned false. The show operation will rollback.");
-            }
-#endif
-            return openResult && !IsStaleShowOperation(meta, operationVersion);
-        }
-
         private int PromoteOcclusionWindow(UIMetadata meta)
         {
             if (meta == null || !IsOcclusionWindow(meta))
@@ -828,6 +730,112 @@ namespace AlicizaX.UI.Runtime
             int previousFullscreenIndex = layer.LastFullscreenIndex;
             layer.LastFullscreenIndex = index;
             return previousFullscreenIndex;
+        }
+
+        private async UniTask<UIShowResult> RunPreparedShowVisualAsync(
+            UIMetadata meta,
+            int operationVersion,
+            CancellationTokenSource loadCts,
+            UniTaskCompletionSource<UIBase> showCompletionSource,
+            int layerIndex)
+        {
+            UIShowResult showResult = UIShowResult.Failed;
+            int rollbackPreviousFullscreenIndex = int.MinValue;
+            bool exceptionThrown = false;
+            try
+            {
+                UniTask<bool> openTask = meta.View.InternalOpen();
+                rollbackPreviousFullscreenIndex = PromoteOcclusionWindow(meta);
+                await SortWindowVisibleAsync(meta.MetaInfo.UILayer, rollbackPreviousFullscreenIndex);
+                bool openResult = await openTask;
+
+                showResult = openResult
+                    ? IsStaleShowOperation(meta, operationVersion)
+                        ? UIShowResult.Cancelled
+                        : new UIShowResult(meta.View, UIShowResultState.Opened)
+                    : IsShowAcceptedAfterOpenInterruption(meta, operationVersion);
+
+                if (!showResult.IsAccepted && !IsStaleShowOperation(meta, operationVersion))
+                {
+#if UNITY_EDITOR
+                    WarnUIOperation("Show visual state failed, rollback will run", meta, operationVersion, "The UI did not reach a valid opened or occlusion-interrupted state.");
+#endif
+                    await RollbackFailedShowAsync(meta, operationVersion, rollbackPreviousFullscreenIndex);
+                }
+            }
+            catch (Exception exception)
+            {
+                exceptionThrown = true;
+#if UNITY_EDITOR
+                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show visual exception, rollback will run", meta, operationVersion, $"Exception={exception.GetType().Name}: {exception.Message}");
+#endif
+                if (ShouldRollbackInvalidShow(meta, operationVersion))
+                {
+                    await RollbackFailedShowAsync(meta, operationVersion, rollbackPreviousFullscreenIndex);
+                }
+
+                meta.FailShowOperation(showCompletionSource, exception);
+                throw;
+            }
+            finally
+            {
+                UIBase result = showResult.IsAccepted ? meta.View : null;
+                meta.EndShowOperation(operationVersion, loadCts);
+                EndLayerMutation(layerIndex);
+                if (!exceptionThrown)
+                {
+                    meta.CompleteShowOperation(showCompletionSource, result);
+                }
+                loadCts.Dispose();
+            }
+
+            return showResult;
+        }
+
+        private async UniTaskVoid CompletePreparedShowFailureAsync(
+            UIMetadata meta,
+            int operationVersion,
+            CancellationTokenSource loadCts,
+            UniTaskCompletionSource<UIBase> showCompletionSource,
+            int layerIndex)
+        {
+            try
+            {
+                if (ShouldRollbackInvalidShow(meta, operationVersion))
+                {
+                    await RollbackFailedShowAsync(meta, operationVersion);
+                }
+            }
+            finally
+            {
+                meta?.EndShowOperation(operationVersion, loadCts);
+                EndLayerMutation(layerIndex);
+                meta?.CompleteShowOperation(showCompletionSource, null);
+                loadCts?.Dispose();
+            }
+        }
+
+        private void CompletePreparedShowFailureBeforeStackImmediate(
+            UIMetadata meta,
+            int operationVersion,
+            CancellationTokenSource loadCts,
+            UniTaskCompletionSource<UIBase> showCompletionSource,
+            int layerIndex)
+        {
+            try
+            {
+                if (meta != null && meta.OperationVersion == operationVersion && !ShouldRollbackInvalidShow(meta, operationVersion))
+                {
+                    meta.DisposeImmediate();
+                }
+            }
+            finally
+            {
+                meta?.EndShowOperation(operationVersion, loadCts);
+                EndLayerMutation(layerIndex);
+                meta?.CompleteShowOperation(showCompletionSource, null);
+                loadCts?.Dispose();
+            }
         }
 
         private async UniTask SortWindowVisibleAsync(int layer, int previousFullscreenIndex = int.MinValue)
@@ -864,42 +872,6 @@ namespace AlicizaX.UI.Runtime
                 : Math.Max(oldFullscreenIndex, fullscreenIdx) + 1;
 
             await ApplyVisibilityRangeAsync(layerData, start, endExclusive, fullscreenIdx, visibilityVersion);
-        }
-
-        private void SortWindowVisibleSync(int layer, int previousFullscreenIndex = int.MinValue)
-        {
-            var layerData = _openUI[layer];
-            layerData.VisibilityVersion++;
-            int count = layerData.Count;
-
-            int fullscreenIdx = layerData.LastFullscreenIndex;
-            if (fullscreenIdx >= count || (fullscreenIdx >= 0 && !IsActiveOcclusionWindow(layerData.Items[fullscreenIdx])))
-            {
-                fullscreenIdx = FindLastFullscreenIndex(layerData, count - 1);
-                layerData.LastFullscreenIndex = fullscreenIdx;
-            }
-
-            int oldFullscreenIndex = previousFullscreenIndex == int.MinValue ? fullscreenIdx : previousFullscreenIndex;
-            if (oldFullscreenIndex == fullscreenIdx)
-            {
-                ApplyVisibilityRangeSync(layerData, 0, count, fullscreenIdx);
-                return;
-            }
-
-            if (oldFullscreenIndex == -1 && fullscreenIdx == -1)
-            {
-                ApplyVisibilityRangeSync(layerData, 0, count, -1);
-                return;
-            }
-
-            int start = oldFullscreenIndex < 0 || fullscreenIdx < 0
-                ? 0
-                : Math.Min(oldFullscreenIndex, fullscreenIdx);
-            int endExclusive = oldFullscreenIndex < 0 || fullscreenIdx < 0
-                ? count
-                : Math.Max(oldFullscreenIndex, fullscreenIdx) + 1;
-
-            ApplyVisibilityRangeSync(layerData, start, endExclusive, fullscreenIdx);
         }
 
         private void SortWindowDepth(int layer, int startIndex = 0)
@@ -1082,40 +1054,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private static void ApplyVisibilityRangeSync(LayerData layer, int startInclusive, int endExclusive, int fullscreenIdx)
-        {
-            NormalizeVisibilityRange(layer, ref startInclusive, ref endExclusive);
-
-            bool showAll = fullscreenIdx < 0;
-            UIOcclusionMode occlusionMode = GetOcclusionMode(layer, fullscreenIdx, showAll);
-
-            for (int i = startInclusive; i < endExclusive; i++)
-            {
-                UIMetadata meta = layer.Items[i];
-                UIBase view = meta?.View;
-                if (view == null)
-                {
-                    continue;
-                }
-
-                bool visible = showAll || i >= fullscreenIdx;
-                if (meta.StackRemovalPending)
-                {
-                    view.Visible = false;
-                    continue;
-                }
-
-                if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
-                {
-                    ApplyWindowOcclusionSync(meta, visible, occlusionMode);
-                }
-                else
-                {
-                    view.Visible = visible;
-                }
-            }
-        }
-
         private static bool NeedsAsyncOcclusion(UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
         {
             UIBase view = meta?.View;
@@ -1177,9 +1115,6 @@ namespace AlicizaX.UI.Runtime
             {
                 if (view.State == UIState.Closed || view.State == UIState.Closing)
                 {
-#if UNITY_EDITOR
-                    WarnOcclusionOperation("Occlusion reveal will reopen UI", view, visible, occlusionMode, "The window became visible while it was Closed or Closing. InternalOpen will be called; Closing means the close transition is being interrupted.");
-#endif
                     bool openResult = await view.InternalOpen(causedByOcclusion: true);
 #if UNITY_EDITOR
                     if (!openResult)
@@ -1196,67 +1131,12 @@ namespace AlicizaX.UI.Runtime
 
             if (occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening))
             {
-#if UNITY_EDITOR
-                WarnOcclusionOperation("Lifecycle occlusion will close UI", view, visible, occlusionMode, "The occluding window requires Lifecycle mode. InternalClose will be called; Opening means the open transition is being interrupted.");
-#endif
                 // Occluded windows are already hidden, so lifecycle occlusion skips the close transition.
                 bool closeResult = await view.InternalClose(causedByOcclusion: true, skipTransition: true);
 #if UNITY_EDITOR
                 if (!closeResult)
                 {
                     WarnOcclusionOperation("Lifecycle occlusion close failed", view, visible, occlusionMode, "InternalClose returned false while hiding an occluded window.");
-                }
-#endif
-                return;
-            }
-
-            view.Visible = false;
-        }
-
-        private static void ApplyWindowOcclusionSync(UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
-        {
-            if (meta == null || meta.StackRemovalPending)
-            {
-                return;
-            }
-
-            UIBase view = meta.View;
-            if (view == null)
-            {
-                return;
-            }
-
-            if (visible)
-            {
-                if (view.State == UIState.Closed || view.State == UIState.Closing)
-                {
-#if UNITY_EDITOR
-                    WarnOcclusionOperation("Occlusion reveal will reopen UI sync", view, visible, occlusionMode, "The window became visible while it was Closed or Closing. InternalOpenSync will be called; Closing means the close transition is being interrupted.");
-#endif
-                    bool openResult = view.InternalOpenSync(causedByOcclusion: true);
-#if UNITY_EDITOR
-                    if (!openResult)
-                    {
-                        WarnOcclusionOperation("Occlusion reveal reopen sync failed", view, visible, occlusionMode, "InternalOpenSync returned false while restoring a previously occluded window.");
-                    }
-#endif
-                    return;
-                }
-
-                view.Visible = true;
-                return;
-            }
-
-            if (occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening))
-            {
-#if UNITY_EDITOR
-                WarnOcclusionOperation("Lifecycle occlusion will close UI sync", view, visible, occlusionMode, "The occluding window requires Lifecycle mode. InternalCloseSync will be called; Opening means the open transition is being interrupted.");
-#endif
-                bool closeResult = view.InternalCloseSync(causedByOcclusion: true);
-#if UNITY_EDITOR
-                if (!closeResult)
-                {
-                    WarnOcclusionOperation("Lifecycle occlusion close sync failed", view, visible, occlusionMode, "InternalCloseSync returned false while hiding an occluded window.");
                 }
 #endif
                 return;
@@ -1310,15 +1190,9 @@ namespace AlicizaX.UI.Runtime
         {
             if (!CanRollbackShow(meta, operationVersion))
             {
-#if UNITY_EDITOR
-                WarnUIOperation("Rollback skipped", meta, operationVersion, "RollbackFailedShowAsync was called, but the metadata was null or the operation version no longer matched.");
-#endif
                 return;
             }
 
-#if UNITY_EDITOR
-            WarnUIOperation("Rollback show async", meta, operationVersion, "The show operation failed and the UI will be popped, visibility will be recalculated, and the metadata will be disposed.");
-#endif
             var popResult = Pop(meta);
             int rollbackPreviousFullscreenIndex = previousFullscreenIndex == int.MinValue
                 ? popResult.previousFullscreenIndex
@@ -1327,26 +1201,6 @@ namespace AlicizaX.UI.Runtime
             SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
 
             await meta.DisposeAsync();
-        }
-
-        private void RollbackFailedShow(UIMetadata meta, int operationVersion)
-        {
-            if (!CanRollbackShow(meta, operationVersion))
-            {
-#if UNITY_EDITOR
-                WarnUIOperation("Rollback skipped sync", meta, operationVersion, "RollbackFailedShow was called, but the metadata was null or the operation version no longer matched.");
-#endif
-                return;
-            }
-
-#if UNITY_EDITOR
-            WarnUIOperation("Rollback show sync", meta, operationVersion, "The sync show operation failed and the UI will be popped, visibility will be recalculated, and the metadata will be disposed immediately.");
-#endif
-            var popResult = Pop(meta);
-            SortWindowVisibleSync(meta.MetaInfo.UILayer, popResult.previousFullscreenIndex);
-            SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
-
-            meta.DisposeImmediate();
         }
 
         private bool CanRollbackShow(UIMetadata meta, int operationVersion)
