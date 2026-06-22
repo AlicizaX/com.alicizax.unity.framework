@@ -10,8 +10,8 @@ namespace AlicizaX
     {
         internal sealed class MemoryPoolHandle
         {
-            public delegate IMemory AcquireHandler();
-            public delegate void ReleaseHandler(IMemory memory);
+            public delegate MemoryObject AcquireHandler();
+            public delegate void ReleaseHandler(MemoryObject memory);
             public delegate void ClearHandler();
             public delegate void IntHandler(int value);
             public delegate void CapacityHandler(int softCapacity, int hardCapacity);
@@ -204,29 +204,26 @@ namespace AlicizaX
             return new AlicizaX.MemoryPoolHandle(GetOrCreateHandle(type));
         }
 
-        public static IMemory Acquire(Type type)
+        public static MemoryObject Acquire(Type type)
         {
             AssertMainThread();
             return GetOrCreateHandle(type).Acquire();
         }
 
-        public static void Release(IMemory memory)
+        public static void Release(MemoryObject memory)
         {
             AssertMainThread();
             if (memory == null)
                 return;
 
-            if (!(memory is MemoryObject memoryObject))
-                throw new InvalidOperationException("MemoryPool.Release(IMemory) only accepts MemoryObject instances.");
-
-            MemoryPoolHandle handle = GetOwnerHandle(memoryObject);
-            if (handle.PoolId == memoryObject.PoolId)
+            MemoryPoolHandle handle = GetOwnerHandle(memory);
+            if (handle.PoolId == memory.PoolId)
             {
                 handle.Release(memory);
                 return;
             }
 
-            throw new InvalidOperationException("MemoryPool.Release(IMemory) rejected an object without a valid owner pool.");
+            throw new InvalidOperationException("MemoryPool.Release(MemoryObject) rejected an object without a valid owner pool.");
         }
 
         public static int GetAllInfos(MemoryPoolInfo[] infos)

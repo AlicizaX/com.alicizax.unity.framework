@@ -62,7 +62,7 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static IMemory Acquire(Type memoryType)
+        public static MemoryObject Acquire(Type memoryType)
         {
             return MemoryPoolRegistry.Acquire(memoryType);
         }
@@ -75,7 +75,7 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Release(IMemory memory)
+        public static void Release(MemoryObject memory)
         {
             MemoryPoolRegistry.Release(memory);
         }

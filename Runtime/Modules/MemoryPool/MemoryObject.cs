@@ -1,22 +1,11 @@
-﻿namespace AlicizaX
+namespace AlicizaX
 {
-    /// <summary>
-    /// 内存对象Interface。
-    /// </summary>
-    public interface IMemory
-    {
-        /// <summary>
-        /// 清理内存对象回收入池。
-        /// </summary>
-        void Clear();
-    }
-
     public interface IPoolEvictable
     {
         void OnEvict();
     }
 
-    public abstract class MemoryObject : IMemory
+    public abstract class MemoryObject
     {
         internal MemoryPoolHandle OwnerHandle;
         internal int PoolId;

@@ -162,13 +162,13 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static IMemory AcquireAsMemory()
+        private static MemoryObject AcquireAsMemory()
         {
             return Acquire();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void ReleaseAsMemory(IMemory memory)
+        private static void ReleaseAsMemory(MemoryObject memory)
         {
             Release((T)memory);
         }

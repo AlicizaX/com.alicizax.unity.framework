@@ -100,8 +100,7 @@ namespace AlicizaX
                 RunCase("Info Buffer No Alloc", RunInfoBufferNoAlloc);
                 RunCase("Explicit Compact", RunExplicitCompact);
                 RunCase("Null Release Noop", RunNullReleaseNoop);
-                RunCase("Release IMemory Owner Path", RunReleaseIMemoryOwnerPath);
-                RunCase("Release IMemory Rejects Legacy", RunReleaseIMemoryRejectsLegacy);
+                RunCase("Release MemoryObject Owner Path", RunReleaseMemoryObjectOwnerPath);
                 RunCase("Release Rejects Unowned Object", RunReleaseRejectsUnownedObject);
                 RunCase("Double Release Guard", RunDoubleReleaseGuard);
                 RunCase("Invalid Type API Guards", RunInvalidTypeApiGuards);
@@ -654,7 +653,7 @@ namespace AlicizaX
                 RestartCaseMeasure();
                 for (int i = 0; i < loopCount; i++)
                 {
-                    IMemory item = handle.Acquire();
+                    MemoryObject item = handle.Acquire();
                     handle.Release(item);
                 }
                 StopCaseMeasure();
@@ -699,32 +698,26 @@ namespace AlicizaX
         private void RunNullReleaseNoop()
         {
             RestartCaseMeasure();
-            MemoryPool.Release((IMemory)null);
+            MemoryPool.Release((MemoryObject)null);
             MemoryPool<BenchmarkMemory>.Release(null);
             StopCaseMeasure();
         }
 
-        private void RunReleaseIMemoryOwnerPath()
+        private void RunReleaseMemoryObjectOwnerPath()
         {
             MemoryPool<BenchmarkMemory>.ClearAll();
             BenchmarkMemory item = MemoryPool<BenchmarkMemory>.Acquire();
             item.Value = 23;
 
             RestartCaseMeasure();
-            MemoryPool.Release((IMemory)item);
+            MemoryPool.Release((MemoryObject)item);
             StopCaseMeasure();
 
-            AssertEqual(item.Value, 0, "IMemory release did not clear owned object");
+            AssertEqual(item.Value, 0, "MemoryObject release did not clear owned object");
             MemoryPoolInfo info = GetBenchmarkInfo(typeof(BenchmarkMemory));
-            AssertTrue(info.UsingCount == 0, "IMemory release left object in use");
-            AssertTrue(info.UnusedCount == 1, "IMemory release did not return object to pool");
+            AssertTrue(info.UsingCount == 0, "MemoryObject release left object in use");
+            AssertTrue(info.UnusedCount == 1, "MemoryObject release did not return object to pool");
             MemoryPool<BenchmarkMemory>.ClearAll();
-        }
-
-        private void RunReleaseIMemoryRejectsLegacy()
-        {
-            LegacyMemory legacy = new LegacyMemory();
-            AssertThrows<InvalidOperationException>(() => MemoryPool.Release((IMemory)legacy), "legacy IMemory release was accepted");
         }
 
         private void RunReleaseRejectsUnownedObject()
@@ -745,7 +738,7 @@ namespace AlicizaX
         private void RunInvalidTypeApiGuards()
         {
             AssertThrows<ArgumentNullException>(() => MemoryPool.Acquire(null), "null dynamic type was accepted");
-            AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(LegacyMemory)), "legacy IMemory dynamic type was accepted");
+            AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(PlainMemory)), "plain dynamic type was accepted");
             AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(AbstractBenchmarkMemory)), "abstract dynamic type was accepted");
             AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(OpenGenericMemory<>)), "open generic dynamic type was accepted");
             AssertThrows<InvalidOperationException>(() => MemoryPool.Acquire(typeof(PrivateCtorMemory)), "private ctor dynamic type was accepted");
@@ -755,7 +748,7 @@ namespace AlicizaX
         {
             MemoryPool<DynamicBenchmarkMemory>.ClearAll();
             RestartCaseMeasure();
-            IMemory memory = MemoryPool.Acquire(typeof(DynamicBenchmarkMemory));
+            MemoryObject memory = MemoryPool.Acquire(typeof(DynamicBenchmarkMemory));
             MemoryPool.Release(memory);
             StopCaseMeasure();
 
@@ -887,7 +880,7 @@ namespace AlicizaX
             {
                 MemoryPoolHandle handle = MemoryPool.GetHandle(types[i]);
                 AssertTrue(handle.IsValid, "materialized cache handle is invalid");
-                IMemory item = handle.Acquire();
+                MemoryObject item = handle.Acquire();
                 handle.Release(item);
             }
             StopCaseMeasure();
@@ -1124,7 +1117,7 @@ namespace AlicizaX
             }
         }
 
-        private sealed class LegacyMemory : IMemory
+        private sealed class PlainMemory
         {
             public void Clear()
             {

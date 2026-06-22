@@ -30,14 +30,14 @@ namespace AlicizaX
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public IMemory Acquire()
+        public MemoryObject Acquire()
         {
             ThrowIfInvalid();
             return _handle.Acquire();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Release(IMemory memory)
+        public void Release(MemoryObject memory)
         {
             ThrowIfInvalid();
             _handle.Release(memory);
