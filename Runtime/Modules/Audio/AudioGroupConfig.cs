@@ -11,7 +11,9 @@ namespace AlicizaX.Audio.Runtime
         [SerializeField] private AudioMixerGroup m_MixerGroup = null;
         [SerializeField] private bool m_Mute = false;
         [SerializeField, Range(0f, 1f)] private float m_Volume = 1f;
-        [SerializeField, Min(1)] private int m_AgentHelperCount = 8;
+        [SerializeField, HideInInspector] private int m_AgentHelperCount = 8;
+        [SerializeField, Min(0)] private int m_InitialSourceCount = 2;
+        [SerializeField, Min(1)] private int m_MaxSourceCount = 8;
         [SerializeField] private string m_ExposedVolumeParameter = null;
         [SerializeField, Range(0f, 1f)] private float m_SpatialBlend = 1f;
         [SerializeField, Range(0f, 5f)] private float m_DopplerLevel = 1f;
@@ -33,7 +35,9 @@ namespace AlicizaX.Audio.Runtime
         public AudioMixerGroup MixerGroup => m_MixerGroup;
         public bool Mute => m_Mute;
         public float Volume => m_Volume;
-        public int AgentHelperCount => m_AgentHelperCount > 0 ? m_AgentHelperCount : 1;
+        public int AgentHelperCount => MaxSourceCount;
+        public int InitialSourceCount => Mathf.Clamp(m_InitialSourceCount, 0, MaxSourceCount);
+        public int MaxSourceCount => m_MaxSourceCount > 0 ? m_MaxSourceCount : (m_AgentHelperCount > 0 ? m_AgentHelperCount : 1);
         public string ExposedVolumeParameter => m_ExposedVolumeParameter;
         public float SpatialBlend => m_SpatialBlend;
         public float DopplerLevel => m_DopplerLevel;
@@ -56,6 +60,8 @@ namespace AlicizaX.Audio.Runtime
             m_Mute = false;
             m_Volume = 1f;
             m_AgentHelperCount = agentHelperCount;
+            m_MaxSourceCount = agentHelperCount;
+            m_InitialSourceCount = GetDefaultInitialSourceCount(type, agentHelperCount);
             m_ExposedVolumeParameter = exposedVolumeParameter;
             m_SpatialBlend = spatialBlend;
             m_DopplerLevel = 1f;
@@ -70,6 +76,42 @@ namespace AlicizaX.Audio.Runtime
             audioRolloffMode = AudioRolloffMode.Logarithmic;
             minDistance = type == AudioType.Music || type == AudioType.UISound ? 1f : 2f;
             maxDistance = type == AudioType.Music || type == AudioType.UISound ? 25f : 80f;
+        }
+
+        internal void EnsureSourceCounts()
+        {
+            if (m_MaxSourceCount <= 0)
+            {
+                m_MaxSourceCount = m_AgentHelperCount > 0 ? m_AgentHelperCount : 1;
+            }
+
+            m_InitialSourceCount = Mathf.Clamp(m_InitialSourceCount, 0, m_MaxSourceCount);
+        }
+
+        private static int GetDefaultInitialSourceCount(AudioType type, int maxSourceCount)
+        {
+            int initial;
+            switch (type)
+            {
+                case AudioType.Sound:
+                    initial = 4;
+                    break;
+                case AudioType.UISound:
+                    initial = 2;
+                    break;
+                case AudioType.Music:
+                    initial = 1;
+                    break;
+                case AudioType.Voice:
+                case AudioType.Ambient:
+                    initial = 2;
+                    break;
+                default:
+                    initial = 2;
+                    break;
+            }
+
+            return Mathf.Clamp(initial, 0, maxSourceCount);
         }
     }
 }

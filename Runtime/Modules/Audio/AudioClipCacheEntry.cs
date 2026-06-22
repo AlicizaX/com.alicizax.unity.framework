@@ -23,6 +23,7 @@ namespace AlicizaX.Audio.Runtime
         public int HashNextIndex;
         public int RefCount;
         public int AddressHash;
+        public AudioCachePolicy CachePolicy;
         public bool Loading;
         public bool Pinned;
         public bool CacheAfterUse;
@@ -38,16 +39,22 @@ namespace AlicizaX.Audio.Runtime
 
         public bool IsLoaded => Clip != null && Handle != null && Handle.IsValid && !Loading;
 
-        public void Initialize(AudioService owner, string address, int addressHash, bool pinned, int slotIndex)
+        public void Initialize(AudioService owner, string address, int addressHash, AudioCachePolicy cachePolicy, int slotIndex)
         {
             Owner = owner;
             Address = address;
             AddressHash = addressHash;
             SlotIndex = slotIndex;
             HashNextIndex = -1;
-            Pinned = pinned;
-            CacheAfterUse = pinned;
+            ApplyCachePolicy(cachePolicy);
             LastUseTime = Time.realtimeSinceStartup;
+        }
+
+        public void ApplyCachePolicy(AudioCachePolicy cachePolicy)
+        {
+            CachePolicy = cachePolicy;
+            Pinned = cachePolicy == AudioCachePolicy.Pin;
+            CacheAfterUse = cachePolicy != AudioCachePolicy.None;
         }
 
         public void AddPending(AudioLoadRequest request)
@@ -123,6 +130,7 @@ namespace AlicizaX.Audio.Runtime
             info.Clip = Clip;
             info.RefCount = RefCount;
             info.PendingCount = CountPending();
+            info.CachePolicy = CachePolicy;
             info.Loading = Loading;
             info.Pinned = Pinned;
             info.CacheAfterUse = CacheAfterUse;
@@ -166,6 +174,7 @@ namespace AlicizaX.Audio.Runtime
             HashNextIndex = -1;
             RefCount = 0;
             AddressHash = 0;
+            CachePolicy = AudioCachePolicy.Default;
             Loading = false;
             Pinned = false;
             CacheAfterUse = false;

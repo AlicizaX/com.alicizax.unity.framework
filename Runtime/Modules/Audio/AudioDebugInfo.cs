@@ -7,6 +7,8 @@ namespace AlicizaX.Audio.Runtime
         int CategoryCount { get; }
         int ClipCacheCount { get; }
         int ClipCacheCapacity { get; }
+        float ClipCacheTtl { get; }
+        AudioCachePolicy DefaultCachePolicy { get; }
         int HandleCapacity { get; }
         bool Initialized { get; }
         bool UnityAudioDisabled { get; }
@@ -25,10 +27,19 @@ namespace AlicizaX.Audio.Runtime
         public bool Enable;
         public float Volume;
         public int CategoryCount;
+        public int TotalSourceCount;
+        public int ActiveSourceCount;
         public int ActiveAgentCount;
         public int HandleCapacity;
         public int ClipCacheCount;
         public int ClipCacheCapacity;
+        public float ClipCacheTtl;
+        public AudioCachePolicy DefaultCachePolicy;
+        public int LoadingClipCount;
+        public int PinnedClipCount;
+        public int CachePolicyNoneCount;
+        public int CachePolicyTtlCount;
+        public int CachePolicyPinCount;
         public AudioListener Listener;
         public Transform InstanceRoot;
 
@@ -39,10 +50,19 @@ namespace AlicizaX.Audio.Runtime
             Enable = false;
             Volume = 0f;
             CategoryCount = 0;
+            TotalSourceCount = 0;
+            ActiveSourceCount = 0;
             ActiveAgentCount = 0;
             HandleCapacity = 0;
             ClipCacheCount = 0;
             ClipCacheCapacity = 0;
+            ClipCacheTtl = 0f;
+            DefaultCachePolicy = AudioCachePolicy.Default;
+            LoadingClipCount = 0;
+            PinnedClipCount = 0;
+            CachePolicyNoneCount = 0;
+            CachePolicyTtlCount = 0;
+            CachePolicyPinCount = 0;
             Listener = null;
             InstanceRoot = null;
         }
@@ -54,6 +74,7 @@ namespace AlicizaX.Audio.Runtime
         public bool Enabled;
         public float Volume;
         public int Capacity;
+        public int CreatedCount;
         public int ActiveCount;
         public int FreeCount;
         public int HeapCount;
@@ -64,6 +85,7 @@ namespace AlicizaX.Audio.Runtime
             Enabled = false;
             Volume = 0f;
             Capacity = 0;
+            CreatedCount = 0;
             ActiveCount = 0;
             FreeCount = 0;
             HeapCount = 0;
@@ -91,6 +113,7 @@ namespace AlicizaX.Audio.Runtime
         public float MinDistance;
         public float MaxDistance;
         public float StartedAt;
+        public int Priority;
 
         public void Clear()
         {
@@ -113,6 +136,7 @@ namespace AlicizaX.Audio.Runtime
             MinDistance = 0f;
             MaxDistance = 0f;
             StartedAt = 0f;
+            Priority = 0;
         }
     }
 
@@ -122,6 +146,7 @@ namespace AlicizaX.Audio.Runtime
         public AudioClip Clip;
         public int RefCount;
         public int PendingCount;
+        public AudioCachePolicy CachePolicy;
         public bool Loading;
         public bool Pinned;
         public bool CacheAfterUse;
@@ -136,6 +161,7 @@ namespace AlicizaX.Audio.Runtime
             Clip = null;
             RefCount = 0;
             PendingCount = 0;
+            CachePolicy = AudioCachePolicy.Default;
             Loading = false;
             Pinned = false;
             CacheAfterUse = false;

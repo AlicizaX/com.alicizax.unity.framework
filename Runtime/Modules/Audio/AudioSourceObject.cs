@@ -12,6 +12,28 @@ namespace AlicizaX.Audio.Runtime
         public AudioSource Source => _source;
         public AudioLowPassFilter LowPassFilter => _lowPassFilter;
 
+        internal AudioLowPassFilter EnsureLowPassFilter()
+        {
+            if (_lowPassFilter != null)
+            {
+                return _lowPassFilter;
+            }
+
+            if (_source == null)
+            {
+                return null;
+            }
+
+            if (!_source.TryGetComponent(out _lowPassFilter))
+            {
+                _lowPassFilter = _source.gameObject.AddComponent<AudioLowPassFilter>();
+            }
+
+            _lowPassFilter.enabled = false;
+            _lowPassFilter.cutoffFrequency = 22000f;
+            return _lowPassFilter;
+        }
+
         public static AudioSourceObject Create(string name, AudioSource source, AudioLowPassFilter lowPassFilter)
         {
             if (source == null)

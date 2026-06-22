@@ -24,6 +24,10 @@ namespace AlicizaX.Audio.Editor
         private SerializedProperty _audioListener;
         private SerializedProperty _audioMixer;
         private SerializedProperty _audioGroupConfigs;
+        private SerializedProperty _serviceConfig;
+        private SerializedProperty _clipCacheCapacity;
+        private SerializedProperty _clipCacheTtl;
+        private SerializedProperty _defaultCachePolicy;
         private bool[] _configFoldouts;
         private bool _groupsExpanded = true;
         private bool _debugExpanded = true;
@@ -58,6 +62,10 @@ namespace AlicizaX.Audio.Editor
             _audioListener = serializedObject.FindProperty("m_AudioListener");
             _audioMixer = serializedObject.FindProperty("m_AudioMixer");
             _audioGroupConfigs = serializedObject.FindProperty("m_AudioGroupConfigs");
+            _serviceConfig = serializedObject.FindProperty("m_ServiceConfig");
+            _clipCacheCapacity = _serviceConfig != null ? _serviceConfig.FindPropertyRelative("ClipCacheCapacity") : null;
+            _clipCacheTtl = _serviceConfig != null ? _serviceConfig.FindPropertyRelative("ClipCacheTtl") : null;
+            _defaultCachePolicy = _serviceConfig != null ? _serviceConfig.FindPropertyRelative("DefaultClipCachePolicy") : null;
             _configFoldouts = new bool[(int)AudioType.Max];
             for (int i = 0; i < _configFoldouts.Length; i++)
             {
@@ -76,9 +84,52 @@ namespace AlicizaX.Audio.Editor
             EditorGUI.BeginDisabledGroup(EditorApplication.isPlayingOrWillChangePlaymode);
             DrawPropertyRow("Listener", _audioListener);
             DrawPropertyRow("Audio Mixer", _audioMixer);
+            DrawCacheConfig(component);
             DrawGroupConfigs();
             EditorGUI.EndDisabledGroup();
 
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawCacheConfig(AudioComponent component)
+        {
+            EditorGUILayout.Space(2f);
+            Rect headerRect = GUILayoutUtility.GetRect(1f, ConfigHeaderHeight, GUILayout.ExpandWidth(true));
+            AlicizaEditorGUI.DrawToolbarBackground(headerRect);
+            GUI.Label(new Rect(headerRect.x + 8f, headerRect.y + 2f, headerRect.width - 16f, 20f), "Clip Cache", AlicizaEditorGUI.Styles.RowLabel);
+
+            EditorGUILayout.BeginVertical(AlicizaEditorGUI.Styles.EntryBody);
+            DrawPropertyRow("Capacity", _clipCacheCapacity);
+            DrawPropertyRow("TTL Seconds", _clipCacheTtl);
+            DrawPropertyRow("Default Policy", _defaultCachePolicy);
+
+            EditorGUILayout.BeginHorizontal(AlicizaEditorGUI.Styles.FieldRow);
+            GUILayout.Space(RowLabelWidth);
+            if (GUILayout.Button("Reset", GUILayout.Width(72f)))
+            {
+                Undo.RecordObject(component, "Reset Audio Cache Settings");
+                component.ResetServiceConfigForEditor();
+                EditorUtility.SetDirty(component);
+                serializedObject.Update();
+            }
+
+            if (GUILayout.Button("Mobile", GUILayout.Width(72f)))
+            {
+                Undo.RecordObject(component, "Apply Mobile Audio Cache Settings");
+                component.ApplyMobileServiceConfigForEditor();
+                EditorUtility.SetDirty(component);
+                serializedObject.Update();
+            }
+
+            if (GUILayout.Button("Desktop", GUILayout.Width(72f)))
+            {
+                Undo.RecordObject(component, "Apply Desktop Audio Cache Settings");
+                component.ApplyDesktopServiceConfigForEditor();
+                EditorUtility.SetDirty(component);
+                serializedObject.Update();
+            }
+
+            EditorGUILayout.EndHorizontal();
             EditorGUILayout.EndVertical();
         }
 
@@ -238,7 +289,8 @@ namespace AlicizaX.Audio.Editor
             DrawPropertyRow("Mixer Group", configProperty.FindPropertyRelative("m_MixerGroup"));
             DrawPropertyRow("Mute", configProperty.FindPropertyRelative("m_Mute"));
             DrawPropertyRow("Volume", configProperty.FindPropertyRelative("m_Volume"));
-            DrawPropertyRow("Agent Count", configProperty.FindPropertyRelative("m_AgentHelperCount"));
+            DrawPropertyRow("Initial Sources", configProperty.FindPropertyRelative("m_InitialSourceCount"));
+            DrawPropertyRow("Max Sources", configProperty.FindPropertyRelative("m_MaxSourceCount"));
             DrawPropertyRow("Volume Param", configProperty.FindPropertyRelative("m_ExposedVolumeParameter"));
             DrawPropertyRow("Spatial Blend", configProperty.FindPropertyRelative("m_SpatialBlend"));
             DrawPropertyRow("Doppler", configProperty.FindPropertyRelative("m_DopplerLevel"));
@@ -267,33 +319,35 @@ namespace AlicizaX.Audio.Editor
             switch (type)
             {
                 case AudioType.Sound:
-                    ApplyDefaultConfig(configProperty, type, "Sound", "SoundVolume", 24, 1f, false, 128, 2f, 80f);
+                    ApplyDefaultConfig(configProperty, type, "Sound", "SoundVolume", 4, 24, 1f, false, 128, 2f, 80f);
                     break;
                 case AudioType.UISound:
-                    ApplyDefaultConfig(configProperty, type, "UISound", "UISoundVolume", 12, 0f, false, 128, 1f, 25f);
+                    ApplyDefaultConfig(configProperty, type, "UISound", "UISoundVolume", 2, 12, 0f, false, 128, 1f, 25f);
                     break;
                 case AudioType.Music:
-                    ApplyDefaultConfig(configProperty, type, "Music", "MusicVolume", 2, 0f, false, 32, 1f, 25f);
+                    ApplyDefaultConfig(configProperty, type, "Music", "MusicVolume", 1, 2, 0f, false, 32, 1f, 25f);
                     break;
                 case AudioType.Voice:
-                    ApplyDefaultConfig(configProperty, type, "Voice", "VoiceVolume", 6, 1f, true, 128, 2f, 80f);
+                    ApplyDefaultConfig(configProperty, type, "Voice", "VoiceVolume", 2, 6, 1f, true, 128, 2f, 80f);
                     break;
                 case AudioType.Ambient:
-                    ApplyDefaultConfig(configProperty, type, "Ambient", "AmbientVolume", 6, 1f, true, 128, 2f, 80f);
+                    ApplyDefaultConfig(configProperty, type, "Ambient", "AmbientVolume", 2, 6, 1f, true, 128, 2f, 80f);
                     break;
                 default:
-                    ApplyDefaultConfig(configProperty, AudioType.Sound, "Sound", "SoundVolume", 24, 1f, false, 128, 2f, 80f);
+                    ApplyDefaultConfig(configProperty, AudioType.Sound, "Sound", "SoundVolume", 4, 24, 1f, false, 128, 2f, 80f);
                     break;
             }
         }
 
-        private static void ApplyDefaultConfig(SerializedProperty configProperty, AudioType type, string name, string exposedParameter, int agentCount, float spatialBlend, bool occlusionEnabled, int priority, float minDistance, float maxDistance)
+        private static void ApplyDefaultConfig(SerializedProperty configProperty, AudioType type, string name, string exposedParameter, int initialSourceCount, int maxSourceCount, float spatialBlend, bool occlusionEnabled, int priority, float minDistance, float maxDistance)
         {
             configProperty.FindPropertyRelative("AudioType").enumValueIndex = (int)type;
             configProperty.FindPropertyRelative("m_Name").stringValue = name;
             configProperty.FindPropertyRelative("m_Mute").boolValue = false;
             configProperty.FindPropertyRelative("m_Volume").floatValue = 1f;
-            configProperty.FindPropertyRelative("m_AgentHelperCount").intValue = agentCount;
+            configProperty.FindPropertyRelative("m_AgentHelperCount").intValue = maxSourceCount;
+            configProperty.FindPropertyRelative("m_InitialSourceCount").intValue = initialSourceCount;
+            configProperty.FindPropertyRelative("m_MaxSourceCount").intValue = maxSourceCount;
             configProperty.FindPropertyRelative("m_ExposedVolumeParameter").stringValue = exposedParameter;
             configProperty.FindPropertyRelative("m_SpatialBlend").floatValue = spatialBlend;
             configProperty.FindPropertyRelative("m_DopplerLevel").floatValue = 1f;
@@ -568,9 +622,14 @@ namespace AlicizaX.Audio.Editor
                 DrawDebugRow("Volume", _serviceInfo.Volume.ToString("F3"));
                 DrawDebugObjectRow("Listener", _serviceInfo.Listener, typeof(AudioListener));
                 DrawDebugObjectRow("Instance Root", _serviceInfo.InstanceRoot, typeof(Transform));
+                DrawDebugRow("Sources", _serviceInfo.ActiveSourceCount + " / " + _serviceInfo.TotalSourceCount);
                 DrawDebugRow("Active Agents", _serviceInfo.ActiveAgentCount.ToString());
                 DrawDebugRow("Handle Capacity", _serviceInfo.HandleCapacity.ToString());
                 DrawDebugRow("Clip Cache", _serviceInfo.ClipCacheCount + " / " + _serviceInfo.ClipCacheCapacity);
+                DrawDebugRow("Cache TTL", _serviceInfo.ClipCacheTtl.ToString("F1") + "s");
+                DrawDebugRow("Default Cache Policy", _serviceInfo.DefaultCachePolicy.ToString());
+                DrawDebugRow("Cache Loading/Pinned", _serviceInfo.LoadingClipCount + " / " + _serviceInfo.PinnedClipCount);
+                DrawDebugRow("Cache Policies", "None " + _serviceInfo.CachePolicyNoneCount + " | Ttl " + _serviceInfo.CachePolicyTtlCount + " | Pin " + _serviceInfo.CachePolicyPinCount);
 
                 DrawCategoryDebugInfo(debugService);
                 DrawAgentDebugInfo(debugService);
@@ -599,6 +658,7 @@ namespace AlicizaX.Audio.Editor
                                + " | Volume " + _categoryInfo.Volume.ToString("F2")
                                + " | Active " + _categoryInfo.ActiveCount
                                + " | Free " + _categoryInfo.FreeCount
+                               + " | Created " + _categoryInfo.CreatedCount
                                + " | Capacity " + _categoryInfo.Capacity);
             }
         }
@@ -671,6 +731,7 @@ namespace AlicizaX.Audio.Editor
                         "Ref " + _clipCacheInfo.RefCount
                                + " | Pending " + _clipCacheInfo.PendingCount
                                + " | Loaded " + _clipCacheInfo.IsLoaded
+                               + " | Policy " + _clipCacheInfo.CachePolicy
                                + " | Loading " + _clipCacheInfo.Loading
                                + " | Pinned " + _clipCacheInfo.Pinned
                                + " | LRU " + _clipCacheInfo.InLru);

@@ -27,12 +27,17 @@ namespace AlicizaX.Audio.Runtime
         private ulong _handle;
         private float _baseVolume;
         private float _pitch;
+        private float _volumeFadeStart;
+        private float _volumeFadeTarget;
+        private float _volumeFadeTimer;
+        private float _volumeFadeDuration;
         private float _fadeInTimer;
         private float _fadeInDuration;
         private float _fadeTimer;
         private float _fadeDuration;
         private float _startedAt;
         private float _nextOcclusionCheckTime;
+        private int _playbackPriority;
 
         internal int Index { get; private set; }
         internal int GlobalIndex { get; private set; }
@@ -43,6 +48,7 @@ namespace AlicizaX.Audio.Runtime
         internal bool IsFree => _state == AudioAgentRuntimeState.Free;
         internal bool IsPlayingState => _state == AudioAgentRuntimeState.Playing || _state == AudioAgentRuntimeState.Loading || _state == AudioAgentRuntimeState.FadingIn || _state == AudioAgentRuntimeState.FadingOut;
         internal float StartedAt => _startedAt;
+        internal int PlaybackPriority => _playbackPriority;
 
         public AudioAgent() { }
 
@@ -72,6 +78,10 @@ namespace AlicizaX.Audio.Runtime
             _state = AudioAgentRuntimeState.Loading;
             _startedAt = Time.realtimeSinceStartup;
             _baseVolume = Mathf.Clamp01(request.Volume);
+            _volumeFadeStart = _baseVolume;
+            _volumeFadeTarget = _baseVolume;
+            _volumeFadeTimer = 0f;
+            _volumeFadeDuration = 0f;
             _pitch = request.Pitch <= 0f ? 1f : request.Pitch;
             _fadeInDuration = request.FadeInSeconds > 0f ? request.FadeInSeconds : 0f;
             _fadeInTimer = 0f;
@@ -98,7 +108,7 @@ namespace AlicizaX.Audio.Runtime
                 return 0UL;
             }
 
-            if (!_service.RequestClip(request.Address, request.Async, request.CacheClip, this, _generation, out AudioClipCacheEntry entry, out AudioLoadRequest loadRequest))
+            if (!_service.RequestClip(request.Address, request.Async, request.CachePolicy, this, _generation, out AudioClipCacheEntry entry, out AudioLoadRequest loadRequest))
             {
                 StopImmediate(true);
                 return 0UL;
@@ -161,6 +171,49 @@ namespace AlicizaX.Audio.Runtime
             _state = AudioAgentRuntimeState.FadingOut;
         }
 
+        internal void Stop(float fadeOutSeconds)
+        {
+            if (_state == AudioAgentRuntimeState.Free)
+            {
+                return;
+            }
+
+            if (fadeOutSeconds <= 0f || _state == AudioAgentRuntimeState.Loading)
+            {
+                StopImmediate(true);
+                return;
+            }
+
+            _fadeDuration = fadeOutSeconds;
+            _fadeTimer = fadeOutSeconds;
+            _state = AudioAgentRuntimeState.FadingOut;
+        }
+
+        internal void SetVolume(float volume, float fadeSeconds)
+        {
+            if (_state == AudioAgentRuntimeState.Free)
+            {
+                return;
+            }
+
+            float target = Mathf.Clamp01(volume);
+            if (fadeSeconds <= 0f || _state == AudioAgentRuntimeState.Loading)
+            {
+                _baseVolume = target;
+                _volumeFadeStart = target;
+                _volumeFadeTarget = target;
+                _volumeFadeTimer = 0f;
+                _volumeFadeDuration = 0f;
+                ApplyCurrentRuntimeVolume();
+                return;
+            }
+
+            _volumeFadeStart = _baseVolume;
+            _volumeFadeTarget = target;
+            _volumeFadeTimer = 0f;
+            _volumeFadeDuration = fadeSeconds;
+        }
+
         internal void Update(float deltaTime)
         {
             if (_state == AudioAgentRuntimeState.Free)
@@ -170,6 +223,7 @@ namespace AlicizaX.Audio.Runtime
 
             UpdateFollowTarget();
             UpdateOcclusion();
+            bool volumeChanged = UpdateVolumeFade(deltaTime);
 
             if (_state == AudioAgentRuntimeState.FadingIn)
             {
@@ -192,6 +246,12 @@ namespace AlicizaX.Audio.Runtime
                 if (!_loop && _source != null && !_source.isPlaying)
                 {
                     StopImmediate(true);
+                    return;
+                }
+
+                if (volumeChanged)
+                {
+                    ApplyRuntimeVolume(1f);
                 }
 
                 return;
@@ -248,12 +308,17 @@ namespace AlicizaX.Audio.Runtime
             _handle = 0UL;
             _baseVolume = 1f;
             _pitch = 1f;
+            _volumeFadeStart = 1f;
+            _volumeFadeTarget = 1f;
+            _volumeFadeTimer = 0f;
+            _volumeFadeDuration = 0f;
             _fadeInTimer = 0f;
             _fadeInDuration = 0f;
             _fadeTimer = 0f;
             _fadeDuration = 0f;
             _startedAt = 0f;
             _nextOcclusionCheckTime = 0f;
+            _playbackPriority = 0;
         }
 
         internal void FillDebugInfo(AudioAgentDebugInfo info)
@@ -282,6 +347,7 @@ namespace AlicizaX.Audio.Runtime
             info.MinDistance = _source != null ? _source.minDistance : 0f;
             info.MaxDistance = _source != null ? _source.maxDistance : 0f;
             info.StartedAt = _startedAt;
+            info.Priority = _playbackPriority;
         }
 
         private void BindSource(AudioSourceObject sourceObject)
@@ -387,12 +453,17 @@ namespace AlicizaX.Audio.Runtime
             _handle = 0;
             _baseVolume = 1f;
             _pitch = 1f;
+            _volumeFadeStart = 1f;
+            _volumeFadeTarget = 1f;
+            _volumeFadeTimer = 0f;
+            _volumeFadeDuration = 0f;
             _fadeInTimer = 0f;
             _fadeInDuration = 0f;
             _fadeTimer = 0f;
             _fadeDuration = 0f;
             _startedAt = 0f;
             _nextOcclusionCheckTime = 0f;
+            _playbackPriority = 0;
 
             if (_source != null)
             {
@@ -416,7 +487,8 @@ namespace AlicizaX.Audio.Runtime
             _source.bypassEffects = false;
             _source.bypassListenerEffects = false;
             _source.bypassReverbZones = false;
-            _source.priority = config.SourcePriority;
+            _playbackPriority = ResolvePlaybackPriority(request, config);
+            _source.priority = ResolveUnitySourcePriority(_playbackPriority);
             _source.pitch = _pitch;
             _source.rolloffMode = request.OverrideSpatialSettings ? request.RolloffMode : config.RolloffMode;
             _source.minDistance = request.OverrideSpatialSettings ? request.MinDistance : config.MinDistance;
@@ -456,6 +528,21 @@ namespace AlicizaX.Audio.Runtime
             }
 
             return config.SpatialBlend;
+        }
+
+        private static int ResolvePlaybackPriority(AudioPlayRequest request, AudioGroupConfig config)
+        {
+            if (request.Priority > 0)
+            {
+                return Mathf.Clamp(request.Priority, 0, 256);
+            }
+
+            return Mathf.Clamp(256 - config.SourcePriority, 0, 256);
+        }
+
+        private static int ResolveUnitySourcePriority(int playbackPriority)
+        {
+            return Mathf.Clamp(256 - playbackPriority, 0, 256);
         }
 
         private void UpdateFollowTarget()
@@ -529,7 +616,43 @@ namespace AlicizaX.Audio.Runtime
                 _lowPassFilter.cutoffFrequency = occluded ? config.OcclusionLowPassCutoff : MaxCutoffFrequency;
             }
 
-            ApplyRuntimeVolume(_state == AudioAgentRuntimeState.FadingOut ? _fadeTimer / Mathf.Max(_fadeDuration, MinFadeOutSeconds) : 1f);
+            ApplyCurrentRuntimeVolume();
+        }
+
+        private bool UpdateVolumeFade(float deltaTime)
+        {
+            if (_volumeFadeDuration <= 0f)
+            {
+                return false;
+            }
+
+            _volumeFadeTimer += deltaTime;
+            if (_volumeFadeTimer >= _volumeFadeDuration)
+            {
+                _baseVolume = _volumeFadeTarget;
+                _volumeFadeTimer = 0f;
+                _volumeFadeDuration = 0f;
+                return true;
+            }
+
+            float t = _volumeFadeTimer / Mathf.Max(_volumeFadeDuration, MinFadeOutSeconds);
+            _baseVolume = Mathf.Lerp(_volumeFadeStart, _volumeFadeTarget, t);
+            return true;
+        }
+
+        private void ApplyCurrentRuntimeVolume()
+        {
+            float fadeScale = 1f;
+            if (_state == AudioAgentRuntimeState.FadingIn)
+            {
+                fadeScale = _fadeInDuration > 0f ? _fadeInTimer / Mathf.Max(_fadeInDuration, MinFadeOutSeconds) : 1f;
+            }
+            else if (_state == AudioAgentRuntimeState.FadingOut)
+            {
+                fadeScale = _fadeTimer / Mathf.Max(_fadeDuration, MinFadeOutSeconds);
+            }
+
+            ApplyRuntimeVolume(fadeScale);
         }
 
         private void ApplyRuntimeVolume(float fadeScale)

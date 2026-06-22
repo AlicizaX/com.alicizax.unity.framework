@@ -25,7 +25,9 @@ namespace AlicizaX.Audio.Runtime
         [SerializeField] private bool m_Loop = true;
         [SerializeField, Range(0f, 1f)] private float m_Volume = 1f;
         [SerializeField] private bool m_Async = true;
-        [SerializeField] private bool m_CacheClip = true;
+        [SerializeField, HideInInspector] private bool m_CacheClip = true;
+        [SerializeField, HideInInspector] private bool m_CachePolicyMigrated;
+        [SerializeField] private AudioCachePolicy m_CachePolicy = AudioCachePolicy.Ttl;
         [SerializeField] private bool m_StopWithFadeout = true;
 
         [Header("Spatial")]
@@ -59,6 +61,7 @@ namespace AlicizaX.Audio.Runtime
 
         private void Awake()
         {
+            EnsureCachePolicyMigrated();
             _cachedTransform = transform;
         }
 
@@ -160,6 +163,20 @@ namespace AlicizaX.Audio.Runtime
             }
 
             float maxDistance = m_MaxDistance >= m_MinDistance ? m_MaxDistance : m_MinDistance;
+            AudioSpatialOptions spatial = new AudioSpatialOptions
+            {
+                Override = true,
+                SpatialBlend = m_SpatialBlend,
+                MinDistance = m_MinDistance,
+                MaxDistance = maxDistance,
+                RolloffMode = m_RolloffMode
+            };
+            AudioPlayOptions options = new AudioPlayOptions
+            {
+                Async = m_Async,
+                CachePolicy = m_CachePolicy
+            };
+
             if (m_FollowSelf)
             {
                 _handle = m_ClipMode == AudioEmitterClipMode.Clip
@@ -168,25 +185,19 @@ namespace AlicizaX.Audio.Runtime
                         m_Clip,
                         _cachedTransform,
                         m_FollowOffset,
-                        m_MinDistance,
-                        maxDistance,
-                        m_RolloffMode,
-                        m_SpatialBlend,
                         m_Loop,
-                        m_Volume)
+                        m_Volume,
+                        spatial,
+                        options)
                     : _audioService.PlayFollow(
                         m_AudioType,
                         m_Address,
                         _cachedTransform,
                         m_FollowOffset,
-                        m_MinDistance,
-                        maxDistance,
-                        m_RolloffMode,
-                        m_SpatialBlend,
                         m_Loop,
                         m_Volume,
-                        m_Async,
-                        m_CacheClip);
+                        spatial,
+                        options);
             }
             else
             {
@@ -201,24 +212,18 @@ namespace AlicizaX.Audio.Runtime
                         m_AudioType,
                         m_Clip,
                         position,
-                        m_MinDistance,
-                        maxDistance,
-                        m_RolloffMode,
-                        m_SpatialBlend,
                         m_Loop,
-                        m_Volume)
+                        m_Volume,
+                        spatial,
+                        options)
                     : _audioService.Play3D(
                         m_AudioType,
                         m_Address,
                         position,
-                        m_MinDistance,
-                        maxDistance,
-                        m_RolloffMode,
-                        m_SpatialBlend,
                         m_Loop,
                         m_Volume,
-                        m_Async,
-                        m_CacheClip);
+                        spatial,
+                        options);
             }
 
             _isPlaying = _handle != 0UL;
@@ -239,6 +244,17 @@ namespace AlicizaX.Audio.Runtime
 
             _handle = 0UL;
             _isPlaying = false;
+        }
+
+        private void EnsureCachePolicyMigrated()
+        {
+            if (m_CachePolicyMigrated)
+            {
+                return;
+            }
+
+            m_CachePolicy = m_CacheClip ? AudioCachePolicy.Ttl : AudioCachePolicy.None;
+            m_CachePolicyMigrated = true;
         }
 
         private bool HasPlayableAsset()
@@ -266,6 +282,7 @@ namespace AlicizaX.Audio.Runtime
 
         private void OnValidate()
         {
+            EnsureCachePolicyMigrated();
             if (m_MaxDistance < m_MinDistance)
             {
                 m_MaxDistance = m_MinDistance;
