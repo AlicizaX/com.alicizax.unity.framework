@@ -7,29 +7,29 @@ namespace AlicizaX.Scene.Runtime
 {
     public interface ISceneService : IService
     {
-        public string CurrentMainSceneName { get; }
+        string CurrentMainSceneName { get; }
 
-        public UniTask<UnityEngine.SceneManagement.Scene> LoadSceneAsync(string location, LoadSceneMode sceneMode = LoadSceneMode.Single, bool suspendLoad = false, uint priority = 100, bool gcCollect = true,
+        UniTask<UnityEngine.SceneManagement.Scene> LoadSceneAsync(string location, LoadSceneMode sceneMode = LoadSceneMode.Single, bool suspendLoad = false, uint priority = 100, bool gcCollect = false,
             Action<float> progressCallBack = null);
 
-        public void LoadScene(string location,
+        void LoadScene(string location,
             LoadSceneMode sceneMode = LoadSceneMode.Single,
             bool suspendLoad = false,
             uint priority = 100,
             Action<UnityEngine.SceneManagement.Scene> callBack = null,
-            bool gcCollect = true,
+            bool gcCollect = false,
             Action<float> progressCallBack = null);
 
-        public bool ActivateScene(string location);
+        bool ActivateScene(string location);
 
-        public bool UnSuspend(string location);
+        bool UnSuspend(string location);
 
-        public bool IsMainScene(string location);
+        bool IsMainScene(string location);
 
-        public UniTask<bool> UnloadAsync(string location, Action<float> progressCallBack = null);
+        UniTask<bool> UnloadSubSceneAsync(string location, bool gcCollect = false, Action<float> progressCallback = null);
 
-        public void Unload(string location, Action callBack = null, Action<float> progressCallBack = null);
+        void UnloadSubScene(string location, Action callback = null, bool gcCollect = false, Action<float> progressCallback = null);
 
-        public bool IsContainScene(string location);
+        bool IsContainScene(string location);
     }
 }

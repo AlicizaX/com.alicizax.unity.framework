@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
@@ -10,147 +10,68 @@ namespace AlicizaX.Scene.Runtime
     internal class SceneService : ServiceBase, ISceneService
     {
         private readonly SceneDomainState _sceneState = new();
+        private int _lifecycleVersion;
+        private bool _destroyed = true;
 
         public string CurrentMainSceneName => _sceneState.CurrentMainSceneName;
 
         protected override void OnInitialize()
         {
+            unchecked
+            {
+                _lifecycleVersion++;
+            }
+
+            _destroyed = false;
             var activeScene = SceneManager.GetActiveScene();
             _sceneState.SetBootScene(activeScene.name);
         }
 
         protected override void OnDestroyService()
         {
+            _destroyed = true;
+            unchecked
+            {
+                _lifecycleVersion++;
+            }
+
             _sceneState.Destroy();
         }
 
-        public async UniTask<UnityEngine.SceneManagement.Scene> LoadSceneAsync(string location, LoadSceneMode sceneMode = LoadSceneMode.Single, bool suspendLoad = false, uint priority = 100, bool gcCollect = true, Action<float> progressCallBack = null)
+        public UniTask<UnityEngine.SceneManagement.Scene> LoadSceneAsync(string location, LoadSceneMode sceneMode = LoadSceneMode.Single, bool suspendLoad = false,
+            uint priority = 100, bool gcCollect = false, Action<float> progressCallback = null)
         {
-            var sceneState = _sceneState;
-            if (!sceneState.TryBeginHandling(location))
-            {
-                Log.Error($"Could not load scene while loading. Scene: {location}");
-                return default;
-            }
-
-            if (sceneMode == LoadSceneMode.Additive)
-            {
-                if (sceneState.TryGetSubScene(location, out YooAsset.SceneHandle loadedSubScene))
-                {
-                    throw new Exception($"Could not load subScene while already loaded. Scene: {location}");
-                }
-
-                var subScene = YooAssets.LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, suspendLoad, priority);
-                sceneState.AddSubScene(location, subScene);
-
-                if (progressCallBack != null)
-                {
-                    while (!subScene.IsDone && subScene.IsValid)
-                    {
-                        progressCallBack.Invoke(subScene.Progress);
-                        await UniTask.Yield();
-                    }
-                }
-                else
-                {
-                    await subScene.ToUniTask();
-                }
-
-                sceneState.EndHandling(location);
-                return subScene.SceneObject;
-            }
-
-            if (sceneState.CurrentMainSceneHandle is { IsDone: false })
-            {
-                throw new Exception($"Could not load MainScene while loading. CurrentMainScene: {sceneState.CurrentMainSceneName}.");
-            }
-
-            sceneState = PrepareSceneStateForMainSceneLoad(location);
-            var mainSceneHandle = YooAssets.LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, suspendLoad, priority);
-
-            if (progressCallBack != null)
-            {
-                while (!mainSceneHandle.IsDone && mainSceneHandle.IsValid)
-                {
-                    progressCallBack.Invoke(mainSceneHandle.Progress);
-                    await UniTask.Yield();
-                }
-            }
-            else
-            {
-                await mainSceneHandle.ToUniTask();
-            }
-
-            sceneState.SetMainScene(location, mainSceneHandle);
-            Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
-            sceneState.EndHandling(location);
-            return mainSceneHandle.SceneObject;
+            return sceneMode == LoadSceneMode.Additive
+                ? LoadSubSceneAsync(location, suspendLoad, priority, progressCallback)
+                : LoadMainSceneAsync(location, sceneMode, suspendLoad, priority, gcCollect, progressCallback);
         }
 
         public void LoadScene(string location, LoadSceneMode sceneMode = LoadSceneMode.Single, bool suspendLoad = false, uint priority = 100,
-            Action<UnityEngine.SceneManagement.Scene> callBack = null,
-            bool gcCollect = true, Action<float> progressCallBack = null)
+            Action<UnityEngine.SceneManagement.Scene> callback = null,
+            bool gcCollect = false, Action<float> progressCallback = null)
         {
-            var sceneState = _sceneState;
-            if (!sceneState.TryBeginHandling(location))
-            {
-                Log.Error($"Could not load scene while loading. Scene: {location}");
-                return;
-            }
-
-            if (sceneMode == LoadSceneMode.Additive)
-            {
-                if (sceneState.TryGetSubScene(location, out YooAsset.SceneHandle loadedSubScene))
-                {
-                    Log.Warning($"Could not load subScene while already loaded. Scene: {location}");
-                    return;
-                }
-
-                var subScene = YooAssets.LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, suspendLoad, priority);
-                sceneState.AddSubScene(location, subScene);
-                subScene.Completed += handle =>
-                {
-                    sceneState.EndHandling(location);
-                    callBack?.Invoke(handle.SceneObject);
-                };
-
-                if (progressCallBack != null)
-                {
-                    InvokeSceneProgress(subScene, progressCallBack).Forget();
-                }
-
-                return;
-            }
-
-            if (sceneState.CurrentMainSceneHandle is { IsDone: false })
-            {
-                Log.Warning($"Could not load MainScene while loading. CurrentMainScene: {sceneState.CurrentMainSceneName}.");
-                return;
-            }
-
-            sceneState = PrepareSceneStateForMainSceneLoad(location);
-            var mainSceneHandle = YooAssets.LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, suspendLoad, priority);
-            mainSceneHandle.Completed += handle =>
-            {
-                sceneState.SetMainScene(location, handle);
-                sceneState.EndHandling(location);
-                callBack?.Invoke(handle.SceneObject);
-            };
-
-            if (progressCallBack != null)
-            {
-                InvokeSceneProgress(mainSceneHandle, progressCallBack).Forget();
-            }
-
-            Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
+            LoadSceneCallbackAsync(location, sceneMode, suspendLoad, priority, callback, gcCollect, progressCallback).Forget();
         }
 
         public bool ActivateScene(string location)
         {
-            var sceneState = _sceneState;
-            if (sceneState.CurrentMainSceneName.Equals(location))
+            if (string.IsNullOrEmpty(location))
             {
-                return sceneState.CurrentMainSceneHandle != null && sceneState.CurrentMainSceneHandle.ActivateScene();
+                Log.Warning("ActivateScene invalid location.");
+                return false;
+            }
+
+            var sceneState = _sceneState;
+            if (sceneState.IsMainScene(location))
+            {
+                var mainSceneHandle = sceneState.CurrentMainSceneHandle;
+                if (mainSceneHandle != null)
+                {
+                    return mainSceneHandle.ActivateScene();
+                }
+
+                var scene = SceneManager.GetSceneByName(location);
+                return scene.IsValid() && scene.isLoaded && SceneManager.SetActiveScene(scene);
             }
 
             if (sceneState.TryGetSubScene(location, out var subScene) && subScene != null)
@@ -158,131 +79,87 @@ namespace AlicizaX.Scene.Runtime
                 return subScene.ActivateScene();
             }
 
-            Log.Warning($"IsMainScene invalid location:{location}");
+            Log.Warning($"ActivateScene invalid location:{location}");
             return false;
         }
 
-
         public bool UnSuspend(string location)
         {
-            var sceneState = _sceneState;
-            if (sceneState.CurrentMainSceneName.Equals(location))
+            if (string.IsNullOrEmpty(location))
             {
-                return sceneState.CurrentMainSceneHandle != null && sceneState.CurrentMainSceneHandle.UnSuspend();
+                Log.Warning("UnSuspend invalid location.");
+                return false;
             }
 
-            if (sceneState.TryGetSubScene(location, out var subScene) && subScene != null)
+            if (_sceneState.TryGetAnySceneHandle(location, out var sceneHandle) && sceneHandle != null)
             {
-                return subScene.UnSuspend();
+                return sceneHandle.UnSuspend();
             }
 
-            Log.Warning($"IsMainScene invalid location:{location}");
+            Log.Warning($"UnSuspend invalid location:{location}");
             return false;
         }
 
         public bool IsMainScene(string location)
         {
-            var sceneState = _sceneState;
-            var currentScene = SceneManager.GetActiveScene();
-
-            if (sceneState.CurrentMainSceneName.Equals(location))
-            {
-                if (sceneState.CurrentMainSceneHandle == null)
-                {
-                    return currentScene.name == location;
-                }
-
-                if (currentScene.name == sceneState.CurrentMainSceneHandle.SceneName)
-                {
-                    return true;
-                }
-
-                return sceneState.CurrentMainSceneHandle.SceneName == currentScene.name;
-            }
-
-            if (currentScene.name == sceneState.CurrentMainSceneHandle?.SceneName)
-            {
-                return true;
-            }
-
-            Log.Warning($"IsMainScene invalid location:{location}");
-            return false;
+            return _sceneState.IsMainScene(location);
         }
 
-        public async UniTask<bool> UnloadAsync(string location, Action<float> progressCallBack = null)
+        public async UniTask<bool> UnloadSubSceneAsync(string location, bool gcCollect = false, Action<float> progressCallback = null)
         {
-            var sceneState = _sceneState;
-            if (sceneState.TryGetSubScene(location, out var subScene) && subScene != null)
+            if (string.IsNullOrEmpty(location))
             {
-                if (subScene.SceneObject == default)
+                Log.Warning("UnloadSubSceneAsync invalid location.");
+                return false;
+            }
+
+            var lifecycleVersion = _lifecycleVersion;
+            var sceneState = _sceneState;
+            if (!sceneState.TryBeginSubSceneUnload(location, out var subScene))
+            {
+                Log.Warning($"Could not unload sub scene. Scene: {location}");
+                return false;
+            }
+
+            bool succeeded = false;
+            AsyncOperationBase unloadOperation = null;
+            try
+            {
+                unloadOperation = subScene.UnloadAsync();
+                await AwaitOperation(unloadOperation, progressCallback);
+                if (!IsServiceAlive(lifecycleVersion))
                 {
-                    Log.Error($"Could not unload Scene while not loaded. Scene: {location}");
                     return false;
                 }
 
-                if (!sceneState.TryBeginHandling(location))
+                succeeded = unloadOperation.Status == EOperationStatus.Succeed;
+                if (!succeeded)
                 {
-                    Log.Warning($"Could not unload Scene while loading. Scene: {location}");
+                    Log.Error($"Unload sub scene failed. Scene: {location}, Error: {GetOperationError(unloadOperation)}");
                     return false;
                 }
 
-                var unloadOperation = subScene.UnloadAsync();
-                if (progressCallBack != null)
-                {
-                    while (!unloadOperation.IsDone && unloadOperation.Status != EOperationStatus.Failed)
-                    {
-                        progressCallBack.Invoke(unloadOperation.Progress);
-                        await UniTask.Yield();
-                    }
-                }
-                else
-                {
-                    await unloadOperation.ToUniTask();
-                }
-
-                sceneState.RemoveSubScene(location);
-                sceneState.EndHandling(location);
+                RequestUnloadUnusedAssets(gcCollect);
+                InvokeProgress(progressCallback, 1f);
                 return true;
             }
-
-            Log.Warning($"UnloadAsync invalid location:{location}");
-            return false;
+            catch (Exception exception)
+            {
+                LogOperationException($"Unload sub scene failed. Scene: {location}", exception, GetOperationError(unloadOperation));
+                return false;
+            }
+            finally
+            {
+                if (IsServiceAlive(lifecycleVersion))
+                {
+                    sceneState.EndSubSceneUnload(location, subScene, succeeded);
+                }
+            }
         }
 
-        public void Unload(string location, Action callBack = null, Action<float> progressCallBack = null)
+        public void UnloadSubScene(string location, Action callback = null, bool gcCollect = false, Action<float> progressCallback = null)
         {
-            var sceneState = _sceneState;
-            if (sceneState.TryGetSubScene(location, out var subScene) && subScene != null)
-            {
-                if (subScene.SceneObject == default)
-                {
-                    Log.Error($"Could not unload Scene while not loaded. Scene: {location}");
-                    return;
-                }
-
-                if (!sceneState.TryBeginHandling(location))
-                {
-                    Log.Warning($"Could not unload Scene while loading. Scene: {location}");
-                    return;
-                }
-
-                var unloadOperation = subScene.UnloadAsync();
-                unloadOperation.Completed += @base =>
-                {
-                    sceneState.RemoveSubScene(location);
-                    sceneState.EndHandling(location);
-                    callBack?.Invoke();
-                };
-
-                if (progressCallBack != null)
-                {
-                    InvokeOperationProgress(unloadOperation, progressCallBack).Forget();
-                }
-
-                return;
-            }
-
-            Log.Warning($"UnloadAsync invalid location:{location}");
+            UnloadCallbackAsync(location, callback, gcCollect, progressCallback).Forget();
         }
 
         public bool IsContainScene(string location)
@@ -290,124 +167,582 @@ namespace AlicizaX.Scene.Runtime
             return _sceneState.IsContainScene(location);
         }
 
-        private SceneDomainState PrepareSceneStateForMainSceneLoad(string location)
+        private async UniTask<UnityEngine.SceneManagement.Scene> LoadMainSceneAsync(string location, LoadSceneMode sceneMode, bool suspendLoad, uint priority,
+            bool gcCollect, Action<float> progressCallback)
         {
-            _sceneState.MarkMainSceneLoading(location);
-            return _sceneState;
+            if (string.IsNullOrEmpty(location))
+            {
+                Log.Error("Load main scene failed. Location is invalid.");
+                return default;
+            }
+
+            var lifecycleVersion = _lifecycleVersion;
+            var sceneState = _sceneState;
+            if (!sceneState.TryBeginMainSceneLoad(location))
+            {
+                Log.Warning($"Could not load main scene while another scene operation is running. Scene: {location}");
+                return default;
+            }
+
+            YooAsset.SceneHandle mainSceneHandle = null;
+            bool succeeded = false;
+            bool operationAbandoned = false;
+            try
+            {
+                mainSceneHandle = YooAssets.LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, suspendLoad, priority);
+                sceneState.SetLoadingMainScene(location, mainSceneHandle);
+
+                await AwaitSceneHandle(mainSceneHandle, progressCallback);
+                if (!IsServiceAlive(lifecycleVersion))
+                {
+                    operationAbandoned = true;
+                    return default;
+                }
+
+                succeeded = IsSceneLoadSucceed(mainSceneHandle);
+                if (!succeeded)
+                {
+                    Log.Error($"Load main scene failed. Scene: {location}, Error: {GetSceneHandleError(mainSceneHandle)}");
+                    return default;
+                }
+
+                var scene = mainSceneHandle.SceneObject;
+                sceneState.SetMainScene(location, mainSceneHandle);
+                RequestUnloadUnusedAssets(gcCollect);
+                InvokeProgress(progressCallback, 1f);
+                return scene;
+            }
+            catch (Exception exception)
+            {
+                LogOperationException($"Load main scene failed. Scene: {location}", exception, GetSceneHandleError(mainSceneHandle));
+                return default;
+            }
+            finally
+            {
+                if (!succeeded && !operationAbandoned)
+                {
+                    ReleaseSceneHandle(mainSceneHandle);
+                }
+
+                if (IsServiceAlive(lifecycleVersion))
+                {
+                    sceneState.EndMainSceneLoad(location);
+                }
+            }
         }
 
-        private async UniTaskVoid InvokeSceneProgress(YooAsset.SceneHandle sceneHandle, Action<float> progress)
+        private async UniTask<UnityEngine.SceneManagement.Scene> LoadSubSceneAsync(string location, bool suspendLoad, uint priority, Action<float> progressCallback)
+        {
+            if (string.IsNullOrEmpty(location))
+            {
+                Log.Error("Load sub scene failed. Location is invalid.");
+                return default;
+            }
+
+            var lifecycleVersion = _lifecycleVersion;
+            var sceneState = _sceneState;
+            if (!sceneState.TryBeginSubSceneLoad(location))
+            {
+                Log.Warning($"Could not load sub scene while scene is loaded or another scene operation is running. Scene: {location}");
+                return default;
+            }
+
+            YooAsset.SceneHandle subSceneHandle = null;
+            bool succeeded = false;
+            bool operationAbandoned = false;
+            try
+            {
+                subSceneHandle = YooAssets.LoadSceneAsync(location, LoadSceneMode.Additive, LocalPhysicsMode.None, suspendLoad, priority);
+                sceneState.SetSubSceneLoading(location, subSceneHandle);
+
+                await AwaitSceneHandle(subSceneHandle, progressCallback);
+                if (!IsServiceAlive(lifecycleVersion))
+                {
+                    operationAbandoned = true;
+                    return default;
+                }
+
+                succeeded = IsSceneLoadSucceed(subSceneHandle);
+                if (!succeeded)
+                {
+                    Log.Error($"Load sub scene failed. Scene: {location}, Error: {GetSceneHandleError(subSceneHandle)}");
+                    return default;
+                }
+
+                sceneState.SetSubSceneLoaded(location, subSceneHandle);
+                InvokeProgress(progressCallback, 1f);
+                return subSceneHandle.SceneObject;
+            }
+            catch (Exception exception)
+            {
+                LogOperationException($"Load sub scene failed. Scene: {location}", exception, GetSceneHandleError(subSceneHandle));
+                return default;
+            }
+            finally
+            {
+                if (!succeeded && !operationAbandoned)
+                {
+                    sceneState.RemoveSubScene(location);
+                    ReleaseSceneHandle(subSceneHandle);
+                }
+
+                if (IsServiceAlive(lifecycleVersion))
+                {
+                    sceneState.EndHandling(location);
+                }
+            }
+        }
+
+        private async UniTaskVoid LoadSceneCallbackAsync(string location, LoadSceneMode sceneMode, bool suspendLoad, uint priority,
+            Action<UnityEngine.SceneManagement.Scene> callback, bool gcCollect, Action<float> progressCallback)
+        {
+            try
+            {
+                var scene = await LoadSceneAsync(location, sceneMode, suspendLoad, priority, gcCollect, progressCallback);
+                if (scene.IsValid())
+                {
+                    InvokeSceneCallback(callback, scene);
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Exception(exception);
+            }
+        }
+
+        private async UniTaskVoid UnloadCallbackAsync(string location, Action callback, bool gcCollect, Action<float> progressCallback)
+        {
+            try
+            {
+                bool succeeded = await UnloadSubSceneAsync(location, gcCollect, progressCallback);
+                if (succeeded)
+                {
+                    InvokeCallback(callback);
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Exception(exception);
+            }
+        }
+
+        private async UniTask AwaitSceneHandle(YooAsset.SceneHandle sceneHandle, Action<float> progress)
         {
             if (sceneHandle == null)
             {
                 return;
             }
 
-            while (!sceneHandle.IsDone && sceneHandle.IsValid)
+            if (progress == null)
             {
-                await UniTask.Yield();
-                progress?.Invoke(sceneHandle.Progress);
+                await sceneHandle.ToUniTask();
+                return;
             }
+
+            InvokeProgress(progress, 0f);
+            await sceneHandle.ToUniTask(CreateProgress(progress));
         }
 
-        private async UniTaskVoid InvokeOperationProgress(AsyncOperationBase operation, Action<float> progress)
+        private async UniTask AwaitOperation(AsyncOperationBase operation, Action<float> progress)
         {
             if (operation == null)
             {
                 return;
             }
 
-            while (!operation.IsDone && operation.Status != EOperationStatus.Failed)
+            if (progress == null)
             {
-                await UniTask.Yield();
-                progress?.Invoke(operation.Progress);
-            }
-        }
-    }
-
-    internal sealed class SceneDomainState
-    {
-        private readonly Dictionary<string,YooAsset.SceneHandle> _subScenes = new ();
-        private readonly HashSet<string> _handlingScenes = new HashSet<string>();
-
-        public string CurrentMainSceneName { get; private set; } = string.Empty;
-
-        public YooAsset.SceneHandle CurrentMainSceneHandle { get; private set; }
-
-        public void Destroy()
-        {
-            foreach (var subScene in _subScenes.Values)
-            {
-                subScene?.UnloadAsync();
+                await operation.ToUniTask();
+                return;
             }
 
-            _subScenes.Clear();
-            _handlingScenes.Clear();
-            CurrentMainSceneHandle = null;
-            CurrentMainSceneName = string.Empty;
+            InvokeProgress(progress, 0f);
+            await operation.ToUniTask(CreateProgress(progress));
         }
 
-        public void SetBootScene(string sceneName)
+        private IProgress<float> CreateProgress(Action<float> progress)
         {
-            CurrentMainSceneName = sceneName ?? string.Empty;
-            CurrentMainSceneHandle = null;
-            _subScenes.Clear();
-            _handlingScenes.Clear();
+            return Cysharp.Threading.Tasks.Progress.Create<float>(value => InvokeProgress(progress, value));
         }
 
-        public void MarkMainSceneLoading(string sceneName)
+        private void InvokeProgress(Action<float> progress, float value)
         {
-            CurrentMainSceneName = sceneName ?? string.Empty;
-            CurrentMainSceneHandle = null;
-            foreach (var subScene in _subScenes.Values)
+            if (progress == null)
             {
-                subScene?.UnloadAsync();
+                return;
             }
 
-            _subScenes.Clear();
-            _handlingScenes.Clear();
-            TryBeginHandling(sceneName);
-        }
-
-        public void SetMainScene(string sceneName, YooAsset.SceneHandle sceneHandle)
-        {
-            CurrentMainSceneName = sceneName ?? string.Empty;
-            CurrentMainSceneHandle = sceneHandle;
-        }
-
-        public bool TryBeginHandling(string location)
-            => !string.IsNullOrEmpty(location) && _handlingScenes.Add(location);
-
-        public void EndHandling(string location)
-        {
-            if (!string.IsNullOrEmpty(location))
+            try
             {
-                _handlingScenes.Remove(location);
+                progress.Invoke(value);
+            }
+            catch (Exception exception)
+            {
+                Log.Exception(exception);
             }
         }
 
-        public void AddSubScene(string location, YooAsset.SceneHandle sceneHandle)
+        private bool IsServiceAlive(int lifecycleVersion)
         {
-            _subScenes[location] = sceneHandle;
+            return !_destroyed && lifecycleVersion == _lifecycleVersion;
         }
 
-        public bool TryGetSubScene(string location, out YooAsset.SceneHandle sceneHandle)
-            => _subScenes.TryGetValue(location, out sceneHandle);
-
-        public bool RemoveSubScene(string location)
-            => _subScenes.Remove(location);
-
-        public bool IsContainScene(string location)
+        private void InvokeCallback(Action callback)
         {
-            if (CurrentMainSceneName.Equals(location))
+            if (callback == null)
             {
+                return;
+            }
+
+            try
+            {
+                callback.Invoke();
+            }
+            catch (Exception exception)
+            {
+                Log.Exception(exception);
+            }
+        }
+
+        private void InvokeSceneCallback(Action<UnityEngine.SceneManagement.Scene> callback, UnityEngine.SceneManagement.Scene scene)
+        {
+            if (callback == null)
+            {
+                return;
+            }
+
+            try
+            {
+                callback.Invoke(scene);
+            }
+            catch (Exception exception)
+            {
+                Log.Exception(exception);
+            }
+        }
+
+        private void RequestUnloadUnusedAssets(bool gcCollect)
+        {
+            try
+            {
+                Require<IResourceService>().ForceUnloadUnusedAssets(gcCollect);
+            }
+            catch (Exception exception)
+            {
+                Log.Exception(exception);
+            }
+        }
+
+        private static void LogOperationException(string message, Exception exception, string operationError)
+        {
+            if (!string.IsNullOrEmpty(operationError))
+            {
+                Log.Error($"{message}, Error: {operationError}");
+            }
+            else
+            {
+                Log.Error(message);
+            }
+
+            Log.Exception(exception);
+        }
+
+        private static bool IsSceneLoadSucceed(YooAsset.SceneHandle sceneHandle)
+        {
+            if (sceneHandle is not { IsValid: true, Status: EOperationStatus.Succeed })
+            {
+                return false;
+            }
+
+            var scene = sceneHandle.SceneObject;
+            return scene.IsValid() && scene.isLoaded;
+        }
+
+        private static bool IsSceneHandleLoaded(YooAsset.SceneHandle sceneHandle)
+        {
+            if (sceneHandle == null || !sceneHandle.IsValid)
+            {
+                return false;
+            }
+
+            var scene = sceneHandle.SceneObject;
+            return scene.IsValid() && scene.isLoaded;
+        }
+
+        private static string GetSceneHandleError(YooAsset.SceneHandle sceneHandle)
+        {
+            return sceneHandle != null && sceneHandle.IsValid ? sceneHandle.LastError : "Scene handle is invalid.";
+        }
+
+        private static string GetOperationError(AsyncOperationBase operation)
+        {
+            return operation != null ? operation.Error : "Operation is invalid.";
+        }
+
+        private static void ReleaseSceneHandle(YooAsset.SceneHandle sceneHandle)
+        {
+            if (sceneHandle != null && sceneHandle.IsValid)
+            {
+                sceneHandle.Release();
+            }
+        }
+
+        internal sealed class SceneDomainState
+        {
+            private readonly Dictionary<string, SceneSlot> _subScenes = new();
+            private readonly HashSet<string> _handlingScenes = new();
+
+            private string _loadingMainSceneName = string.Empty;
+            private YooAsset.SceneHandle _loadingMainSceneHandle;
+            private bool _mainSceneSwitching;
+
+            public string CurrentMainSceneName { get; private set; } = string.Empty;
+
+            public YooAsset.SceneHandle CurrentMainSceneHandle { get; private set; }
+
+            public void Destroy()
+            {
+                if (_loadingMainSceneHandle != CurrentMainSceneHandle)
+                {
+                    TryUnloadSceneHandle(_loadingMainSceneHandle);
+                }
+
+                UnloadSubScenes();
+                _subScenes.Clear();
+                _handlingScenes.Clear();
+                _loadingMainSceneName = string.Empty;
+                _loadingMainSceneHandle = null;
+                _mainSceneSwitching = false;
+                CurrentMainSceneHandle = null;
+                CurrentMainSceneName = string.Empty;
+            }
+
+            private static void TryUnloadSceneHandle(YooAsset.SceneHandle sceneHandle)
+            {
+                if (sceneHandle == null || !sceneHandle.IsValid)
+                {
+                    return;
+                }
+
+                try
+                {
+                    var scene = sceneHandle.SceneObject;
+                    if (sceneHandle.IsDone && (!scene.IsValid() || !scene.isLoaded))
+                    {
+                        SceneService.ReleaseSceneHandle(sceneHandle);
+                        return;
+                    }
+
+                    sceneHandle.UnloadAsync();
+                }
+                catch (Exception exception)
+                {
+                    Log.Exception(exception);
+                }
+            }
+
+            private void UnloadSubScenes()
+            {
+                foreach (var subScene in _subScenes.Values)
+                {
+                    if (subScene.State == SceneLoadState.Unloading)
+                    {
+                        continue;
+                    }
+
+                    TryUnloadSceneHandle(subScene.Handle);
+                }
+            }
+
+            public void SetBootScene(string sceneName)
+            {
+                CurrentMainSceneName = sceneName ?? string.Empty;
+                CurrentMainSceneHandle = null;
+                _loadingMainSceneName = string.Empty;
+                _loadingMainSceneHandle = null;
+                _mainSceneSwitching = false;
+                _subScenes.Clear();
+                _handlingScenes.Clear();
+            }
+
+            public bool TryBeginMainSceneLoad(string location)
+            {
+                if (string.IsNullOrEmpty(location) || _mainSceneSwitching || _handlingScenes.Count > 0)
+                {
+                    return false;
+                }
+
+                _mainSceneSwitching = true;
+                _loadingMainSceneName = location;
                 return true;
             }
 
-            return _subScenes.ContainsKey(location);
-        }
+            public void SetLoadingMainScene(string sceneName, YooAsset.SceneHandle sceneHandle)
+            {
+                _loadingMainSceneName = sceneName ?? string.Empty;
+                _loadingMainSceneHandle = sceneHandle;
+            }
 
-        public bool IsMainScene(string location)
-            => CurrentMainSceneName.Equals(location);
+            public void SetMainScene(string sceneName, YooAsset.SceneHandle sceneHandle)
+            {
+                CurrentMainSceneName = sceneName ?? string.Empty;
+                CurrentMainSceneHandle = sceneHandle;
+                UnloadSubScenes();
+                _subScenes.Clear();
+            }
+
+            public void EndMainSceneLoad(string location)
+            {
+                if (string.Equals(_loadingMainSceneName, location, StringComparison.Ordinal))
+                {
+                    _loadingMainSceneName = string.Empty;
+                    _loadingMainSceneHandle = null;
+                }
+
+                _mainSceneSwitching = false;
+            }
+
+            public bool TryBeginSubSceneLoad(string location)
+            {
+                if (string.IsNullOrEmpty(location) || _mainSceneSwitching || _subScenes.ContainsKey(location))
+                {
+                    return false;
+                }
+
+                return _handlingScenes.Add(location);
+            }
+
+            public void SetSubSceneLoading(string location, YooAsset.SceneHandle sceneHandle)
+            {
+                _subScenes[location] = new SceneSlot(sceneHandle, SceneLoadState.Loading);
+            }
+
+            public void SetSubSceneLoaded(string location, YooAsset.SceneHandle sceneHandle)
+            {
+                if (_subScenes.TryGetValue(location, out var slot) && slot.Handle == sceneHandle)
+                {
+                    slot.State = SceneLoadState.Loaded;
+                    return;
+                }
+
+                _subScenes[location] = new SceneSlot(sceneHandle, SceneLoadState.Loaded);
+            }
+
+            public bool TryBeginSubSceneUnload(string location, out YooAsset.SceneHandle sceneHandle)
+            {
+                sceneHandle = null;
+                if (_mainSceneSwitching || !_subScenes.TryGetValue(location, out var slot) || slot.State != SceneLoadState.Loaded || slot.Handle == null)
+                {
+                    return false;
+                }
+
+                if (!_handlingScenes.Add(location))
+                {
+                    return false;
+                }
+
+                slot.State = SceneLoadState.Unloading;
+                sceneHandle = slot.Handle;
+                return true;
+            }
+
+            public void EndSubSceneUnload(string location, YooAsset.SceneHandle sceneHandle, bool succeeded)
+            {
+                if (succeeded)
+                {
+                    _subScenes.Remove(location);
+                }
+                else if (_subScenes.TryGetValue(location, out var slot) && slot.Handle == sceneHandle)
+                {
+                    if (SceneService.IsSceneHandleLoaded(sceneHandle))
+                    {
+                        slot.State = SceneLoadState.Loaded;
+                    }
+                    else
+                    {
+                        _subScenes.Remove(location);
+                        SceneService.ReleaseSceneHandle(sceneHandle);
+                    }
+                }
+
+                EndHandling(location);
+            }
+
+            public void EndHandling(string location)
+            {
+                if (!string.IsNullOrEmpty(location))
+                {
+                    _handlingScenes.Remove(location);
+                }
+            }
+
+            public bool TryGetSubScene(string location, out YooAsset.SceneHandle sceneHandle)
+            {
+                sceneHandle = null;
+                if (!_subScenes.TryGetValue(location, out var slot))
+                {
+                    return false;
+                }
+
+                sceneHandle = slot.Handle;
+                return sceneHandle != null;
+            }
+
+            public bool TryGetAnySceneHandle(string location, out YooAsset.SceneHandle sceneHandle)
+            {
+                sceneHandle = null;
+                if (string.Equals(_loadingMainSceneName, location, StringComparison.Ordinal))
+                {
+                    sceneHandle = _loadingMainSceneHandle;
+                    return sceneHandle != null;
+                }
+
+                if (string.Equals(CurrentMainSceneName, location, StringComparison.Ordinal))
+                {
+                    sceneHandle = CurrentMainSceneHandle;
+                    return sceneHandle != null;
+                }
+
+                return TryGetSubScene(location, out sceneHandle);
+            }
+
+            public void RemoveSubScene(string location)
+            {
+                _subScenes.Remove(location);
+            }
+
+            public bool IsContainScene(string location)
+            {
+                return !string.IsNullOrEmpty(location) &&
+                       (string.Equals(CurrentMainSceneName, location, StringComparison.Ordinal) ||
+                        string.Equals(_loadingMainSceneName, location, StringComparison.Ordinal) ||
+                        _subScenes.ContainsKey(location));
+            }
+
+            public bool IsMainScene(string location)
+            {
+                return !string.IsNullOrEmpty(location) && string.Equals(CurrentMainSceneName, location, StringComparison.Ordinal);
+            }
+
+            private sealed class SceneSlot
+            {
+                public SceneSlot(YooAsset.SceneHandle handle, SceneLoadState state)
+                {
+                    Handle = handle;
+                    State = state;
+                }
+
+                public YooAsset.SceneHandle Handle { get; }
+
+                public SceneLoadState State { get; set; }
+            }
+
+            private enum SceneLoadState
+            {
+                Loading,
+                Loaded,
+                Unloading
+            }
+        }
     }
 }
