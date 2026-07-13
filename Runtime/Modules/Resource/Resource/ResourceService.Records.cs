@@ -868,7 +868,7 @@ namespace AlicizaX.Resource.Runtime
                 if (existing.Asset == null && asset != null)
                 {
                     existing.Asset = asset;
-                    existing.AssetInstanceId = ResourceUnityObjectId.Get(asset);
+                    existing.AssetInstanceId = UnityObjectId.Get(asset);
                     LinkAssetByUnityObject(existingId, ref existing);
                 }
 
@@ -890,7 +890,7 @@ namespace AlicizaX.Resource.Runtime
             slot.AssetType = assetType;
             slot.LoadKeyId = AllocateLoadKeyId();
             slot.Asset = asset;
-            slot.AssetInstanceId = ResourceUnityObjectId.Get(asset);
+            slot.AssetInstanceId = UnityObjectId.Get(asset);
             slot.AssetHandle = assetHandle;
             slot.AssetKind = assetKind;
             slot.HandleKind = handleKind;
@@ -1015,7 +1015,7 @@ namespace AlicizaX.Resource.Runtime
                 return false;
             }
 
-            int instanceId = ResourceUnityObjectId.Get(asset);
+            int instanceId = UnityObjectId.Get(asset);
             if (!_assetRecordHeadByUnityObjectId.TryGetValue(instanceId, out int current))
             {
                 return false;
@@ -1061,7 +1061,7 @@ namespace AlicizaX.Resource.Runtime
                 return false;
             }
 
-            int instanceId = ResourceUnityObjectId.Get(unityObject);
+            int instanceId = UnityObjectId.Get(unityObject);
             if (!_assetRecordHeadByUnityObjectId.TryGetValue(instanceId, out int current))
             {
                 return false;

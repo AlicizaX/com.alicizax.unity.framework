@@ -389,11 +389,7 @@ namespace AlicizaX.UI.Editor
                 return;
             }
 
-#if UNITY_6000_4_OR_NEWER
-            string keyId = root.GetEntityId().ToString();
-#else
-            string keyId = root.GetInstanceID().ToString();
-#endif
+            string keyId = UnityObjectId.Get(root).ToString();
 
             var groupKey = $"{keyId}::{groupName}";
             if (!_arrayComponents.Add(groupKey))
@@ -645,11 +641,7 @@ namespace AlicizaX.UI.Editor
 
         private static void InitializeGenerationContext(GameObject targetObject)
         {
-#if UNITY_6000_4_OR_NEWER
-            EditorPrefs.SetInt(GenerateInstanceIdKey, targetObject.GetEntityId());
-#else
-            EditorPrefs.SetInt(GenerateInstanceIdKey, targetObject.GetInstanceID());
-#endif
+            EditorPrefs.SetInt(GenerateInstanceIdKey, UnityObjectId.Get(targetObject));
             var assetPath = UIGenerateQuick.GetPrefabAssetPath(targetObject);
             if (!string.IsNullOrEmpty(assetPath))
             {
