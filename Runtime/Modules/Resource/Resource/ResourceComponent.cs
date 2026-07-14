@@ -196,7 +196,7 @@ namespace AlicizaX.Resource.Runtime
 
             Application.lowMemory += OnLowMemory;
 #if UNITY_EDITOR
-            _playMode = (EPlayMode)UnityEditor.EditorPrefs.GetInt(PrefsKey, 0);
+            _playMode = (EPlayMode)UnityEditor.EditorPrefs.GetInt(PrefsKey, (int)EPlayMode.EditorSimulateMode);
 #endif
             _resourceService.DefaultPackageName = PackageName;
             _resourceService.DecryptionServices = decryptionServices;

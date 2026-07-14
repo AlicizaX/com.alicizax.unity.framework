@@ -93,7 +93,7 @@ namespace AlicizaX.Scene.Runtime
 
             if (_sceneState.TryGetAnySceneHandle(location, out var sceneHandle) && sceneHandle != null)
             {
-                return sceneHandle.UnSuspend();
+                return sceneHandle.AllowSceneActivation();
             }
 
             Log.Warning($"UnSuspend invalid location:{location}");
@@ -125,14 +125,14 @@ namespace AlicizaX.Scene.Runtime
             AsyncOperationBase unloadOperation = null;
             try
             {
-                unloadOperation = subScene.UnloadAsync();
+                unloadOperation = subScene.UnloadSceneAsync();
                 await AwaitOperation(unloadOperation, progressCallback);
                 if (!IsServiceAlive(lifecycleVersion))
                 {
                     return false;
                 }
 
-                succeeded = unloadOperation.Status == EOperationStatus.Succeed;
+                succeeded = unloadOperation.Status == EOperationStatus.Succeeded;
                 if (!succeeded)
                 {
                     Log.Error($"Unload sub scene failed. Scene: {location}, Error: {GetOperationError(unloadOperation)}");
@@ -189,7 +189,7 @@ namespace AlicizaX.Scene.Runtime
             bool operationAbandoned = false;
             try
             {
-                mainSceneHandle = YooAssets.LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, suspendLoad, priority);
+                mainSceneHandle = GetDefaultPackage().LoadSceneAsync(location, sceneMode, LocalPhysicsMode.None, !suspendLoad, priority);
                 sceneState.SetLoadingMainScene(location, mainSceneHandle);
 
                 await AwaitSceneHandle(mainSceneHandle, progressCallback);
@@ -252,7 +252,7 @@ namespace AlicizaX.Scene.Runtime
             bool operationAbandoned = false;
             try
             {
-                subSceneHandle = YooAssets.LoadSceneAsync(location, LoadSceneMode.Additive, LocalPhysicsMode.None, suspendLoad, priority);
+                subSceneHandle = GetDefaultPackage().LoadSceneAsync(location, LoadSceneMode.Additive, LocalPhysicsMode.None, !suspendLoad, priority);
                 sceneState.SetSubSceneLoading(location, subSceneHandle);
 
                 await AwaitSceneHandle(subSceneHandle, progressCallback);
@@ -447,9 +447,15 @@ namespace AlicizaX.Scene.Runtime
             Log.Exception(exception);
         }
 
+        private static ResourcePackage GetDefaultPackage()
+        {
+            var resourceService = AppServices.Require<IResourceService>();
+            return YooAssets.GetPackage(resourceService.DefaultPackageName);
+        }
+
         private static bool IsSceneLoadSucceed(YooAsset.SceneHandle sceneHandle)
         {
-            if (sceneHandle is not { IsValid: true, Status: EOperationStatus.Succeed })
+            if (sceneHandle is not { IsValid: true, Status: EOperationStatus.Succeeded })
             {
                 return false;
             }
@@ -471,7 +477,7 @@ namespace AlicizaX.Scene.Runtime
 
         private static string GetSceneHandleError(YooAsset.SceneHandle sceneHandle)
         {
-            return sceneHandle != null && sceneHandle.IsValid ? sceneHandle.LastError : "Scene handle is invalid.";
+            return sceneHandle != null && sceneHandle.IsValid ? sceneHandle.Error : "Scene handle is invalid.";
         }
 
         private static string GetOperationError(AsyncOperationBase operation)
@@ -533,7 +539,7 @@ namespace AlicizaX.Scene.Runtime
                         return;
                     }
 
-                    sceneHandle.UnloadAsync();
+                    sceneHandle.UnloadSceneAsync();
                 }
                 catch (Exception exception)
                 {

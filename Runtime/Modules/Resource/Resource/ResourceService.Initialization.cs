@@ -11,78 +11,79 @@ namespace AlicizaX.Resource.Runtime
         /// 根据运行模式创建初始化操作数据
         /// </summary>
         /// <returns></returns>
-        private InitializationOperation CreateInitializationOperationHandler(ResourcePackage resourcePackage, string hostServerURL, string fallbackHostServerURL, string decryptionServicesName)
+        private InitializePackageOperation CreateInitializationOperationHandler(ResourcePackage resourcePackage, string hostServerURL, string fallbackHostServerURL, string decryptionServicesName)
         {
-            IDecryptionServices decryptionServices = CreateDecryptionServices(decryptionServicesName);
-            InitializeParameters initializeParameters = null;
+            IBundleDecryptor bundleDecryptor = CreateBundleDecryptor(decryptionServicesName);
+            InitializePackageOptions initializeOptions = null;
             switch (PlayMode)
             {
                 case EPlayMode.EditorSimulateMode:
                 {
-                    initializeParameters = InitializeYooAssetEditorSimulateMode(DefaultPackageName);
+                    initializeOptions = InitializeYooAssetEditorSimulateMode(resourcePackage.PackageName);
                     break;
                 }
                 case EPlayMode.OfflinePlayMode:
                 {
                     // 单机运行模式
-                    initializeParameters = InitializeYooAssetOfflinePlayMode(decryptionServices);
+                    initializeOptions = InitializeYooAssetOfflinePlayMode(bundleDecryptor);
                     break;
                 }
                 case EPlayMode.HostPlayMode:
                 {
                     // 联机运行模式
-                    initializeParameters = InitializeYooAssetHostPlayMode(hostServerURL, fallbackHostServerURL, decryptionServices);
+                    initializeOptions = InitializeYooAssetHostPlayMode(hostServerURL, fallbackHostServerURL, bundleDecryptor);
                     break;
                 }
                 case EPlayMode.WebPlayMode:
                 {
                     // WebGL运行模式
-                    initializeParameters = InitializeYooAssetWebPlayMode(hostServerURL, fallbackHostServerURL);
+                    initializeOptions = InitializeYooAssetWebPlayMode(hostServerURL, fallbackHostServerURL, bundleDecryptor);
                     break;
                 }
             }
 
 
-            if (initializeParameters == null) return null;
+            if (initializeOptions == null) return null;
 
-            initializeParameters.AutoUnloadBundleWhenUnused = AutoUnloadBundleWhenUnused;
-            return resourcePackage.InitializeAsync(initializeParameters);
+            initializeOptions.AutoUnloadBundleWhenUnused = AutoUnloadBundleWhenUnused;
+            return resourcePackage.InitializePackageAsync(initializeOptions);
         }
 
-        private IDecryptionServices CreateDecryptionServices(string decryptionServicesName)
+        private IBundleDecryptor CreateBundleDecryptor(string decryptionServicesName)
         {
-            IDecryptionServices decryptionServices = null;
-            if (!string.IsNullOrEmpty(decryptionServicesName))
+            if (string.IsNullOrEmpty(decryptionServicesName))
             {
-                var decryptionServicesType = AlicizaX.Utility.Assembly.GetType(decryptionServicesName);
-                decryptionServices = (IDecryptionServices)Activator.CreateInstance(decryptionServicesType);
+                return null;
             }
 
-            return decryptionServices;
+            var decryptorType = AlicizaX.Utility.Assembly.GetType(decryptionServicesName);
+            return (IBundleDecryptor)Activator.CreateInstance(decryptorType);
         }
 
-        private InitializeParameters InitializeYooAssetEditorSimulateMode(string packageName)
+        private InitializePackageOptions InitializeYooAssetEditorSimulateMode(string packageName)
         {
-            var buildResult = EditorSimulateModeHelper.SimulateBuild(packageName);
+            var buildResult = EditorSimulateBuildInvoker.Build(packageName, (int)EBundleType.VirtualAssetBundle);
             var packageRoot = buildResult.PackageRootDirectory;
-            var initializeParameters = new EditorSimulateModeParameters();
-            initializeParameters.EditorFileSystemParameters = FileSystemParameters.CreateDefaultEditorFileSystemParameters(packageRoot);
-            return initializeParameters;
+            return new EditorSimulateModeOptions
+            {
+                EditorFileSystemParameters = FileSystemParameters.CreateDefaultEditorFileSystemParameters(packageRoot)
+            };
         }
 
-        private InitializeParameters InitializeYooAssetOfflinePlayMode(IDecryptionServices decryptionServices = null)
+        private InitializePackageOptions InitializeYooAssetOfflinePlayMode(IBundleDecryptor bundleDecryptor)
         {
-            var buildinFileSystem = FileSystemParameters.CreateDefaultBuildinFileSystemParameters(decryptionServices);
-            var initializeParameters = new OfflinePlayModeParameters();
-            initializeParameters.BuildinFileSystemParameters = buildinFileSystem;
-            return initializeParameters;
+            var builtinFileSystem = FileSystemParameters.CreateDefaultBuiltinFileSystemParameters();
+            ConfigureBundleDecryptor(builtinFileSystem, bundleDecryptor);
+            return new OfflinePlayModeOptions
+            {
+                BuiltinFileSystemParameters = builtinFileSystem
+            };
         }
 
-        private InitializeParameters InitializeYooAssetWebPlayMode(string hostServerURL, string fallbackHostServerURL)
+        private InitializePackageOptions InitializeYooAssetWebPlayMode(string hostServerURL, string fallbackHostServerURL, IBundleDecryptor bundleDecryptor)
         {
-            var initializeParameters = new WebPlayModeParameters();
-            FileSystemParameters webRemoteFileSystemParams = null;
-            IRemoteServices remoteServices = new RemoteServices(hostServerURL, fallbackHostServerURL);
+            FileSystemParameters webNetworkFileSystemParameters = null;
+            IRemoteService remoteService = new RemoteServices(hostServerURL, fallbackHostServerURL);
             var webServerFileSystemParams = FileSystemParameters.CreateDefaultWebServerFileSystemParameters();
 #if UNITY_WEBGL
 #if WEIXINMINIGAME
@@ -92,24 +93,43 @@ namespace AlicizaX.Resource.Runtime
             // 注意：此处代码根据微信插件配置来填写！
             WeChatWASM.WXBase.PreloadConcurrent(10);
             string packageRoot = ZString.Concat(WeChatWASM.WX.env.USER_DATA_PATH, "/__GAME_FILE_CACHE/yoo");
-            webRemoteFileSystemParams = WechatFileSystemCreater.CreateFileSystemParameters(packageRoot, remoteServices, null);
+            webNetworkFileSystemParameters = WechatFileSystemCreater.CreateFileSystemParameters(packageRoot, remoteService, bundleDecryptor);
 #endif
 
 #endif
-            initializeParameters.WebServerFileSystemParameters = webServerFileSystemParams;
-            initializeParameters.WebRemoteFileSystemParameters = webRemoteFileSystemParams;
-            return initializeParameters;
+            return new WebPlayModeOptions
+            {
+                WebServerFileSystemParameters = webServerFileSystemParams,
+                WebNetworkFileSystemParameters = webNetworkFileSystemParameters
+            };
         }
 
-        private InitializeParameters InitializeYooAssetHostPlayMode(string hostServerURL, string fallbackHostServerURL, IDecryptionServices decryptionServices = null)
+        private InitializePackageOptions InitializeYooAssetHostPlayMode(string hostServerURL, string fallbackHostServerURL, IBundleDecryptor bundleDecryptor)
         {
-            IRemoteServices remoteServices = new RemoteServices(hostServerURL, fallbackHostServerURL);
-            var cacheFileSystem = FileSystemParameters.CreateDefaultCacheFileSystemParameters(remoteServices);
-            var buildinFileSystem = FileSystemParameters.CreateDefaultBuildinFileSystemParameters(decryptionServices);
-            var initializeParameters = new HostPlayModeParameters();
-            initializeParameters.BuildinFileSystemParameters = buildinFileSystem;
-            initializeParameters.CacheFileSystemParameters = cacheFileSystem;
-            return initializeParameters;
+            IRemoteService remoteService = new RemoteServices(hostServerURL, fallbackHostServerURL);
+            var cacheFileSystem = FileSystemParameters.CreateDefaultSandboxFileSystemParameters(remoteService);
+            var builtinFileSystem = FileSystemParameters.CreateDefaultBuiltinFileSystemParameters();
+            ConfigureBundleDecryptor(cacheFileSystem, bundleDecryptor);
+            ConfigureBundleDecryptor(builtinFileSystem, bundleDecryptor);
+            return new HostPlayModeOptions
+            {
+                BuiltinFileSystemParameters = builtinFileSystem,
+                CacheFileSystemParameters = cacheFileSystem
+            };
+        }
+
+        private static void ConfigureBundleDecryptor(FileSystemParameters fileSystemParameters, IBundleDecryptor bundleDecryptor)
+        {
+            if (bundleDecryptor == null)
+            {
+                return;
+            }
+
+            fileSystemParameters.AddParameter(EFileSystemParameter.AssetBundleDecryptor, bundleDecryptor);
+            if (bundleDecryptor is IBundleMemoryDecryptor fallbackDecryptor)
+            {
+                fileSystemParameters.AddParameter(EFileSystemParameter.AssetBundleFallbackDecryptor, fallbackDecryptor);
+            }
         }
     }
 }

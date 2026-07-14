@@ -12,9 +12,6 @@ namespace AlicizaX.UI.Runtime
 
         void ApplyClosedState();
 
-        /// <summary>
-        /// Stops any running transition. After Stop/ApplyOpenState/ApplyClosedState, an older transition must not continue writing visuals.
-        /// </summary>
         void Stop();
     }
 }

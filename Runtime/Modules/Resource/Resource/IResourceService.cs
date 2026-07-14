@@ -197,7 +197,7 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="location">资源的定位地址</param>
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包</param>
-        bool CheckLocationValid(string location, string packageName = "");
+        bool IsLocationValid(string location, string packageName = "");
 
         /// <summary>
         /// 获取资源信息列表。
@@ -316,8 +316,7 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="clearMode">文件清理方式。</param>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
-        ClearCacheFilesOperation ClearCacheFilesAsync(
-            EFileClearMode clearMode = EFileClearMode.ClearUnusedBundleFiles, string customPackageName = "");
+        ClearCacheOperation ClearCacheAsync(ClearCacheOptions options, string customPackageName = "");
 
         /// <summary>
         /// 清理沙盒路径。
@@ -358,7 +357,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="packageVersion">更新的包裹版本</param>
         /// <param name="timeout">超时时间（默认值：60秒）</param>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
-        UpdatePackageManifestOperation UpdatePackageManifestAsync(string packageVersion, int timeout = 60, string customPackageName = "");
+        LoadPackageManifestOperation LoadPackageManifestAsync(string packageVersion, int timeout = 60, string customPackageName = "");
 
         /// <summary>
         /// 低内存行为。

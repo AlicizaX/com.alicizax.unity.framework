@@ -1,7 +1,6 @@
 ﻿using System.IO;
-using System.Text;
+using System.Collections.Generic;
 using Cysharp.Text;
-using UnityEngine;
 using YooAsset;
 
 namespace AlicizaX.Resource.Runtime
@@ -9,7 +8,7 @@ namespace AlicizaX.Resource.Runtime
     /// <summary>
     /// 远端资源地址查询服务类
     /// </summary>
-    class RemoteServices : IRemoteServices
+    class RemoteServices : IRemoteService
     {
         private readonly string _defaultHostServer;
         private readonly string _fallbackHostServer;
@@ -20,44 +19,40 @@ namespace AlicizaX.Resource.Runtime
             _fallbackHostServer = fallbackHostServer;
         }
 
-        string IRemoteServices.GetRemoteMainURL(string fileName)
+        IReadOnlyList<string> IRemoteService.GetRemoteUrls(string fileName)
         {
-            return ZString.Concat(_defaultHostServer, "/", fileName);
-        }
+            if (string.IsNullOrEmpty(_fallbackHostServer))
+            {
+                return new[] { ZString.Concat(_defaultHostServer, "/", fileName) };
+            }
 
-        string IRemoteServices.GetRemoteFallbackURL(string fileName)
-        {
-            return ZString.Concat(_fallbackHostServer, "/", fileName);
+            return new[]
+            {
+                ZString.Concat(_defaultHostServer, "/", fileName),
+                ZString.Concat(_fallbackHostServer, "/", fileName)
+            };
         }
     }
 
     /// <summary>
     /// 资源文件流加载解密类
     /// </summary>
-    class FileStreamDecryption : IDecryptionServices
+    class FileStreamDecryption : IBundleStreamDecryptor, IBundleMemoryDecryptor
     {
         /// <summary>
         /// 同步方式获取解密的资源包对象
         /// </summary>
-        DecryptResult IDecryptionServices.LoadAssetBundle(DecryptFileInfo fileInfo)
+        Stream IBundleStreamDecryptor.CreateDecryptionStream(BundleDecryptArgs args)
         {
-            BundleStream bundleStream = new BundleStream(fileInfo.FileLoadPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            DecryptResult decryptResult = new DecryptResult();
-            decryptResult.ManagedStream = bundleStream;
-            decryptResult.Result = AssetBundle.LoadFromStream(bundleStream, fileInfo.FileLoadCRC, GetManagedReadBufferSize());
-            return decryptResult;
+            return new BundleStream(args.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         }
 
         /// <summary>
         /// 异步方式获取解密的资源包对象
         /// </summary>
-        DecryptResult IDecryptionServices.LoadAssetBundleAsync(DecryptFileInfo fileInfo)
+        int IBundleStreamDecryptor.GetBufferSize(BundleDecryptArgs args)
         {
-            BundleStream bundleStream = new BundleStream(fileInfo.FileLoadPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            DecryptResult decryptResult = new DecryptResult();
-            decryptResult.ManagedStream = bundleStream;
-            decryptResult.CreateRequest = AssetBundle.LoadFromStreamAsync(bundleStream, fileInfo.FileLoadCRC, GetManagedReadBufferSize());
-            return decryptResult;
+            return 1024;
         }
 
         /// <summary>
@@ -65,21 +60,9 @@ namespace AlicizaX.Resource.Runtime
         /// 注意：当正常解密方法失败后，会触发后备加载！
         /// 说明：建议通过LoadFromMemory()方法加载资源包作为保底机制。
         /// </summary>
-        DecryptResult IDecryptionServices.LoadAssetBundleFallback(DecryptFileInfo fileInfo)
+        byte[] IBundleMemoryDecryptor.GetDecryptedData(BundleDecryptArgs args)
         {
-            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
-            var assetBundle = AssetBundle.LoadFromMemory(fileData, fileInfo.FileLoadCRC);
-            DecryptResult decryptResult = new DecryptResult();
-            decryptResult.Result = assetBundle;
-            return decryptResult;
-        }
-
-        /// <summary>
-        /// 获取解密的字节数据
-        /// </summary>
-        byte[] IDecryptionServices.ReadFileData(DecryptFileInfo fileInfo)
-        {
-            byte[] fileData = File.ReadAllBytes(fileInfo.FileLoadPath);
+            byte[] fileData = args.FileData ?? File.ReadAllBytes(args.FilePath);
             for (int i = 0; i < fileData.Length; i++)
             {
                 fileData[i] ^= BundleStream.KEY;
@@ -87,68 +70,29 @@ namespace AlicizaX.Resource.Runtime
 
             return fileData;
         }
-
-        /// <summary>
-        /// 获取解密的文本数据
-        /// </summary>
-        string IDecryptionServices.ReadFileText(DecryptFileInfo fileInfo)
-        {
-            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
-            return Encoding.UTF8.GetString(fileData);
-        }
-
-        private static uint GetManagedReadBufferSize()
-        {
-            return 1024;
-        }
     }
 
     /// <summary>
     /// 资源文件偏移加载解密类
     /// </summary>
-    class FileOffsetDecryption : IDecryptionServices
+    class FileOffsetDecryption : IBundleOffsetDecryptor, IBundleMemoryDecryptor
     {
         /// <summary>
         /// 同步方式获取解密的资源包对象
         /// 注意：加载流对象在资源包对象释放的时候会自动释放
         /// </summary>
-        DecryptResult IDecryptionServices.LoadAssetBundle(DecryptFileInfo fileInfo)
+        long IBundleOffsetDecryptor.GetFileOffset(BundleDecryptArgs args)
         {
-            DecryptResult decryptResult = new DecryptResult();
-            decryptResult.ManagedStream = null;
-            decryptResult.Result = AssetBundle.LoadFromFile(fileInfo.FileLoadPath, fileInfo.FileLoadCRC, GetFileOffset());
-            return decryptResult;
+            return (long)GetFileOffset();
         }
 
         /// <summary>
         /// 异步方式获取解密的资源包对象
         /// 注意：加载流对象在资源包对象释放的时候会自动释放
         /// </summary>
-        DecryptResult IDecryptionServices.LoadAssetBundleAsync(DecryptFileInfo fileInfo)
+        byte[] IBundleMemoryDecryptor.GetDecryptedData(BundleDecryptArgs args)
         {
-            DecryptResult decryptResult = new DecryptResult();
-            decryptResult.ManagedStream = null;
-            decryptResult.CreateRequest = AssetBundle.LoadFromFileAsync(fileInfo.FileLoadPath, fileInfo.FileLoadCRC, GetFileOffset());
-            return decryptResult;
-        }
-
-        /// <summary>
-        /// 后备方式获取解密的资源包对象
-        /// </summary>
-        DecryptResult IDecryptionServices.LoadAssetBundleFallback(DecryptFileInfo fileInfo)
-        {
-            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
-            DecryptResult decryptResult = new DecryptResult();
-            decryptResult.Result = AssetBundle.LoadFromMemory(fileData, fileInfo.FileLoadCRC);
-            return decryptResult;
-        }
-
-        /// <summary>
-        /// 获取解密的字节数据
-        /// </summary>
-        byte[] IDecryptionServices.ReadFileData(DecryptFileInfo fileInfo)
-        {
-            byte[] fileData = File.ReadAllBytes(fileInfo.FileLoadPath);
+            byte[] fileData = args.FileData ?? File.ReadAllBytes(args.FilePath);
             ulong fileOffset = GetFileOffset();
             if ((ulong)fileData.Length <= fileOffset)
             {
@@ -160,16 +104,6 @@ namespace AlicizaX.Resource.Runtime
             System.Buffer.BlockCopy(fileData, (int)fileOffset, output, 0, outputLength);
             return output;
         }
-
-        /// <summary>
-        /// 获取解密的文本数据
-        /// </summary>
-        string IDecryptionServices.ReadFileText(DecryptFileInfo fileInfo)
-        {
-            byte[] fileData = ((IDecryptionServices)this).ReadFileData(fileInfo);
-            return Encoding.UTF8.GetString(fileData);
-        }
-
         private static ulong GetFileOffset()
         {
             return 32;

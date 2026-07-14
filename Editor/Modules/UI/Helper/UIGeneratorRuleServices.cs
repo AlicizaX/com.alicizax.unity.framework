@@ -204,7 +204,7 @@ namespace AlicizaX.UI.Editor
         {
             try
             {
-                var defaultPackage = YooAsset.Editor.AssetBundleCollectorSettingData.Setting.GetPackage("DefaultPackage");
+                var defaultPackage = YooAsset.Editor.BundleCollectorSettingData.Setting.GetPackage("DefaultPackage");
                 if (defaultPackage?.EnableAddressable == true)
                 {
                     return defaultPath;

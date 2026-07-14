@@ -22,6 +22,7 @@ namespace AlicizaX.Resource.Editor
 
         private static readonly string[] _playModeNames =
         {
+            "None (未指定允许模式)",
             "EditorSimulateMode (编辑器下的模拟模式)",
             "OfflinePlayMode (单机模式)",
             "HostPlayMode (联机运行模式)",
@@ -835,7 +836,7 @@ namespace AlicizaX.Resource.Editor
         {
             m_DecryptionServicesTypeName.Clear();
             m_DecryptionServicesTypeName.Add(NoneOptionName);
-            m_DecryptionServicesTypeName.AddRange(AlicizaX.Utility.Assembly.GetRuntimeTypeNames(typeof(IDecryptionServices)));
+            m_DecryptionServicesTypeName.AddRange(AlicizaX.Utility.Assembly.GetRuntimeTypeNames(typeof(IBundleDecryptor)));
             _decryptionServiceOptions = m_DecryptionServicesTypeName.ToArray();
 
             string selectedService = string.IsNullOrEmpty(_decryptionServices.stringValue) ? NoneOptionName : _decryptionServices.stringValue;
@@ -855,7 +856,7 @@ namespace AlicizaX.Resource.Editor
         {
             _packageNameBuffer.Clear();
 
-            foreach (var package in AssetBundleCollectorSettingData.Setting.Packages)
+            foreach (var package in BundleCollectorSettingData.Setting.Packages)
             {
                 _packageNameBuffer.Add(package.PackageName);
             }

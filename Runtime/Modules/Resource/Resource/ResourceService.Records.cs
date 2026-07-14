@@ -197,7 +197,7 @@ namespace AlicizaX.Resource.Runtime
         internal async UniTask<ResourceLeaseHandle> AcquireSubAssetsBindingAsync(string location, string packageName, ResourceLeaseOptions leaseOptions, CancellationToken cancellationToken = default)
         {
             string normalizedPackageName = NormalizePackageName(packageName);
-            if (string.IsNullOrEmpty(location) || !CheckLocationValid(location, normalizedPackageName))
+            if (string.IsNullOrEmpty(location) || !IsLocationValid(location, normalizedPackageName))
             {
                 return ResourceLeaseHandle.Invalid;
             }
@@ -330,7 +330,7 @@ namespace AlicizaX.Resource.Runtime
 
             string packageName = NormalizePackageName(key.PackageName);
             Type assetType = NormalizeAssetType(key.AssetType, key.AssetKind);
-            if (!CheckLocationValid(key.Location, packageName))
+            if (!IsLocationValid(key.Location, packageName))
             {
                 return ResourceLeaseHandle.Invalid;
             }
@@ -396,7 +396,7 @@ namespace AlicizaX.Resource.Runtime
 
             string packageName = NormalizePackageName(key.PackageName);
             Type assetType = NormalizeAssetType(key.AssetType, key.AssetKind);
-            if (!CheckLocationValid(key.Location, packageName))
+            if (!IsLocationValid(key.Location, packageName))
             {
                 return false;
             }
@@ -797,7 +797,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             string normalizedPackageName = NormalizePackageName(packageName);
-            if (!CheckLocationValid(location, normalizedPackageName))
+            if (!IsLocationValid(location, normalizedPackageName))
             {
                 return ResourceLeaseHandle.Invalid;
             }

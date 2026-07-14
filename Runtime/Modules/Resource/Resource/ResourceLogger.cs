@@ -9,17 +9,17 @@ namespace AlicizaX.Resource.Runtime
             AlicizaX.Log.Info(message);
         }
 
-        public void Warning(string message)
+        public void LogWarning(string message)
         {
             AlicizaX.Log.Warning(message);
         }
 
-        public void Error(string message)
+        public void LogError(string message)
         {
             AlicizaX.Log.Error(message);
         }
 
-        public void Exception(Exception exception)
+        public void LogException(Exception exception)
         {
             AlicizaX.Log.Exception(exception);
         }

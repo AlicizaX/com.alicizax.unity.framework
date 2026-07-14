@@ -146,7 +146,7 @@ namespace AlicizaX.Resource.Runtime
 
         private readonly List<UnloadAllAssetsOperation> _unloadAllAssetsOperations = new List<UnloadAllAssetsOperation>();
 
-        private readonly List<UpdatePackageManifestOperation> _manifestUpdateOperations = new List<UpdatePackageManifestOperation>();
+        private readonly List<LoadPackageManifestOperation> _manifestUpdateOperations = new List<LoadPackageManifestOperation>();
 
         private bool _isDestroying;
 
@@ -204,19 +204,15 @@ namespace AlicizaX.Resource.Runtime
             // 初始化资源系。。
             YooAssets.Initialize(new ResourceLogger());
 
-            YooAssets.SetOperationSystemMaxTimeSlice(Milliseconds);
+            YooAssets.SetAsyncOperationMaxTimeSlice(Milliseconds);
 
             // 创建默认的资源包
             string packageName = DefaultPackageName;
 
-            var defaultPackage = YooAssets.TryGetPackage(packageName);
-
-            if (defaultPackage == null)
+            if (!YooAssets.TryGetPackage(packageName, out var defaultPackage))
 
             {
                 defaultPackage = YooAssets.CreatePackage(packageName);
-
-                YooAssets.SetDefaultPackage(defaultPackage);
             }
 
             DefaultPackage = defaultPackage;
@@ -253,7 +249,7 @@ namespace AlicizaX.Resource.Runtime
 
             if (PackageMap.TryGetValue(packageName, out var resPackage))
             {
-                if (resPackage.InitializeStatus is EOperationStatus.Processing or EOperationStatus.Succeed)
+                if (resPackage.InitializeStatus is EOperationStatus.Processing or EOperationStatus.Succeeded)
                 {
                     Log.Error(ZString.Format("ResourceSystem has already init package : {0}", packageName));
                     return new UniTask<bool>(false);
@@ -269,8 +265,7 @@ namespace AlicizaX.Resource.Runtime
             GameFrameworkGuard.NotNull(hostServerURL, nameof(hostServerURL));
             GameFrameworkGuard.NotNull(fallbackHostServerURL, nameof(fallbackHostServerURL));
             // 创建默认的资源包
-            var resourcePackage = YooAssets.TryGetPackage(packageName);
-            if (resourcePackage == null)
+            if (!YooAssets.TryGetPackage(packageName, out var resourcePackage))
             {
                 resourcePackage = YooAssets.CreatePackage(packageName);
             }
@@ -279,7 +274,7 @@ namespace AlicizaX.Resource.Runtime
             var initializationOperationHandler = CreateInitializationOperationHandler(resourcePackage, hostServerURL, fallbackHostServerURL, DecryptionServices);
             initializationOperationHandler.Completed += asyncOperationBase =>
             {
-                if (asyncOperationBase.Error == null && asyncOperationBase.Status == EOperationStatus.Succeed && asyncOperationBase.IsDone)
+                if (asyncOperationBase.Status == EOperationStatus.Succeeded)
                 {
                     taskCompletionSource.TrySetResult(true);
                 }
@@ -322,7 +317,8 @@ namespace AlicizaX.Resource.Runtime
             string customPackageName = "")
         {
             var package = GetPackageOrThrow(customPackageName);
-            return package.RequestPackageVersionAsync(appendTimeTicks, timeout);
+            var options = new RequestPackageVersionOptions(appendTimeTicks, timeout);
+            return package.RequestPackageVersionAsync(options);
         }
 
         /// <summary>
@@ -331,11 +327,12 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="packageVersion">更新的包裹版。。</param>
         /// <param name="timeout">超时时间（默认值：60秒）</param>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
-        public UpdatePackageManifestOperation UpdatePackageManifestAsync(string packageVersion, int timeout = 60, string customPackageName = "")
+        public LoadPackageManifestOperation LoadPackageManifestAsync(string packageVersion, int timeout = 60, string customPackageName = "")
         {
             var package = GetPackageOrThrow(customPackageName);
             ClearAssetInfoCache();
-            UpdatePackageManifestOperation operation = package.UpdatePackageManifestAsync(packageVersion, timeout);
+            var options = new LoadPackageManifestOptions(packageVersion, timeout);
+            LoadPackageManifestOperation operation = package.LoadPackageManifestAsync(options);
             TrackManifestUpdateOperation(operation);
             WatchManifestUpdateOperation(operation).Forget();
             return operation;
@@ -348,7 +345,8 @@ namespace AlicizaX.Resource.Runtime
         public ResourceDownloaderOperation CreateResourceDownloader(string customPackageName = "")
         {
             ResourcePackage package = GetPackageOrThrow(customPackageName);
-            return package.CreateResourceDownloader(DownloadingMaxNum, FailedTryAgain);
+            var options = new ResourceDownloaderOptions(DownloadingMaxNum, FailedTryAgain);
+            return package.CreateResourceDownloader(options);
         }
 
         /// <summary>
@@ -356,12 +354,10 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="clearMode">文件清理方式。</param>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
-        public ClearCacheFilesOperation ClearCacheFilesAsync(
-            EFileClearMode clearMode = EFileClearMode.ClearUnusedBundleFiles,
-            string customPackageName = "")
+        public ClearCacheOperation ClearCacheAsync(ClearCacheOptions options, string customPackageName = "")
         {
             var package = GetPackageOrThrow(customPackageName);
-            return package.ClearCacheFilesAsync(clearMode);
+            return package.ClearCacheAsync(options);
         }
 
         /// <summary>
@@ -371,7 +367,7 @@ namespace AlicizaX.Resource.Runtime
         public void ClearAllBundleFiles(string customPackageName = "")
         {
             var package = GetPackageOrThrow(customPackageName);
-            package.ClearCacheFilesAsync(EFileClearMode.ClearAllBundleFiles);
+            package.ClearCacheAsync(new ClearCacheOptions(ClearCacheMethods.ClearAllBundleFiles));
         }
 
         #region 资源回收
@@ -407,7 +403,7 @@ namespace AlicizaX.Resource.Runtime
 
             foreach (var package in PackageMap.Values)
             {
-                if (package is { InitializeStatus: EOperationStatus.Succeed })
+                if (package is { InitializeStatus: EOperationStatus.Succeeded })
                 {
                     _unloadUnusedAssetsOperations.Add(package.UnloadUnusedAssetsAsync());
                 }
@@ -456,7 +452,7 @@ namespace AlicizaX.Resource.Runtime
             ForceReleaseAllAssetRecords();
             foreach (var package in PackageMap.Values)
             {
-                if (package is { InitializeStatus: EOperationStatus.Succeed })
+                if (package is { InitializeStatus: EOperationStatus.Succeeded })
                 {
                     _unloadAllAssetsOperations.Add(package.UnloadAllAssetsAsync());
                 }
@@ -506,7 +502,7 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private void TrackManifestUpdateOperation(UpdatePackageManifestOperation operation)
+        private void TrackManifestUpdateOperation(LoadPackageManifestOperation operation)
         {
             if (operation == null || operation.IsDone)
             {
@@ -521,7 +517,7 @@ namespace AlicizaX.Resource.Runtime
             bool inProgress = false;
             for (int i = _manifestUpdateOperations.Count - 1; i >= 0; i--)
             {
-                UpdatePackageManifestOperation operation = _manifestUpdateOperations[i];
+                LoadPackageManifestOperation operation = _manifestUpdateOperations[i];
                 if (operation == null || operation.IsDone)
                 {
                     _manifestUpdateOperations.RemoveAt(i);
@@ -534,7 +530,7 @@ namespace AlicizaX.Resource.Runtime
             return inProgress;
         }
 
-        private async UniTaskVoid WatchManifestUpdateOperation(UpdatePackageManifestOperation operation)
+        private async UniTaskVoid WatchManifestUpdateOperation(LoadPackageManifestOperation operation)
         {
             if (operation == null)
             {
@@ -559,15 +555,9 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="location">资源的定位地址。</param>
         /// <param name="packageName">资源包名称。</param>
-        public bool IsNeedDownloadFromRemote(string location, string packageName = "")
+        public long GetDownloadSize(string location, string packageName = "")
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.IsNeedDownloadFromRemote(location);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.IsNeedDownloadFromRemote(location);
+            return GetPackageOrThrow(packageName).GetDownloadSize(location);
         }
 
         /// <summary>
@@ -575,15 +565,9 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="assetInfo">资源信息。</param>
         /// <param name="packageName">资源包名称。</param>
-        public bool IsNeedDownloadFromRemote(AssetInfo assetInfo, string packageName = "")
+        public long GetDownloadSize(AssetInfo assetInfo, string packageName = "")
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.IsNeedDownloadFromRemote(assetInfo);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.IsNeedDownloadFromRemote(assetInfo);
+            return GetPackageOrThrow(packageName).GetDownloadSize(assetInfo);
         }
 
         /// <summary>
@@ -594,13 +578,7 @@ namespace AlicizaX.Resource.Runtime
         /// <returns>资源信息列表。</returns>
         public AssetInfo[] GetAssetInfos(string tag, string packageName = "")
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.GetAssetInfos(tag);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.GetAssetInfos(tag);
+            return GetPackageOrThrow(packageName).GetAssetInfos(tag);
         }
 
         /// <summary>
@@ -611,13 +589,7 @@ namespace AlicizaX.Resource.Runtime
         /// <returns>资源信息列表。</returns>
         public AssetInfo[] GetAssetInfos(string[] tags, string packageName = "")
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.GetAssetInfos(tags);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.GetAssetInfos(tags);
+            return GetPackageOrThrow(packageName).GetAssetInfos(tags);
         }
 
         /// <summary>
@@ -654,18 +626,7 @@ namespace AlicizaX.Resource.Runtime
 
         private AssetInfo GetAssetInfoUncached(string location, string packageName)
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.GetAssetInfo(location);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            if (package == null)
-            {
-                throw new GameFrameworkException(ZString.Format("The package does not exist. Package Name :{0}", packageName));
-            }
-
-            return package.GetAssetInfo(location);
+            return GetPackageOrThrow(packageName).GetAssetInfo(location);
         }
 
         private static bool CanCacheAssetInfo(AssetInfo assetInfo)
@@ -687,7 +648,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             AssetInfo assetInfo = GetAssetInfo(location, packageName);
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 return HasAssetResult.NotExist;
             }
@@ -697,7 +658,7 @@ namespace AlicizaX.Resource.Runtime
                 return HasAssetResult.NotExist;
             }
 
-            if (IsNeedDownloadFromRemote(assetInfo))
+            if (GetDownloadSize(assetInfo, packageName) > 0)
             {
                 return HasAssetResult.AssetOnline;
             }
@@ -710,15 +671,9 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         /// <param name="location">资源的定位地址</param>
         /// <param name="packageName">资源包名称。</param>
-        public bool CheckLocationValid(string location, string packageName = "")
+        public bool IsLocationValid(string location, string packageName = "")
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.CheckLocationValid(location);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package != null && package.CheckLocationValid(location);
+            return GetPackageOrThrow(packageName).IsLocationValid(location);
         }
 
         #endregion
@@ -741,13 +696,7 @@ namespace AlicizaX.Resource.Runtime
 
         private AssetHandle GetHandleSync(string location, Type assetType, string packageName = "")
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.LoadAssetSync(location, assetType);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.LoadAssetSync(location, assetType);
+            return GetPackageOrThrow(packageName).LoadAssetSync(location, assetType);
         }
 
         /// <summary>
@@ -764,14 +713,7 @@ namespace AlicizaX.Resource.Runtime
 
         private AssetHandle GetHandleAsync(string location, Type assetType, string packageName = "", uint priority = 0)
         {
-            if (string.IsNullOrEmpty(packageName))
-
-            {
-                return YooAssets.LoadAssetAsync(location, assetType, priority);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.LoadAssetAsync(location, assetType, priority);
+            return GetPackageOrThrow(packageName).LoadAssetAsync(location, assetType, priority);
         }
 
         private static uint NormalizePriority(int priority)
@@ -1187,7 +1129,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Asset name is invalid.");
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 Log.Error(ZString.Format("Could not found location [{0}].", location));
                 return null;
@@ -1287,7 +1229,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Asset name is invalid.");
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 Log.Error(ZString.Format("Could not found location [{0}].", location));
                 return null;
@@ -1339,7 +1281,7 @@ namespace AlicizaX.Resource.Runtime
                 return;
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 Log.Error(ZString.Format("Could not found location [{0}].", location));
                 callback?.Invoke(null);
@@ -1365,7 +1307,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Asset name is invalid.");
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 Log.Error(ZString.Format("Could not found location [{0}].", location));
                 return null;
@@ -1390,7 +1332,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Asset name is invalid.");
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 Log.Error(ZString.Format("Could not found location [{0}].", location));
                 return null;
@@ -1456,7 +1398,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Load asset callbacks is invalid.");
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 string errorMessage = ZString.Format("Could not found location [{0}].", location);
                 Log.Error(errorMessage);
@@ -1518,7 +1460,7 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Load asset callbacks is invalid.");
             }
 
-            if (!CheckLocationValid(location, packageName))
+            if (!IsLocationValid(location, packageName))
             {
                 string errorMessage = ZString.Format("Could not found location [{0}].", location);
                 Log.Error(errorMessage);
@@ -1603,13 +1545,7 @@ namespace AlicizaX.Resource.Runtime
         /// <returns>资源操作句柄。</returns>
         public AssetHandle LoadAssetSyncHandle<T>(string location, string packageName = "") where T : UnityEngine.Object
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.LoadAssetSync<T>(location);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.LoadAssetSync<T>(location);
+            return GetPackageOrThrow(packageName).LoadAssetSync<T>(location);
         }
 
         /// <summary>
@@ -1621,13 +1557,7 @@ namespace AlicizaX.Resource.Runtime
         /// <returns>资源操作句柄。</returns>
         public AssetHandle LoadAssetAsyncHandle<T>(string location, string packageName = "") where T : UnityEngine.Object
         {
-            if (string.IsNullOrEmpty(packageName))
-            {
-                return YooAssets.LoadAssetAsync<T>(location);
-            }
-
-            var package = YooAssets.GetPackage(packageName);
-            return package.LoadAssetAsync<T>(location);
+            return GetPackageOrThrow(packageName).LoadAssetAsync<T>(location);
         }
 
         #endregion
@@ -2007,32 +1937,5 @@ namespace AlicizaX.Resource.Runtime
 
         #endregion
 
-        #region 设置下载系统参数，自定义下载请求
-
-        /// <summary>
-        /// 设置下载系统参数，自定义下载请求。
-        /// </summary>
-        /// <param name="downloadSystemUnityWebRequest">自定义下载器的请求委托，<see cref="UnityWebRequestDelegate"/></param>
-        public void SetDownloadSystemUnityWebRequest(UnityWebRequestDelegate downloadSystemUnityWebRequest)
-        {
-            YooAssets.SetDownloadSystemUnityWebRequest(downloadSystemUnityWebRequest);
-        }
-
-        public UnityEngine.Networking.UnityWebRequest CustomWebRequester(string url)
-        {
-            var request = new UnityEngine.Networking.UnityWebRequest(url, UnityEngine.Networking.UnityWebRequest.kHttpVerbGET);
-            var authorization = GetAuthorization("Admin", "12345");
-            request.SetRequestHeader("AUTHORIZATION", authorization);
-            return request;
-        }
-
-        private string GetAuthorization(string userName, string password)
-        {
-            string auth = ZString.Concat(userName, ":", password);
-            var bytes = System.Text.Encoding.GetEncoding("ISO-8859-1").GetBytes(auth);
-            return ZString.Concat("Basic ", Convert.ToBase64String(bytes));
-        }
-
-        #endregion
     }
 }
