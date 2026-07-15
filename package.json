@@ -3,7 +3,7 @@
   "displayName": "Aliciza X Framework",
   "category": "Aliciza X",
   "description": "Aliciza X Core Framework",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "unity": "2022.3",
   "keywords": [
     "Aliciza X"
@@ -20,6 +20,6 @@
   "dependencies": {
     "com.tuyoogame.yooasset": "3.0.4",
     "com.cysharp.zstring": "2.6.0",
-    "com.alicizax.unity.cysharp.unitask": "2.5.10"
+    "com.alicizax.unity.cysharp.unitask": "2.5.11"
   }
 }
