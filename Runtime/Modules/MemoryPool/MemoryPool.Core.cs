@@ -346,6 +346,11 @@ namespace AlicizaX
         private static void ReleaseNativeMetadataNow()
         {
             s_PendingClearNativeMetadata = false;
+            ClearQueues();
+            s_HasFreeScanDebt = false;
+            s_HasEmptyScanDebt = false;
+            s_FreeDebtScanCursor = 0;
+            s_EmptyDebtScanCursor = 0;
             FreeNativeMetadata();
             s_ObjectPages = Array.Empty<T[]>();
             s_PageCount = 0;
@@ -814,6 +819,15 @@ namespace AlicizaX
 
         private static bool TryDequeueValidPage(PageHandle* queue, int capacity, ref int head, ref int tail, ref int count, int flag, bool requireFree, out int pageIndex)
         {
+            if (queue == null || capacity <= 0 || count <= 0)
+            {
+                head = 0;
+                tail = 0;
+                count = 0;
+                pageIndex = InvalidIndex;
+                return false;
+            }
+
             while (count > 0)
             {
                 PageHandle handle = queue[head];
