@@ -133,6 +133,17 @@ namespace AlicizaX.UI.Runtime
             CompleteCurrentShowOperation(null);
         }
 
+        public void RequestCancelShowLoad()
+        {
+            if (!_showInProgress)
+            {
+                return;
+            }
+
+            _loadCancellationTokenSource?.Cancel();
+            _cancelRequested = true;
+        }
+
         public void SetPendingShowUserDatas(System.Object[] userDatas)
         {
             _pendingShowUserDatas = userDatas;

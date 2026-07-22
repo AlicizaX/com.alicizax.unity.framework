@@ -43,9 +43,29 @@ namespace AlicizaX.UI.Runtime
 
     internal sealed partial class UIService
     {
+        private struct PendingLayerClose
+        {
+            public RuntimeTypeHandle Handle;
+            public int TypeId;
+            public bool Force;
+        }
+
         private readonly LayerData[] _openUI = new LayerData[(int)UILayer.All];
         private readonly bool[] _layerMutationBusy = new bool[(int)UILayer.All];
         private readonly bool[] _layerVisualDirty = new bool[(int)UILayer.All];
+        private readonly PendingLayerClose[][] _layerPendingCloses = CreateLayerPendingCloseBuffers();
+        private readonly int[] _layerPendingCloseCounts = new int[(int)UILayer.All];
+
+        private static PendingLayerClose[][] CreateLayerPendingCloseBuffers()
+        {
+            var buffers = new PendingLayerClose[(int)UILayer.All][];
+            for (int i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = new PendingLayerClose[4];
+            }
+
+            return buffers;
+        }
 
         private bool IsLayerBlockedForMutation(int layer)
         {
@@ -74,9 +94,138 @@ namespace AlicizaX.UI.Runtime
 
         private void EndLayerMutation(int layer)
         {
-            if ((uint)layer < (uint)_layerMutationBusy.Length)
+            if ((uint)layer >= (uint)_layerMutationBusy.Length)
             {
-                _layerMutationBusy[layer] = false;
+                return;
+            }
+
+            _layerMutationBusy[layer] = false;
+            DrainLayerCloseQueue(layer);
+        }
+
+        private bool TryEnqueueLayerClose(UIMetadata meta, bool force)
+        {
+            if (meta == null)
+            {
+                return false;
+            }
+
+            int layer = meta.MetaInfo.UILayer;
+            if ((uint)layer >= (uint)_layerPendingCloses.Length)
+            {
+                return false;
+            }
+
+            int typeId = meta.MetaInfo.TypeId;
+            PendingLayerClose[] buffer = _layerPendingCloses[layer];
+            int count = _layerPendingCloseCounts[layer];
+
+            for (int i = 0; i < count; i++)
+            {
+                if (buffer[i].TypeId != typeId)
+                {
+                    continue;
+                }
+
+                if (force && !buffer[i].Force)
+                {
+                    buffer[i].Force = true;
+                }
+
+#if UNITY_EDITOR
+                if (UIWarningSettings.OtherWarningsEnabled)
+                {
+                    WarnUIOperation(
+                        "Close merged into layer queue",
+                        meta,
+                        meta.OperationVersion,
+                        $"Layer={(UILayer)layer}, Force={buffer[i].Force}. A close for the same UI was already queued while the layer transaction was busy.");
+                }
+#endif
+                if (meta.ShowInProgress)
+                {
+                    meta.RequestCancelShowLoad();
+                }
+
+                return true;
+            }
+
+            if (count >= buffer.Length)
+            {
+                Array.Resize(ref buffer, buffer.Length << 1);
+                _layerPendingCloses[layer] = buffer;
+            }
+
+            buffer[count] = new PendingLayerClose
+            {
+                Handle = meta.MetaInfo.RuntimeTypeHandle,
+                TypeId = typeId,
+                Force = force,
+            };
+            _layerPendingCloseCounts[layer] = count + 1;
+
+            if (meta.ShowInProgress)
+            {
+                meta.RequestCancelShowLoad();
+            }
+
+#if UNITY_EDITOR
+            if (UIWarningSettings.OtherWarningsEnabled)
+            {
+                WarnUIOperation(
+                    "Close queued because layer is busy",
+                    meta,
+                    meta.OperationVersion,
+                    $"Layer={(UILayer)layer}, Force={force}, QueueCount={_layerPendingCloseCounts[layer]}. The close will run after the current layer transaction ends.");
+            }
+#endif
+            return true;
+        }
+
+        private void DrainLayerCloseQueue(int layer)
+        {
+            if ((uint)layer >= (uint)_layerPendingCloseCounts.Length)
+            {
+                return;
+            }
+
+            // 同步失败的 Close 不会重新占锁，需要继续取下一项；
+            // 一旦某项成功 BeginMutation（busy=true），交给该事务的 EndLayerMutation 再继续 drain。
+            while (_layerPendingCloseCounts[layer] > 0)
+            {
+                if (_layerMutationBusy[layer] || _layerVisualDirty[layer])
+                {
+                    return;
+                }
+
+                PendingLayerClose[] buffer = _layerPendingCloses[layer];
+                PendingLayerClose entry = buffer[0];
+                int count = _layerPendingCloseCounts[layer];
+                for (int i = 1; i < count; i++)
+                {
+                    buffer[i - 1] = buffer[i];
+                }
+
+                buffer[count - 1] = default;
+                _layerPendingCloseCounts[layer] = count - 1;
+
+                // UniTask 会同步执行到第一个 await；成功占锁后 busy 已为 true。
+                CloseUIAsyncCore(entry.Handle, entry.Force).Forget();
+            }
+        }
+
+        private void ClearAllLayerCloseQueues()
+        {
+            for (int layer = 0; layer < _layerPendingCloseCounts.Length; layer++)
+            {
+                PendingLayerClose[] buffer = _layerPendingCloses[layer];
+                int count = _layerPendingCloseCounts[layer];
+                if (count > 0)
+                {
+                    Array.Clear(buffer, 0, count);
+                }
+
+                _layerPendingCloseCounts[layer] = 0;
             }
         }
 
@@ -277,19 +426,34 @@ namespace AlicizaX.UI.Runtime
         }
         private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
         {
-            if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying)
-            {
-                return false;
-            }
-
-            if (IsLayerBlockedForMutation(meta.MetaInfo.UILayer))
+            if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying || meta.State == UIState.Destroyed)
             {
                 return false;
             }
 
             int layerIndex = meta.MetaInfo.UILayer;
+            if (IsLayerBlockedForMutation(layerIndex))
+            {
+
+                if ((uint)layerIndex < (uint)_layerMutationBusy.Length
+                    && _layerMutationBusy[layerIndex]
+                    && !_layerVisualDirty[layerIndex])
+                {
+                    return TryEnqueueLayerClose(meta, force);
+                }
+
+                return false;
+            }
+
             if (!TryBeginLayerMutation(layerIndex))
             {
+                if ((uint)layerIndex < (uint)_layerMutationBusy.Length
+                    && _layerMutationBusy[layerIndex]
+                    && !_layerVisualDirty[layerIndex])
+                {
+                    return TryEnqueueLayerClose(meta, force);
+                }
+
                 return false;
             }
 
@@ -1304,7 +1468,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                _layerMutationBusy[layerIndex] = false;
+                EndLayerMutation(layerIndex);
             }
         }
 

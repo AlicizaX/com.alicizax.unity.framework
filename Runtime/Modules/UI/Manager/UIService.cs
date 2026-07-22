@@ -178,9 +178,37 @@ namespace AlicizaX.UI.Runtime
             if (metadata == null
                 || metadata.State == UIState.Uninitialized
                 || metadata.State == UIState.Destroying
-                || IsLayerBlockedForMutation(metadata.MetaInfo.UILayer))
+                || metadata.State == UIState.Destroyed)
             {
                 return UniTask.FromResult(false);
+            }
+
+            int layer = metadata.MetaInfo.UILayer;
+            if ((uint)layer >= (uint)_openUI.Length)
+            {
+                return UniTask.FromResult(false);
+            }
+
+
+            if (_layerVisualDirty[layer])
+            {
+#if UNITY_EDITOR
+                if (UIWarningSettings.OtherWarningsEnabled)
+                {
+                    WarnUIOperation(
+                        "Close rejected because layer visual is dirty",
+                        metadata,
+                        metadata.OperationVersion,
+                        $"Layer={(UILayer)layer}. Rebuild the layer visual state before closing.");
+                }
+#endif
+                return UniTask.FromResult(false);
+            }
+
+            if (_layerMutationBusy[layer])
+            {
+                bool queued = TryEnqueueLayerClose(metadata, force);
+                return UniTask.FromResult(queued);
             }
 
             return CloseUIImplCore(metadata, force);
@@ -199,6 +227,8 @@ namespace AlicizaX.UI.Runtime
 
         private void DestroyAllManagedUI()
         {
+            ClearAllLayerCloseQueues();
+
             for (int layerIndex = 0; layerIndex < _openUI.Length; layerIndex++)
             {
                 LayerData layer = _openUI[layerIndex];
@@ -228,6 +258,8 @@ namespace AlicizaX.UI.Runtime
 
                 layer.Count = 0;
                 layer.LastFullscreenIndex = -1;
+                _layerMutationBusy[layerIndex] = false;
+                _layerVisualDirty[layerIndex] = false;
             }
 
             Array.Clear(_updateableWindows, 0, _updateableWindowCount);
