@@ -132,16 +132,6 @@ namespace AlicizaX.UI.Runtime
                     buffer[i].Force = true;
                 }
 
-#if UNITY_EDITOR
-                if (UIWarningSettings.OtherWarningsEnabled)
-                {
-                    WarnUIOperation(
-                        "Close merged into layer queue",
-                        meta,
-                        meta.OperationVersion,
-                        $"Layer={(UILayer)layer}, Force={buffer[i].Force}. A close for the same UI was already queued while the layer transaction was busy.");
-                }
-#endif
                 if (meta.ShowInProgress)
                 {
                     meta.RequestCancelShowLoad();
@@ -169,16 +159,6 @@ namespace AlicizaX.UI.Runtime
                 meta.RequestCancelShowLoad();
             }
 
-#if UNITY_EDITOR
-            if (UIWarningSettings.OtherWarningsEnabled)
-            {
-                WarnUIOperation(
-                    "Close queued because layer is busy",
-                    meta,
-                    meta.OperationVersion,
-                    $"Layer={(UILayer)layer}, Force={force}, QueueCount={_layerPendingCloseCounts[layer]}. The close will run after the current layer transaction ends.");
-            }
-#endif
             return true;
         }
 

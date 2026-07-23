@@ -32,31 +32,6 @@ namespace AlicizaX.UI.Runtime
             return false;
         }
 
-
-        public static ushort GetValidNextStateMask(UIState currentState)
-        {
-            int stateIndex = (int)currentState;
-            return (uint)stateIndex < (uint)ValidTransitionMasks.Length ? ValidTransitionMasks[stateIndex] : (ushort)0;
-        }
-
-        public static string GetStateDescription(UIState state)
-        {
-            return state switch
-            {
-                UIState.Uninitialized => "Not yet created",
-                UIState.CreatedUI => "UI logic created, awaiting resource load",
-                UIState.Loaded => "Resources loaded, awaiting initialization",
-                UIState.Initialized => "Initialized, ready to open",
-                UIState.Opening => "Opening transition is running",
-                UIState.Opened => "Currently visible and active",
-                UIState.Closing => "Closing transition is running",
-                UIState.Closed => "Hidden but cached",
-                UIState.Destroying => "Being destroyed",
-                UIState.Destroyed => "Fully destroyed",
-                _ => "Unknown state"
-            };
-        }
-
         public static bool IsDisplayActive(UIState state)
         {
             return state == UIState.Opening || state == UIState.Opened || state == UIState.Closing;

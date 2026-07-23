@@ -93,12 +93,16 @@ namespace AlicizaX.UI.Runtime
         UniTask<UIShowResult> ShowUIResult(RuntimeTypeHandle handle, params object[] userDatas);
 
         /// <summary>
-        /// 同步显示 UI（无参重载，避免 params 空数组分配）。异步初始化 UI 会返回 null；打开过渡直接应用最终状态。
+        /// 同步显示 UI（无参重载，避免 params 空数组分配）。
+        /// 仅同步完成资源加载与初始化；返回时 View 已可用，但 Open 过渡与 OnOpen 仍在后台异步推进。
+        /// 需要完整打开完成时请使用 ShowUI / ShowUIResult。异步初始化 UI 会返回 null。
         /// </summary>
         T ShowUISync<T>() where T : UIBase;
 
         /// <summary>
-        /// 同步显示 UI（仅限资源已预加载时使用）。异步初始化 UI 会返回 null；打开过渡直接应用最终状态。
+        /// 同步显示 UI（仅限资源已预加载时使用）。
+        /// 仅同步完成资源加载与初始化；返回时 View 已可用，但 Open 过渡与 OnOpen 仍在后台异步推进。
+        /// 需要完整打开完成时请使用 ShowUI / ShowUIResult。异步初始化 UI 会返回 null。
         /// </summary>
         T ShowUISync<T>(params object[] userDatas) where T : UIBase;
 
