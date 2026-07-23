@@ -1,6 +1,5 @@
 using AlicizaX;
 using UnityEngine;
-using UnityEngine.UI;
 using Object = UnityEngine.Object;
 
 namespace AlicizaX.UI.Runtime
@@ -13,7 +12,6 @@ namespace AlicizaX.UI.Runtime
     {
         [SerializeField] private GameObject uiRoot = null;
         [SerializeField] private bool _isOrthographic = true;
-        private const string CanvasScalerMissingMessage = "Not found CanvasScaler !";
 
         private IUIService _uiService;
 

@@ -4,9 +4,9 @@ using Cysharp.Threading.Tasks;
 namespace AlicizaX.UI.Runtime
 {
     /// <summary>
-    /// UI 页面导航路由器。
-    /// 管理页面级历史记录、导航、返回、替换和重置流程。
-    /// UI 实例生命周期、层级和缓存仍由 UIService 负责。
+    /// 页面级导航路由器。
+    /// 仅用于主页面历史（Navigate/Back/Replace/Reset）；弹窗与独立叠加层走 IUIService.ShowUI。
+    /// 实例生命周期、层级和缓存仍由 UIService 负责。
     /// </summary>
     public interface IUIRouter
     {

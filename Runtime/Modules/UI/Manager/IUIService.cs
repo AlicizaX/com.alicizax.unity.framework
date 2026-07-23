@@ -7,10 +7,14 @@ namespace AlicizaX.UI.Runtime
 {
     /// <summary>
     /// UI 模块接口：负责 UI 的创建、显示、关闭与查询。
-    /// 支持异步与同步（预加载）两种打开方式。
+    /// 页面导航用 Router；叠加弹窗/独立面板用 ShowUI/CloseUI。
+    /// 同一逻辑页不要混用两条路径。
     /// </summary>
     public interface IUIService : IService
     {
+        /// <summary>
+        /// 页面级导航。历史栈、Back/Replace 由 Router 维护；实例生命周期仍由本服务负责。
+        /// </summary>
         IUIRouter Router { get; }
 
         /// <summary>
@@ -136,12 +140,12 @@ namespace AlicizaX.UI.Runtime
         UniTask<UICloseManyResult> CloseManyAsync(RuntimeTypeHandle[] handles, UICloseManyMode[] modes, int count, bool force = false);
 
         /// <summary>
-        /// 指定类型 UI 当前是否处于稳定打开状态。
+        /// 是否处于 Opened 稳定态。Opening/Closing 返回 false；需要结果态请用 ShowUIResult。
         /// </summary>
         bool IsOpen<T>() where T : UIBase;
 
         /// <summary>
-        /// 指定类型 UI 当前是否处于稳定打开状态。
+        /// 是否处于 Opened 稳定态。Opening/Closing 返回 false；需要结果态请用 ShowUIResult。
         /// </summary>
         bool IsOpen(RuntimeTypeHandle handle);
 

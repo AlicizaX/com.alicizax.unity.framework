@@ -56,7 +56,6 @@ namespace AlicizaX.UI.Runtime
         OpenInterruptionFailed,
         LifecycleCloseFailed,
         FinalizeFailed,
-        VisibilityRefreshFailed,
         CanceledByNewOperation,
     }
 

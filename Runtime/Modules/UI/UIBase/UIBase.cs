@@ -144,6 +144,7 @@ namespace AlicizaX.UI.Runtime
 
         private bool _visible;
 
+        // 显示层：Layer + Raycaster。缓存渲染开关见 SetCanvasEnabled
         internal bool Visible
         {
             get => _visible && _canvas != null;
@@ -173,6 +174,7 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        // 缓存路径关闭/恢复渲染；与 Visible 的 Layer 开关独立
         internal void SetCanvasEnabled(bool value)
         {
             if (_canvas != null && _canvas.enabled != value)
@@ -378,7 +380,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -399,7 +401,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -791,11 +793,6 @@ namespace AlicizaX.UI.Runtime
         private string FormatLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState)
         {
             return $"ExpectedState={expectedState}, ActualState={_state}, ExpectedLifecycleVersion={expectedLifecycleVersion}, ActualLifecycleVersion={_lifecycleVersion}.";
-        }
-
-        private bool ShouldWarnOpenInterruption(int lifecycleVersion)
-        {
-            return UIWarningSettings.AnyWarningsEnabled;
         }
 
 #endif

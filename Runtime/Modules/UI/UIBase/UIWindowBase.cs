@@ -25,14 +25,6 @@ namespace AlicizaX.UI.Runtime
             UIService.CloseUI(RuntimeTypeHandler, force);
         }
 
-        /// <summary>
-        /// 强制关闭自身（跳过缓存策略）。
-        /// </summary>
-        protected void ForceCloseSelf()
-        {
-            CloseSelf(true);
-        }
-
         internal sealed override void BindUIHolder(UIHolderObjectBase holder, UIBase owner)
         {
             if (_state != UIState.CreatedUI)

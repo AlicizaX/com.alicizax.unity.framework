@@ -40,14 +40,14 @@ namespace AlicizaX.UI.Runtime
         {
             return resInfo.LoadType == EUIResLoadType.AssetBundle
                 ? await ResourceService.LoadGameObjectAsync(resInfo.Location, parent, cancellationToken)
-                : await LoadResourceWithFallbackAsync(resInfo.Location, parent, cancellationToken);
+                : await InstantiateResourceAsync(resInfo.Location, parent, cancellationToken);
         }
 
         internal static GameObject LoadUIResourcesSync(UIResRegistry.UIResInfo resInfo, Transform parent)
         {
             return resInfo.LoadType == EUIResLoadType.AssetBundle
                 ? ResourceService.LoadGameObject(resInfo.Location, parent)
-                : LoadResourceWithFallbackSync(resInfo.Location, parent);
+                : InstantiateResourceSync(resInfo.Location, parent);
         }
 
 
@@ -115,16 +115,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             return Object.Instantiate(prefab, parent);
-        }
-
-        private static async UniTask<GameObject> LoadResourceWithFallbackAsync(string location, Transform parent, CancellationToken cancellationToken)
-        {
-            return await InstantiateResourceAsync(location, parent, cancellationToken);
-        }
-
-        private static GameObject LoadResourceWithFallbackSync(string location, Transform parent)
-        {
-            return InstantiateResourceSync(location, parent);
         }
 
         private static bool ValidateAndBind(UIMetadata meta, GameObject holderObject, UIBase owner)

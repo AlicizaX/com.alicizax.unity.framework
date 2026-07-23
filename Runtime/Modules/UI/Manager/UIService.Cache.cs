@@ -45,8 +45,8 @@ namespace AlicizaX.UI.Runtime
             ulong timerHandle = 0UL;
 
             view.PauseEventListeners();
-            // 缓存期间释放用户数据引用，并关闭 Canvas 渲染（不触发网格重建）
             view.ClearUserData();
+            // 缓存关 Canvas；显示态用 Layer/Raycaster（Visible）
             view.SetCanvasEnabled(false);
             view.Holder.transform.SetParent(UICacheLayer, false);
             if (uiMetadata.MetaInfo.CacheTime > 0)

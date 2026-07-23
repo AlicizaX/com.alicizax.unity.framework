@@ -145,12 +145,7 @@ namespace AlicizaX.UI.Runtime
                         closedCount++;
                     }
 
-                    UICloseFailureReason refreshFailure = RefreshChangedLayersAfterCloseMany(layerWorks);
-                    if (refreshFailure != UICloseFailureReason.None)
-                    {
-                        return UICloseManyResult.Fail(closedCount, skippedCount, -1, default, refreshFailure);
-                    }
-
+                    RefreshChangedLayersAfterCloseMany(layerWorks);
                     return UICloseManyResult.Ok(closedCount, skippedCount);
                 }
                 finally
@@ -367,7 +362,7 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private UICloseFailureReason RefreshChangedLayersAfterCloseMany(LayerCloseWork[] layerWorks)
+        private void RefreshChangedLayersAfterCloseMany(LayerCloseWork[] layerWorks)
         {
             for (int layerIndex = 0; layerIndex < (int)UILayer.All; layerIndex++)
             {
@@ -377,18 +372,8 @@ namespace AlicizaX.UI.Runtime
                     continue;
                 }
 
-                try
-                {
-                    SortWindowDepth(layerIndex, work.MinRemovedIndex < 0 ? 0 : work.MinRemovedIndex);
-                }
-                catch
-                {
-                    MarkLayerVisualDirty(layerIndex);
-                    return UICloseFailureReason.VisibilityRefreshFailed;
-                }
+                SortWindowDepth(layerIndex, work.MinRemovedIndex < 0 ? 0 : work.MinRemovedIndex);
             }
-
-            return UICloseFailureReason.None;
         }
 
         private void CleanupCloseManyPendingFlags(CloseManyTarget[] targets, int targetCount)

@@ -74,7 +74,7 @@ namespace AlicizaX.UI.Runtime
             m_LayerBlock.SetActive(value);
         }
 
-        public void RecoverLayerOptionAll()
+        private void RecoverLayerOptionAll()
         {
             SetLayerBlockOption(false);
             m_LastCountDownHandle = 0UL;

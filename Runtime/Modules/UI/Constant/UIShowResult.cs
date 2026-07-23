@@ -18,8 +18,6 @@ namespace AlicizaX.UI.Runtime
             State = state;
         }
 
-        public bool HasView => View != null;
-        public bool IsOpened => State == UIShowResultState.Opened;
         public bool IsAccepted => State == UIShowResultState.Opened;
 
         public static UIShowResult Failed => new(null, UIShowResultState.Failed);
@@ -37,8 +35,6 @@ namespace AlicizaX.UI.Runtime
             State = state;
         }
 
-        public bool HasView => View != null;
-        public bool IsOpened => State == UIShowResultState.Opened;
         public bool IsAccepted => State == UIShowResultState.Opened;
     }
 }

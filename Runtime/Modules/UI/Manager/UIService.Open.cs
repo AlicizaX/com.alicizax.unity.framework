@@ -285,23 +285,15 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            try
+            LayerData layerData = _openUI[layer];
+            if (layerData != null)
             {
-                LayerData layerData = _openUI[layer];
-                if (layerData != null)
-                {
-                    ClearStackRemovalPendingOnLayer(layerData);
-                    SortWindowDepth(layer, 0);
-                }
+                ClearStackRemovalPendingOnLayer(layerData);
+                SortWindowDepth(layer, 0);
+            }
 
-                _layerVisualDirty[layer] = false;
-                return true;
-            }
-            catch
-            {
-                _layerVisualDirty[layer] = true;
-                return false;
-            }
+            _layerVisualDirty[layer] = false;
+            return true;
         }
 
         private bool TryEnsureLayerNotVisuallyDirty(int layer)
@@ -445,8 +437,10 @@ namespace AlicizaX.UI.Runtime
 
             if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
+                // 已有异步 Show 进行中：Sync 不 join，避免返回半开 View
                 metaInfo.SetPendingShowUserDatas(userDatas);
-                return metaInfo.View;
+                Log.Error("[UI] ShowUISync rejected while show is in progress: {0}", metaInfo.UILogicTypeName);
+                return null;
             }
 
             if (!TryBeginLayerMutation(layerIndex))
@@ -614,14 +608,7 @@ namespace AlicizaX.UI.Runtime
 
             if (refreshVisual)
             {
-                try
-                {
-                    SortWindowDepth(layerIndex, removedIndex);
-                }
-                catch
-                {
-                    MarkLayerVisualDirty(layerIndex);
-                }
+                SortWindowDepth(layerIndex, removedIndex);
             }
 
 
@@ -657,6 +644,7 @@ namespace AlicizaX.UI.Runtime
             return meta?.State == UIState.Opened ? meta.View : null;
         }
 
+        // 仅 Opened；过渡态不算打开
         private static bool IsOpenImpl(UIMetadata meta)
         {
             return meta != null && meta.State == UIState.Opened;
@@ -699,8 +687,9 @@ namespace AlicizaX.UI.Runtime
                     {
                         matched = predicate(handle);
                     }
-                    catch (Exception)
+                    catch (Exception exception)
                     {
+                        Log.Exception(exception);
                         matched = false;
                     }
 
@@ -747,8 +736,9 @@ namespace AlicizaX.UI.Runtime
                     {
                         accepted = predicate == null || predicate(candidate);
                     }
-                    catch (Exception)
+                    catch (Exception exception)
                     {
+                        Log.Exception(exception);
                         accepted = false;
                     }
 
@@ -789,7 +779,7 @@ namespace AlicizaX.UI.Runtime
             if (meta.InCache)
             {
                 RemoveFromCache(meta.MetaInfo.RuntimeTypeHandle);
-
+                // 缓存路径关闭 Canvas；出缓存时恢复渲染
                 meta.View.SetCanvasEnabled(true);
                 Push(meta);
             }
@@ -1099,16 +1089,7 @@ namespace AlicizaX.UI.Runtime
 
             int removed = Pop(meta);
             int layerIndex = meta.MetaInfo.UILayer;
-            try
-            {
-                SortWindowDepth(layerIndex, removed >= 0 ? removed : 0);
-            }
-            catch
-            {
-                MarkLayerVisualDirty(layerIndex);
-            }
-
-
+            SortWindowDepth(layerIndex, removed >= 0 ? removed : 0);
             await meta.DisposeAsync();
         }
 
@@ -1140,14 +1121,8 @@ namespace AlicizaX.UI.Runtime
                 _layerVisualDirty[layerIndex] = false;
                 return UniTask.FromResult(true);
             }
-            catch
-            {
-                _layerVisualDirty[layerIndex] = true;
-                return UniTask.FromResult(false);
-            }
             finally
             {
-
                 _layerMutationBusy[layerIndex] = false;
                 if (_layerVisualDirty[layerIndex])
                 {

@@ -33,8 +33,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             UIRoot = root;
-            Object.DontDestroyOnLoad(root.gameObject);
-
             UIRoot.transform.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
 
             UICanvas = UIRoot.GetComponentInChildren<Canvas>();
