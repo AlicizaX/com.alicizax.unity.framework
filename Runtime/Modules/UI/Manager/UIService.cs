@@ -19,6 +19,15 @@ namespace AlicizaX.UI.Runtime
         protected override void OnDestroyService()
         {
             DestroyAllManagedUI();
+            // 服务销毁强制清 Router，忽略导航中互斥。
+            if (Router is UIRouter concreteRouter)
+            {
+                concreteRouter.ForceResetHistoryForDestroy();
+            }
+            else
+            {
+                Router?.ResetHistory();
+            }
         }
 
         void IServiceTickable.Tick(float deltaTime)
@@ -190,17 +199,10 @@ namespace AlicizaX.UI.Runtime
             }
 
 
-            if (_layerVisualDirty[layer])
+            if (_layerVisualDirty[layer] && !TryEnsureLayerNotVisuallyDirty(layer))
             {
 #if UNITY_EDITOR
-                if (UIWarningSettings.OtherWarningsEnabled)
-                {
-                    WarnUIOperation(
-                        "Close rejected because layer visual is dirty",
-                        metadata,
-                        metadata.OperationVersion,
-                        $"Layer={(UILayer)layer}. Rebuild the layer visual state before closing.");
-                }
+                WarnUIOperation("Close rejected: layer visual dirty", metadata, metadata.OperationVersion);
 #endif
                 return UniTask.FromResult(false);
             }

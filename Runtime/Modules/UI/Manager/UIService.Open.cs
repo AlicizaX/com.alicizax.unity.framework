@@ -50,6 +50,7 @@ namespace AlicizaX.UI.Runtime
         private readonly bool[] _layerVisualDirty = new bool[(int)UILayer.All];
         private readonly PendingLayerClose[][] _layerPendingCloses = CreateLayerPendingCloseBuffers();
         private readonly int[] _layerPendingCloseCounts = new int[(int)UILayer.All];
+        private readonly int[] _layerPendingCloseHeads = new int[(int)UILayer.All];
 
         private static PendingLayerClose[][] CreateLayerPendingCloseBuffers()
         {
@@ -64,9 +65,18 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsLayerBlockedForMutation(int layer)
         {
-            return (uint)layer >= (uint)_openUI.Length
-                   || _layerMutationBusy[layer]
-                   || _layerVisualDirty[layer];
+            if ((uint)layer >= (uint)_openUI.Length)
+            {
+                return true;
+            }
+
+            // dirty 时先 best-effort 恢复，避免永久拒事务。
+            if (_layerVisualDirty[layer] && !TryEnsureLayerNotVisuallyDirty(layer))
+            {
+                return true;
+            }
+
+            return _layerMutationBusy[layer] || _layerVisualDirty[layer];
         }
 
         private UICloseFailureReason GetLayerBlockedReason(int layer)
@@ -95,6 +105,13 @@ namespace AlicizaX.UI.Runtime
             }
 
             _layerMutationBusy[layer] = false;
+
+            // 事务结束后再尝试恢复 dirty，避免半截深度状态永久锁层。
+            if (_layerVisualDirty[layer])
+            {
+                TryRecoverLayerVisualState(layer);
+            }
+
             DrainLayerCloseQueue(layer);
         }
 
@@ -113,18 +130,20 @@ namespace AlicizaX.UI.Runtime
 
             int typeId = meta.MetaInfo.TypeId;
             PendingLayerClose[] buffer = _layerPendingCloses[layer];
+            int head = _layerPendingCloseHeads[layer];
             int count = _layerPendingCloseCounts[layer];
 
             for (int i = 0; i < count; i++)
             {
-                if (buffer[i].TypeId != typeId)
+                int index = head + i;
+                if (buffer[index].TypeId != typeId)
                 {
                     continue;
                 }
 
-                if (force && !buffer[i].Force)
+                if (force && !buffer[index].Force)
                 {
-                    buffer[i].Force = true;
+                    buffer[index].Force = true;
                 }
 
                 if (meta.ShowInProgress)
@@ -135,13 +154,20 @@ namespace AlicizaX.UI.Runtime
                 return true;
             }
 
-            if (count >= buffer.Length)
+            CompactLayerCloseQueueIfNeeded(layer);
+            head = _layerPendingCloseHeads[layer];
+            count = _layerPendingCloseCounts[layer];
+            buffer = _layerPendingCloses[layer];
+
+            int writeIndex = head + count;
+            if (writeIndex >= buffer.Length)
             {
-                Array.Resize(ref buffer, buffer.Length << 1);
+                int newSize = Math.Max(buffer.Length << 1, writeIndex + 1);
+                Array.Resize(ref buffer, newSize);
                 _layerPendingCloses[layer] = buffer;
             }
 
-            buffer[count] = new PendingLayerClose
+            buffer[writeIndex] = new PendingLayerClose
             {
                 Handle = meta.MetaInfo.RuntimeTypeHandle,
                 TypeId = typeId,
@@ -155,6 +181,25 @@ namespace AlicizaX.UI.Runtime
             }
 
             return true;
+        }
+
+        private void CompactLayerCloseQueueIfNeeded(int layer)
+        {
+            int head = _layerPendingCloseHeads[layer];
+            if (head == 0)
+            {
+                return;
+            }
+
+            PendingLayerClose[] buffer = _layerPendingCloses[layer];
+            int count = _layerPendingCloseCounts[layer];
+            if (count > 0)
+            {
+                Array.Copy(buffer, head, buffer, 0, count);
+            }
+
+            Array.Clear(buffer, count, head);
+            _layerPendingCloseHeads[layer] = 0;
         }
 
         private void DrainLayerCloseQueue(int layer)
@@ -174,15 +219,16 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 PendingLayerClose[] buffer = _layerPendingCloses[layer];
-                PendingLayerClose entry = buffer[0];
-                int count = _layerPendingCloseCounts[layer];
-                for (int i = 1; i < count; i++)
-                {
-                    buffer[i - 1] = buffer[i];
-                }
+                int head = _layerPendingCloseHeads[layer];
+                PendingLayerClose entry = buffer[head];
+                buffer[head] = default;
+                _layerPendingCloseHeads[layer] = head + 1;
+                _layerPendingCloseCounts[layer]--;
 
-                buffer[count - 1] = default;
-                _layerPendingCloseCounts[layer] = count - 1;
+                if (_layerPendingCloseCounts[layer] == 0)
+                {
+                    _layerPendingCloseHeads[layer] = 0;
+                }
 
                 // UniTask 会同步执行到第一个 await；成功占锁后 busy 已为 true。
                 CloseUIAsyncCore(entry.Handle, entry.Force).Forget();
@@ -194,22 +240,87 @@ namespace AlicizaX.UI.Runtime
             for (int layer = 0; layer < _layerPendingCloseCounts.Length; layer++)
             {
                 PendingLayerClose[] buffer = _layerPendingCloses[layer];
+                int head = _layerPendingCloseHeads[layer];
                 int count = _layerPendingCloseCounts[layer];
                 if (count > 0)
                 {
-                    Array.Clear(buffer, 0, count);
+                    Array.Clear(buffer, head, count);
                 }
 
                 _layerPendingCloseCounts[layer] = 0;
+                _layerPendingCloseHeads[layer] = 0;
             }
         }
 
         private void MarkLayerVisualDirty(int layer)
         {
-            if ((uint)layer < (uint)_layerVisualDirty.Length)
+            if ((uint)layer >= (uint)_layerVisualDirty.Length)
+            {
+                return;
+            }
+
+            _layerVisualDirty[layer] = true;
+
+            // 非 busy 时立刻 best-effort 恢复；busy 时留给 EndLayerMutation / 下次入口。
+            if (!_layerMutationBusy[layer])
+            {
+                TryRecoverLayerVisualState(layer);
+            }
+        }
+
+        /// <summary>
+        /// 尝试清除层 visual dirty：重算深度并清 StackRemovalPending。
+        /// 层 busy 时不抢锁，返回 false。
+        /// </summary>
+        private bool TryRecoverLayerVisualState(int layer)
+        {
+            if ((uint)layer >= (uint)_layerVisualDirty.Length)
+            {
+                return false;
+            }
+
+            if (!_layerVisualDirty[layer])
+            {
+                return true;
+            }
+
+            if (_layerMutationBusy[layer])
+            {
+                return false;
+            }
+
+            try
+            {
+                LayerData layerData = _openUI[layer];
+                if (layerData != null)
+                {
+                    ClearStackRemovalPendingOnLayer(layerData);
+                    SortWindowDepth(layer, 0);
+                }
+
+                _layerVisualDirty[layer] = false;
+                return true;
+            }
+            catch
             {
                 _layerVisualDirty[layer] = true;
+                return false;
             }
+        }
+
+        private bool TryEnsureLayerNotVisuallyDirty(int layer)
+        {
+            if ((uint)layer >= (uint)_layerVisualDirty.Length)
+            {
+                return false;
+            }
+
+            if (!_layerVisualDirty[layer])
+            {
+                return true;
+            }
+
+            return TryRecoverLayerVisualState(layer);
         }
 
         private bool IsMetaInOpenStack(UIMetadata meta)
@@ -232,18 +343,18 @@ namespace AlicizaX.UI.Runtime
                 return UIShowResult.Failed;
             }
 
-            if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource))
+            if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
                 metaInfo.SetPendingShowUserDatas(userDatas);
                 UIBase joinedView = await metaInfo.WaitForShowOperationAsync();
                 return CreateShowResultFromView(joinedView);
             }
 
-            // 鍦?Begin 涔嬪悗鍙崟鑾蜂竴娆′护鐗岋細鍚庣画鏂版搷浣滀細鏇挎崲 CTS锛屽啀璇诲睘鎬т細鎷垮埌閿欒浠ょ墝 鐗瑰埆娉ㄦ剰
+            // Begin 后只拿一次 token：后续新操作会替换 CTS，再读属性会拿到错误令牌。
             if (!TryBeginLayerMutation(layerIndex))
             {
+                metaInfo.CompleteShowOperation(null);
                 metaInfo.EndShowOperation(operationVersion, loadCts);
-                metaInfo.CompleteShowOperation(showCompletionSource, null);
                 loadCts.Dispose();
                 return UIShowResult.Failed;
             }
@@ -259,9 +370,12 @@ namespace AlicizaX.UI.Runtime
                 if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
                 {
 #if UNITY_EDITOR
-                    if (!IsStaleShowOperation(metaInfo, operationVersion) && UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show invalid after async resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
+                    if (metaInfo.IsOperationCurrent(operationVersion))
+                    {
+                        WarnUIOperation("Show invalid after resource creation", metaInfo, operationVersion);
+                    }
 #endif
-                    if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                    if (CanRollbackShow(metaInfo, operationVersion))
                     {
                         await RollbackFailedShowAsync(metaInfo, operationVersion);
                     }
@@ -275,7 +389,7 @@ namespace AlicizaX.UI.Runtime
                     if (metaInfo.State == UIState.Loaded && !await metaInfo.View.InternalInitlized(metaInfo, operationVersion))
                     {
 #if UNITY_EDITOR
-                        WarnUIOperation("Show initialization interrupted", metaInfo, operationVersion, "InternalInitlized returned false. The show operation will be treated as failed.");
+                        WarnUIOperation("Show init failed", metaInfo, operationVersion);
 #endif
                         showResult = UIShowResult.Failed;
                     }
@@ -286,11 +400,11 @@ namespace AlicizaX.UI.Runtime
                     else
                     {
                         visualStarted = true;
-                        return await RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex);
+                        return await RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts, layerIndex);
                     }
                 }
 
-                if (!showResult.IsAccepted && !IsStaleShowOperation(metaInfo, operationVersion) && ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                if (!showResult.IsAccepted && CanRollbackShow(metaInfo, operationVersion))
                 {
                     await RollbackFailedShowAsync(metaInfo, operationVersion);
                 }
@@ -298,15 +412,12 @@ namespace AlicizaX.UI.Runtime
             catch (Exception exception)
             {
                 exceptionThrown = true;
-#if UNITY_EDITOR
-                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show exception, rollback will run", metaInfo, operationVersion, $"Exception={exception.GetType().Name}: {exception.Message}");
-#endif
-                if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                if (CanRollbackShow(metaInfo, operationVersion))
                 {
                     await RollbackFailedShowAsync(metaInfo, operationVersion);
                 }
 
-                metaInfo.FailShowOperation(showCompletionSource, exception);
+                metaInfo.FailShowOperation(exception);
                 throw;
             }
             finally
@@ -314,12 +425,13 @@ namespace AlicizaX.UI.Runtime
                 if (!visualStarted)
                 {
                     UIBase result = showResult.IsAccepted ? metaInfo.View : null;
-                    metaInfo.EndShowOperation(operationVersion, loadCts);
-                    EndLayerMutation(layerIndex);
                     if (!exceptionThrown)
                     {
-                        metaInfo.CompleteShowOperation(showCompletionSource, result);
+                        metaInfo.CompleteShowOperation(result);
                     }
+
+                    metaInfo.EndShowOperation(operationVersion, loadCts);
+                    EndLayerMutation(layerIndex);
                     loadCts.Dispose();
                 }
             }
@@ -335,7 +447,7 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource))
+            if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
                 metaInfo.SetPendingShowUserDatas(userDatas);
                 return metaInfo.View;
@@ -343,8 +455,8 @@ namespace AlicizaX.UI.Runtime
 
             if (!TryBeginLayerMutation(layerIndex))
             {
+                metaInfo.CompleteShowOperation(null);
                 metaInfo.EndShowOperation(operationVersion, loadCts);
-                metaInfo.CompleteShowOperation(showCompletionSource, null);
                 loadCts.Dispose();
                 return null;
             }
@@ -355,9 +467,12 @@ namespace AlicizaX.UI.Runtime
                 if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
                 {
 #if UNITY_EDITOR
-                    if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("ShowSync invalid after resource creation", metaInfo, operationVersion, GetInvalidShowReason(metaInfo, operationVersion));
+                    if (metaInfo.IsOperationCurrent(operationVersion))
+                    {
+                        WarnUIOperation("ShowSync invalid after resource creation", metaInfo, operationVersion);
+                    }
 #endif
-                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex);
+                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts, layerIndex);
                     return null;
                 }
 
@@ -366,34 +481,31 @@ namespace AlicizaX.UI.Runtime
                 if (metaInfo.State == UIState.Loaded && !metaInfo.View.InternalInitlizedSync(metaInfo, operationVersion))
                 {
 #if UNITY_EDITOR
-                    WarnUIOperation("ShowSync initialization failed", metaInfo, operationVersion, "InternalInitlizedSync returned false. The show operation will rollback.");
+                    WarnUIOperation("ShowSync init failed", metaInfo, operationVersion);
 #endif
-                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, layerIndex).Forget();
                     return null;
                 }
 
                 if (metaInfo.OperationVersion != operationVersion)
                 {
-                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, layerIndex).Forget();
                     return null;
                 }
 
                 UIBase view = metaInfo.View;
-                RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts, layerIndex).Forget();
                 return view;
             }
-            catch (Exception exception)
+            catch
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("ShowSync exception, rollback will run", metaInfo, operationVersion, $"Exception={exception.GetType().Name}: {exception.Message}");
-#endif
-                if (ShouldRollbackInvalidShow(metaInfo, operationVersion))
+                if (CanRollbackShow(metaInfo, operationVersion))
                 {
-                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex).Forget();
+                    CompletePreparedShowFailureAsync(metaInfo, operationVersion, loadCts, layerIndex).Forget();
                 }
                 else
                 {
-                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts, showCompletionSource, layerIndex);
+                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts, layerIndex);
                 }
 
                 throw;
@@ -470,7 +582,7 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
                     else
                     {
-                        WarnUIOperation("Close interrupted", meta, operationVersion, "InternalClose returned false or the final state was not Closed. The UI was not popped or cached by this close operation.");
+                        WarnUIOperation("Close interrupted", meta, operationVersion);
                     }
 #endif
 
@@ -503,6 +615,7 @@ namespace AlicizaX.UI.Runtime
                 return UIFinalizeClosedResult.Fail(UICloseFailureReason.FinalizeFailed);
             }
 
+            // 深度刷新是 best-effort：失败只标 dirty，绝不阻止实例回收。
             if (refreshVisual)
             {
                 try
@@ -512,10 +625,10 @@ namespace AlicizaX.UI.Runtime
                 catch
                 {
                     MarkLayerVisualDirty(layerIndex);
-                    return new UIFinalizeClosedResult(false, removedIndex, UICloseFailureReason.VisibilityRefreshFailed);
                 }
             }
 
+            // Pop 成功后必须回收，避免出栈半成品悬空。
             if (mode == UIFinalizeClosedMode.Dispose)
             {
                 await meta.DisposeAsync();
@@ -714,23 +827,13 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsShowValidAfterResourceCreation(UIMetadata meta, int operationVersion)
         {
+            // 资源完成后：事务仍当前、View 已绑定资源（非 CreatedUI/空/已毁）。
             return meta != null
-                   && operationVersion == meta.OperationVersion
+                   && meta.IsOperationCurrent(operationVersion)
                    && meta.View != null
                    && meta.State != UIState.Uninitialized
                    && meta.State != UIState.CreatedUI
                    && meta.State != UIState.Destroyed;
-        }
-
-        private bool ShouldRollbackInvalidShow(UIMetadata meta, int operationVersion)
-        {
-            if (meta == null || operationVersion != meta.OperationVersion)
-            {
-                return false;
-            }
-
-            LayerData layer = _openUI[meta.MetaInfo.UILayer];
-            return GetOpenIndex(layer, meta) >= 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -829,50 +932,25 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        /// <summary>
+        /// InternalOpen 返回 false 时：stale→Cancelled；仍在栈且可显示→Accepted；否则 Failed。
+        /// 诊断日志由调用方在 Failed 时统一打一次。
+        /// </summary>
         private UIShowResult IsShowAcceptedAfterOpenInterruption(UIMetadata meta, int operationVersion)
         {
-            if (IsStaleShowOperation(meta, operationVersion))
+            if (meta == null || !meta.IsOperationCurrent(operationVersion))
             {
                 return UIShowResult.Cancelled;
             }
 
-            if (meta == null
-                || meta.View == null)
+            if (meta.View == null || !IsMetaInOpenStack(meta))
             {
-#if UNITY_EDITOR
-                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show open interruption rejected", meta, operationVersion, GetOpenInterruptionRejectReason(meta, operationVersion));
-#endif
                 return UIShowResult.Failed;
             }
 
-            LayerData layer = _openUI[meta.MetaInfo.UILayer];
-            if (GetOpenIndex(layer, meta) < 0)
-            {
-#if UNITY_EDITOR
-                WarnUIOperation("Show open interruption rejected", meta, operationVersion, "InternalOpen returned false and the UI is no longer in the open stack. Rollback will run.");
-#endif
-                return UIShowResult.Failed;
-            }
-
-            UIState state = meta.State;
-            bool accepted = UIStateMachine.IsDisplayActive(state);
-#if UNITY_EDITOR
-            WarnUIOperation(
-                accepted ? "Show open interruption accepted" : "Show open interruption rejected",
-                meta,
-                operationVersion,
-                accepted
-                    ? "InternalOpen returned false, but the UI is still in the open stack with a recoverable display state. Rollback is skipped."
-                    : "InternalOpen returned false and the final state is not recoverable. Rollback will run.");
-#endif
-            return accepted
+            return UIStateMachine.IsDisplayActive(meta.State)
                 ? new UIShowResult(meta.View, UIShowResultState.Opened)
                 : UIShowResult.Failed;
-        }
-
-        private static bool IsStaleShowOperation(UIMetadata meta, int operationVersion)
-        {
-            return meta != null && meta.OperationVersion != operationVersion;
         }
 
         private static UIShowResult CreateShowResultFromView(UIBase view)
@@ -891,7 +969,6 @@ namespace AlicizaX.UI.Runtime
             UIMetadata meta,
             int operationVersion,
             CancellationTokenSource loadCts,
-            UniTaskCompletionSource<UIBase> showCompletionSource,
             int layerIndex)
         {
             UIShowResult showResult = UIShowResult.Failed;
@@ -901,15 +978,15 @@ namespace AlicizaX.UI.Runtime
                 bool openResult = await meta.View.InternalOpen();
 
                 showResult = openResult
-                    ? IsStaleShowOperation(meta, operationVersion)
-                        ? UIShowResult.Cancelled
-                        : new UIShowResult(meta.View, UIShowResultState.Opened)
+                    ? meta.IsOperationCurrent(operationVersion)
+                        ? new UIShowResult(meta.View, UIShowResultState.Opened)
+                        : UIShowResult.Cancelled
                     : IsShowAcceptedAfterOpenInterruption(meta, operationVersion);
 
-                if (!showResult.IsAccepted && !IsStaleShowOperation(meta, operationVersion))
+                if (!showResult.IsAccepted && meta.IsOperationCurrent(operationVersion))
                 {
 #if UNITY_EDITOR
-                    WarnUIOperation("Show visual state failed, rollback will run", meta, operationVersion, "The UI did not reach a valid opened state.");
+                    WarnUIOperation("Show open rejected", meta, operationVersion);
 #endif
                     await RollbackFailedShowAsync(meta, operationVersion);
                 }
@@ -917,26 +994,24 @@ namespace AlicizaX.UI.Runtime
             catch (Exception exception)
             {
                 exceptionThrown = true;
-#if UNITY_EDITOR
-                if (UIWarningSettings.OtherWarningsEnabled) WarnUIOperation("Show visual exception, rollback will run", meta, operationVersion, $"Exception={exception.GetType().Name}: {exception.Message}");
-#endif
-                if (ShouldRollbackInvalidShow(meta, operationVersion))
+                if (CanRollbackShow(meta, operationVersion))
                 {
                     await RollbackFailedShowAsync(meta, operationVersion);
                 }
 
-                meta.FailShowOperation(showCompletionSource, exception);
+                meta.FailShowOperation(exception);
                 throw;
             }
             finally
             {
                 UIBase result = showResult.IsAccepted ? meta.View : null;
-                meta.EndShowOperation(operationVersion, loadCts);
-                EndLayerMutation(layerIndex);
                 if (!exceptionThrown)
                 {
-                    meta.CompleteShowOperation(showCompletionSource, result);
+                    meta.CompleteShowOperation(result);
                 }
+
+                meta.EndShowOperation(operationVersion, loadCts);
+                EndLayerMutation(layerIndex);
                 loadCts.Dispose();
             }
 
@@ -947,21 +1022,20 @@ namespace AlicizaX.UI.Runtime
             UIMetadata meta,
             int operationVersion,
             CancellationTokenSource loadCts,
-            UniTaskCompletionSource<UIBase> showCompletionSource,
             int layerIndex)
         {
             try
             {
-                if (ShouldRollbackInvalidShow(meta, operationVersion))
+                if (CanRollbackShow(meta, operationVersion))
                 {
                     await RollbackFailedShowAsync(meta, operationVersion);
                 }
             }
             finally
             {
+                meta?.CompleteShowOperation(null);
                 meta?.EndShowOperation(operationVersion, loadCts);
                 EndLayerMutation(layerIndex);
-                meta?.CompleteShowOperation(showCompletionSource, null);
                 loadCts?.Dispose();
             }
         }
@@ -970,37 +1044,55 @@ namespace AlicizaX.UI.Runtime
             UIMetadata meta,
             int operationVersion,
             CancellationTokenSource loadCts,
-            UniTaskCompletionSource<UIBase> showCompletionSource,
             int layerIndex)
         {
             try
             {
-                if (meta != null && meta.OperationVersion == operationVersion && !ShouldRollbackInvalidShow(meta, operationVersion))
+                if (meta != null && meta.IsOperationCurrent(operationVersion) && !CanRollbackShow(meta, operationVersion))
                 {
                     meta.DisposeImmediate();
                 }
             }
             finally
             {
+                meta?.CompleteShowOperation(null);
                 meta?.EndShowOperation(operationVersion, loadCts);
                 EndLayerMutation(layerIndex);
-                meta?.CompleteShowOperation(showCompletionSource, null);
                 loadCts?.Dispose();
             }
         }
 
         private void SortWindowDepth(int layer, int startIndex = 0)
         {
-            var layerData = _openUI[layer];
-            int baseDepth = layer * LAYER_DEEP;
+            if ((uint)layer >= (uint)_openUI.Length)
+            {
+                return;
+            }
 
+            LayerData layerData = _openUI[layer];
+            if (layerData == null)
+            {
+                return;
+            }
+
+            if (startIndex < 0)
+            {
+                startIndex = 0;
+            }
+
+            int baseDepth = layer * LAYER_DEEP;
             for (int i = startIndex; i < layerData.Count; i++)
             {
-                int newDepth = baseDepth + i * WINDOW_DEEP;
-
-                if (layerData.Items[i].View.Depth != newDepth)
+                UIBase view = layerData.Items[i]?.View;
+                if (view == null)
                 {
-                    layerData.Items[i].View.Depth = newDepth;
+                    continue;
+                }
+
+                int newDepth = baseDepth + i * WINDOW_DEEP;
+                if (view.Depth != newDepth)
+                {
+                    view.Depth = newDepth;
                 }
             }
         }
@@ -1013,19 +1105,28 @@ namespace AlicizaX.UI.Runtime
             }
 
             int removed = Pop(meta);
-            SortWindowDepth(meta.MetaInfo.UILayer, removed >= 0 ? removed : 0);
+            int layerIndex = meta.MetaInfo.UILayer;
+            try
+            {
+                SortWindowDepth(layerIndex, removed >= 0 ? removed : 0);
+            }
+            catch
+            {
+                MarkLayerVisualDirty(layerIndex);
+            }
 
+            // 与 Finalize 一致：出栈后必须回收实例。
             await meta.DisposeAsync();
         }
 
         private bool CanRollbackShow(UIMetadata meta, int operationVersion)
         {
             return meta != null
-                   && meta.OperationVersion == operationVersion
+                   && meta.IsOperationCurrent(operationVersion)
                    && IsMetaInOpenStack(meta);
         }
 
-        internal UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
+        public UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
         {
             int layerIndex = (int)layer;
             if ((uint)layerIndex >= (uint)_openUI.Length || _layerMutationBusy[layerIndex])
@@ -1037,14 +1138,12 @@ namespace AlicizaX.UI.Runtime
             try
             {
                 LayerData layerData = _openUI[layerIndex];
-                if (layerData == null)
+                if (layerData != null)
                 {
-                    _layerVisualDirty[layerIndex] = false;
-                    return UniTask.FromResult(true);
+                    ClearStackRemovalPendingOnLayer(layerData);
+                    SortWindowDepth(layerIndex, 0);
                 }
 
-                ClearStackRemovalPendingOnLayer(layerData);
-                SortWindowDepth(layerIndex, 0);
                 _layerVisualDirty[layerIndex] = false;
                 return UniTask.FromResult(true);
             }
@@ -1055,7 +1154,14 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                EndLayerMutation(layerIndex);
+                // 直接清 busy，避免 EndLayerMutation 再嵌套 recover/drain 造成重入语义复杂化。
+                _layerMutationBusy[layerIndex] = false;
+                if (_layerVisualDirty[layerIndex])
+                {
+                    TryRecoverLayerVisualState(layerIndex);
+                }
+
+                DrainLayerCloseQueue(layerIndex);
             }
         }
 
@@ -1122,64 +1228,14 @@ namespace AlicizaX.UI.Runtime
         }
 
 #if UNITY_EDITOR
-        private static void WarnUIOperation(string title, UIMetadata meta, int expectedOperationVersion, string reason)
+        private static void WarnUIOperation(string title, UIMetadata meta, int expectedOperationVersion)
         {
             if (!UIWarningSettings.OtherWarningsEnabled)
             {
                 return;
             }
 
-            Log.Warning($"[UI] {title}. Reason: {reason} ExpectedVersion={expectedOperationVersion}. {FormatMetadata(meta)}");
-        }
-
-        private static string GetInvalidShowReason(UIMetadata meta, int expectedOperationVersion)
-        {
-            if (meta == null)
-            {
-                return "Metadata is null after resource creation.";
-            }
-
-            if (meta.OperationVersion != expectedOperationVersion)
-            {
-                return $"Operation version changed while loading resources. ActualVersion={meta.OperationVersion}.";
-            }
-
-            if (meta.View == null)
-            {
-                return "View is null after resource creation.";
-            }
-
-            if (meta.State == UIState.Uninitialized || meta.State == UIState.Destroyed)
-            {
-                return $"State became {meta.State} after resource creation.";
-            }
-
-            if (meta.State == UIState.CreatedUI)
-            {
-                return "State is still CreatedUI after resource creation. The UI resource was not bound, so rollback will remove the reserved stack slot.";
-            }
-
-            return "Show operation became invalid after resource creation.";
-        }
-
-        private static string GetOpenInterruptionRejectReason(UIMetadata meta, int expectedOperationVersion)
-        {
-            if (meta == null)
-            {
-                return "InternalOpen returned false and metadata is null. Rollback will run.";
-            }
-
-            if (meta.OperationVersion != expectedOperationVersion)
-            {
-                return $"InternalOpen returned false and the operation version changed. ActualVersion={meta.OperationVersion}. Rollback will run.";
-            }
-
-            if (meta.View == null)
-            {
-                return "InternalOpen returned false and View is null. Rollback will run.";
-            }
-
-            return "InternalOpen returned false before a recoverable display state could be confirmed. Rollback will run.";
+            Log.Warning($"[UI] {title}. ExpectedVersion={expectedOperationVersion}. {FormatMetadata(meta)}");
         }
 
         private static string FormatMetadata(UIMetadata meta)
@@ -1190,7 +1246,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             string viewState = meta.View == null ? "View=null" : $"ViewState={meta.View.State}, Visible={meta.View.Visible}, Depth={meta.View.Depth}";
-            return $"UI={meta.UILogicTypeName}, State={meta.State}, {viewState}, ActualVersion={meta.OperationVersion}, CancelRequested={meta.CancelRequested}, ShowInProgress={meta.ShowInProgress}, CloseInProgress={meta.CloseInProgress}, InCache={meta.InCache}, Layer={(UILayer)meta.MetaInfo.UILayer}, TypeId={meta.MetaInfo.TypeId}.";
+            return $"UI={meta.UILogicTypeName}, State={meta.State}, {viewState}, ActualVersion={meta.OperationVersion}, ShowInProgress={meta.ShowInProgress}, CloseInProgress={meta.CloseInProgress}, InCache={meta.InCache}, Layer={(UILayer)meta.MetaInfo.UILayer}, TypeId={meta.MetaInfo.TypeId}.";
         }
 #endif
     }

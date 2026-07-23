@@ -52,12 +52,6 @@ namespace AlicizaX.UI.Runtime
         Type IUIRouterDebug.Current => Current;
         bool IUIRouterDebug.CanBack => CanBack;
         bool IUIRouterDebug.IsDirty => _dirty;
-
-        public void OnDestroyService()
-        {
-            _history.Clear();
-            _warnings.Clear();
-        }
 #endif
 
         public UniTask<bool> NavigateTo<T>() where T : UIBase
@@ -372,8 +366,27 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
+            ClearHistoryCore();
+        }
+
+        /// <summary>
+        /// 服务销毁时强制清空 history，忽略导航中互斥。
+        /// </summary>
+        internal void ForceResetHistoryForDestroy()
+        {
+            _navigating = false;
+            _navigationWaiter?.TrySetResult();
+            _navigationWaiter = null;
+            ClearHistoryCore();
+        }
+
+        private void ClearHistoryCore()
+        {
             _history.Clear();
             _dirty = false;
+#if UNITY_EDITOR
+            _warnings.Clear();
+#endif
         }
 
         public void SyncFromCurrentUI(Type currentPageType, params object[] args)

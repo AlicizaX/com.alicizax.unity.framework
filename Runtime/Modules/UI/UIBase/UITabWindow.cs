@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
-    public abstract class UITabWindow<T> : UIBase where T : UIHolderObjectBase
+    public abstract class UITabWindow<T> : UIWindowBase<T> where T : UIHolderObjectBase
     {
         // 当前激活的Tab页
         private UIWidget _activeTab;
@@ -32,26 +32,6 @@ namespace AlicizaX.UI.Runtime
         private int _currentRequestVersion;
         private RuntimeTypeHandle _currentRequestTypeHandle;
         private System.Object[] _currentRequestUserDatas;
-
-        protected T baseui => (T)Holder;
-
-        internal sealed override Type UIHolderType => typeof(T);
-
-        protected void CloseSelf(bool forceClose = false)
-        {
-            AppServices.App.Require<IUIService>().CloseUI(RuntimeTypeHandler, forceClose);
-        }
-
-        internal sealed override void BindUIHolder(UIHolderObjectBase holder, UIBase owner)
-        {
-            if (_state != UIState.CreatedUI)
-            {
-                Log.Error("Cannot bind UI holder because tab window has already been created.");
-                return;
-            }
-
-            BindHolderCommon(holder, owner == null, true);
-        }
 
         // 初始化方法（泛型版本）
         protected void InitTabVirtuallyView<TTab>(Transform parent = null) where TTab : UIWidget

@@ -393,21 +393,14 @@ namespace AlicizaX.UI.Runtime
 
         private void CleanupCloseManyPendingFlags(CloseManyTarget[] targets, int targetCount)
         {
+            // CloseMany 事务结束即清除 pending；层 dirty 由 EndLayerMutation 自动恢复。
             for (int i = 0; i < targetCount; i++)
             {
                 UIMetadata meta = targets[i].Meta;
-                if (meta == null)
+                if (meta != null)
                 {
-                    continue;
+                    meta.StackRemovalPending = false;
                 }
-
-                int layerIndex = meta.MetaInfo.UILayer;
-                if (IsMetaInOpenStack(meta) && _layerVisualDirty[layerIndex])
-                {
-                    continue;
-                }
-
-                meta.StackRemovalPending = false;
             }
         }
 

@@ -23,12 +23,10 @@ namespace AlicizaX.UI.Runtime
         private System.Object[] _pendingShowUserDatas;
         private bool _hasPendingShowUserDatas;
         private int _operationVersion;
-        private bool _cancelRequested;
         private bool _showInProgress;
         private bool _closeInProgress;
 
         public int OperationVersion => _operationVersion;
-        public bool CancelRequested => _cancelRequested;
         public bool ShowInProgress => _showInProgress;
         public bool CloseInProgress => _closeInProgress;
 
@@ -62,23 +60,33 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts, out UniTaskCompletionSource<UIBase> showCompletionSource)
+        /// <summary>Window Show：CTS + version；UTCS 由 Wait 懒创建。</summary>
+        public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts)
+        {
+            return BeginLoadOperation(out operationVersion, out loadCts);
+        }
+
+        /// <summary>Widget 创建：与 Show 同事务骨架，无 join 语义（调用方不 Wait）。</summary>
+        public bool BeginCreateOperation(out int operationVersion, out CancellationTokenSource loadCts)
+        {
+            return BeginLoadOperation(out operationVersion, out loadCts);
+        }
+
+        private bool BeginLoadOperation(out int operationVersion, out CancellationTokenSource loadCts)
         {
             if (_showInProgress)
             {
                 operationVersion = -1;
                 loadCts = null;
-                showCompletionSource = null;
                 return false;
             }
 
             _loadCancellationTokenSource?.Cancel();
             loadCts = new CancellationTokenSource();
             _loadCancellationTokenSource = loadCts;
-            showCompletionSource = new UniTaskCompletionSource<UIBase>();
-            _showCompletionSource = showCompletionSource;
+            // 释放泄漏 waiter（若有）；本轮默认无 join，Wait 时再懒创建。
+            CompleteShowOperation(null);
             operationVersion = ++_operationVersion;
-            _cancelRequested = false;
             _showInProgress = true;
             _closeInProgress = false;
             return true;
@@ -95,9 +103,10 @@ namespace AlicizaX.UI.Runtime
             _loadCancellationTokenSource?.Cancel();
             _loadCancellationTokenSource = null;
             operationVersion = ++_operationVersion;
-            _cancelRequested = false;
             _closeInProgress = true;
             _showInProgress = false;
+            // 打断进行中的 Show：必须释放 join waiter，避免永久挂起。
+            CompleteShowOperation(null);
             return true;
         }
 
@@ -126,11 +135,10 @@ namespace AlicizaX.UI.Runtime
         {
             _loadCancellationTokenSource?.Cancel();
             _loadCancellationTokenSource = null;
-            _cancelRequested = true;
             _operationVersion++;
             _showInProgress = false;
             _closeInProgress = false;
-            CompleteCurrentShowOperation(null);
+            CompleteShowOperation(null);
         }
 
         public void RequestCancelShowLoad()
@@ -141,7 +149,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             _loadCancellationTokenSource?.Cancel();
-            _cancelRequested = true;
         }
 
         public void SetPendingShowUserDatas(System.Object[] userDatas)
@@ -157,26 +164,30 @@ namespace AlicizaX.UI.Runtime
             return _hasPendingShowUserDatas ? _pendingShowUserDatas : fallback;
         }
 
+        /// <summary>
+        /// 并发 Show join：优先已有字段 UTCS；仍在 Show 时懒创建一次；否则同步返回当前结果。
+        /// 顺序必须先字段再 ShowInProgress，避免 Close 清标志后吞掉未完成 waiter。
+        /// </summary>
         public UniTask<UIBase> WaitForShowOperationAsync()
         {
-            return _showCompletionSource != null
-                ? _showCompletionSource.Task
-                : UniTask.FromResult(State == UIState.Opened ? View : null);
+            if (_showCompletionSource != null)
+            {
+                return _showCompletionSource.Task;
+            }
+
+            if (_showInProgress)
+            {
+                _showCompletionSource = new UniTaskCompletionSource<UIBase>();
+                return _showCompletionSource.Task;
+            }
+
+            return UniTask.FromResult(State == UIState.Opened ? View : null);
         }
 
-        public void CompleteShowOperation(UniTaskCompletionSource<UIBase> showCompletionSource, UIBase result)
-        {
-            showCompletionSource?.TrySetResult(result);
-            ClearShowCompletionIfCurrent(showCompletionSource);
-        }
-
-        public void FailShowOperation(UniTaskCompletionSource<UIBase> showCompletionSource, Exception exception)
-        {
-            showCompletionSource?.TrySetException(exception);
-            ClearShowCompletionIfCurrent(showCompletionSource);
-        }
-
-        private void CompleteCurrentShowOperation(UIBase result)
+        /// <summary>
+        /// 完成当前 Show 的 join waiter（幂等：无 waiter 时 no-op）。
+        /// </summary>
+        public void CompleteShowOperation(UIBase result)
         {
             UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
             _showCompletionSource = null;
@@ -184,13 +195,15 @@ namespace AlicizaX.UI.Runtime
             showCompletionSource?.TrySetResult(result);
         }
 
-        private void ClearShowCompletionIfCurrent(UniTaskCompletionSource<UIBase> showCompletionSource)
+        /// <summary>
+        /// 以异常完成 join waiter（幂等：无 waiter 时 no-op）。
+        /// </summary>
+        public void FailShowOperation(Exception exception)
         {
-            if (ReferenceEquals(_showCompletionSource, showCompletionSource))
-            {
-                _showCompletionSource = null;
-                ClearPendingShowUserDatas();
-            }
+            UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
+            _showCompletionSource = null;
+            ClearPendingShowUserDatas();
+            showCompletionSource?.TrySetException(exception);
         }
 
         private void ClearPendingShowUserDatas()
@@ -202,17 +215,11 @@ namespace AlicizaX.UI.Runtime
         internal void ResetRuntimeState()
         {
             CancelAsyncOperations();
-            _cancelRequested = false;
             _showInProgress = false;
             _closeInProgress = false;
             StackRemovalPending = false;
             View = null;
             InCache = false;
-        }
-
-        public void Dispose()
-        {
-            DisposeAsync().Forget();
         }
 
         internal async UniTask DisposeAsync()

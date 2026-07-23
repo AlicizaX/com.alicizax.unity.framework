@@ -159,5 +159,11 @@ namespace AlicizaX.UI.Runtime
         /// 获取当前已打开的指定类型 UI。
         /// </summary>
         T GetUI<T>() where T : UIBase;
+
+        /// <summary>
+        /// 尝试重建指定层的深度排序并清除 visual dirty。
+        /// 层事务进行中时返回 false。
+        /// </summary>
+        UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer);
     }
 }
