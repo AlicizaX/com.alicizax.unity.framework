@@ -14,69 +14,69 @@ namespace AlicizaX.UI.Runtime
         /// 导航到目标页面，不携带用户数据。
         /// 目标页面会加入历史记录，前一个路由页面由 Router 关闭。
         /// </summary>
-        UniTask<bool> NavigateTo<T>() where T : UIBase;
+        UniTask<UIRouteResult> NavigateTo<T>() where T : UIBase;
 
         /// <summary>
         /// 导航到目标页面，并携带用户数据。
         /// Args 会浅拷贝到历史记录中，以保持路由快照稳定。
         /// </summary>
-        UniTask<bool> NavigateTo<T>(params object[] args) where T : UIBase;
+        UniTask<UIRouteResult> NavigateTo<T>(params object[] args) where T : UIBase;
 
         /// <summary>
         /// 打开目标页面，并替换当前历史记录项。
         /// </summary>
-        UniTask<bool> Replace<T>() where T : UIBase;
+        UniTask<UIRouteResult> Replace<T>() where T : UIBase;
 
         /// <summary>
         /// 打开目标页面并携带用户数据，同时替换当前历史记录项。
         /// </summary>
-        UniTask<bool> Replace<T>(params object[] args) where T : UIBase;
+        UniTask<UIRouteResult> Replace<T>(params object[] args) where T : UIBase;
 
         /// <summary>
         /// 返回到 Router 历史记录中的上一个页面。
         /// 此处不处理弹窗优先级；弹窗关闭规则应由调用方代码处理。
         /// </summary>
-        UniTask<bool> Back();
+        UniTask<UIRouteResult> Back();
 
         /// <summary>
         /// 关闭当前 Router 页面。
         /// 如果存在上一条历史记录，则等同于 Back；否则关闭并移除根页面。
         /// </summary>
-        UniTask<bool> CloseCurrent();
+        UniTask<UIRouteResult> CloseCurrent();
 
         /// <summary>
         /// 关闭当前 Router 页面，并可选择强制关闭可缓存 UI。
         /// 如果存在上一条历史记录，则等同于 Back。
         /// </summary>
-        UniTask<bool> CloseCurrent(bool force);
+        UniTask<UIRouteResult> CloseCurrent(bool force);
 
         /// <summary>
         /// 返回到当前导航根页面。
         /// 深层页面会通过 Router 批量关闭，因此只有当前页面播放关闭过渡。
         /// </summary>
-        UniTask<bool> BackToRoot();
+        UniTask<UIRouteResult> BackToRoot();
 
         /// <summary>
         /// 返回到历史记录中最近一次匹配的页面。
         /// 如果未找到，并且 openIfMissing 为 true，则使用 ResetTo。
         /// </summary>
-        UniTask<bool> BackTo<T>() where T : UIBase;
+        UniTask<UIRouteResult> BackTo<T>() where T : UIBase;
 
         /// <summary>
         /// 返回到历史记录中最近一次匹配的页面。
         /// Args 只在目标页面缺失且需要打开时使用。
         /// </summary>
-        UniTask<bool> BackTo<T>(bool openIfMissing = true, params object[] args) where T : UIBase;
+        UniTask<UIRouteResult> BackTo<T>(bool openIfMissing = true, params object[] args) where T : UIBase;
 
         /// <summary>
         /// 重置导航历史记录，并只保留目标页面作为根页面。
         /// </summary>
-        UniTask<bool> ResetTo<T>() where T : UIBase;
+        UniTask<UIRouteResult> ResetTo<T>() where T : UIBase;
 
         /// <summary>
         /// 使用用户数据重置导航历史记录，并只保留目标页面作为根页面。
         /// </summary>
-        UniTask<bool> ResetTo<T>(params object[] args) where T : UIBase;
+        UniTask<UIRouteResult> ResetTo<T>(params object[] args) where T : UIBase;
 
         /// <summary>
         /// 清空 Router 历史记录和脏状态。
@@ -113,11 +113,41 @@ namespace AlicizaX.UI.Runtime
         UIRouteEntry CurrentEntry { get; }
     }
 
+    public enum UIRouteStatus : byte
+    {
+        Success = 0,
+        RejectedBusy,
+        RejectedDirty,
+        RejectedLimit,
+        NotFound,
+        OpenFailed,
+        CloseFailed,
+        InvalidTarget,
+    }
+
+    public readonly struct UIRouteResult
+    {
+        public readonly UIRouteStatus Status;
+
+        public UIRouteResult(UIRouteStatus status)
+        {
+            Status = status;
+        }
+
+        public bool Success => Status == UIRouteStatus.Success;
+
+        public static UIRouteResult Ok { get; } = new(UIRouteStatus.Success);
+
+        public static UIRouteResult From(UIRouteStatus status) => new(status);
+
+        public static implicit operator bool(UIRouteResult result) => result.Success;
+    }
+
     internal interface IUIRouterInternal
     {
         bool IsCurrent(RuntimeTypeHandle handle);
 
-        UniTask<bool> CloseCurrent(RuntimeTypeHandle expectedHandle, bool force);
+        UniTask<UIRouteResult> CloseCurrent(RuntimeTypeHandle expectedHandle, bool force);
     }
 
 #if UNITY_EDITOR

@@ -230,7 +230,7 @@ namespace AlicizaX.UI.Runtime
                 }
 
 
-                CloseUIAsyncCore(entry.Handle, entry.Force).Forget();
+                CloseUIAsyncCore(entry.Handle, entry.Force, allowEnqueue: true).Forget();
             }
         }
 
@@ -501,7 +501,7 @@ namespace AlicizaX.UI.Runtime
                 throw;
             }
         }
-        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
+        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force, bool allowEnqueue = true)
         {
             if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying || meta.State == UIState.Destroyed)
             {
@@ -511,8 +511,8 @@ namespace AlicizaX.UI.Runtime
             int layerIndex = meta.MetaInfo.UILayer;
             if (IsLayerBlockedForMutation(layerIndex))
             {
-
-                if ((uint)layerIndex < (uint)_layerMutationBusy.Length
+                if (allowEnqueue
+                    && (uint)layerIndex < (uint)_layerMutationBusy.Length
                     && _layerMutationBusy[layerIndex]
                     && !_layerVisualDirty[layerIndex])
                 {
@@ -524,7 +524,8 @@ namespace AlicizaX.UI.Runtime
 
             if (!TryBeginLayerMutation(layerIndex))
             {
-                if ((uint)layerIndex < (uint)_layerMutationBusy.Length
+                if (allowEnqueue
+                    && (uint)layerIndex < (uint)_layerMutationBusy.Length
                     && _layerMutationBusy[layerIndex]
                     && !_layerVisualDirty[layerIndex])
                 {

@@ -168,20 +168,33 @@ namespace AlicizaX.UI.Runtime
 
         internal UniTask<bool> CloseUIFromRouterAsync(RuntimeTypeHandle handle, bool force = false)
         {
-            return CloseUIAsyncCore(handle, force);
+            return CloseUIAsyncCore(handle, force, allowEnqueue: false);
         }
 
-        private UniTask<bool> CloseUIAsyncDirect(RuntimeTypeHandle handle, bool force)
+        internal bool IsLayerCloseBlocked(RuntimeTypeHandle handle)
+        {
+            UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
+            if (metadata == null)
+            {
+                return false;
+            }
+
+            int layer = metadata.MetaInfo.UILayer;
+            return IsLayerBlockedForMutation(layer);
+        }
+
+        private async UniTask<bool> CloseUIAsyncDirect(RuntimeTypeHandle handle, bool force)
         {
             if (_routerInternal != null && _routerInternal.IsCurrent(handle))
             {
-                return _routerInternal.CloseCurrent(handle, force);
+                UIRouteResult routeResult = await _routerInternal.CloseCurrent(handle, force);
+                return routeResult.Success;
             }
 
-            return CloseUIAsyncCore(handle, force);
+            return await CloseUIAsyncCore(handle, force, allowEnqueue: true);
         }
 
-        private UniTask<bool> CloseUIAsyncCore(RuntimeTypeHandle handle, bool force)
+        private UniTask<bool> CloseUIAsyncCore(RuntimeTypeHandle handle, bool force, bool allowEnqueue)
         {
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
             if (metadata == null
@@ -209,11 +222,16 @@ namespace AlicizaX.UI.Runtime
 
             if (_layerMutationBusy[layer])
             {
+                if (!allowEnqueue)
+                {
+                    return UniTask.FromResult(false);
+                }
+
                 bool queued = TryEnqueueLayerClose(metadata, force);
                 return UniTask.FromResult(queued);
             }
 
-            return CloseUIImplCore(metadata, force);
+            return CloseUIImplCore(metadata, force, allowEnqueue);
         }
 
         public bool IsOpen<T>() where T : UIBase

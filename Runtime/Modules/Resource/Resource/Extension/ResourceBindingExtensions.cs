@@ -4,6 +4,7 @@ using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
+using YooAsset;
 
 public static class ResourceBindingExtensions
 {
@@ -48,7 +49,7 @@ public static class ResourceBindingExtensions
 
     public static void SetSprite(this Image image, string location, ResourceBindingOptions options, CancellationToken cancellationToken = default)
     {
-        if (image == null || cancellationToken.IsCancellationRequested)
+        if (image == null || cancellationToken.IsCancellationRequested || !YooAssets.IsInitialized)
         {
             return;
         }
@@ -69,7 +70,7 @@ public static class ResourceBindingExtensions
 
     public static void SetSprite(this SpriteRenderer spriteRenderer, string location, ResourceBindingOptions options, CancellationToken cancellationToken = default)
     {
-        if (spriteRenderer == null || cancellationToken.IsCancellationRequested)
+        if (spriteRenderer == null || cancellationToken.IsCancellationRequested || !YooAssets.IsInitialized)
         {
             return;
         }
