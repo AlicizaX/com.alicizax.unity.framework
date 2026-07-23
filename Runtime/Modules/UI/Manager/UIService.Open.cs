@@ -38,29 +38,65 @@ namespace AlicizaX.UI.Runtime
 
     internal sealed partial class UIService
     {
-        private struct PendingLayerClose
+        private enum LayerCommandKind : byte
         {
+            Show = 0,
+            Close = 1,
+        }
+
+        private struct LayerCommand
+        {
+            public LayerCommandKind Kind;
             public RuntimeTypeHandle Handle;
             public int TypeId;
             public bool Force;
+            public object[] UserDatas;
+            public UniTaskCompletionSource<UIShowResult> ShowCompletion;
+            public UniTaskCompletionSource<bool> CloseCompletion;
         }
 
         private readonly LayerData[] _openUI = new LayerData[(int)UILayer.All];
         private readonly bool[] _layerMutationBusy = new bool[(int)UILayer.All];
         private readonly bool[] _layerVisualDirty = new bool[(int)UILayer.All];
-        private readonly PendingLayerClose[][] _layerPendingCloses = CreateLayerPendingCloseBuffers();
-        private readonly int[] _layerPendingCloseCounts = new int[(int)UILayer.All];
-        private readonly int[] _layerPendingCloseHeads = new int[(int)UILayer.All];
+        private readonly LayerCommand[][] _layerCommands = CreateLayerCommandBuffers();
+        private readonly int[] _layerCommandCounts = new int[(int)UILayer.All];
+        private readonly int[] _layerCommandHeads = new int[(int)UILayer.All];
+        private readonly bool[] _layerDraining = new bool[(int)UILayer.All];
 
-        private static PendingLayerClose[][] CreateLayerPendingCloseBuffers()
+        private static LayerCommand[][] CreateLayerCommandBuffers()
         {
-            var buffers = new PendingLayerClose[(int)UILayer.All][];
+            var buffers = new LayerCommand[(int)UILayer.All][];
             for (int i = 0; i < buffers.Length; i++)
             {
-                buffers[i] = new PendingLayerClose[4];
+                buffers[i] = new LayerCommand[4];
             }
 
             return buffers;
+        }
+
+        private bool HasPendingLayerCommands(int layer)
+        {
+            return (uint)layer < (uint)_layerCommandCounts.Length && _layerCommandCounts[layer] > 0;
+        }
+
+        private bool IsLayerFullyIdle(int layer)
+        {
+            if ((uint)layer >= (uint)_openUI.Length)
+            {
+                return false;
+            }
+
+            if (_layerMutationBusy[layer] || HasPendingLayerCommands(layer))
+            {
+                return false;
+            }
+
+            if (_layerVisualDirty[layer] && !TryEnsureLayerNotVisuallyDirty(layer))
+            {
+                return false;
+            }
+
+            return !_layerVisualDirty[layer];
         }
 
         private bool IsLayerBlockedForMutation(int layer)
@@ -106,148 +142,338 @@ namespace AlicizaX.UI.Runtime
 
             _layerMutationBusy[layer] = false;
 
-
             if (_layerVisualDirty[layer])
             {
                 TryRecoverLayerVisualState(layer);
             }
 
-            DrainLayerCloseQueue(layer);
+            DrainLayerCommandQueue(layer);
         }
 
-        private bool TryEnqueueLayerClose(UIMetadata meta, bool force)
+        private UniTask<UIShowResult> EnqueueShowCommandAsync(UIMetadata meta, object[] userDatas)
         {
             if (meta == null)
             {
-                return false;
+                return UniTask.FromResult(UIShowResult.Failed);
             }
 
             int layer = meta.MetaInfo.UILayer;
-            if ((uint)layer >= (uint)_layerPendingCloses.Length)
+            if ((uint)layer >= (uint)_layerCommands.Length)
             {
-                return false;
+                return UniTask.FromResult(UIShowResult.Failed);
+            }
+
+            if (meta.ShowInProgress)
+            {
+                return ShowUIImplAsync(meta, userDatas);
             }
 
             int typeId = meta.MetaInfo.TypeId;
-            PendingLayerClose[] buffer = _layerPendingCloses[layer];
-            int head = _layerPendingCloseHeads[layer];
-            int count = _layerPendingCloseCounts[layer];
-
-            for (int i = 0; i < count; i++)
+            if (TryFindPendingCommand(layer, typeId, out int pendingIndex))
             {
-                int index = head + i;
-                if (buffer[index].TypeId != typeId)
+                ref LayerCommand pending = ref _layerCommands[layer][pendingIndex];
+                if (pending.Kind == LayerCommandKind.Show)
                 {
-                    continue;
+                    pending.UserDatas = userDatas;
+                    UniTaskCompletionSource<UIShowResult> existing = pending.ShowCompletion;
+                    return existing != null ? existing.Task : UniTask.FromResult(UIShowResult.Failed);
                 }
 
-                if (force && !buffer[index].Force)
-                {
-                    buffer[index].Force = true;
-                }
-
-                if (meta.ShowInProgress)
-                {
-                    meta.RequestCancelShowLoad();
-                }
-
-                return true;
             }
 
-            CompactLayerCloseQueueIfNeeded(layer);
-            head = _layerPendingCloseHeads[layer];
-            count = _layerPendingCloseCounts[layer];
-            buffer = _layerPendingCloses[layer];
-
-            int writeIndex = head + count;
-            if (writeIndex >= buffer.Length)
+            var completion = new UniTaskCompletionSource<UIShowResult>();
+            AppendLayerCommand(layer, new LayerCommand
             {
-                int newSize = Math.Max(buffer.Length << 1, writeIndex + 1);
-                Array.Resize(ref buffer, newSize);
-                _layerPendingCloses[layer] = buffer;
-            }
-
-            buffer[writeIndex] = new PendingLayerClose
-            {
+                Kind = LayerCommandKind.Show,
                 Handle = meta.MetaInfo.RuntimeTypeHandle,
                 TypeId = typeId,
-                Force = force,
-            };
-            _layerPendingCloseCounts[layer] = count + 1;
+                UserDatas = userDatas,
+                ShowCompletion = completion,
+            });
+
+            DrainLayerCommandQueue(layer);
+            return completion.Task;
+        }
+
+        private UniTask<bool> EnqueueCloseCommandAsync(UIMetadata meta, bool force, bool allowEnqueue)
+        {
+            if (meta == null)
+            {
+                return UniTask.FromResult(false);
+            }
+
+            int layer = meta.MetaInfo.UILayer;
+            if ((uint)layer >= (uint)_layerCommands.Length)
+            {
+                return UniTask.FromResult(false);
+            }
+
+            int typeId = meta.MetaInfo.TypeId;
 
             if (meta.ShowInProgress)
             {
                 meta.RequestCancelShowLoad();
             }
 
-            return true;
+            if (TryFindPendingCommand(layer, typeId, out int pendingIndex))
+            {
+                ref LayerCommand pending = ref _layerCommands[layer][pendingIndex];
+                if (pending.Kind == LayerCommandKind.Show)
+                {
+                    pending.ShowCompletion?.TrySetResult(UIShowResult.Cancelled);
+                    RemoveLayerCommandAt(layer, pendingIndex);
+                    if (meta.State == UIState.Uninitialized
+                        || meta.State == UIState.Destroying
+                        || meta.State == UIState.Destroyed)
+                    {
+                        return UniTask.FromResult(true);
+                    }
+                }
+                else if (pending.Kind == LayerCommandKind.Close)
+                {
+                    if (force)
+                    {
+                        pending.Force = true;
+                    }
+
+                    UniTaskCompletionSource<bool> existing = pending.CloseCompletion;
+                    return existing != null ? existing.Task : UniTask.FromResult(true);
+                }
+            }
+
+            if (meta.State == UIState.Uninitialized
+                || meta.State == UIState.Destroying
+                || meta.State == UIState.Destroyed)
+            {
+                return UniTask.FromResult(false);
+            }
+
+            if (!allowEnqueue)
+            {
+                if (!IsLayerFullyIdle(layer))
+                {
+                    return UniTask.FromResult(false);
+                }
+
+                return CloseUIImplCore(meta, force);
+            }
+
+            var completion = new UniTaskCompletionSource<bool>();
+            AppendLayerCommand(layer, new LayerCommand
+            {
+                Kind = LayerCommandKind.Close,
+                Handle = meta.MetaInfo.RuntimeTypeHandle,
+                TypeId = typeId,
+                Force = force,
+                CloseCompletion = completion,
+            });
+
+            DrainLayerCommandQueue(layer);
+            return completion.Task;
         }
 
-        private void CompactLayerCloseQueueIfNeeded(int layer)
+        private bool TryFindPendingCommand(int layer, int typeId, out int absoluteIndex)
         {
-            int head = _layerPendingCloseHeads[layer];
+            absoluteIndex = -1;
+            int head = _layerCommandHeads[layer];
+            int count = _layerCommandCounts[layer];
+            LayerCommand[] buffer = _layerCommands[layer];
+            for (int i = 0; i < count; i++)
+            {
+                int index = head + i;
+                if (buffer[index].TypeId == typeId)
+                {
+                    absoluteIndex = index;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void AppendLayerCommand(int layer, LayerCommand command)
+        {
+            CompactLayerCommandQueueIfNeeded(layer);
+            LayerCommand[] buffer = _layerCommands[layer];
+            int head = _layerCommandHeads[layer];
+            int count = _layerCommandCounts[layer];
+            int writeIndex = head + count;
+            if (writeIndex >= buffer.Length)
+            {
+                int newSize = Math.Max(buffer.Length << 1, writeIndex + 1);
+                Array.Resize(ref buffer, newSize);
+                _layerCommands[layer] = buffer;
+            }
+
+            buffer[writeIndex] = command;
+            _layerCommandCounts[layer] = count + 1;
+        }
+
+        private void RemoveLayerCommandAt(int layer, int absoluteIndex)
+        {
+            LayerCommand[] buffer = _layerCommands[layer];
+            int head = _layerCommandHeads[layer];
+            int count = _layerCommandCounts[layer];
+            int end = head + count;
+            if (absoluteIndex < head || absoluteIndex >= end)
+            {
+                return;
+            }
+
+            for (int i = absoluteIndex; i < end - 1; i++)
+            {
+                buffer[i] = buffer[i + 1];
+            }
+
+            buffer[end - 1] = default;
+            _layerCommandCounts[layer] = count - 1;
+            if (_layerCommandCounts[layer] == 0)
+            {
+                _layerCommandHeads[layer] = 0;
+            }
+        }
+
+        private void CompactLayerCommandQueueIfNeeded(int layer)
+        {
+            int head = _layerCommandHeads[layer];
             if (head == 0)
             {
                 return;
             }
 
-            PendingLayerClose[] buffer = _layerPendingCloses[layer];
-            int count = _layerPendingCloseCounts[layer];
+            LayerCommand[] buffer = _layerCommands[layer];
+            int count = _layerCommandCounts[layer];
             if (count > 0)
             {
                 Array.Copy(buffer, head, buffer, 0, count);
             }
 
             Array.Clear(buffer, count, head);
-            _layerPendingCloseHeads[layer] = 0;
+            _layerCommandHeads[layer] = 0;
         }
 
-        private void DrainLayerCloseQueue(int layer)
+        private void DrainLayerCommandQueue(int layer)
         {
-            if ((uint)layer >= (uint)_layerPendingCloseCounts.Length)
+            DrainLayerCommandQueueAsync(layer).Forget();
+        }
+
+        private async UniTaskVoid DrainLayerCommandQueueAsync(int layer)
+        {
+            if ((uint)layer >= (uint)_layerCommandCounts.Length)
             {
                 return;
             }
 
-
-            while (_layerPendingCloseCounts[layer] > 0)
+            if (_layerDraining[layer])
             {
-                if (_layerMutationBusy[layer] || _layerVisualDirty[layer])
+                return;
+            }
+
+            _layerDraining[layer] = true;
+            try
+            {
+                while (_layerCommandCounts[layer] > 0)
                 {
-                    return;
+                    if (_layerMutationBusy[layer])
+                    {
+                        return;
+                    }
+
+                    if (_layerVisualDirty[layer] && !TryRecoverLayerVisualState(layer))
+                    {
+                        return;
+                    }
+
+                    LayerCommand[] buffer = _layerCommands[layer];
+                    int head = _layerCommandHeads[layer];
+                    LayerCommand entry = buffer[head];
+                    buffer[head] = default;
+                    _layerCommandHeads[layer] = head + 1;
+                    _layerCommandCounts[layer]--;
+
+                    if (_layerCommandCounts[layer] == 0)
+                    {
+                        _layerCommandHeads[layer] = 0;
+                    }
+
+                    await ExecuteLayerCommandAsync(entry);
                 }
-
-                PendingLayerClose[] buffer = _layerPendingCloses[layer];
-                int head = _layerPendingCloseHeads[layer];
-                PendingLayerClose entry = buffer[head];
-                buffer[head] = default;
-                _layerPendingCloseHeads[layer] = head + 1;
-                _layerPendingCloseCounts[layer]--;
-
-                if (_layerPendingCloseCounts[layer] == 0)
+            }
+            finally
+            {
+                _layerDraining[layer] = false;
+                if (_layerCommandCounts[layer] > 0 && !_layerMutationBusy[layer] && !_layerVisualDirty[layer])
                 {
-                    _layerPendingCloseHeads[layer] = 0;
+                    DrainLayerCommandQueue(layer);
                 }
-
-
-                CloseUIAsyncCore(entry.Handle, entry.Force, allowEnqueue: true).Forget();
             }
         }
 
-        private void ClearAllLayerCloseQueues()
+        private async UniTask ExecuteLayerCommandAsync(LayerCommand command)
         {
-            for (int layer = 0; layer < _layerPendingCloseCounts.Length; layer++)
+            UIMetadata meta = UIMetadataFactory.GetWindowMetadata(command.Handle);
+            try
             {
-                PendingLayerClose[] buffer = _layerPendingCloses[layer];
-                int head = _layerPendingCloseHeads[layer];
-                int count = _layerPendingCloseCounts[layer];
+                if (command.Kind == LayerCommandKind.Show)
+                {
+                    if (meta == null)
+                    {
+                        command.ShowCompletion?.TrySetResult(UIShowResult.Failed);
+                        return;
+                    }
+
+                    UIShowResult result = await ShowUIImplAsync(meta, command.UserDatas);
+                    command.ShowCompletion?.TrySetResult(result);
+                    return;
+                }
+
+                if (meta == null)
+                {
+                    command.CloseCompletion?.TrySetResult(false);
+                    return;
+                }
+
+                bool closed = await CloseUIImplCore(meta, command.Force);
+                command.CloseCompletion?.TrySetResult(closed);
+            }
+            catch (Exception exception)
+            {
+                if (command.Kind == LayerCommandKind.Show)
+                {
+                    if (command.ShowCompletion == null || !command.ShowCompletion.TrySetException(exception))
+                    {
+                        Log.Exception(exception);
+                    }
+                }
+                else if (command.CloseCompletion == null || !command.CloseCompletion.TrySetException(exception))
+                {
+                    Log.Exception(exception);
+                }
+            }
+        }
+
+        private void ClearAllLayerCommandQueues()
+        {
+            for (int layer = 0; layer < _layerCommandCounts.Length; layer++)
+            {
+                LayerCommand[] buffer = _layerCommands[layer];
+                int head = _layerCommandHeads[layer];
+                int count = _layerCommandCounts[layer];
                 if (count > 0)
                 {
+                    for (int i = 0; i < count; i++)
+                    {
+                        LayerCommand cmd = buffer[head + i];
+                        cmd.ShowCompletion?.TrySetResult(UIShowResult.Cancelled);
+                        cmd.CloseCompletion?.TrySetResult(false);
+                    }
+
                     Array.Clear(buffer, head, count);
                 }
 
-                _layerPendingCloseCounts[layer] = 0;
-                _layerPendingCloseHeads[layer] = 0;
+                _layerCommandCounts[layer] = 0;
+                _layerCommandHeads[layer] = 0;
+                _layerDraining[layer] = false;
             }
         }
 
@@ -357,18 +583,20 @@ namespace AlicizaX.UI.Runtime
                 await UIHolderFactory.CreateUIResourceAsync(metaInfo, UICacheLayer, cancellationToken);
                 if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
                 {
-#if UNITY_EDITOR
-                    if (metaInfo.IsOperationCurrent(operationVersion))
+                    bool cancelled = IsShowCancelled(metaInfo, operationVersion, cancellationToken);
+                    if (!cancelled)
                     {
+#if UNITY_EDITOR
                         WarnUIOperation("Show invalid after resource creation", metaInfo, operationVersion);
-                    }
 #endif
+                    }
+
                     if (CanRollbackShow(metaInfo, operationVersion))
                     {
                         await RollbackFailedShowAsync(metaInfo, operationVersion);
                     }
 
-                    showResult = UIShowResult.Failed;
+                    showResult = cancelled ? UIShowResult.Cancelled : UIShowResult.Failed;
                 }
                 else
                 {
@@ -376,12 +604,17 @@ namespace AlicizaX.UI.Runtime
                     SortWindowDepth(metaInfo.MetaInfo.UILayer);
                     if (metaInfo.State == UIState.Loaded && !await metaInfo.View.InternalInitlized(metaInfo, operationVersion))
                     {
+                        bool cancelled = IsShowCancelled(metaInfo, operationVersion, cancellationToken);
+                        if (!cancelled)
+                        {
 #if UNITY_EDITOR
-                        WarnUIOperation("Show init failed", metaInfo, operationVersion);
+                            WarnUIOperation("Show init failed", metaInfo, operationVersion);
 #endif
-                        showResult = UIShowResult.Failed;
+                        }
+
+                        showResult = cancelled ? UIShowResult.Cancelled : UIShowResult.Failed;
                     }
-                    else if (metaInfo.OperationVersion != operationVersion)
+                    else if (metaInfo.OperationVersion != operationVersion || cancellationToken.IsCancellationRequested)
                     {
                         showResult = UIShowResult.Cancelled;
                     }
@@ -396,6 +629,15 @@ namespace AlicizaX.UI.Runtime
                 {
                     await RollbackFailedShowAsync(metaInfo, operationVersion);
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                if (CanRollbackShow(metaInfo, operationVersion))
+                {
+                    await RollbackFailedShowAsync(metaInfo, operationVersion);
+                }
+
+                showResult = UIShowResult.Cancelled;
             }
             catch (Exception exception)
             {
@@ -501,7 +743,7 @@ namespace AlicizaX.UI.Runtime
                 throw;
             }
         }
-        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force, bool allowEnqueue = true)
+        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
         {
             if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying || meta.State == UIState.Destroyed)
             {
@@ -509,29 +751,8 @@ namespace AlicizaX.UI.Runtime
             }
 
             int layerIndex = meta.MetaInfo.UILayer;
-            if (IsLayerBlockedForMutation(layerIndex))
-            {
-                if (allowEnqueue
-                    && (uint)layerIndex < (uint)_layerMutationBusy.Length
-                    && _layerMutationBusy[layerIndex]
-                    && !_layerVisualDirty[layerIndex])
-                {
-                    return TryEnqueueLayerClose(meta, force);
-                }
-
-                return false;
-            }
-
             if (!TryBeginLayerMutation(layerIndex))
             {
-                if (allowEnqueue
-                    && (uint)layerIndex < (uint)_layerMutationBusy.Length
-                    && _layerMutationBusy[layerIndex]
-                    && !_layerVisualDirty[layerIndex])
-                {
-                    return TryEnqueueLayerClose(meta, force);
-                }
-
                 return false;
             }
 
@@ -571,7 +792,7 @@ namespace AlicizaX.UI.Runtime
                         closeCompleted = finalizeResult.Success;
                     }
 #if UNITY_EDITOR
-                    else
+                    else if (meta.OperationVersion == operationVersion)
                     {
                         WarnUIOperation("Close interrupted", meta, operationVersion);
                     }
@@ -824,6 +1045,14 @@ namespace AlicizaX.UI.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsShowCancelled(UIMetadata meta, int operationVersion, CancellationToken cancellationToken)
+        {
+            return meta == null
+                   || !meta.IsOperationCurrent(operationVersion)
+                   || cancellationToken.IsCancellationRequested;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void Push(UIMetadata meta)
         {
             var layer = _openUI[meta.MetaInfo.UILayer];
@@ -969,9 +1198,13 @@ namespace AlicizaX.UI.Runtime
 
                 if (!showResult.IsAccepted && meta.IsOperationCurrent(operationVersion))
                 {
+                    if (showResult.State == UIShowResultState.Failed)
+                    {
 #if UNITY_EDITOR
-                    WarnUIOperation("Show open rejected", meta, operationVersion);
+                        WarnUIOperation("Show open rejected", meta, operationVersion);
 #endif
+                    }
+
                     await RollbackFailedShowAsync(meta, operationVersion);
                 }
             }
@@ -1104,7 +1337,7 @@ namespace AlicizaX.UI.Runtime
         public UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
         {
             int layerIndex = (int)layer;
-            if ((uint)layerIndex >= (uint)_openUI.Length || _layerMutationBusy[layerIndex])
+            if ((uint)layerIndex >= (uint)_openUI.Length || _layerMutationBusy[layerIndex] || HasPendingLayerCommands(layerIndex))
             {
                 return UniTask.FromResult(false);
             }
@@ -1130,7 +1363,7 @@ namespace AlicizaX.UI.Runtime
                     TryRecoverLayerVisualState(layerIndex);
                 }
 
-                DrainLayerCloseQueue(layerIndex);
+                DrainLayerCommandQueue(layerIndex);
             }
         }
 

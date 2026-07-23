@@ -51,12 +51,12 @@ namespace AlicizaX.UI.Runtime
             if (UIMetaRegistry.TryGet(type, out var metaRegistry))
             {
                 UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(metaRegistry.RuntimeTypeHandle);
-                if (metadata == null || (IsLayerBlockedForMutation(metadata.MetaInfo.UILayer) && !metadata.ShowInProgress))
+                if (metadata == null)
                 {
                     return UniTask.FromResult(UIShowResult.Failed);
                 }
 
-                return ShowUIImplAsync(metadata, userDatas);
+                return EnqueueShowCommandAsync(metadata, userDatas);
             }
 
             return UniTask.FromResult(UIShowResult.Failed);
@@ -82,24 +82,34 @@ namespace AlicizaX.UI.Runtime
             }
 
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(handle);
-            if (metadata == null || (IsLayerBlockedForMutation(metadata.MetaInfo.UILayer) && !metadata.ShowInProgress))
+            if (metadata == null)
             {
                 return UniTask.FromResult(UIShowResult.Failed);
             }
 
-            return ShowUIImplAsync(metadata, userDatas);
+            return EnqueueShowCommandAsync(metadata, userDatas);
         }
 
         public T ShowUISync<T>() where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            return metadata == null || (IsLayerBlockedForMutation(metadata.MetaInfo.UILayer) && !metadata.ShowInProgress) ? null : (T)ShowUIImplSync(metadata, null);
+            if (metadata == null || !IsLayerFullyIdle(metadata.MetaInfo.UILayer))
+            {
+                return null;
+            }
+
+            return (T)ShowUIImplSync(metadata, null);
         }
 
         public T ShowUISync<T>(params object[] userDatas) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            return metadata == null || (IsLayerBlockedForMutation(metadata.MetaInfo.UILayer) && !metadata.ShowInProgress) ? null : (T)ShowUIImplSync(metadata, userDatas);
+            if (metadata == null || !IsLayerFullyIdle(metadata.MetaInfo.UILayer))
+            {
+                return null;
+            }
+
+            return (T)ShowUIImplSync(metadata, userDatas);
         }
 
         public async UniTask<T> ShowUI<T>() where T : UIBase
@@ -111,12 +121,12 @@ namespace AlicizaX.UI.Runtime
         public async UniTask<UIShowResult<T>> ShowUIResult<T>() where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null || (IsLayerBlockedForMutation(metadata.MetaInfo.UILayer) && !metadata.ShowInProgress))
+            if (metadata == null)
             {
                 return new UIShowResult<T>(null, UIShowResultState.Failed);
             }
 
-            UIShowResult result = await ShowUIImplAsync(metadata, null);
+            UIShowResult result = await EnqueueShowCommandAsync(metadata, null);
             return new UIShowResult<T>((T)result.View, result.State);
         }
 
@@ -129,12 +139,12 @@ namespace AlicizaX.UI.Runtime
         public async UniTask<UIShowResult<T>> ShowUIResult<T>(params System.Object[] userDatas) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null || (IsLayerBlockedForMutation(metadata.MetaInfo.UILayer) && !metadata.ShowInProgress))
+            if (metadata == null)
             {
                 return new UIShowResult<T>(null, UIShowResultState.Failed);
             }
 
-            UIShowResult result = await ShowUIImplAsync(metadata, userDatas);
+            UIShowResult result = await EnqueueShowCommandAsync(metadata, userDatas);
             return new UIShowResult<T>((T)result.View, result.State);
         }
 
@@ -180,7 +190,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             int layer = metadata.MetaInfo.UILayer;
-            return IsLayerBlockedForMutation(layer);
+            return IsLayerBlockedForMutation(layer) || HasPendingLayerCommands(layer);
         }
 
         private async UniTask<bool> CloseUIAsyncDirect(RuntimeTypeHandle handle, bool force)
@@ -197,10 +207,7 @@ namespace AlicizaX.UI.Runtime
         private UniTask<bool> CloseUIAsyncCore(RuntimeTypeHandle handle, bool force, bool allowEnqueue)
         {
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
-            if (metadata == null
-                || metadata.State == UIState.Uninitialized
-                || metadata.State == UIState.Destroying
-                || metadata.State == UIState.Destroyed)
+            if (metadata == null)
             {
                 return UniTask.FromResult(false);
             }
@@ -211,27 +218,7 @@ namespace AlicizaX.UI.Runtime
                 return UniTask.FromResult(false);
             }
 
-
-            if (_layerVisualDirty[layer] && !TryEnsureLayerNotVisuallyDirty(layer))
-            {
-#if UNITY_EDITOR
-                WarnUIOperation("Close rejected: layer visual dirty", metadata, metadata.OperationVersion);
-#endif
-                return UniTask.FromResult(false);
-            }
-
-            if (_layerMutationBusy[layer])
-            {
-                if (!allowEnqueue)
-                {
-                    return UniTask.FromResult(false);
-                }
-
-                bool queued = TryEnqueueLayerClose(metadata, force);
-                return UniTask.FromResult(queued);
-            }
-
-            return CloseUIImplCore(metadata, force, allowEnqueue);
+            return EnqueueCloseCommandAsync(metadata, force, allowEnqueue);
         }
 
         public bool IsOpen<T>() where T : UIBase
@@ -247,7 +234,7 @@ namespace AlicizaX.UI.Runtime
 
         private void DestroyAllManagedUI()
         {
-            ClearAllLayerCloseQueues();
+            ClearAllLayerCommandQueues();
 
             for (int layerIndex = 0; layerIndex < _openUI.Length; layerIndex++)
             {

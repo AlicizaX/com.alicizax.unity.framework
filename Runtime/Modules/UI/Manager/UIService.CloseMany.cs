@@ -229,7 +229,7 @@ namespace AlicizaX.UI.Runtime
                     return FailPreflight(skippedCount, callerIndex, handle, UICloseFailureReason.AlreadyClosing);
                 }
 
-                if (IsLayerBlockedForMutation(layerIndex))
+                if (IsLayerBlockedForMutation(layerIndex) || HasPendingLayerCommands(layerIndex))
                 {
                     return FailPreflight(skippedCount, callerIndex, handle, GetLayerBlockedReason(layerIndex));
                 }
