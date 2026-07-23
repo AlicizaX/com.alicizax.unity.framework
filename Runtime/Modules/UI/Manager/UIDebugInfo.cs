@@ -17,21 +17,9 @@ namespace AlicizaX.UI.Runtime
 
     internal static class UIWarningSettings
     {
-        private const string OcclusionWarningsKey = "AlicizaX.UI.Warning.Occlusion";
         private const string OtherWarningsKey = "AlicizaX.UI.Warning.Other";
 
-        private static bool? _occlusionWarningsEnabled;
         private static bool? _otherWarningsEnabled;
-
-        public static bool OcclusionWarningsEnabled
-        {
-            get => _occlusionWarningsEnabled ??= EditorPrefs.GetBool(OcclusionWarningsKey, false);
-            set
-            {
-                _occlusionWarningsEnabled = value;
-                EditorPrefs.SetBool(OcclusionWarningsKey, value);
-            }
-        }
 
         public static bool OtherWarningsEnabled
         {
@@ -43,7 +31,7 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        public static bool AnyWarningsEnabled => OcclusionWarningsEnabled || OtherWarningsEnabled;
+        public static bool AnyWarningsEnabled => OtherWarningsEnabled;
     }
 
     internal sealed class UIServiceDebugInfo
@@ -83,7 +71,6 @@ namespace AlicizaX.UI.Runtime
         public int LayerIndex;
         public UILayer Layer;
         public int WindowCount;
-        public int LastFullscreenIndex;
         public RectTransform RectTransform;
 
         public void Clear()
@@ -91,7 +78,6 @@ namespace AlicizaX.UI.Runtime
             LayerIndex = 0;
             Layer = UILayer.Background;
             WindowCount = 0;
-            LastFullscreenIndex = -1;
             RectTransform = null;
         }
     }
@@ -105,7 +91,6 @@ namespace AlicizaX.UI.Runtime
         public string HolderTypeName;
         public UIState State;
         public bool Visible;
-        public UIOcclusionMode OcclusionMode;
         public bool InCache;
         public bool NeedUpdate;
         public bool ShowInProgress;
@@ -125,7 +110,6 @@ namespace AlicizaX.UI.Runtime
             HolderTypeName = null;
             State = UIState.Uninitialized;
             Visible = false;
-            OcclusionMode = UIOcclusionMode.None;
             InCache = false;
             NeedUpdate = false;
             ShowInProgress = false;

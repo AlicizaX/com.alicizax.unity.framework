@@ -2,7 +2,6 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using AlicizaX;
-using AlicizaX.ObjectPool;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
@@ -12,8 +11,6 @@ namespace AlicizaX.UI.Runtime
         public UIMetadata[] Items;
         public int[] TypeIdToIndex;
         public int Count;
-        public int LastFullscreenIndex;
-        public int VisibilityVersion;
 
         public LayerData(int initialCapacity)
         {
@@ -21,8 +18,6 @@ namespace AlicizaX.UI.Runtime
             TypeIdToIndex = UITypeIndexArray.Create(initialCapacity);
 
             Count = 0;
-            LastFullscreenIndex = -1;
-            VisibilityVersion = 0;
         }
 
         public void EnsureTypeCapacity(int typeId)
@@ -498,27 +493,26 @@ namespace AlicizaX.UI.Runtime
         {
             if (meta == null)
             {
-                return UIFinalizeClosedResult.Fail(int.MinValue, UICloseFailureReason.FinalizeFailed);
+                return UIFinalizeClosedResult.Fail(UICloseFailureReason.FinalizeFailed);
             }
 
             int layerIndex = meta.MetaInfo.UILayer;
-            var popResult = Pop(meta);
-            if (popResult.removedIndex < 0)
+            int removedIndex = Pop(meta);
+            if (removedIndex < 0)
             {
-                return UIFinalizeClosedResult.Fail(popResult.previousFullscreenIndex, UICloseFailureReason.FinalizeFailed);
+                return UIFinalizeClosedResult.Fail(UICloseFailureReason.FinalizeFailed);
             }
 
             if (refreshVisual)
             {
                 try
                 {
-                    await SortWindowVisibleAsync(layerIndex, popResult.previousFullscreenIndex);
-                    SortWindowDepth(layerIndex, popResult.removedIndex);
+                    SortWindowDepth(layerIndex, removedIndex);
                 }
                 catch
                 {
                     MarkLayerVisualDirty(layerIndex);
-                    return new UIFinalizeClosedResult(false, popResult.removedIndex, popResult.previousFullscreenIndex, UICloseFailureReason.VisibilityRefreshFailed);
+                    return new UIFinalizeClosedResult(false, removedIndex, UICloseFailureReason.VisibilityRefreshFailed);
                 }
             }
 
@@ -531,7 +525,7 @@ namespace AlicizaX.UI.Runtime
                 CacheWindow(meta, force);
             }
 
-            return new UIFinalizeClosedResult(true, popResult.removedIndex, popResult.previousFullscreenIndex, UICloseFailureReason.None);
+            return new UIFinalizeClosedResult(true, removedIndex, UICloseFailureReason.None);
         }
 
         private static UIFinalizeClosedMode GetFinalizeModeForExplicitClose(UIMetadata meta, bool interruptedShow)
@@ -751,27 +745,22 @@ namespace AlicizaX.UI.Runtime
                 int index = layer.Count++;
                 layer.Items[index] = meta;
                 layer.TypeIdToIndex[typeId] = index;
-                if (IsOcclusionWindow(meta))
-                {
-                    layer.LastFullscreenIndex = index;
-                }
 
                 AddUpdateableWindow(meta);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private (int removedIndex, int previousFullscreenIndex) Pop(UIMetadata meta)
+        private int Pop(UIMetadata meta)
         {
             var layer = _openUI[meta.MetaInfo.UILayer];
-            int previousFullscreenIndex = layer.LastFullscreenIndex;
             int typeId = meta.MetaInfo.TypeId;
             if ((uint)typeId < (uint)layer.TypeIdToIndex.Length)
             {
                 int index = layer.TypeIdToIndex[typeId];
                 if (index < 0)
                 {
-                    return (-1, previousFullscreenIndex);
+                    return -1;
                 }
 
                 int lastIndex = layer.Count - 1;
@@ -787,11 +776,10 @@ namespace AlicizaX.UI.Runtime
                 layer.TypeIdToIndex[typeId] = -1;
                 RemoveUpdateableWindow(meta);
 
-                UpdateFullscreenIndexAfterRemove(layer, meta, index);
-                return (index, previousFullscreenIndex);
+                return index;
             }
 
-            return (-1, previousFullscreenIndex);
+            return -1;
         }
 
         private static int GetOpenIndex(LayerData layer, UIMetadata meta)
@@ -838,7 +826,6 @@ namespace AlicizaX.UI.Runtime
 
                 layer.Items[lastIdx] = meta;
                 layer.TypeIdToIndex[typeId] = lastIdx;
-                UpdateFullscreenIndexAfterMove(layer, meta, currentIdx, lastIdx);
             }
         }
 
@@ -868,31 +855,18 @@ namespace AlicizaX.UI.Runtime
             }
 
             UIState state = meta.State;
-            bool accepted = UIStateMachine.IsDisplayActive(state) || state == UIState.Closed;
+            bool accepted = UIStateMachine.IsDisplayActive(state);
 #if UNITY_EDITOR
-            if (meta.View.WasLifecycleInterruptedByOcclusion(operationVersion))
-            {
-                WarnOcclusionInterruption(
-                    accepted ? "Show open interruption accepted" : "Show open interruption rejected",
-                    meta,
-                    operationVersion,
-                    accepted
-                        ? "InternalOpen returned false, but the UI is still in the open stack with a recoverable display state. This is treated as an occlusion/lifecycle interruption and rollback is skipped."
-                        : "InternalOpen returned false and the final state is not recoverable. Rollback will run.");
-            }
-            else
-            {
-                WarnUIOperation(
-                    accepted ? "Show open interruption accepted" : "Show open interruption rejected",
-                    meta,
-                    operationVersion,
-                    accepted
-                        ? "InternalOpen returned false, but the UI is still in the open stack with a recoverable display state. Rollback is skipped."
-                        : "InternalOpen returned false and the final state is not recoverable. Rollback will run.");
-            }
+            WarnUIOperation(
+                accepted ? "Show open interruption accepted" : "Show open interruption rejected",
+                meta,
+                operationVersion,
+                accepted
+                    ? "InternalOpen returned false, but the UI is still in the open stack with a recoverable display state. Rollback is skipped."
+                    : "InternalOpen returned false and the final state is not recoverable. Rollback will run.");
 #endif
             return accepted
-                ? new UIShowResult(meta.View, state == UIState.Closed ? UIShowResultState.OcclusionAccepted : UIShowResultState.Opened)
+                ? new UIShowResult(meta.View, UIShowResultState.Opened)
                 : UIShowResult.Failed;
         }
 
@@ -908,34 +882,9 @@ namespace AlicizaX.UI.Runtime
                 return UIShowResult.Failed;
             }
 
-            return view.State == UIState.Closed
-                ? new UIShowResult(view, UIShowResultState.OcclusionAccepted)
-                : new UIShowResult(view, UIShowResultState.Opened);
-        }
-
-        private int PromoteOcclusionWindow(UIMetadata meta)
-        {
-            if (meta == null || !IsOcclusionWindow(meta))
-            {
-                return int.MinValue;
-            }
-
-            LayerData layer = _openUI[meta.MetaInfo.UILayer];
-            int typeId = meta.MetaInfo.TypeId;
-            if ((uint)typeId >= (uint)layer.TypeIdToIndex.Length)
-            {
-                return int.MinValue;
-            }
-
-            int index = layer.TypeIdToIndex[typeId];
-            if (index < 0 || index <= layer.LastFullscreenIndex)
-            {
-                return int.MinValue;
-            }
-
-            int previousFullscreenIndex = layer.LastFullscreenIndex;
-            layer.LastFullscreenIndex = index;
-            return previousFullscreenIndex;
+            return view.State == UIState.Opened
+                ? new UIShowResult(view, UIShowResultState.Opened)
+                : UIShowResult.Failed;
         }
 
         private async UniTask<UIShowResult> RunPreparedShowVisualAsync(
@@ -946,14 +895,10 @@ namespace AlicizaX.UI.Runtime
             int layerIndex)
         {
             UIShowResult showResult = UIShowResult.Failed;
-            int rollbackPreviousFullscreenIndex = int.MinValue;
             bool exceptionThrown = false;
             try
             {
-                UniTask<bool> openTask = meta.View.InternalOpen();
-                rollbackPreviousFullscreenIndex = PromoteOcclusionWindow(meta);
-                await SortWindowVisibleAsync(meta.MetaInfo.UILayer, rollbackPreviousFullscreenIndex);
-                bool openResult = await openTask;
+                bool openResult = await meta.View.InternalOpen();
 
                 showResult = openResult
                     ? IsStaleShowOperation(meta, operationVersion)
@@ -964,9 +909,9 @@ namespace AlicizaX.UI.Runtime
                 if (!showResult.IsAccepted && !IsStaleShowOperation(meta, operationVersion))
                 {
 #if UNITY_EDITOR
-                    WarnUIOperation("Show visual state failed, rollback will run", meta, operationVersion, "The UI did not reach a valid opened or occlusion-interrupted state.");
+                    WarnUIOperation("Show visual state failed, rollback will run", meta, operationVersion, "The UI did not reach a valid opened state.");
 #endif
-                    await RollbackFailedShowAsync(meta, operationVersion, rollbackPreviousFullscreenIndex);
+                    await RollbackFailedShowAsync(meta, operationVersion);
                 }
             }
             catch (Exception exception)
@@ -977,7 +922,7 @@ namespace AlicizaX.UI.Runtime
 #endif
                 if (ShouldRollbackInvalidShow(meta, operationVersion))
                 {
-                    await RollbackFailedShowAsync(meta, operationVersion, rollbackPreviousFullscreenIndex);
+                    await RollbackFailedShowAsync(meta, operationVersion);
                 }
 
                 meta.FailShowOperation(showCompletionSource, exception);
@@ -1044,42 +989,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private async UniTask SortWindowVisibleAsync(int layer, int previousFullscreenIndex = int.MinValue)
-        {
-            var layerData = _openUI[layer];
-            int visibilityVersion = ++layerData.VisibilityVersion;
-            int count = layerData.Count;
-
-            int fullscreenIdx = layerData.LastFullscreenIndex;
-            if (fullscreenIdx >= count || (fullscreenIdx >= 0 && !IsActiveOcclusionWindow(layerData.Items[fullscreenIdx])))
-            {
-                fullscreenIdx = FindLastFullscreenIndex(layerData, count - 1);
-                layerData.LastFullscreenIndex = fullscreenIdx;
-            }
-
-            int oldFullscreenIndex = previousFullscreenIndex == int.MinValue ? fullscreenIdx : previousFullscreenIndex;
-            if (oldFullscreenIndex == fullscreenIdx)
-            {
-                await ApplyVisibilityRangeAsync(layerData, 0, count, fullscreenIdx, visibilityVersion);
-                return;
-            }
-
-            if (oldFullscreenIndex == -1 && fullscreenIdx == -1)
-            {
-                await ApplyVisibilityRangeAsync(layerData, 0, count, -1, visibilityVersion);
-                return;
-            }
-
-            int start = oldFullscreenIndex < 0 || fullscreenIdx < 0
-                ? 0
-                : Math.Min(oldFullscreenIndex, fullscreenIdx);
-            int endExclusive = oldFullscreenIndex < 0 || fullscreenIdx < 0
-                ? count
-                : Math.Max(oldFullscreenIndex, fullscreenIdx) + 1;
-
-            await ApplyVisibilityRangeAsync(layerData, start, endExclusive, fullscreenIdx, visibilityVersion);
-        }
-
         private void SortWindowDepth(int layer, int startIndex = 0)
         {
             var layerData = _openUI[layer];
@@ -1096,315 +1005,15 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private static bool IsOcclusionWindow(UIMetadata meta)
-        {
-            return meta.MetaInfo.OcclusionMode != UIOcclusionMode.None;
-        }
-
-        private static bool IsActiveOcclusionWindow(UIMetadata meta)
-        {
-            return IsOcclusionWindow(meta) && (UIStateMachine.IsDisplayActive(meta.State) || meta.State == UIState.Closed);
-        }
-
-        private static int FindLastFullscreenIndex(LayerData layer, int startIndex)
-        {
-            for (int i = Math.Min(startIndex, layer.Count - 1); i >= 0; i--)
-            {
-                if (IsActiveOcclusionWindow(layer.Items[i]))
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        private struct OcclusionWorkItem
-        {
-            public UIMetadata Meta;
-            public bool Visible;
-
-            public OcclusionWorkItem(UIMetadata meta, bool visible)
-            {
-                Meta = meta;
-                Visible = visible;
-            }
-        }
-
-        private static async UniTask ApplyVisibilityRangeAsync(LayerData layer, int startInclusive, int endExclusive, int fullscreenIdx, int visibilityVersion)
-        {
-            NormalizeVisibilityRange(layer, ref startInclusive, ref endExclusive);
-            if (!IsVisibilityVersionCurrent(layer, visibilityVersion))
-            {
-                return;
-            }
-
-            bool showAll = fullscreenIdx < 0;
-            UIOcclusionMode occlusionMode = GetOcclusionMode(layer, fullscreenIdx, showAll);
-
-            int asyncCount = 0;
-            for (int i = startInclusive; i < endExclusive; i++)
-            {
-                if (!IsVisibilityVersionCurrent(layer, visibilityVersion))
-                {
-                    return;
-                }
-
-                UIMetadata meta = layer.Items[i];
-                UIBase view = meta?.View;
-                if (view == null)
-                {
-                    continue;
-                }
-
-                bool visible = showAll || i >= fullscreenIdx;
-                if (meta.StackRemovalPending)
-                {
-                    view.Visible = false;
-                    continue;
-                }
-
-                if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
-                {
-                    asyncCount++;
-                }
-                else
-                {
-                    view.Visible = visible;
-                }
-            }
-
-            if (asyncCount == 0)
-            {
-                return;
-            }
-
-            if (asyncCount == 1)
-            {
-                for (int i = startInclusive; i < endExclusive; i++)
-                {
-                    if (!IsVisibilityVersionCurrent(layer, visibilityVersion))
-                    {
-                        return;
-                    }
-
-                    UIMetadata meta = layer.Items[i];
-                    bool visible = showAll || i >= fullscreenIdx;
-                    if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
-                    {
-                        await ApplyWindowOcclusionAsync(layer, visibilityVersion, meta, visible, occlusionMode);
-                        return;
-                    }
-                }
-
-                return;
-            }
-
-            OcclusionWorkItem[] workItems = null;
-            UniTask[] tasks = null;
-            int n = 0;
-
-            try
-            {
-                workItems = SlotArrayPool<OcclusionWorkItem>.Rent(asyncCount);
-                for (int i = startInclusive; i < endExclusive && n < asyncCount; i++)
-                {
-                    if (!IsVisibilityVersionCurrent(layer, visibilityVersion))
-                    {
-                        return;
-                    }
-
-                    UIMetadata meta = layer.Items[i];
-                    bool visible = showAll || i >= fullscreenIdx;
-                    if (NeedsAsyncOcclusion(meta, visible, occlusionMode))
-                    {
-                        workItems[n++] = new OcclusionWorkItem(meta, visible);
-                    }
-                }
-
-                if (n == 0)
-                {
-                    return;
-                }
-
-                if (n == 1)
-                {
-                    OcclusionWorkItem workItem = workItems[0];
-                    await ApplyWindowOcclusionAsync(layer, visibilityVersion, workItem.Meta, workItem.Visible, occlusionMode);
-                    return;
-                }
-
-                tasks = SlotArrayPool<UniTask>.Rent(n);
-                if (tasks.Length > n)
-                {
-                    Array.Clear(tasks, n, tasks.Length - n);
-                }
-
-                for (int i = 0; i < n; i++)
-                {
-                    OcclusionWorkItem workItem = workItems[i];
-                    tasks[i] = ApplyWindowOcclusionAsync(layer, visibilityVersion, workItem.Meta, workItem.Visible, occlusionMode);
-                }
-
-                await UniTask.WhenAll(tasks);
-            }
-            finally
-            {
-                if (tasks != null)
-                {
-                    Array.Clear(tasks, 0, n);
-                    SlotArrayPool<UniTask>.Return(tasks);
-                }
-
-                SlotArrayPool<OcclusionWorkItem>.Return(workItems, true);
-            }
-        }
-
-        private static bool NeedsAsyncOcclusion(UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
-        {
-            UIBase view = meta?.View;
-            if (view == null || meta.StackRemovalPending)
-            {
-                return false;
-            }
-
-            if (visible)
-            {
-                return view.State == UIState.Closed || view.State == UIState.Closing;
-            }
-
-            return occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening);
-        }
-
-        private static UIOcclusionMode GetOcclusionMode(LayerData layer, int fullscreenIdx, bool showAll)
-        {
-            if (showAll || fullscreenIdx < 0 || fullscreenIdx >= layer.Count)
-            {
-                return UIOcclusionMode.None;
-            }
-
-            return layer.Items[fullscreenIdx]?.MetaInfo.OcclusionMode ?? UIOcclusionMode.None;
-        }
-
-        private static void NormalizeVisibilityRange(LayerData layer, ref int startInclusive, ref int endExclusive)
-        {
-            if (startInclusive < 0)
-            {
-                startInclusive = 0;
-            }
-
-            if (endExclusive > layer.Count)
-            {
-                endExclusive = layer.Count;
-            }
-        }
-
-        private static bool IsVisibilityVersionCurrent(LayerData layer, int visibilityVersion)
-        {
-            return layer != null && layer.VisibilityVersion == visibilityVersion;
-        }
-
-        private static async UniTask ApplyWindowOcclusionAsync(LayerData layer, int visibilityVersion, UIMetadata meta, bool visible, UIOcclusionMode occlusionMode)
-        {
-            if (!IsVisibilityVersionCurrent(layer, visibilityVersion) || meta == null || meta.StackRemovalPending)
-            {
-                return;
-            }
-
-            UIBase view = meta.View;
-            if (view == null)
-            {
-                return;
-            }
-
-            if (visible)
-            {
-                if (view.State == UIState.Closed || view.State == UIState.Closing)
-                {
-                    bool openResult = await view.InternalOpen(causedByOcclusion: true);
-#if UNITY_EDITOR
-                    if (!openResult)
-                    {
-                        WarnOcclusionOperation("Occlusion reveal reopen failed", view, visible, occlusionMode, "InternalOpen returned false while restoring a previously occluded window.");
-                    }
-#endif
-                    return;
-                }
-
-                view.Visible = true;
-                return;
-            }
-
-            if (occlusionMode == UIOcclusionMode.Lifecycle && (view.State == UIState.Opened || view.State == UIState.Opening))
-            {
-                // Occluded windows are already hidden, so lifecycle occlusion skips the close transition.
-                bool closeResult = await view.InternalClose(causedByOcclusion: true, skipTransition: true);
-#if UNITY_EDITOR
-                if (!closeResult)
-                {
-                    WarnOcclusionOperation("Lifecycle occlusion close failed", view, visible, occlusionMode, "InternalClose returned false while hiding an occluded window.");
-                }
-#endif
-                return;
-            }
-
-            view.Visible = false;
-        }
-
-        private static void UpdateFullscreenIndexAfterRemove(LayerData layer, UIMetadata removedMeta, int removedIndex)
-        {
-            if (layer.Count == 0)
-            {
-                layer.LastFullscreenIndex = -1;
-                return;
-            }
-
-            if (IsOcclusionWindow(removedMeta) && layer.LastFullscreenIndex == removedIndex)
-            {
-                layer.LastFullscreenIndex = FindLastFullscreenIndex(layer, removedIndex - 1);
-                return;
-            }
-
-            if (removedIndex < layer.LastFullscreenIndex)
-            {
-                layer.LastFullscreenIndex--;
-            }
-        }
-
-        private static void UpdateFullscreenIndexAfterMove(LayerData layer, UIMetadata meta, int fromIndex, int toIndex)
-        {
-            if (layer.LastFullscreenIndex == fromIndex)
-            {
-                layer.LastFullscreenIndex = toIndex;
-                return;
-            }
-
-            if (!IsOcclusionWindow(meta))
-            {
-                return;
-            }
-
-            if (fromIndex < layer.LastFullscreenIndex)
-            {
-                layer.LastFullscreenIndex--;
-            }
-
-            layer.LastFullscreenIndex = Math.Max(layer.LastFullscreenIndex, toIndex);
-        }
-
-        private async UniTask RollbackFailedShowAsync(UIMetadata meta, int operationVersion, int previousFullscreenIndex = int.MinValue)
+        private async UniTask RollbackFailedShowAsync(UIMetadata meta, int operationVersion)
         {
             if (!CanRollbackShow(meta, operationVersion))
             {
                 return;
             }
 
-            var popResult = Pop(meta);
-            int rollbackPreviousFullscreenIndex = previousFullscreenIndex == int.MinValue
-                ? popResult.previousFullscreenIndex
-                : previousFullscreenIndex;
-            await SortWindowVisibleAsync(meta.MetaInfo.UILayer, rollbackPreviousFullscreenIndex);
-            SortWindowDepth(meta.MetaInfo.UILayer, popResult.removedIndex >= 0 ? popResult.removedIndex : 0);
+            int removed = Pop(meta);
+            SortWindowDepth(meta.MetaInfo.UILayer, removed >= 0 ? removed : 0);
 
             await meta.DisposeAsync();
         }
@@ -1416,12 +1025,12 @@ namespace AlicizaX.UI.Runtime
                    && IsMetaInOpenStack(meta);
         }
 
-        internal async UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
+        internal UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
         {
             int layerIndex = (int)layer;
             if ((uint)layerIndex >= (uint)_openUI.Length || _layerMutationBusy[layerIndex])
             {
-                return false;
+                return UniTask.FromResult(false);
             }
 
             _layerMutationBusy[layerIndex] = true;
@@ -1431,20 +1040,18 @@ namespace AlicizaX.UI.Runtime
                 if (layerData == null)
                 {
                     _layerVisualDirty[layerIndex] = false;
-                    return true;
+                    return UniTask.FromResult(true);
                 }
 
-                layerData.LastFullscreenIndex = FindLastFullscreenIndex(layerData, layerData.Count - 1);
                 ClearStackRemovalPendingOnLayer(layerData);
-                await SortWindowVisibleAsync(layerIndex, int.MinValue);
                 SortWindowDepth(layerIndex, 0);
                 _layerVisualDirty[layerIndex] = false;
-                return true;
+                return UniTask.FromResult(true);
             }
             catch
             {
                 _layerVisualDirty[layerIndex] = true;
-                return false;
+                return UniTask.FromResult(false);
             }
             finally
             {
@@ -1525,26 +1132,6 @@ namespace AlicizaX.UI.Runtime
             Log.Warning($"[UI] {title}. Reason: {reason} ExpectedVersion={expectedOperationVersion}. {FormatMetadata(meta)}");
         }
 
-        private static void WarnOcclusionInterruption(string title, UIMetadata meta, int expectedOperationVersion, string reason)
-        {
-            if (!UIWarningSettings.OcclusionWarningsEnabled)
-            {
-                return;
-            }
-
-            Log.Warning($"[UI] {title}. Reason: {reason} ExpectedVersion={expectedOperationVersion}. {FormatMetadata(meta)}");
-        }
-
-        private static void WarnOcclusionOperation(string title, UIBase view, bool targetVisible, UIOcclusionMode occlusionMode, string reason)
-        {
-            if (!UIWarningSettings.OcclusionWarningsEnabled)
-            {
-                return;
-            }
-
-            Log.Warning($"[UI] {title}. Reason: {reason} TargetVisible={targetVisible}, OcclusionMode={occlusionMode}. {FormatView(view)}");
-        }
-
         private static string GetInvalidShowReason(UIMetadata meta, int expectedOperationVersion)
         {
             if (meta == null)
@@ -1592,7 +1179,7 @@ namespace AlicizaX.UI.Runtime
                 return "InternalOpen returned false and View is null. Rollback will run.";
             }
 
-            return "InternalOpen returned false before a recoverable occlusion state could be confirmed. Rollback will run.";
+            return "InternalOpen returned false before a recoverable display state could be confirmed. Rollback will run.";
         }
 
         private static string FormatMetadata(UIMetadata meta)
@@ -1603,17 +1190,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             string viewState = meta.View == null ? "View=null" : $"ViewState={meta.View.State}, Visible={meta.View.Visible}, Depth={meta.View.Depth}";
-            return $"UI={meta.UILogicTypeName}, State={meta.State}, {viewState}, ActualVersion={meta.OperationVersion}, CancelRequested={meta.CancelRequested}, ShowInProgress={meta.ShowInProgress}, CloseInProgress={meta.CloseInProgress}, InCache={meta.InCache}, Layer={(UILayer)meta.MetaInfo.UILayer}, TypeId={meta.MetaInfo.TypeId}, Occlusion={meta.MetaInfo.OcclusionMode}.";
-        }
-
-        private static string FormatView(UIBase view)
-        {
-            if (view == null)
-            {
-                return "View=null.";
-            }
-
-            return $"UI={view.GetType().Name}, State={view.State}, Visible={view.Visible}, Depth={view.Depth}.";
+            return $"UI={meta.UILogicTypeName}, State={meta.State}, {viewState}, ActualVersion={meta.OperationVersion}, CancelRequested={meta.CancelRequested}, ShowInProgress={meta.ShowInProgress}, CloseInProgress={meta.CloseInProgress}, InCache={meta.InCache}, Layer={(UILayer)meta.MetaInfo.UILayer}, TypeId={meta.MetaInfo.TypeId}.";
         }
 #endif
     }

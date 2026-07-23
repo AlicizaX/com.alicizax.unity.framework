@@ -4,7 +4,6 @@ namespace AlicizaX.UI.Runtime
     {
         Failed,
         Opened,
-        OcclusionAccepted,
         Cancelled,
     }
 
@@ -21,7 +20,7 @@ namespace AlicizaX.UI.Runtime
 
         public bool HasView => View != null;
         public bool IsOpened => State == UIShowResultState.Opened;
-        public bool IsAccepted => State == UIShowResultState.Opened || State == UIShowResultState.OcclusionAccepted;
+        public bool IsAccepted => State == UIShowResultState.Opened;
 
         public static UIShowResult Failed => new(null, UIShowResultState.Failed);
         public static UIShowResult Cancelled => new(null, UIShowResultState.Cancelled);
@@ -40,6 +39,6 @@ namespace AlicizaX.UI.Runtime
 
         public bool HasView => View != null;
         public bool IsOpened => State == UIShowResultState.Opened;
-        public bool IsAccepted => State == UIShowResultState.Opened || State == UIShowResultState.OcclusionAccepted;
+        public bool IsAccepted => State == UIShowResultState.Opened;
     }
 }

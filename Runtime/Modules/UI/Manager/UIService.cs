@@ -257,7 +257,6 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 layer.Count = 0;
-                layer.LastFullscreenIndex = -1;
                 _layerMutationBusy[layerIndex] = false;
                 _layerVisualDirty[layerIndex] = false;
             }

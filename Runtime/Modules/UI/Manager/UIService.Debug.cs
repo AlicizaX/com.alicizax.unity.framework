@@ -68,7 +68,6 @@ namespace AlicizaX.UI.Runtime
             info.LayerIndex = layerIndex;
             info.Layer = (UILayer)layerIndex;
             info.WindowCount = layer.Count;
-            info.LastFullscreenIndex = layer.LastFullscreenIndex;
             info.RectTransform = m_AllWindowLayer[layerIndex];
             return true;
         }
@@ -136,7 +135,6 @@ namespace AlicizaX.UI.Runtime
             info.HolderTypeName = metadata.UIHolderTypeName;
             info.State = metadata.State;
             info.Visible = view != null && view.Visible;
-            info.OcclusionMode = metadata.MetaInfo.OcclusionMode;
             info.InCache = metadata.InCache;
             info.NeedUpdate = metadata.MetaInfo.NeedUpdate;
             info.ShowInProgress = metadata.ShowInProgress;

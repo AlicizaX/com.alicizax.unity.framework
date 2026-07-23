@@ -58,7 +58,7 @@ namespace AlicizaX.UI.Runtime
         UniTask<T> ShowUI<T>() where T : UIBase;
 
         /// <summary>
-        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// 异步显示 UI，并返回精确状态（Opened / Failed / Cancelled）。
         /// </summary>
         UniTask<UIShowResult<T>> ShowUIResult<T>() where T : UIBase;
 
@@ -68,7 +68,7 @@ namespace AlicizaX.UI.Runtime
         UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIBase;
 
         /// <summary>
-        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// 异步显示 UI，并返回精确状态（Opened / Failed / Cancelled）。
         /// </summary>
         UniTask<UIShowResult<T>> ShowUIResult<T>(params object[] userDatas) where T : UIBase;
 
@@ -78,7 +78,7 @@ namespace AlicizaX.UI.Runtime
         UniTask<UIBase> ShowUI(string type, params object[] userDatas);
 
         /// <summary>
-        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// 异步显示 UI，并返回精确状态（Opened / Failed / Cancelled）。
         /// </summary>
         UniTask<UIShowResult> ShowUIResult(string type, params object[] userDatas);
 
@@ -88,7 +88,7 @@ namespace AlicizaX.UI.Runtime
         UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas);
 
         /// <summary>
-        /// 异步显示 UI，并返回精确状态。用于区分窗口已打开和被遮挡系统接管。
+        /// 异步显示 UI，并返回精确状态（Opened / Failed / Cancelled）。
         /// </summary>
         UniTask<UIShowResult> ShowUIResult(RuntimeTypeHandle handle, params object[] userDatas);
 

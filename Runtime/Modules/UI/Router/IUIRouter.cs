@@ -6,7 +6,7 @@ namespace AlicizaX.UI.Runtime
     /// <summary>
     /// UI 页面导航路由器。
     /// 管理页面级历史记录、导航、返回、替换和重置流程。
-    /// UI 实例生命周期、层级、遮挡和缓存仍由 UIService 负责。
+    /// UI 实例生命周期、层级和缓存仍由 UIService 负责。
     /// </summary>
     public interface IUIRouter
     {

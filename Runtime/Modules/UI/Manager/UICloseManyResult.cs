@@ -76,24 +76,21 @@ namespace AlicizaX.UI.Runtime
     {
         public readonly bool Success;
         public readonly int RemovedIndex;
-        public readonly int PreviousFullscreenIndex;
         public readonly UICloseFailureReason FailureReason;
 
         public UIFinalizeClosedResult(
             bool success,
             int removedIndex,
-            int previousFullscreenIndex,
             UICloseFailureReason failureReason)
         {
             Success = success;
             RemovedIndex = removedIndex;
-            PreviousFullscreenIndex = previousFullscreenIndex;
             FailureReason = failureReason;
         }
 
-        public static UIFinalizeClosedResult Fail(int previousFullscreenIndex, UICloseFailureReason reason)
+        public static UIFinalizeClosedResult Fail(UICloseFailureReason reason)
         {
-            return new UIFinalizeClosedResult(false, -1, previousFullscreenIndex, reason);
+            return new UIFinalizeClosedResult(false, -1, reason);
         }
     }
 }

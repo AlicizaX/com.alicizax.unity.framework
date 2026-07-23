@@ -17,7 +17,6 @@ namespace AlicizaX.UI.Runtime
 
         private struct LayerCloseWork
         {
-            public int PreviousFullscreenIndex;
             public int MinRemovedIndex;
             public bool Changed;
         }
@@ -134,7 +133,6 @@ namespace AlicizaX.UI.Runtime
                         LayerCloseWork work = layerWorks[target.Layer];
                         if (!work.Changed)
                         {
-                            work.PreviousFullscreenIndex = closeOneResult.FinalizeResult.PreviousFullscreenIndex;
                             work.MinRemovedIndex = closeOneResult.FinalizeResult.RemovedIndex;
                             work.Changed = true;
                         }
@@ -147,7 +145,7 @@ namespace AlicizaX.UI.Runtime
                         closedCount++;
                     }
 
-                    UICloseFailureReason refreshFailure = await RefreshChangedLayersAfterCloseMany(layerWorks);
+                    UICloseFailureReason refreshFailure = RefreshChangedLayersAfterCloseMany(layerWorks);
                     if (refreshFailure != UICloseFailureReason.None)
                     {
                         return UICloseManyResult.Fail(closedCount, skippedCount, -1, default, refreshFailure);
@@ -369,7 +367,7 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private async UniTask<UICloseFailureReason> RefreshChangedLayersAfterCloseMany(LayerCloseWork[] layerWorks)
+        private UICloseFailureReason RefreshChangedLayersAfterCloseMany(LayerCloseWork[] layerWorks)
         {
             for (int layerIndex = 0; layerIndex < (int)UILayer.All; layerIndex++)
             {
@@ -381,7 +379,6 @@ namespace AlicizaX.UI.Runtime
 
                 try
                 {
-                    await SortWindowVisibleAsync(layerIndex, work.PreviousFullscreenIndex);
                     SortWindowDepth(layerIndex, work.MinRemovedIndex < 0 ? 0 : work.MinRemovedIndex);
                 }
                 catch

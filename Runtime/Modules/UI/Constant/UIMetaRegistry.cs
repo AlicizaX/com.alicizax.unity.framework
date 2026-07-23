@@ -12,17 +12,15 @@ namespace AlicizaX.UI.Runtime
             public readonly RuntimeTypeHandle RuntimeTypeHandle;
             public readonly RuntimeTypeHandle HolderRuntimeTypeHandle;
             public readonly int UILayer;
-            public readonly UIOcclusionMode OcclusionMode;
             public readonly int CacheTime;
             public readonly bool NeedUpdate;
             public readonly int TypeId;
 
-            public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle, UILayer windowLayer, UIOcclusionMode occlusionMode, int cacheTime, bool needUpdate, int typeId)
+            public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle, UILayer windowLayer, int cacheTime, bool needUpdate, int typeId)
             {
                 RuntimeTypeHandle = runtimeTypeHandle;
                 HolderRuntimeTypeHandle = holderRuntimeTypeHandle;
                 UILayer = (int)windowLayer;
-                OcclusionMode = occlusionMode;
                 CacheTime = cacheTime;
                 NeedUpdate = needUpdate;
                 TypeId = typeId;
@@ -36,13 +34,13 @@ namespace AlicizaX.UI.Runtime
         public static int TypeCount => _nextTypeId;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, UIOcclusionMode occlusionMode = UIOcclusionMode.None, int cacheTime = 0, bool needUpdate = false)
+        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, int cacheTime = 0, bool needUpdate = false)
         {
             RuntimeTypeHandle holderHandle = holderType.TypeHandle;
             RuntimeTypeHandle uiHandle = uiType.TypeHandle;
             layer = SanitizeLayer(uiType, layer);
             int typeId = _typeHandleMap.TryGetValue(uiHandle, out UIMetaInfo oldInfo) ? oldInfo.TypeId : _nextTypeId++;
-            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, occlusionMode, cacheTime, needUpdate, typeId);
+            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, cacheTime, needUpdate, typeId);
             RegisterTypeName(uiType, uiHandle);
         }
 
@@ -118,7 +116,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             UILayer layer = UILayer.UI;
-            UIOcclusionMode occlusionMode = UIOcclusionMode.None;
             int cacheTime = 0;
             bool needUpdate = false;
 
@@ -137,12 +134,7 @@ namespace AlicizaX.UI.Runtime
 
                     if (args.Count > 1)
                     {
-                        occlusionMode = ReadOcclusionModeArgument(args[1].Value, UIOcclusionMode.None);
-                    }
-
-                    if (args.Count > 2)
-                    {
-                        cacheTime = ReadIntArgument(args[2].Value, 0);
+                        cacheTime = ReadIntArgument(args[1].Value, 0);
                     }
                 }
                 else if (attributeName == nameof(UIUpdateAttribute))
@@ -151,7 +143,7 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
-            Register(uiType, holderType, layer, occlusionMode, cacheTime, needUpdate);
+            Register(uiType, holderType, layer, cacheTime, needUpdate);
             info = _typeHandleMap[uiType.TypeHandle];
             return true;
         }
@@ -195,11 +187,6 @@ namespace AlicizaX.UI.Runtime
         private static UILayer ReadLayerArgument(object value, UILayer fallback)
         {
             return value == null ? fallback : (UILayer)Convert.ToInt32(value);
-        }
-
-        private static UIOcclusionMode ReadOcclusionModeArgument(object value, UIOcclusionMode fallback)
-        {
-            return value == null ? fallback : (UIOcclusionMode)Convert.ToInt32(value);
         }
 
         private static int ReadIntArgument(object value, int fallback)

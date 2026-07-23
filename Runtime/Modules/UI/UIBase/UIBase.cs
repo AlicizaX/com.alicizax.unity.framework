@@ -31,7 +31,6 @@ namespace AlicizaX.UI.Runtime
         internal UIState _state = UIState.Uninitialized;
         internal UIState State => _state;
 #if UNITY_EDITOR
-        private int _occlusionInterruptedLifecycleVersion = -1;
         private float _stateEnteredRealtime;
         internal float StateDuration => Time.realtimeSinceStartup - _stateEnteredRealtime;
 #endif
@@ -358,9 +357,9 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        internal async UniTask<bool> InternalOpen(bool causedByOcclusion = false)
+        internal async UniTask<bool> InternalOpen()
         {
-            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
+            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult))
             {
                 if (skippedResult)
                 {
@@ -379,7 +378,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after OnOpen", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -400,7 +399,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
             {
 #if UNITY_EDITOR
-                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (ShouldWarnOpenInterruption(lifecycleVersion)) WarnLifecycleOperation("Open interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
 #endif
                 RollbackOpeningState(lifecycleVersion);
                 return false;
@@ -410,7 +409,7 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
             if (!completed)
             {
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Opening));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Open completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Opening));
             }
 #endif
             return completed;
@@ -436,9 +435,9 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal async UniTask<bool> InternalClose(bool causedByOcclusion = false, bool skipTransition = false)
+        internal async UniTask<bool> InternalClose(bool skipTransition = false)
         {
-            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult, causedByOcclusion))
+            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult))
             {
                 return skippedResult;
             }
@@ -475,7 +474,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
             {
 #if UNITY_EDITOR
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close interrupted after transition", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing));
 #endif
                 RollbackClosingState(lifecycleVersion);
                 return false;
@@ -486,7 +485,7 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
             if (!completed)
             {
-                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing), IsOcclusionLifecycleInterruption(lifecycleVersion, UIState.Closing));
+                if (UIWarningSettings.AnyWarningsEnabled) WarnLifecycleOperation("Close completion interrupted", FormatLifecycleInterruption(lifecycleVersion, UIState.Closing));
             }
 #endif
             return completed;
@@ -536,9 +535,9 @@ namespace AlicizaX.UI.Runtime
             this._userDatas = userDatas;
         }
 
-        private int BeginLifecycleTransition(bool causedByOcclusion = false)
+        private int BeginLifecycleTransition()
         {
-            InterruptLifecycleTransition(causedByOcclusion);
+            InterruptLifecycleTransition();
             return _lifecycleVersion;
         }
 
@@ -564,7 +563,7 @@ namespace AlicizaX.UI.Runtime
             RegisterEventListenersIfNeeded();
         }
 
-        private bool TryBeginOpen(out int lifecycleVersion, out bool skippedResult, bool causedByOcclusion = false)
+        private bool TryBeginOpen(out int lifecycleVersion, out bool skippedResult)
         {
             lifecycleVersion = 0;
             skippedResult = false;
@@ -578,7 +577,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             _openingPreviousState = _state;
-            lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
+            lifecycleVersion = BeginLifecycleTransition();
             SetState(UIState.Opening);
             Visible = true;
             Interactable = true;
@@ -597,7 +596,7 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private bool TryBeginClose(out int lifecycleVersion, out bool skippedResult, bool causedByOcclusion = false)
+        private bool TryBeginClose(out int lifecycleVersion, out bool skippedResult)
         {
             lifecycleVersion = 0;
             skippedResult = false;
@@ -611,7 +610,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             _closingPreviousState = _state;
-            lifecycleVersion = BeginLifecycleTransition(causedByOcclusion);
+            lifecycleVersion = BeginLifecycleTransition();
             SetState(UIState.Closing);
             Interactable = false;
             Holder.OnWindowBeforeClosedEvent?.Invoke();
@@ -673,12 +672,9 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private void InterruptLifecycleTransition(bool causedByOcclusion = false)
+        private void InterruptLifecycleTransition()
         {
             _lifecycleVersion++;
-#if UNITY_EDITOR
-            _occlusionInterruptedLifecycleVersion = causedByOcclusion ? _lifecycleVersion - 1 : -1;
-#endif
             Holder?.StopTransition();
         }
 
@@ -782,16 +778,9 @@ namespace AlicizaX.UI.Runtime
         }
 
 #if UNITY_EDITOR
-        private void WarnLifecycleOperation(string title, string reason, bool occlusionWarning = false)
+        private void WarnLifecycleOperation(string title, string reason)
         {
-            if (occlusionWarning)
-            {
-                if (!UIWarningSettings.OcclusionWarningsEnabled)
-                {
-                    return;
-                }
-            }
-            else if (!UIWarningSettings.OtherWarningsEnabled)
+            if (!UIWarningSettings.OtherWarningsEnabled)
             {
                 return;
             }
@@ -802,22 +791,6 @@ namespace AlicizaX.UI.Runtime
         private string FormatLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState)
         {
             return $"ExpectedState={expectedState}, ActualState={_state}, ExpectedLifecycleVersion={expectedLifecycleVersion}, ActualLifecycleVersion={_lifecycleVersion}.";
-        }
-
-        private bool IsOcclusionLifecycleInterruption(int expectedLifecycleVersion, UIState expectedState)
-        {
-            if (_occlusionInterruptedLifecycleVersion != expectedLifecycleVersion || expectedLifecycleVersion == _lifecycleVersion)
-            {
-                return false;
-            }
-
-            return expectedState == UIState.Opening && (_state == UIState.Closing || _state == UIState.Closed)
-                   || expectedState == UIState.Closing && (_state == UIState.Opening || _state == UIState.Opened);
-        }
-
-        internal bool WasLifecycleInterruptedByOcclusion(int lifecycleVersion)
-        {
-            return _occlusionInterruptedLifecycleVersion == lifecycleVersion;
         }
 
         private bool ShouldWarnOpenInterruption(int lifecycleVersion)

@@ -33,22 +33,7 @@ namespace AlicizaX.UI.Runtime
 #endif
         private bool _navigating;
         private UniTaskCompletionSource _navigationWaiter;
-        private int _pendingRouteShowCount;
         private bool _dirty;
-
-        private readonly struct TrimmedRouteEntry
-        {
-            public readonly bool HasValue;
-            public readonly int Index;
-            public readonly UIRouteEntry Entry;
-
-            public TrimmedRouteEntry(int index, UIRouteEntry entry)
-            {
-                HasValue = true;
-                Index = index;
-                Entry = entry;
-            }
-        }
 
         public UIRouter(IUIService uiService)
         {
@@ -87,7 +72,6 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask<bool> NavigateToInternal<T>(object[] args) where T : UIBase
         {
-            bool navigationExited = false;
             await EnterNavigation();
             try
             {
@@ -117,18 +101,7 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 UIRouteEntry oldCurrent = GetCurrentInternal();
-                UniTask<UIBase> openTask = ShowByRouter(handle, entry.Args);
-                if (ShouldCompleteNavigateAfterShowStarted(oldCurrent, handle))
-                {
-                    _history.Add(entry);
-                    TrimmedRouteEntry trimmedEntry = TrimHistory();
-                    _pendingRouteShowCount++;
-                    ExitNavigation();
-                    navigationExited = true;
-                    return await CompletePendingRouteShow(entry, openTask, trimmedEntry);
-                }
-
-                UIBase opened = await openTask;
+                UIBase opened = await ShowByRouter(handle, entry.Args);
                 if (opened == null)
                 {
                     return false;
@@ -151,10 +124,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                if (!navigationExited)
-                {
-                    ExitNavigation();
-                }
+                ExitNavigation();
             }
         }
 
@@ -533,16 +503,6 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private static bool ShouldCompleteNavigateAfterShowStarted(UIRouteEntry previousRoute, RuntimeTypeHandle targetHandle)
-        {
-            return previousRoute != null
-                   && !RuntimeTypeHandleComparer.Instance.Equals(previousRoute.TypeHandle, targetHandle)
-                   && UIMetaRegistry.TryGet(previousRoute.TypeHandle, out UIMetaRegistry.UIMetaInfo previousMetaInfo)
-                   && UIMetaRegistry.TryGet(targetHandle, out UIMetaRegistry.UIMetaInfo targetMetaInfo)
-                   && previousMetaInfo.UILayer == targetMetaInfo.UILayer
-                   && targetMetaInfo.OcclusionMode == UIOcclusionMode.Lifecycle;
-        }
-
         private static bool IsSameRoute(UIRouteEntry left, UIRouteEntry right)
         {
             if (left == null || right == null)
@@ -781,9 +741,8 @@ namespace AlicizaX.UI.Runtime
                    && _uiService.IsOpen(target.TypeHandle);
         }
 
-        private TrimmedRouteEntry TrimHistory()
+        private void TrimHistory()
         {
-            TrimmedRouteEntry trimmedEntry = default;
             while (_history.Count > MaxHistoryCount)
             {
                 int removeIndex = 0;
@@ -796,15 +755,8 @@ namespace AlicizaX.UI.Runtime
                     }
                 }
 
-                UIRouteEntry removedEntry = _history[removeIndex];
                 _history.RemoveAt(removeIndex);
-                if (!trimmedEntry.HasValue)
-                {
-                    trimmedEntry = new TrimmedRouteEntry(removeIndex, removedEntry);
-                }
             }
-
-            return trimmedEntry;
         }
 
         private UniTask<UIBase> ShowByRouter(RuntimeTypeHandle handle, object[] args)
@@ -817,96 +769,6 @@ namespace AlicizaX.UI.Runtime
             return _uiService is UIService service
                 ? service.CloseUIFromRouterAsync(handle, force)
                 : _uiService.CloseUIAsync(handle, force);
-        }
-
-        private async UniTask<bool> CompletePendingRouteShow(UIRouteEntry entry, UniTask<UIBase> openTask, TrimmedRouteEntry trimmedEntry)
-        {
-            try
-            {
-                UIBase opened;
-                try
-                {
-                    opened = await openTask;
-                }
-                catch
-                {
-                    await RemovePendingRouteIfCurrent(entry, trimmedEntry);
-                    throw;
-                }
-
-                if (opened != null)
-                {
-                    return true;
-                }
-
-                await RemovePendingRouteIfCurrent(entry, trimmedEntry);
-                return false;
-            }
-            finally
-            {
-                _pendingRouteShowCount--;
-            }
-        }
-
-        private async UniTask RemovePendingRouteIfCurrent(UIRouteEntry entry, TrimmedRouteEntry trimmedEntry)
-        {
-            await EnterNavigation();
-            try
-            {
-                int index = FindHistoryEntryReferenceIndex(entry);
-                if (index < 0)
-                {
-                    return;
-                }
-
-                bool wasTop = index == _history.Count - 1;
-                _history.RemoveAt(index);
-                if (wasTop)
-                {
-                    RestoreTrimmedRoute(trimmedEntry);
-                }
-                else
-                {
-                    MarkDirty(entry.TypeHandle, "Pending lifecycle route completed after newer navigation; removed non-top pending entry and marked router history dirty.");
-                }
-            }
-            finally
-            {
-                ExitNavigation();
-            }
-        }
-
-        private void RestoreTrimmedRoute(TrimmedRouteEntry trimmedEntry)
-        {
-            if (!trimmedEntry.HasValue || trimmedEntry.Entry == null)
-            {
-                return;
-            }
-
-            int insertIndex = trimmedEntry.Index;
-            if (insertIndex < 0)
-            {
-                insertIndex = 0;
-            }
-            else if (insertIndex > _history.Count)
-            {
-                insertIndex = _history.Count;
-            }
-
-            _history.Insert(insertIndex, trimmedEntry.Entry);
-        }
-
-        private int FindHistoryEntryReferenceIndex(UIRouteEntry entry)
-        {
-            for (int i = _history.Count - 1; i >= 0; i--)
-            {
-                if (ReferenceEquals(_history[i], entry))
-                {
-                    return i;
-                }
-            }
-
-            return -1;
         }
 
         private async UniTask<bool> RollbackOpenedEntry(UIRouteEntry entry)
@@ -951,13 +813,13 @@ namespace AlicizaX.UI.Runtime
 
         private bool RejectHistoryMutationDuringNavigation(string operationName, RuntimeTypeHandle handle)
         {
-            if (!_navigating && _pendingRouteShowCount == 0)
+            if (!_navigating)
             {
                 return false;
             }
 
 #if UNITY_EDITOR
-            AddWarning(handle, operationName + " ignored while navigation is in progress or a pending route show has not completed.");
+            AddWarning(handle, operationName + " ignored while navigation is in progress.");
 #endif
             return true;
         }
