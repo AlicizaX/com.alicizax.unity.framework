@@ -35,7 +35,7 @@ namespace AlicizaX.UI.Runtime
                 UIBase view = metadata?.View;
                 if (view != null && view.Visible)
                 {
-                    // 父窗口正在销毁：取消子级未完成的异步操作，关闭时跳过过渡动画
+
                     metadata.CancelAsyncOperations();
                     await view.InternalClose(skipTransition: true);
                 }
@@ -307,7 +307,7 @@ namespace AlicizaX.UI.Runtime
                 }
                 else if (!PrepareWidgetSync(metadata, visible, operationVersion, out shouldReturnToPool))
                 {
-                    // prepare already cleaned on failure
+
                 }
                 else
                 {
@@ -431,7 +431,7 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsWidgetCreateStillValid(UIMetadata meta, int operationVersion)
         {
-            // 资源/绑定完成后：事务仍当前、父未销毁、View 已 Loaded。
+
             return meta != null
                    && meta.IsOperationCurrent(operationVersion)
                    && State != UIState.Destroying

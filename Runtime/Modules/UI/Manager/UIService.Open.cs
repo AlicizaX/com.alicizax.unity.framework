@@ -70,7 +70,7 @@ namespace AlicizaX.UI.Runtime
                 return true;
             }
 
-            // dirty 时先 best-effort 恢复，避免永久拒事务。
+
             if (_layerVisualDirty[layer] && !TryEnsureLayerNotVisuallyDirty(layer))
             {
                 return true;
@@ -106,7 +106,7 @@ namespace AlicizaX.UI.Runtime
 
             _layerMutationBusy[layer] = false;
 
-            // 事务结束后再尝试恢复 dirty，避免半截深度状态永久锁层。
+
             if (_layerVisualDirty[layer])
             {
                 TryRecoverLayerVisualState(layer);
@@ -209,8 +209,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            // 同步失败的 Close 不会重新占锁，需要继续取下一项；
-            // 一旦某项成功 BeginMutation（busy=true），交给该事务的 EndLayerMutation 再继续 drain。
+
             while (_layerPendingCloseCounts[layer] > 0)
             {
                 if (_layerMutationBusy[layer] || _layerVisualDirty[layer])
@@ -230,7 +229,7 @@ namespace AlicizaX.UI.Runtime
                     _layerPendingCloseHeads[layer] = 0;
                 }
 
-                // UniTask 会同步执行到第一个 await；成功占锁后 busy 已为 true。
+
                 CloseUIAsyncCore(entry.Handle, entry.Force).Forget();
             }
         }
@@ -261,17 +260,14 @@ namespace AlicizaX.UI.Runtime
 
             _layerVisualDirty[layer] = true;
 
-            // 非 busy 时立刻 best-effort 恢复；busy 时留给 EndLayerMutation / 下次入口。
+
             if (!_layerMutationBusy[layer])
             {
                 TryRecoverLayerVisualState(layer);
             }
         }
 
-        /// <summary>
-        /// 尝试清除层 visual dirty：重算深度并清 StackRemovalPending。
-        /// 层 busy 时不抢锁，返回 false。
-        /// </summary>
+
         private bool TryRecoverLayerVisualState(int layer)
         {
             if ((uint)layer >= (uint)_layerVisualDirty.Length)
@@ -350,7 +346,7 @@ namespace AlicizaX.UI.Runtime
                 return CreateShowResultFromView(joinedView);
             }
 
-            // Begin 后只拿一次 token：后续新操作会替换 CTS，再读属性会拿到错误令牌。
+
             if (!TryBeginLayerMutation(layerIndex))
             {
                 metaInfo.CompleteShowOperation(null);
@@ -615,7 +611,7 @@ namespace AlicizaX.UI.Runtime
                 return UIFinalizeClosedResult.Fail(UICloseFailureReason.FinalizeFailed);
             }
 
-            // 深度刷新是 best-effort：失败只标 dirty，绝不阻止实例回收。
+
             if (refreshVisual)
             {
                 try
@@ -628,7 +624,7 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
-            // Pop 成功后必须回收，避免出栈半成品悬空。
+
             if (mode == UIFinalizeClosedMode.Dispose)
             {
                 await meta.DisposeAsync();
@@ -793,7 +789,7 @@ namespace AlicizaX.UI.Runtime
             if (meta.InCache)
             {
                 RemoveFromCache(meta.MetaInfo.RuntimeTypeHandle);
-                // 缂撳瓨鏃跺叧闂簡 Canvas 娓叉煋锛岄噸鏂版樉绀哄墠鎭㈠
+
                 meta.View.SetCanvasEnabled(true);
                 Push(meta);
             }
@@ -827,7 +823,7 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsShowValidAfterResourceCreation(UIMetadata meta, int operationVersion)
         {
-            // 资源完成后：事务仍当前、View 已绑定资源（非 CreatedUI/空/已毁）。
+
             return meta != null
                    && meta.IsOperationCurrent(operationVersion)
                    && meta.View != null
@@ -932,10 +928,7 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        /// <summary>
-        /// InternalOpen 返回 false 时：stale→Cancelled；仍在栈且可显示→Accepted；否则 Failed。
-        /// 诊断日志由调用方在 Failed 时统一打一次。
-        /// </summary>
+
         private UIShowResult IsShowAcceptedAfterOpenInterruption(UIMetadata meta, int operationVersion)
         {
             if (meta == null || !meta.IsOperationCurrent(operationVersion))
@@ -1115,7 +1108,7 @@ namespace AlicizaX.UI.Runtime
                 MarkLayerVisualDirty(layerIndex);
             }
 
-            // 与 Finalize 一致：出栈后必须回收实例。
+
             await meta.DisposeAsync();
         }
 
@@ -1154,7 +1147,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                // 直接清 busy，避免 EndLayerMutation 再嵌套 recover/drain 造成重入语义复杂化。
+
                 _layerMutationBusy[layerIndex] = false;
                 if (_layerVisualDirty[layerIndex])
                 {

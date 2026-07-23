@@ -553,8 +553,8 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsInitializeStillValid(UIMetadata metadata, int operationVersion)
         {
-            // Business initialization is intentionally not cancellable. The framework
-            // validates the operation version after initialization and rolls back stale shows.
+
+
             return metadata != null && metadata.OperationVersion == operationVersion;
         }
 

@@ -19,7 +19,7 @@ namespace AlicizaX.UI.Runtime
         protected override void OnDestroyService()
         {
             DestroyAllManagedUI();
-            // 服务销毁强制清 Router，忽略导航中互斥。
+
             if (Router is UIRouter concreteRouter)
             {
                 concreteRouter.ForceResetHistoryForDestroy();
@@ -32,7 +32,7 @@ namespace AlicizaX.UI.Runtime
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            // 正向遍历 + 实时计数：窗口在 Update 中关闭自己时（交换删除），最多漏更一帧，不会重复更新
+
             for (int i = 0; i < _updateableWindowCount; i++)
             {
                 _updateableWindows[i]?.View?.InternalUpdate();

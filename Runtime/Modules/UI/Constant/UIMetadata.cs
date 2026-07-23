@@ -60,13 +60,13 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        /// <summary>Window Show：CTS + version；UTCS 由 Wait 懒创建。</summary>
+
         public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts)
         {
             return BeginLoadOperation(out operationVersion, out loadCts);
         }
 
-        /// <summary>Widget 创建：与 Show 同事务骨架，无 join 语义（调用方不 Wait）。</summary>
+
         public bool BeginCreateOperation(out int operationVersion, out CancellationTokenSource loadCts)
         {
             return BeginLoadOperation(out operationVersion, out loadCts);
@@ -84,7 +84,7 @@ namespace AlicizaX.UI.Runtime
             _loadCancellationTokenSource?.Cancel();
             loadCts = new CancellationTokenSource();
             _loadCancellationTokenSource = loadCts;
-            // 释放泄漏 waiter（若有）；本轮默认无 join，Wait 时再懒创建。
+
             CompleteShowOperation(null);
             operationVersion = ++_operationVersion;
             _showInProgress = true;
@@ -105,7 +105,7 @@ namespace AlicizaX.UI.Runtime
             operationVersion = ++_operationVersion;
             _closeInProgress = true;
             _showInProgress = false;
-            // 打断进行中的 Show：必须释放 join waiter，避免永久挂起。
+
             CompleteShowOperation(null);
             return true;
         }
@@ -164,10 +164,7 @@ namespace AlicizaX.UI.Runtime
             return _hasPendingShowUserDatas ? _pendingShowUserDatas : fallback;
         }
 
-        /// <summary>
-        /// 并发 Show join：优先已有字段 UTCS；仍在 Show 时懒创建一次；否则同步返回当前结果。
-        /// 顺序必须先字段再 ShowInProgress，避免 Close 清标志后吞掉未完成 waiter。
-        /// </summary>
+
         public UniTask<UIBase> WaitForShowOperationAsync()
         {
             if (_showCompletionSource != null)
@@ -184,9 +181,7 @@ namespace AlicizaX.UI.Runtime
             return UniTask.FromResult(State == UIState.Opened ? View : null);
         }
 
-        /// <summary>
-        /// 完成当前 Show 的 join waiter（幂等：无 waiter 时 no-op）。
-        /// </summary>
+
         public void CompleteShowOperation(UIBase result)
         {
             UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
@@ -195,9 +190,7 @@ namespace AlicizaX.UI.Runtime
             showCompletionSource?.TrySetResult(result);
         }
 
-        /// <summary>
-        /// 以异常完成 join waiter（幂等：无 waiter 时 no-op）。
-        /// </summary>
+
         public void FailShowOperation(Exception exception)
         {
             UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;

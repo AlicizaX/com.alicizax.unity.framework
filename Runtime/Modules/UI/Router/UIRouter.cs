@@ -369,9 +369,7 @@ namespace AlicizaX.UI.Runtime
             ClearHistoryCore();
         }
 
-        /// <summary>
-        /// 服务销毁时强制清空 history，忽略导航中互斥。
-        /// </summary>
+
         internal void ForceResetHistoryForDestroy()
         {
             _navigating = false;

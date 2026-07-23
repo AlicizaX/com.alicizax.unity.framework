@@ -47,11 +47,7 @@ namespace AlicizaX.UI.Runtime
             return meta;
         }
 
-        /// <summary>
-        /// 仅查询，不创建。用于 CloseUI/GetUI 等不应隐式创建元数据的路径。 强调后续自己fork改框架 非必要尽量都只用仅查询
-        /// </summary>
-        /// <param name="handle"></param>
-        /// <returns></returns>
+
         internal static UIMetadata TryGetWindowMetadata(RuntimeTypeHandle handle)
         {
             return UIWindowMetadata.TryGetValue(handle, out var meta) ? meta : null;

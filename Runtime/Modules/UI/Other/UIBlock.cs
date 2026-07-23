@@ -3,9 +3,8 @@ using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
-    /// <summary>
-    /// 不可见的一个图，用来阻挡UI的投射。
-    /// </summary>
+
+
     public class UIBlock : Graphic, ICanvasRaycastFilter
     {
         public override bool raycastTarget
