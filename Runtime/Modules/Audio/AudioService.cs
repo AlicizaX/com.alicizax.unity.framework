@@ -753,11 +753,6 @@ namespace AlicizaX.Audio.Runtime
             }
 
             sourceObjects[index] = null;
-            if (sourceObject.Source != null)
-            {
-                sourceObject.Source.transform.SetParent(_instanceRoot, false);
-            }
-
             if (_sourcePool == null)
             {
                 return;
@@ -766,6 +761,11 @@ namespace AlicizaX.Audio.Runtime
             if (_isShuttingDown && sourceObject.Target == null)
             {
                 return;
+            }
+
+            if (!_isShuttingDown && sourceObject.Source != null && _instanceRoot != null)
+            {
+                sourceObject.Source.transform.SetParent(_instanceRoot, false);
             }
 
             _sourcePool.Unspawn(sourceObject);
