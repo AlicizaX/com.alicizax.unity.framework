@@ -3,7 +3,12 @@ using UnityEngine;
 
 namespace AlicizaX
 {
-    public abstract class MonoServiceBehaviour : MonoBehaviour, IService, IServiceLifecycle
+    public interface IMonoService : IService
+    {
+    }
+
+    public abstract class MonoServiceBehaviour<TScope> : MonoBehaviour, IMonoService, IServiceLifecycle
+        where TScope : IScope
     {
         private ServiceWorld _world;
         private ServiceScope _scope;
@@ -53,11 +58,7 @@ namespace AlicizaX
         protected virtual void OnDestroyService()
         {
         }
-    }
 
-    public abstract class MonoServiceBehaviour<TScope> : MonoServiceBehaviour
-        where TScope : IScope
-    {
         [SerializeField] private bool _dontDestroyOnLoad = false;
 
         protected virtual void Awake()
@@ -113,7 +114,7 @@ namespace AlicizaX
         }
     }
 
-    internal static class ScopeKindCache<TScope>
+    public static class ScopeKindCache<TScope>
         where TScope : IScope
     {
         public static readonly ServiceScopeKind Kind = Resolve();

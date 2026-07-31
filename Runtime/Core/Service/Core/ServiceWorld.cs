@@ -4,7 +4,7 @@ using Cysharp.Text;
 
 namespace AlicizaX
 {
-    internal sealed class ServiceWorld : IDisposable
+    public sealed class ServiceWorld : IDisposable
     {
         private const int ScopeSlotCount = 3;
 

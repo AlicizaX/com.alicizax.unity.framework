@@ -27,7 +27,7 @@ namespace AlicizaX
         public int Order { get; }
     }
 
-    internal enum ServiceScopeKind : byte
+    public enum ServiceScopeKind : byte
     {
         App = 0,
         Scene = 1,

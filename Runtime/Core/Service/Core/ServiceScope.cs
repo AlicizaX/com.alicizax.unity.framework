@@ -282,7 +282,7 @@ namespace AlicizaX
 
         private static void ValidateService(IService service)
         {
-            if (service is MonoServiceBehaviour &&
+            if (service is IMonoService &&
                 (service is IServiceTickable ||
                  service is IServiceLateTickable ||
                  service is IServiceFixedTickable ||
