@@ -72,9 +72,6 @@ namespace AlicizaX
             if (service == null || !_entriesByService.TryGetValue(service, out var entry))
                 return false;
 
-            if (service is not IServiceLifecycle lifecycle)
-                throw new InvalidOperationException(ZString.Format("Service {0} must implement {1}.", service.GetType().FullName, nameof(IServiceLifecycle)));
-
             if (_isIterating)
             {
                 if (entry.PendingRemove) return true;
@@ -85,7 +82,8 @@ namespace AlicizaX
             }
 
             RemoveEntry(service, entry, true);
-            lifecycle.Destroy();
+            if (service is IServiceLifecycle lifecycle)
+                lifecycle.Destroy();
             return true;
         }
 
@@ -160,11 +158,10 @@ namespace AlicizaX
             {
                 var service = _registrationOrder[i];
                 if (service == null || !_entriesByService.TryGetValue(service, out var entry)) continue;
-                if (service is not IServiceLifecycle lifecycle)
-                    throw new InvalidOperationException(ZString.Format("Service {0} must implement {1}.", service.GetType().FullName, nameof(IServiceLifecycle)));
 
                 RemoveEntry(service, entry, false);
-                lifecycle.Destroy();
+                if (service is IServiceLifecycle lifecycle)
+                    lifecycle.Destroy();
             }
 
             _registrationOrder.Clear();
@@ -182,9 +179,6 @@ namespace AlicizaX
             if (service == null)
                 throw new ArgumentNullException(nameof(service));
 
-            if (service is not IServiceLifecycle lifecycle)
-                throw new InvalidOperationException(ZString.Format("Service {0} must implement {1}.", service.GetType().FullName, nameof(IServiceLifecycle)));
-
             ValidateService(service);
 
             if (_entriesByService.ContainsKey(service))
@@ -199,7 +193,8 @@ namespace AlicizaX
 
             ValidateContracts(contracts);
             AddEntry(service, contracts);
-            lifecycle.Initialize(World, this);
+            if (service is IServiceLifecycle lifecycle)
+                lifecycle.Initialize(World, this);
             return service;
         }
 
@@ -411,7 +406,8 @@ namespace AlicizaX
                 {
                     if (!_entriesByService.ContainsKey(change.Service))
                     {
-                        ((IServiceLifecycle)change.Service).Initialize(World, this);
+                        if (change.Service is IServiceLifecycle lifecycle)
+                            lifecycle.Initialize(World, this);
                         AddEntry(change.Service, change.Contracts);
                     }
 
@@ -421,7 +417,8 @@ namespace AlicizaX
                 if (_entriesByService.TryGetValue(change.Service, out var entry))
                 {
                     RemoveEntry(change.Service, entry, true);
-                    ((IServiceLifecycle)change.Service).Destroy();
+                    if (change.Service is IServiceLifecycle lifecycle)
+                        lifecycle.Destroy();
                 }
             }
 
