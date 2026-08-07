@@ -24,9 +24,8 @@ namespace AlicizaX.UI.Runtime
         internal Canvas _canvas;
 
         internal GraphicRaycaster _raycaster;
-        private int _lifecycleVersion;
         private UIState _openingPreviousState;
-        private UIState _closingPreviousState;
+        private UniTaskCompletionSource _viewTransitionCompletion;
 
         internal UIState _state = UIState.Uninitialized;
         internal UIState State => _state;
@@ -359,9 +358,23 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        internal async UniTask<bool> InternalOpen()
+        // Widget 自主打开：不查 Meta version，只靠状态机。
+        internal bool InternalOpen()
         {
-            if (!TryBeginOpen(out int lifecycleVersion, out bool skippedResult))
+            return InternalOpenCore(null, -1);
+        }
+
+        // Window / Widget create：带 Begin 拿到的 Meta operation version。
+        internal bool InternalOpen(UIMetadata metadata, int expectedOperationVersion)
+        {
+            return InternalOpenCore(metadata, expectedOperationVersion);
+        }
+
+        // 逻辑打开：OnOpen + Opened。转场默认并行，可用 AwaitViewTransition 等待。
+        // Meta 路径：OnOpen 后必须查 version（防 OnOpen 内 Close 重入 bump）。
+        private bool InternalOpenCore(UIMetadata metadata, int expectedOperationVersion)
+        {
+            if (!TryBeginOpen(out bool skippedResult))
             {
                 if (skippedResult)
                 {
@@ -371,44 +384,29 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            if (!TryInvokeOnOpen())
+            // 业务 OnOpen 异常直接抛出，便于编辑器定位
+            OnOpen();
+
+            if (!IsStillInState(UIState.Opening, metadata, expectedOperationVersion))
             {
-                RollbackOpeningState(lifecycleVersion);
+                RollbackOpeningState();
                 return false;
             }
 
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            if (!CompleteOpenTransition(metadata, expectedOperationVersion))
             {
-                RollbackOpeningState(lifecycleVersion);
                 return false;
             }
 
-            try
-            {
-                await Holder.PlayOpenTransitionAsync();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] Open transition failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-                RollbackOpeningState(lifecycleVersion);
-                return false;
-            }
-
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
-            {
-                RollbackOpeningState(lifecycleVersion);
-                return false;
-            }
-
-            return CompleteOpenTransition(lifecycleVersion);
+            StartOpenTransitionInBackground();
+            return true;
         }
 
         internal void InternalRefreshOpened()
         {
             if (_state == UIState.Opened)
             {
-                TryInvokeOnRefresh();
+                OnRefresh();
             }
         }
 
@@ -420,54 +418,102 @@ namespace AlicizaX.UI.Runtime
                 || _state == UIState.Closing
                 || _state == UIState.Closed)
             {
-                TryInvokeOnRefresh();
+                OnRefresh();
             }
         }
 
-        internal async UniTask<bool> InternalClose(bool skipTransition = false)
+        // Widget 自主关闭：不查 Meta version。
+        internal UniTask<bool> InternalClose(bool skipTransition = false)
         {
-            if (!TryBeginClose(out int lifecycleVersion, out bool skippedResult))
+            return InternalCloseCore(skipTransition, null, -1);
+        }
+
+        // Window / 批量关闭：带 BeginClose 的 Meta operation version，跨 await 防过期复活。
+        internal UniTask<bool> InternalClose(UIMetadata metadata, int expectedOperationVersion, bool skipTransition = false)
+        {
+            return InternalCloseCore(skipTransition, metadata, expectedOperationVersion);
+        }
+
+        // 逻辑关闭：OnClose 后 await 关场转场；skipTransition 时立即收尾。
+        // 服务侧 await 完整流程，保证 Finalize/Cache 发生在转场之后。
+        private async UniTask<bool> InternalCloseCore(bool skipTransition, UIMetadata metadata, int expectedOperationVersion)
+        {
+            if (_state == UIState.Closed)
+            {
+                return true;
+            }
+
+            // 二次 Close：join 当前关场转场
+            if (_state == UIState.Closing)
+            {
+                await AwaitViewTransition();
+                return _state == UIState.Closed;
+            }
+
+            if (!TryBeginClose(out bool skippedResult))
             {
                 return skippedResult;
             }
 
-            if (skipTransition)
-            {
-                try
-                {
-                    Holder.ApplyClosedTransitionState();
-                }
-                catch (Exception exception)
-                {
-                    Log.Error("[UI] Close transition state failed for {0}.", CachedTypeName);
-                    Log.Exception(exception);
-                    RollbackClosingState(lifecycleVersion);
-                    return false;
-                }
-            }
-            else
-            {
-                try
-                {
-                    await Holder.PlayCloseTransitionAsync();
-                }
-                catch (Exception exception)
-                {
-                    Log.Error("[UI] Close transition failed for {0}.", CachedTypeName);
-                    Log.Exception(exception);
-                    RollbackClosingState(lifecycleVersion);
-                    return false;
-                }
-            }
+            // 业务 OnClose 异常直接抛出，便于编辑器定位
+            OnClose();
 
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            if (!IsStillInState(UIState.Closing, metadata, expectedOperationVersion))
             {
-                RollbackClosingState(lifecycleVersion);
                 return false;
             }
 
-            InvokeOnCloseSafely();
-            return CompleteCloseTransition(lifecycleVersion);
+            // OnClose 已执行：无论转场成败都尽量落到 Closed，避免卡在 Closing。
+            // await 后只看 State：仍为 Closing 则收尾；Destroying 由 Dispose 路径推进，不在此覆盖。
+            // Meta version 只在 await 前拦截“已被更新代际取代”的关闭，避免过期操作开跑转场。
+            BeginViewTransitionTracking();
+            bool closed = false;
+            try
+            {
+                if (skipTransition)
+                {
+                    Holder?.ApplyClosedTransitionState();
+                }
+                else if (Holder != null)
+                {
+                    await Holder.PlayCloseTransitionAsync();
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Close transition failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+                Holder?.StopTransition();
+                try
+                {
+                    Holder?.ApplyClosedTransitionState();
+                }
+                catch (Exception applyException)
+                {
+                    Log.Exception(applyException);
+                }
+            }
+            finally
+            {
+                if (_state == UIState.Closing)
+                {
+                    closed = CompleteCloseTransition();
+                }
+
+                CompleteViewTransitionTracking();
+            }
+
+            return closed;
+        }
+
+        /// <summary>
+        /// 等待当前 View 的开/关转场。无进行中的转场时立即完成。
+        /// </summary>
+        public UniTask AwaitViewTransition()
+        {
+            return _viewTransitionCompletion != null
+                ? _viewTransitionCompletion.Task
+                : UniTask.CompletedTask;
         }
 
         internal void InternalUpdate()
@@ -482,7 +528,8 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Destroying))
                 return;
 
-            InterruptLifecycleTransition();
+            // 代际作废只在 Meta.Cancel/Dispose；View 只打断转场跟踪
+            InterruptViewTransition();
             SetState(UIState.Destroying);
             Holder?.OnWindowDestroyEvent?.Invoke();
             await DestroyAllChildren();
@@ -499,7 +546,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            InterruptLifecycleTransition();
+            InterruptViewTransition();
             SetState(UIState.Destroying);
             Holder?.OnWindowDestroyEvent?.Invoke();
             DestroyAllChildrenImmediate();
@@ -514,12 +561,6 @@ namespace AlicizaX.UI.Runtime
             this._userDatas = userDatas;
         }
 
-        private int BeginLifecycleTransition()
-        {
-            InterruptLifecycleTransition();
-            return _lifecycleVersion;
-        }
-
         private bool TryBeginInitialize()
         {
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Initialized))
@@ -532,9 +573,7 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsInitializeStillValid(UIMetadata metadata, int operationVersion)
         {
-
-
-            return metadata != null && metadata.OperationVersion == operationVersion;
+            return metadata != null && metadata.IsOperationCurrent(operationVersion);
         }
 
         private void CompleteInitialize()
@@ -542,9 +581,8 @@ namespace AlicizaX.UI.Runtime
             RegisterEventListenersIfNeeded();
         }
 
-        private bool TryBeginOpen(out int lifecycleVersion, out bool skippedResult)
+        private bool TryBeginOpen(out bool skippedResult)
         {
-            lifecycleVersion = 0;
             skippedResult = false;
             if (_state == UIState.Opened || _state == UIState.Opening)
             {
@@ -556,7 +594,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             _openingPreviousState = _state;
-            lifecycleVersion = BeginLifecycleTransition();
+            InterruptViewTransition();
             SetState(UIState.Opening);
             Visible = true;
             Interactable = true;
@@ -564,9 +602,9 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private bool CompleteOpenTransition(int lifecycleVersion)
+        private bool CompleteOpenTransition(UIMetadata metadata, int expectedOperationVersion)
         {
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            if (!IsStillInState(UIState.Opening, metadata, expectedOperationVersion))
                 return false;
 
             SetState(UIState.Opened);
@@ -575,9 +613,8 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private bool TryBeginClose(out int lifecycleVersion, out bool skippedResult)
+        private bool TryBeginClose(out bool skippedResult)
         {
-            lifecycleVersion = 0;
             skippedResult = false;
             if (_state == UIState.Closed || _state == UIState.Closing)
             {
@@ -588,17 +625,16 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Closing))
                 return false;
 
-            _closingPreviousState = _state;
-            lifecycleVersion = BeginLifecycleTransition();
+            InterruptViewTransition();
             SetState(UIState.Closing);
             Interactable = false;
             Holder.OnWindowBeforeClosedEvent?.Invoke();
             return true;
         }
 
-        private bool CompleteCloseTransition(int lifecycleVersion)
+        private bool CompleteCloseTransition()
         {
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
+            if (_state != UIState.Closing)
                 return false;
 
             Visible = false;
@@ -608,58 +644,66 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private bool TryInvokeOnOpen()
+        // 只停转场 / 完成 AwaitViewTransition；不 bump 任何 version
+        private void InterruptViewTransition()
         {
-            try
-            {
-                OnOpen();
-                return true;
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] OnOpen failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-                return false;
-            }
-        }
-
-        private bool TryInvokeOnRefresh()
-        {
-            try
-            {
-                OnRefresh();
-                return true;
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] OnRefresh failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-                return false;
-            }
-        }
-
-        private void InvokeOnCloseSafely()
-        {
-            try
-            {
-                OnClose();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] OnClose failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-            }
-        }
-
-        private void InterruptLifecycleTransition()
-        {
-            _lifecycleVersion++;
             Holder?.StopTransition();
+            CompleteViewTransitionTracking();
         }
 
-        private bool IsCurrentLifecycleTransition(int lifecycleVersion, UIState state)
+        // expectedOperationVersion < 0：Widget 自主路径，只看 State
+        private bool IsStillInState(UIState state, UIMetadata metadata, int expectedOperationVersion)
         {
-            return lifecycleVersion == _lifecycleVersion && _state == state;
+            if (_state != state)
+            {
+                return false;
+            }
+
+            if (expectedOperationVersion < 0 || metadata == null)
+            {
+                return true;
+            }
+
+            return metadata.IsOperationCurrent(expectedOperationVersion);
+        }
+
+        private void BeginViewTransitionTracking()
+        {
+            CompleteViewTransitionTracking();
+            _viewTransitionCompletion = new UniTaskCompletionSource();
+        }
+
+        private void CompleteViewTransitionTracking()
+        {
+            UniTaskCompletionSource completion = _viewTransitionCompletion;
+            _viewTransitionCompletion = null;
+            completion?.TrySetResult();
+        }
+
+        private void StartOpenTransitionInBackground()
+        {
+            BeginViewTransitionTracking();
+            PlayOpenTransitionInBackgroundAsync().Forget();
+        }
+
+        private async UniTaskVoid PlayOpenTransitionInBackgroundAsync()
+        {
+            try
+            {
+                if (Holder != null && Holder.IsValid())
+                {
+                    await Holder.PlayOpenTransitionAsync();
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Open transition failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
+            }
+            finally
+            {
+                CompleteViewTransitionTracking();
+            }
         }
 
         protected void SetState(UIState state)
@@ -670,9 +714,10 @@ namespace AlicizaX.UI.Runtime
 #endif
         }
 
-        private void RollbackOpeningState(int lifecycleVersion)
+        private void RollbackOpeningState()
         {
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Opening))
+            // 已被 Close/Destroy 推走状态时不要回滚，避免覆盖 Closing
+            if (_state != UIState.Opening)
             {
                 return;
             }
@@ -681,28 +726,10 @@ namespace AlicizaX.UI.Runtime
             ApplyRollbackState(NormalizeOpeningRollbackState(_openingPreviousState));
         }
 
-        private void RollbackClosingState(int lifecycleVersion)
-        {
-            if (!IsCurrentLifecycleTransition(lifecycleVersion, UIState.Closing))
-            {
-                return;
-            }
-
-            Holder?.StopTransition();
-            ApplyRollbackState(NormalizeClosingRollbackState(_closingPreviousState));
-        }
-
         private static UIState NormalizeOpeningRollbackState(UIState previousState)
         {
             return previousState == UIState.Closed || previousState == UIState.Closing
                 ? UIState.Closed
-                : UIState.Initialized;
-        }
-
-        private static UIState NormalizeClosingRollbackState(UIState previousState)
-        {
-            return previousState == UIState.Opened
-                ? UIState.Opened
                 : UIState.Initialized;
         }
 

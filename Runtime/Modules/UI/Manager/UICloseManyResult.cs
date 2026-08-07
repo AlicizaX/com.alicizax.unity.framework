@@ -2,7 +2,7 @@ using System;
 
 namespace AlicizaX.UI.Runtime
 {
-    public readonly struct UICloseManyResult
+    internal readonly struct UICloseManyResult
     {
         public readonly bool Success;
         public readonly int ClosedCount;
@@ -43,23 +43,20 @@ namespace AlicizaX.UI.Runtime
         }
     }
 
-    public enum UICloseFailureReason : byte
+    internal enum UICloseFailureReason : byte
     {
         None,
         InvalidArguments,
         InvalidHandle,
         UnknownHandle,
-        LayerTransactionBusy,
-        LayerVisualDirty,
         BeginCloseFailed,
-        AlreadyClosing,
         OpenInterruptionFailed,
         LifecycleCloseFailed,
         FinalizeFailed,
         CanceledByNewOperation,
     }
 
-    public enum UICloseManyMode : byte
+    internal enum UICloseManyMode : byte
     {
         SilentFinalize,
         Transition,

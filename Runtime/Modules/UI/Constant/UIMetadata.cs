@@ -20,6 +20,7 @@ namespace AlicizaX.UI.Runtime
 
         private CancellationTokenSource _loadCancellationTokenSource;
         private UniTaskCompletionSource<UIBase> _showCompletionSource;
+        private UniTaskCompletionSource<bool> _closeCompletionSource;
         private System.Object[] _pendingShowUserDatas;
         private bool _hasPendingShowUserDatas;
         private int _operationVersion;
@@ -61,20 +62,11 @@ namespace AlicizaX.UI.Runtime
         }
 
 
+        // Window Show / Widget Create 共用同一操作入口
         public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts)
         {
-            return BeginLoadOperation(out operationVersion, out loadCts);
-        }
-
-
-        public bool BeginCreateOperation(out int operationVersion, out CancellationTokenSource loadCts)
-        {
-            return BeginLoadOperation(out operationVersion, out loadCts);
-        }
-
-        private bool BeginLoadOperation(out int operationVersion, out CancellationTokenSource loadCts)
-        {
-            if (_showInProgress)
+            // 关闭进行中禁止开加载，避免清掉 Close 标志 / version 错位
+            if (_showInProgress || _closeInProgress)
             {
                 operationVersion = -1;
                 loadCts = null;
@@ -88,7 +80,6 @@ namespace AlicizaX.UI.Runtime
             CompleteShowOperation(null);
             operationVersion = ++_operationVersion;
             _showInProgress = true;
-            _closeInProgress = false;
             return true;
         }
 
@@ -106,7 +97,10 @@ namespace AlicizaX.UI.Runtime
             _closeInProgress = true;
             _showInProgress = false;
 
-            CompleteShowOperation(null);
+            // 打断 Show 等待者并清 pending；Closing 再开由之后的 Show 重新写入
+            CompleteShowOperation(null, clearPendingUserDatas: true);
+            // 预先创建，确保 Close join / Show-after-close 可挂接
+            _closeCompletionSource ??= new UniTaskCompletionSource<bool>();
             return true;
         }
 
@@ -131,6 +125,29 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        public void CompleteCloseOperation(bool success)
+        {
+            UniTaskCompletionSource<bool> closeCompletionSource = _closeCompletionSource;
+            _closeCompletionSource = null;
+            closeCompletionSource?.TrySetResult(success);
+        }
+
+        public UniTask<bool> WaitForCloseOperationAsync()
+        {
+            if (_closeCompletionSource != null)
+            {
+                return _closeCompletionSource.Task;
+            }
+
+            if (_closeInProgress)
+            {
+                _closeCompletionSource = new UniTaskCompletionSource<bool>();
+                return _closeCompletionSource.Task;
+            }
+
+            return UniTask.FromResult(true);
+        }
+
         public void CancelAsyncOperations()
         {
             _loadCancellationTokenSource?.Cancel();
@@ -139,6 +156,7 @@ namespace AlicizaX.UI.Runtime
             _showInProgress = false;
             _closeInProgress = false;
             CompleteShowOperation(null);
+            CompleteCloseOperation(false);
         }
 
         public void RequestCancelShowLoad()
@@ -151,12 +169,22 @@ namespace AlicizaX.UI.Runtime
             _loadCancellationTokenSource?.Cancel();
         }
 
+        // Opened/稳定显示：只刷 View，不写 sticky pending
+        public void RefreshLiveShowUserDatas(System.Object[] userDatas)
+        {
+            View?.RefreshParams(userDatas);
+            if (State == UIState.Opened)
+            {
+                View?.InternalRefreshOpened();
+            }
+        }
+
+        // 仅 ShowInProgress（加载中 latest）或 Closing 再开意图
         public void SetPendingShowUserDatas(System.Object[] userDatas)
         {
             _pendingShowUserDatas = userDatas;
             _hasPendingShowUserDatas = true;
             View?.RefreshParams(userDatas);
-            View?.InternalRefreshAfterInitialize();
         }
 
         public System.Object[] GetPendingShowUserDatas(System.Object[] fallback)
@@ -182,11 +210,15 @@ namespace AlicizaX.UI.Runtime
         }
 
 
-        public void CompleteShowOperation(UIBase result)
+        public void CompleteShowOperation(UIBase result, bool clearPendingUserDatas = true)
         {
             UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
             _showCompletionSource = null;
-            ClearPendingShowUserDatas();
+            if (clearPendingUserDatas)
+            {
+                ClearPendingShowUserDatas();
+            }
+
             showCompletionSource?.TrySetResult(result);
         }
 
@@ -198,6 +230,8 @@ namespace AlicizaX.UI.Runtime
             ClearPendingShowUserDatas();
             showCompletionSource?.TrySetException(exception);
         }
+
+        public bool HasPendingShowUserDatas => _hasPendingShowUserDatas;
 
         private void ClearPendingShowUserDatas()
         {

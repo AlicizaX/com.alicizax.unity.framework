@@ -180,8 +180,10 @@ namespace AlicizaX.UI.Runtime
                 return layer;
             }
 
-            Log.Error($"[UI] Invalid layer '{layer}' for UI type {uiType?.FullName}. UILayer.All is not a window layer; fallback to UILayer.UI.");
-            return UILayer.UI;
+            throw new ArgumentOutOfRangeException(
+                nameof(layer),
+                layer,
+                $"[UI] Invalid layer '{layer}' for UI type {uiType?.FullName}. UILayer.All is not a window layer.");
         }
 
         private static UILayer ReadLayerArgument(object value, UILayer fallback)

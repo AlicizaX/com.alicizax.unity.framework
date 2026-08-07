@@ -16,13 +16,31 @@ namespace AlicizaX.UI.Runtime
         public async UniTask<bool> OpenAsync(params System.Object[] userDatas)
         {
             RefreshParams(userDatas);
+
+            // 已打开/打开中：只刷 latest，不重复打开
             if (State == UIState.Opened)
             {
                 InternalRefreshOpened();
                 return true;
             }
 
-            return await InternalOpen();
+            if (State == UIState.Opening)
+            {
+                return true;
+            }
+
+            // 关闭中：等关场完成后再用 latest 打开
+            if (State == UIState.Closing)
+            {
+                await AwaitViewTransition();
+                RefreshParams(userDatas);
+                if (State != UIState.Closed && State != UIState.Initialized)
+                {
+                    return false;
+                }
+            }
+
+            return InternalOpen();
         }
 
         public void Close()
@@ -32,9 +50,7 @@ namespace AlicizaX.UI.Runtime
 
         public UniTask<bool> CloseAsync()
         {
-            return State == UIState.Closed || State == UIState.Closing
-                ? UniTask.FromResult(State == UIState.Closed)
-                : InternalClose();
+            return InternalClose();
         }
 
         public void Destroy()

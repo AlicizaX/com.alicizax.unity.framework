@@ -351,19 +351,9 @@ namespace AlicizaX.UI.Editor
             EditorGUILayout.BeginHorizontal();
             DrawCounter("Current", debug.Current?.Name ?? "None", debug.Current == null ? _mutedLabelStyle : _rowLabelStyle);
             DrawCounter("Can Back", debug.CanBack ? "Yes" : "No", debug.CanBack ? _rowLabelStyle : _mutedLabelStyle);
-            DrawCounter("Dirty", debug.IsDirty ? "Yes" : "No", debug.IsDirty ? _warningLabelStyle : _rowLabelStyle);
-            EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.BeginHorizontal();
             DrawCounter("History", debug.HistoryCount.ToString(), debug.HistoryCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
             DrawCounter("Warnings", debug.WarningCount.ToString(), debug.WarningCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
             EditorGUILayout.EndHorizontal();
-
-            if (debug.IsDirty)
-            {
-                EditorUtils.TrHelpIconText("Router history is dirty. Use ResetTo, ResetHistory, or SyncFromCurrentUI to recover.", MessageType.Warning);
-            }
-
             DrawSectionEnd();
         }
 

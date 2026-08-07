@@ -35,7 +35,7 @@ namespace AlicizaX.UI.Runtime
                 UIBase view = metadata?.View;
                 if (view != null && view.Visible)
                 {
-
+                    // Cancel 先 bump 作废 create/show；teardown 关场只靠状态机，不绑 Meta version
                     metadata.CancelAsyncOperations();
                     await view.InternalClose(skipTransition: true);
                 }
@@ -216,7 +216,7 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginCreateOperation(out int operationVersion, out CancellationTokenSource loadCts))
+            if (!metadata.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
                 await metadata.DisposeAsync();
                 UIMetadataFactory.ReturnToPool(metadata);
@@ -285,7 +285,7 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            if (!metadata.BeginCreateOperation(out int operationVersion, out CancellationTokenSource loadCts))
+            if (!metadata.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
                 metadata.DisposeImmediate();
                 UIMetadataFactory.ReturnToPool(metadata);
@@ -294,7 +294,6 @@ namespace AlicizaX.UI.Runtime
 
             UIBase result = null;
             bool shouldReturnToPool = false;
-            bool visualStarted = false;
             try
             {
                 if (!resourceStep(metadata))
@@ -307,15 +306,26 @@ namespace AlicizaX.UI.Runtime
                 }
                 else if (!PrepareWidgetSync(metadata, visible, operationVersion, out shouldReturnToPool))
                 {
-
                 }
                 else
                 {
-                    result = metadata.View;
+                    // Sync：逻辑 Open（含 OnOpen）必须在返回前完成；转场后台并行
                     if (visible)
                     {
-                        visualStarted = true;
-                        RunWidgetOpenVisualAsync(metadata, operationVersion, loadCts).Forget();
+                        if (metadata.View != null
+                            && metadata.View.InternalOpen(metadata, operationVersion)
+                            && metadata.IsOperationCurrent(operationVersion))
+                        {
+                            result = metadata.View;
+                        }
+                        else
+                        {
+                            shouldReturnToPool = RemoveFailedWidgetImmediate(metadata, operationVersion);
+                        }
+                    }
+                    else
+                    {
+                        result = metadata.View;
                     }
                 }
             }
@@ -326,10 +336,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                if (!visualStarted)
-                {
-                    EndWidgetCreateOperation(metadata, operationVersion, loadCts, shouldReturnToPool);
-                }
+                EndWidgetCreateOperation(metadata, operationVersion, loadCts, shouldReturnToPool);
             }
 
             return result;
@@ -394,7 +401,7 @@ namespace AlicizaX.UI.Runtime
             bool shouldReturnToPool = false;
             try
             {
-                if (meta.View != null && await meta.View.InternalOpen() && meta.IsOperationCurrent(operationVersion))
+                if (meta.View != null && meta.View.InternalOpen(meta, operationVersion) && meta.IsOperationCurrent(operationVersion))
                 {
                     result = meta.View;
                 }
@@ -451,10 +458,11 @@ namespace AlicizaX.UI.Runtime
 
             if (meta != null)
             {
+                // Cancel 先 bump 作废 create/show；teardown 关场只靠状态机
                 meta.CancelAsyncOperations();
                 if (UIStateMachine.IsDisplayActive(widget.State))
                 {
-                    await widget.InternalClose();
+                    await widget.InternalClose(skipTransition: true);
                 }
 
                 if (meta.MetaInfo.NeedUpdate)

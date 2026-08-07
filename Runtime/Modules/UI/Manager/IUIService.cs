@@ -57,22 +57,28 @@ namespace AlicizaX.UI.Runtime
         // ───────────────────────────────────────────────
 
         /// <summary>
-        /// 异步显示 UI（无参重载，避免 params 空数组分配）
+        /// 异步显示 UI（无参重载，避免 params 空数组分配）。
+        /// await 到逻辑打开完成；转场默认并行，可用 .AwaitViewTransition() 等待。
+        /// 同类型已打开/打开中时只刷新 userData（latest wins）。
         /// </summary>
         UniTask<T> ShowUI<T>() where T : UIBase;
 
         /// <summary>
         /// 异步显示 UI，并返回精确状态（Opened / Failed / Cancelled）。
+        /// await 到逻辑打开完成；转场默认并行，可用 .AwaitViewTransition() 等待。
         /// </summary>
         UniTask<UIShowResult<T>> ShowUIResult<T>() where T : UIBase;
 
         /// <summary>
-        /// 异步显示 UI（推荐方式）
+        /// 异步显示 UI（推荐方式）。
+        /// await 到逻辑打开完成；转场默认并行，可用 .AwaitViewTransition() 等待。
+        /// 同类型已打开/打开中时只刷新 userData（latest wins）。
         /// </summary>
         UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIBase;
 
         /// <summary>
         /// 异步显示 UI，并返回精确状态（Opened / Failed / Cancelled）。
+        /// await 到逻辑打开完成；转场默认并行，可用 .AwaitViewTransition() 等待。
         /// </summary>
         UniTask<UIShowResult<T>> ShowUIResult<T>(params object[] userDatas) where T : UIBase;
 
@@ -98,15 +104,15 @@ namespace AlicizaX.UI.Runtime
 
         /// <summary>
         /// 同步显示 UI（无参重载，避免 params 空数组分配）。
-        /// 仅同步完成资源加载与初始化；返回时 View 已可用，但 Open 过渡与 OnOpen 仍在后台异步推进。
-        /// 需要完整打开完成时请使用 ShowUI / ShowUIResult。异步初始化 UI 会返回 null。
+        /// 同步完成资源加载与初始化；Open 视觉过渡默认在后台推进。
+        /// 同类型已在打开中/已打开时只刷新 userData（latest wins），不重复打开。
         /// </summary>
         T ShowUISync<T>() where T : UIBase;
 
         /// <summary>
-        /// 同步显示 UI（仅限资源已预加载时使用）。
-        /// 仅同步完成资源加载与初始化；返回时 View 已可用，但 Open 过渡与 OnOpen 仍在后台异步推进。
-        /// 需要完整打开完成时请使用 ShowUI / ShowUIResult。异步初始化 UI 会返回 null。
+        /// 同步显示 UI。
+        /// 同步完成资源加载与初始化；Open 视觉过渡默认在后台推进。
+        /// 同类型已在打开中/已打开时只刷新 userData（latest wins），不重复打开。
         /// </summary>
         T ShowUISync<T>(params object[] userDatas) where T : UIBase;
 
@@ -115,14 +121,14 @@ namespace AlicizaX.UI.Runtime
         // ───────────────────────────────────────────────
 
         /// <summary>
-        /// 关闭指定类型 UI。
+        /// 关闭指定类型 UI。逻辑关闭在后台推进；可用返回值 AwaitViewTransition 等待关场动画。
         /// </summary>
-        void CloseUI<T>(bool force = false) where T : UIBase;
+        UICloseHandle CloseUI<T>(bool force = false) where T : UIBase;
 
         /// <summary>
-        /// 关闭指定类型 UI。
+        /// 关闭指定类型 UI。逻辑关闭在后台推进；可用返回值 AwaitViewTransition 等待关场动画。
         /// </summary>
-        void CloseUI(RuntimeTypeHandle handle, bool force = false);
+        UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false);
 
         /// <summary>
         /// 异步关闭指定类型 UI，并返回是否完成关闭。
@@ -133,11 +139,6 @@ namespace AlicizaX.UI.Runtime
         /// 异步关闭指定类型 UI，并返回是否完成关闭。
         /// </summary>
         UniTask<bool> CloseUIAsync(RuntimeTypeHandle handle, bool force = false);
-
-        /// <summary>
-        /// 以一次 UIService 栈事务关闭多个 UI。modes 与 handles 一一对应。
-        /// </summary>
-        UniTask<UICloseManyResult> CloseManyAsync(RuntimeTypeHandle[] handles, UICloseManyMode[] modes, int count, bool force = false);
 
         /// <summary>
         /// 是否处于 Opened 稳定态。Opening/Closing 返回 false；需要结果态请用 ShowUIResult。
@@ -165,8 +166,7 @@ namespace AlicizaX.UI.Runtime
         T GetUI<T>() where T : UIBase;
 
         /// <summary>
-        /// 尝试重建指定层的深度排序并清除 visual dirty。
-        /// 层事务进行中时返回 false。
+        /// 重建指定层的深度排序。
         /// </summary>
         UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer);
     }

@@ -43,7 +43,8 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        public async UniTask<UICloseManyResult> CloseManyAsync(RuntimeTypeHandle[] handles, UICloseManyMode[] modes, int count, bool force = false)
+        // Router 批量关页；不作为业务公开主路径
+        internal async UniTask<UICloseManyResult> CloseManyAsync(RuntimeTypeHandle[] handles, UICloseManyMode[] modes, int count, bool force = false)
         {
             if (handles == null || modes == null || count < 0 || count > handles.Length || count > modes.Length)
             {
@@ -62,8 +63,6 @@ namespace AlicizaX.UI.Runtime
             int closedCount = 0;
             int skippedCount = 0;
             int targetCount;
-            int touchedLayerMask;
-            int begunLayerMask = 0;
 
             try
             {
@@ -78,7 +77,7 @@ namespace AlicizaX.UI.Runtime
                     count,
                     normalizedTypeIds,
                     targets,
-                    out touchedLayerMask);
+                    out _);
 
                 if (!preflight.Success)
                 {
@@ -90,23 +89,6 @@ namespace AlicizaX.UI.Runtime
                 if (targetCount == 0)
                 {
                     return UICloseManyResult.Ok(0, skippedCount);
-                }
-
-                for (int layerIndex = 0; layerIndex < (int)UILayer.All; layerIndex++)
-                {
-                    int layerBit = 1 << layerIndex;
-                    if ((touchedLayerMask & layerBit) == 0)
-                    {
-                        continue;
-                    }
-
-                    if (!TryBeginLayerMutation(layerIndex))
-                    {
-                        EndBegunLayerMutations(begunLayerMask);
-                        return UICloseManyResult.Fail(0, skippedCount, -1, default, GetLayerBlockedReason(layerIndex));
-                    }
-
-                    begunLayerMask |= layerBit;
                 }
 
                 try
@@ -124,7 +106,7 @@ namespace AlicizaX.UI.Runtime
                         {
                             if (IsMetaInOpenStack(target.Meta))
                             {
-                                MarkLayerVisualDirty(target.Layer);
+                                SortWindowDepth(target.Layer, 0);
                             }
 
                             return UICloseManyResult.Fail(closedCount, skippedCount, target.CallerIndex, target.Handle, closeOneResult.FailureReason);
@@ -151,7 +133,6 @@ namespace AlicizaX.UI.Runtime
                 finally
                 {
                     CleanupCloseManyPendingFlags(targets, targetCount);
-                    EndBegunLayerMutations(begunLayerMask);
                 }
             }
             finally
@@ -224,14 +205,11 @@ namespace AlicizaX.UI.Runtime
                     continue;
                 }
 
+                // 已在关闭：跳过，不拖垮整批（与单路 join 不同，批量不在此 await）
                 if (meta.CloseInProgress || state == UIState.Closing)
                 {
-                    return FailPreflight(skippedCount, callerIndex, handle, UICloseFailureReason.AlreadyClosing);
-                }
-
-                if (IsLayerBlockedForMutation(layerIndex) || HasPendingLayerCommands(layerIndex))
-                {
-                    return FailPreflight(skippedCount, callerIndex, handle, GetLayerBlockedReason(layerIndex));
+                    skippedCount++;
+                    continue;
                 }
 
                 targets[targetCount++] = new CloseManyTarget
@@ -304,11 +282,17 @@ namespace AlicizaX.UI.Runtime
             }
 
             bool interruptedShow = meta.ShowInProgress;
+            if (interruptedShow)
+            {
+                meta.RequestCancelShowLoad();
+            }
+
             if (!meta.BeginCloseOperation(out int operationVersion))
             {
                 return new BatchCloseOneResult(UICloseFailureReason.BeginCloseFailed, default);
             }
 
+            bool closeSucceeded = false;
             try
             {
                 UIState state = meta.State;
@@ -330,13 +314,15 @@ namespace AlicizaX.UI.Runtime
                     }
 
                     UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: false);
+                    closeSucceeded = finalizeResult.Success;
                     return new BatchCloseOneResult(finalizeResult.Success ? UICloseFailureReason.None : finalizeResult.FailureReason, finalizeResult);
                 }
 
                 if (state == UIState.Opened || state == UIState.Opening)
                 {
-                    bool closeResult = await meta.View.InternalClose(skipTransition: closeMode == UICloseManyMode.SilentFinalize);
-                    if (!closeResult || meta.State != UIState.Closed || meta.OperationVersion != operationVersion || !IsMetaInOpenStack(meta))
+                    // 与单路一致：转场失败也会尽量 Closed，再 Finalize
+                    await meta.View.InternalClose(meta, operationVersion, skipTransition: closeMode == UICloseManyMode.SilentFinalize);
+                    if (meta.State != UIState.Closed || meta.OperationVersion != operationVersion || !IsMetaInOpenStack(meta))
                     {
                         return new BatchCloseOneResult(
                             state == UIState.Opening
@@ -346,12 +332,8 @@ namespace AlicizaX.UI.Runtime
                     }
 
                     UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: false);
+                    closeSucceeded = finalizeResult.Success;
                     return new BatchCloseOneResult(finalizeResult.Success ? UICloseFailureReason.None : finalizeResult.FailureReason, finalizeResult);
-                }
-
-                if (state == UIState.Closing)
-                {
-                    return new BatchCloseOneResult(UICloseFailureReason.AlreadyClosing, default);
                 }
 
                 return new BatchCloseOneResult(UICloseFailureReason.FinalizeFailed, default);
@@ -359,6 +341,7 @@ namespace AlicizaX.UI.Runtime
             finally
             {
                 meta.EndCloseOperation(operationVersion);
+                meta.CompleteCloseOperation(closeSucceeded);
             }
         }
 
@@ -389,15 +372,5 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private void EndBegunLayerMutations(int begunLayerMask)
-        {
-            for (int layerIndex = (int)UILayer.All - 1; layerIndex >= 0; layerIndex--)
-            {
-                if ((begunLayerMask & (1 << layerIndex)) != 0)
-                {
-                    EndLayerMutation(layerIndex);
-                }
-            }
-        }
     }
 }

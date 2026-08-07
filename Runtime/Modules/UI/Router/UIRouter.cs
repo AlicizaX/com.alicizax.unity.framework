@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
 #endif
+using AlicizaX;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
@@ -33,14 +34,13 @@ namespace AlicizaX.UI.Runtime
 #endif
         private bool _navigating;
         private UniTaskCompletionSource _navigationWaiter;
-        private bool _dirty;
 
         internal UIRouter(UIService uiService)
         {
             _uiService = uiService ?? throw new ArgumentNullException(nameof(uiService));
         }
 
-        public bool CanBack => !_dirty && _history.Count > 1;
+        public bool CanBack => _history.Count > 1;
 
         public Type Current => _history.Count == 0 ? null : _history[_history.Count - 1].UIType;
 
@@ -51,7 +51,6 @@ namespace AlicizaX.UI.Runtime
         int IUIRouterDebug.WarningCount => _warnings.Count;
         Type IUIRouterDebug.Current => Current;
         bool IUIRouterDebug.CanBack => CanBack;
-        bool IUIRouterDebug.IsDirty => _dirty;
 #endif
 
         public UniTask<UIRouteResult> NavigateTo<T>() where T : UIBase
@@ -69,11 +68,6 @@ namespace AlicizaX.UI.Runtime
             await EnterNavigation();
             try
             {
-                if (_dirty)
-                {
-                    return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-                }
-
                 RuntimeTypeHandle handle = typeof(T).TypeHandle;
                 bool isRoot = _history.Count == 0;
                 if (!TryCreateEntry<T>(args, isRoot, out UIRouteEntry entry))
@@ -142,10 +136,6 @@ namespace AlicizaX.UI.Runtime
             await EnterNavigation();
             try
             {
-                if (_dirty)
-                {
-                    return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-                }
 
                 RuntimeTypeHandle handle = typeof(T).TypeHandle;
                 UIRouteEntry oldCurrent = GetCurrentInternal();
@@ -251,10 +241,6 @@ namespace AlicizaX.UI.Runtime
             await EnterNavigation();
             try
             {
-                if (_dirty)
-                {
-                    return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-                }
 
                 if (_history.Count == 0)
                 {
@@ -293,10 +279,6 @@ namespace AlicizaX.UI.Runtime
             await EnterNavigation();
             try
             {
-                if (_dirty)
-                {
-                    return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-                }
 
                 RuntimeTypeHandle handle = typeof(T).TypeHandle;
                 int targetIndex = FindLastHistoryIndex(handle);
@@ -393,7 +375,6 @@ namespace AlicizaX.UI.Runtime
         private void ClearHistoryCore()
         {
             _history.Clear();
-            _dirty = false;
 #if UNITY_EDITOR
             _warnings.Clear();
 #endif
@@ -431,7 +412,6 @@ namespace AlicizaX.UI.Runtime
 
             _history.Clear();
             _history.Add(entry);
-            _dirty = false;
         }
 
 #if UNITY_EDITOR
@@ -470,10 +450,6 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask<UIRouteResult> ResetToLocked<T>(object[] args) where T : UIBase
         {
-            if (_dirty)
-            {
-                return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-            }
 
             RuntimeTypeHandle handle = typeof(T).TypeHandle;
             if (!TryCreateEntry<T>(args, true, out UIRouteEntry entry))
@@ -502,7 +478,6 @@ namespace AlicizaX.UI.Runtime
 
             _history.Clear();
             _history.Add(entry);
-            _dirty = false;
             return UIRouteResult.Ok;
         }
 
@@ -584,10 +559,6 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask<UIRouteResult> BackLocked(bool force = false)
         {
-            if (_dirty)
-            {
-                return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-            }
 
             if (_history.Count <= 1)
             {
@@ -616,7 +587,7 @@ namespace AlicizaX.UI.Runtime
                 bool rollbackResult = await ShowByRouter(current.TypeHandle, current.Args) != null;
                 if (!rollbackResult)
                 {
-                    MarkDirty(current.TypeHandle, "Back rollback failed after target page restore failed.");
+                    LogRouteFailure(current.TypeHandle, "Back rollback failed after target page restore failed.");
                 }
 
                 return UIRouteResult.From(UIRouteStatus.OpenFailed);
@@ -628,10 +599,6 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask<UIRouteResult> CloseCurrentLocked(bool force)
         {
-            if (_dirty)
-            {
-                return UIRouteResult.From(UIRouteStatus.RejectedDirty);
-            }
 
             if (_history.Count == 0)
             {
@@ -676,15 +643,10 @@ namespace AlicizaX.UI.Runtime
 
                 if (!closeResult.Success)
                 {
-                    if (IsTransientCloseManyBusyFailure(closeResult))
-                    {
-                        return UIRouteResult.From(UIRouteStatus.RejectedBusy);
-                    }
-
                     RuntimeTypeHandle dirtyHandle = closeResult.FailedHandle.Value == IntPtr.Zero
                         ? target.TypeHandle
                         : closeResult.FailedHandle;
-                    MarkDirty(dirtyHandle, operationName + " batch close failed: " + closeResult.FailureReason);
+                    LogRouteFailure(dirtyHandle, operationName + " batch close failed: " + closeResult.FailureReason);
                     return UIRouteResult.From(UIRouteStatus.CloseFailed);
                 }
 
@@ -707,7 +669,7 @@ namespace AlicizaX.UI.Runtime
                     bool rollbackResult = await ShowByRouter(current.TypeHandle, current.Args) != null;
                     if (!rollbackResult)
                     {
-                        MarkDirty(target.TypeHandle, operationName + " rollback failed after target page restore failed.");
+                        LogRouteFailure(target.TypeHandle, operationName + " rollback failed after target page restore failed.");
                     }
                 }
 
@@ -723,12 +685,6 @@ namespace AlicizaX.UI.Runtime
             return batchClosedRoutes
                    && target != null
                    && _uiService.IsOpen(target.TypeHandle);
-        }
-
-        private static bool IsTransientCloseManyBusyFailure(UICloseManyResult result)
-        {
-            return result.ClosedCount == 0
-                   && result.FailureReason == UICloseFailureReason.LayerTransactionBusy;
         }
 
         private int BuildDeepBackCloseHandles(
@@ -811,7 +767,7 @@ namespace AlicizaX.UI.Runtime
             bool rollbackResult = (await CloseByRouter(entry.TypeHandle)).Success;
             if (!rollbackResult)
             {
-                MarkDirty(entry.TypeHandle, "Rollback failed after navigation transaction failed.");
+                LogRouteFailure(entry.TypeHandle, "Rollback failed after navigation transaction failed.");
             }
 
             return rollbackResult;
@@ -830,7 +786,7 @@ namespace AlicizaX.UI.Runtime
                 UIBase currentRestored = await ShowByRouter(oldCurrent.TypeHandle, oldCurrent.Args);
                 if (currentRestored == null)
                 {
-                    MarkDirty(oldCurrent.TypeHandle, "Rollback failed to restore previous current route.");
+                    LogRouteFailure(oldCurrent.TypeHandle, "Rollback failed to restore previous current route.");
                     return false;
                 }
             }
@@ -838,9 +794,10 @@ namespace AlicizaX.UI.Runtime
             return rollbackSucceeded;
         }
 
-        private void MarkDirty(RuntimeTypeHandle handle, string message)
+        // 导航失败只记日志，不再永久熔断 Router
+        private void LogRouteFailure(RuntimeTypeHandle handle, string message)
         {
-            _dirty = true;
+            Log.Error("[UIRouter] {0}", message);
 #if UNITY_EDITOR
             AddWarning(handle, message);
 #endif

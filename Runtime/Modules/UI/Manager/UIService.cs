@@ -93,23 +93,23 @@ namespace AlicizaX.UI.Runtime
         public T ShowUISync<T>() where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null || !IsLayerFullyIdle(metadata.MetaInfo.UILayer))
+            if (metadata == null)
             {
                 return null;
             }
 
-            return (T)ShowUIImplSync(metadata, null);
+            return (T)ShowUISyncCore(metadata, null);
         }
 
         public T ShowUISync<T>(params object[] userDatas) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null || !IsLayerFullyIdle(metadata.MetaInfo.UILayer))
+            if (metadata == null)
             {
                 return null;
             }
 
-            return (T)ShowUIImplSync(metadata, userDatas);
+            return (T)ShowUISyncCore(metadata, userDatas);
         }
 
         public async UniTask<T> ShowUI<T>() where T : UIBase
@@ -149,9 +149,9 @@ namespace AlicizaX.UI.Runtime
         }
 
 
-        public void CloseUI<T>(bool force = false) where T : UIBase
+        public UICloseHandle CloseUI<T>(bool force = false) where T : UIBase
         {
-            CloseUIAsync<T>(force).Forget();
+            return CloseUI(typeof(T).TypeHandle, force);
         }
 
         public T GetUI<T>() where T : UIBase
@@ -161,9 +161,10 @@ namespace AlicizaX.UI.Runtime
         }
 
 
-        public void CloseUI(RuntimeTypeHandle handle, bool force = false)
+        public UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false)
         {
-            CloseUIAsync(handle, force).Forget();
+            // 不 Forget：把关闭任务交给 UICloseHandle，便于 AwaitViewTransition
+            return new UICloseHandle(CloseUIAsync(handle, force));
         }
 
         public UniTask<bool> CloseUIAsync<T>(bool force = false) where T : UIBase
@@ -178,7 +179,7 @@ namespace AlicizaX.UI.Runtime
 
         internal UniTask<bool> CloseUIFromRouterAsync(RuntimeTypeHandle handle, bool force = false)
         {
-            return CloseUIAsyncCore(handle, force, allowEnqueue: false);
+            return CloseUIAsyncCore(handle, force);
         }
 
         internal bool IsLayerCloseBlocked(RuntimeTypeHandle handle)
@@ -189,8 +190,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            int layer = metadata.MetaInfo.UILayer;
-            return IsLayerBlockedForMutation(layer) || HasPendingLayerCommands(layer);
+            return metadata.CloseInProgress || metadata.ShowInProgress;
         }
 
         private async UniTask<bool> CloseUIAsyncDirect(RuntimeTypeHandle handle, bool force)
@@ -201,10 +201,10 @@ namespace AlicizaX.UI.Runtime
                 return routeResult.Success;
             }
 
-            return await CloseUIAsyncCore(handle, force, allowEnqueue: true);
+            return await CloseUIAsyncCore(handle, force);
         }
 
-        private UniTask<bool> CloseUIAsyncCore(RuntimeTypeHandle handle, bool force, bool allowEnqueue)
+        private UniTask<bool> CloseUIAsyncCore(RuntimeTypeHandle handle, bool force)
         {
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
             if (metadata == null)
@@ -218,7 +218,7 @@ namespace AlicizaX.UI.Runtime
                 return UniTask.FromResult(false);
             }
 
-            return EnqueueCloseCommandAsync(metadata, force, allowEnqueue);
+            return EnqueueCloseCommandAsync(metadata, force);
         }
 
         public bool IsOpen<T>() where T : UIBase
@@ -234,8 +234,6 @@ namespace AlicizaX.UI.Runtime
 
         private void DestroyAllManagedUI()
         {
-            ClearAllLayerCommandQueues();
-
             for (int layerIndex = 0; layerIndex < _openUI.Length; layerIndex++)
             {
                 LayerData layer = _openUI[layerIndex];
@@ -264,8 +262,6 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 layer.Count = 0;
-                _layerMutationBusy[layerIndex] = false;
-                _layerVisualDirty[layerIndex] = false;
             }
 
             Array.Clear(_updateableWindows, 0, _updateableWindowCount);

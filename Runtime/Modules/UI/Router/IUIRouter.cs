@@ -117,7 +117,6 @@ namespace AlicizaX.UI.Runtime
     {
         Success = 0,
         RejectedBusy,
-        RejectedDirty,
         RejectedLimit,
         NotFound,
         OpenFailed,
@@ -163,8 +162,6 @@ namespace AlicizaX.UI.Runtime
         Type Current { get; }
 
         bool CanBack { get; }
-
-        bool IsDirty { get; }
 
         bool FillHistoryInfo(int index, UIRouteDebugInfo info);
 
