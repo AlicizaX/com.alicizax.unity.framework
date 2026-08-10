@@ -28,6 +28,7 @@ namespace AlicizaX.UI.Runtime
             if (IsValidTransition(from, to))
                 return true;
 
+            // 非法跳转仍拒绝；仅记录一次错误，不做额外恢复
             Log.Error("[UI] Invalid state transition for {0}: {1} -> {2}", uiName, from, to);
             return false;
         }

@@ -24,7 +24,6 @@ namespace AlicizaX.UI.Runtime
         internal Canvas _canvas;
 
         internal GraphicRaycaster _raycaster;
-        private UIState _openingPreviousState;
         private UniTaskCompletionSource _viewTransitionCompletion;
 
         internal UIState _state = UIState.Uninitialized;
@@ -142,7 +141,6 @@ namespace AlicizaX.UI.Runtime
 
         private bool _visible;
 
-        // 显示层：Layer + Raycaster。缓存渲染开关见 SetCanvasEnabled
         internal bool Visible
         {
             get => _visible && _canvas != null;
@@ -172,7 +170,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        // 缓存路径关闭/恢复渲染；与 Visible 的 Layer 开关独立
         internal void SetCanvasEnabled(bool value)
         {
             if (_canvas != null && _canvas.enabled != value)
@@ -180,6 +177,9 @@ namespace AlicizaX.UI.Runtime
                 _canvas.enabled = value;
             }
         }
+
+        internal void EnterCacheVisual() => SetCanvasEnabled(false);
+        internal void ExitCacheVisual() => SetCanvasEnabled(true);
 
         internal void ClearUserData()
         {
@@ -189,12 +189,10 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
         private void SetSceneViewVisible(bool visible)
         {
-            if (_canvas == null || !Application.isPlaying)
+            if (_canvas == null || !Application.isPlaying || !EditorApplication.isPlayingOrWillChangePlaymode)
+            {
                 return;
-            if (!EditorApplication.isPlayingOrWillChangePlaymode)
-                return;
-            if (_canvas == null)
-                return;
+            }
 
             if (visible)
             {
@@ -472,14 +470,8 @@ namespace AlicizaX.UI.Runtime
                 Log.Error("[UI] Close transition failed for {0}.", CachedTypeName);
                 Log.Exception(exception);
                 Holder?.StopTransition();
-                try
-                {
-                    Holder?.ApplyClosedTransitionState();
-                }
-                catch (Exception applyException)
-                {
-                    Log.Exception(applyException);
-                }
+                try { Holder?.ApplyClosedTransitionState(); }
+                catch (Exception applyException) { Log.Exception(applyException); }
             }
             finally
             {
@@ -494,9 +486,6 @@ namespace AlicizaX.UI.Runtime
             return closed;
         }
 
-        /// <summary>
-        /// 等待当前 View 的开/关转场。无进行中的转场时立即完成。
-        /// </summary>
         public UniTask AwaitViewTransition()
         {
             return _viewTransitionCompletion != null
@@ -580,7 +569,6 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Opening))
                 return false;
 
-            _openingPreviousState = _state;
             InterruptViewTransition();
             SetState(UIState.Opening);
             Visible = true;
@@ -631,7 +619,6 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        // 只停转场 / 完成 AwaitViewTransition；不 bump 任何 version
         private void InterruptViewTransition()
         {
             Holder?.StopTransition();
@@ -708,65 +695,21 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            Holder?.StopTransition();
-            ApplyRollbackState(NormalizeOpeningRollbackState(_openingPreviousState));
-        }
-
-        private static UIState NormalizeOpeningRollbackState(UIState previousState)
-        {
-            return previousState == UIState.Closed || previousState == UIState.Closing
-                ? UIState.Closed
-                : UIState.Initialized;
-        }
-
-        private void ApplyRollbackState(UIState targetState)
-        {
-            if (targetState == UIState.Opened)
+            InterruptViewTransition();
+            try
             {
-                Visible = true;
-                ApplyOpenTransitionStateSafely();
-                Interactable = true;
-                SetState(UIState.Opened);
-                RegisterEventListenersIfNeeded();
-                return;
+                Holder?.ApplyClosedTransitionState();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("[UI] Rollback opening state failed for {0}.", CachedTypeName);
+                Log.Exception(exception);
             }
 
-            ApplyClosedTransitionStateSafely();
             Visible = false;
-            if (targetState == UIState.Closed)
-            {
-                SetState(UIState.Closed);
-                PauseEventListeners();
-                return;
-            }
-
+            Interactable = false;
             SetState(UIState.Initialized);
-        }
-
-        private void ApplyOpenTransitionStateSafely()
-        {
-            try
-            {
-                Holder.ApplyOpenTransitionState();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] Rollback open transition state failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-            }
-        }
-
-        private void ApplyClosedTransitionStateSafely()
-        {
-            try
-            {
-                Holder.ApplyClosedTransitionState();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] Rollback closed transition state failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-            }
+            PauseEventListeners();
         }
     }
 }

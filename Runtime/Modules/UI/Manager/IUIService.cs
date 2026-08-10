@@ -121,22 +121,23 @@ namespace AlicizaX.UI.Runtime
         // ───────────────────────────────────────────────
 
         /// <summary>
-        /// 关闭指定类型 UI。逻辑关闭在后台推进；可用返回值 AwaitViewTransition 等待关场动画。
+        /// 关闭指定类型 UI。若是 Router 当前页则走 Router（维护历史），否则只关层实例。
+        /// 逻辑关闭在后台推进；可用返回值 AwaitViewTransition 等待关场动画。
         /// </summary>
         UICloseHandle CloseUI<T>(bool force = false) where T : UIBase;
 
         /// <summary>
-        /// 关闭指定类型 UI。逻辑关闭在后台推进；可用返回值 AwaitViewTransition 等待关场动画。
+        /// 关闭指定类型 UI。若是 Router 当前页则走 Router（维护历史），否则只关层实例。
         /// </summary>
         UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false);
 
         /// <summary>
-        /// 异步关闭指定类型 UI，并返回是否完成关闭。
+        /// 异步关闭指定类型 UI。路由页走 Router；叠加窗走层关闭。返回是否完成关闭。
         /// </summary>
         UniTask<bool> CloseUIAsync<T>(bool force = false) where T : UIBase;
 
         /// <summary>
-        /// 异步关闭指定类型 UI，并返回是否完成关闭。
+        /// 异步关闭指定类型 UI。路由页走 Router；叠加窗走层关闭。返回是否完成关闭。
         /// </summary>
         UniTask<bool> CloseUIAsync(RuntimeTypeHandle handle, bool force = false);
 
@@ -164,10 +165,5 @@ namespace AlicizaX.UI.Runtime
         /// 获取当前已打开的指定类型 UI。
         /// </summary>
         T GetUI<T>() where T : UIBase;
-
-        /// <summary>
-        /// 重建指定层的深度排序。
-        /// </summary>
-        UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer);
     }
 }

@@ -316,7 +316,7 @@ namespace AlicizaX.UI.Editor
         {
             EditorGUILayout.BeginHorizontal(_fieldRowStyle);
             EditorGUILayout.LabelField("Editor Warnings", _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            UIWarningSettings.OtherWarningsEnabled = DrawPillToggle("Other Warn", UIWarningSettings.OtherWarningsEnabled, 92f);
+            UIWarningSettings.Enabled = DrawPillToggle("UI Warn", UIWarningSettings.Enabled, 92f);
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
         }

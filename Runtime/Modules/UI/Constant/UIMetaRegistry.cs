@@ -96,7 +96,7 @@ namespace AlicizaX.UI.Runtime
             }
 
 #if UNITY_EDITOR
-            if (UIWarningSettings.OtherWarningsEnabled)
+            if (UIWarningSettings.Enabled)
             {
                 Log.Warning($"[UI] UI not pre-registered: {uiType.FullName}, using reflection fallback.");
             }

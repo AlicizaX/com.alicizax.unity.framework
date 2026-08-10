@@ -21,8 +21,6 @@ namespace AlicizaX.UI.Runtime
 
         private readonly UIService _uiService;
         private readonly List<UIRouteEntry> _history = new();
-        private readonly RuntimeTypeHandle[] _closeManyHandles = new RuntimeTypeHandle[MaxHistoryCount];
-        private readonly UICloseManyMode[] _closeManyModes = new UICloseManyMode[MaxHistoryCount];
 #if UNITY_EDITOR
         private readonly List<UIRouteWarningInfo> _warnings = new();
 #endif
@@ -105,7 +103,8 @@ namespace AlicizaX.UI.Runtime
                     UIRouteResult closeResult = await CloseByRouter(oldCurrent.TypeHandle);
                     if (!closeResult.Success)
                     {
-                        await RollbackNavigateOpen(entry, oldCurrent);
+                        // 新页已打开但旧页关闭失败：不自动回滚，返回错误由业务决定
+                        LogRouteFailure(oldCurrent.TypeHandle, "NavigateTo close previous page failed after new page opened.");
                         return closeResult.Status == UIRouteStatus.RejectedBusy
                             ? closeResult
                             : UIRouteResult.From(UIRouteStatus.CloseFailed);
@@ -156,7 +155,7 @@ namespace AlicizaX.UI.Runtime
                     UIRouteResult closeResult = await CloseByRouter(oldCurrent.TypeHandle);
                     if (!closeResult.Success)
                     {
-                        await RollbackNavigateOpen(entry, oldCurrent);
+                        LogRouteFailure(oldCurrent.TypeHandle, "Replace close previous page failed after new page opened.");
                         return closeResult.Status == UIRouteStatus.RejectedBusy
                             ? closeResult
                             : UIRouteResult.From(UIRouteStatus.CloseFailed);
@@ -469,7 +468,7 @@ namespace AlicizaX.UI.Runtime
                 UIRouteResult closeResult = await CloseByRouter(oldCurrent.TypeHandle);
                 if (!closeResult.Success)
                 {
-                    await RollbackNavigateOpen(entry, oldCurrent);
+                    LogRouteFailure(oldCurrent.TypeHandle, "ResetTo close previous page failed after new page opened.");
                     return closeResult.Status == UIRouteStatus.RejectedBusy
                         ? closeResult
                         : UIRouteResult.From(UIRouteStatus.CloseFailed);
@@ -584,12 +583,7 @@ namespace AlicizaX.UI.Runtime
             UIBase opened = await ShowByRouter(target.TypeHandle, target.Args);
             if (opened == null)
             {
-                bool rollbackResult = await ShowByRouter(current.TypeHandle, current.Args) != null;
-                if (!rollbackResult)
-                {
-                    LogRouteFailure(current.TypeHandle, "Back rollback failed after target page restore failed.");
-                }
-
+                LogRouteFailure(target.TypeHandle, "Back failed to open target page after current closed.");
                 return UIRouteResult.From(UIRouteStatus.OpenFailed);
             }
 
@@ -627,35 +621,41 @@ namespace AlicizaX.UI.Runtime
         {
             UIRouteEntry target = _history[targetIndex];
             UIRouteEntry current = GetCurrentInternal();
-            int closeCount = BuildDeepBackCloseHandles(targetIndex, target.TypeHandle, current?.TypeHandle ?? default, _closeManyHandles, _closeManyModes);
-            bool batchClosedRoutes = false;
-            if (closeCount > 0)
+
+            // 从上往下顺序关：当前页播转场，中间页 skip；同类型只关一次
+            for (int i = _history.Count - 1; i > targetIndex; i--)
             {
-                UICloseManyResult closeResult;
-                try
+                UIRouteEntry entry = _history[i];
+                if (RuntimeTypeHandleComparer.Instance.Equals(entry.TypeHandle, target.TypeHandle))
                 {
-                    closeResult = await _uiService.CloseManyAsync(_closeManyHandles, _closeManyModes, closeCount);
-                }
-                finally
-                {
-                    ClearCloseManyBuffer(closeCount);
+                    continue;
                 }
 
+                if (IsHandleClosedInRange(i + 1, _history.Count, entry.TypeHandle))
+                {
+                    continue;
+                }
+
+                if (!_uiService.IsOpen(entry.TypeHandle) && !_uiService.IsLayerCloseBlocked(entry.TypeHandle))
+                {
+                    continue;
+                }
+
+                bool isCurrent = current != null
+                                 && RuntimeTypeHandleComparer.Instance.Equals(entry.TypeHandle, current.TypeHandle);
+                UIRouteResult closeResult = await CloseByRouter(entry.TypeHandle, force: false, skipTransition: !isCurrent);
                 if (!closeResult.Success)
                 {
-                    RuntimeTypeHandle dirtyHandle = closeResult.FailedHandle.Value == IntPtr.Zero
-                        ? target.TypeHandle
-                        : closeResult.FailedHandle;
-                    LogRouteFailure(dirtyHandle, operationName + " batch close failed: " + closeResult.FailureReason);
-                    return UIRouteResult.From(UIRouteStatus.CloseFailed);
+                    LogRouteFailure(entry.TypeHandle, operationName + " sequential close failed.");
+                    return closeResult.Status == UIRouteStatus.RejectedBusy
+                        ? closeResult
+                        : UIRouteResult.From(UIRouteStatus.CloseFailed);
                 }
-
-                batchClosedRoutes = true;
             }
 
             bool targetWasDirectlyBelowCurrent = targetIndex == _history.Count - 2;
             if (IsAdjacentRouteOpenAfterCurrentClose(current, target, targetWasDirectlyBelowCurrent)
-                || IsTargetOpenAfterBatchClose(target, batchClosedRoutes))
+                || _uiService.IsOpen(target.TypeHandle))
             {
                 _history.RemoveRange(targetIndex + 1, _history.Count - targetIndex - 1);
                 return UIRouteResult.Ok;
@@ -664,15 +664,7 @@ namespace AlicizaX.UI.Runtime
             UIBase opened = await ShowByRouter(target.TypeHandle, target.Args);
             if (opened == null)
             {
-                if (current != null && !RuntimeTypeHandleComparer.Instance.Equals(current.TypeHandle, target.TypeHandle))
-                {
-                    bool rollbackResult = await ShowByRouter(current.TypeHandle, current.Args) != null;
-                    if (!rollbackResult)
-                    {
-                        LogRouteFailure(target.TypeHandle, operationName + " rollback failed after target page restore failed.");
-                    }
-                }
-
+                LogRouteFailure(target.TypeHandle, operationName + " failed to open target page.");
                 return UIRouteResult.From(UIRouteStatus.OpenFailed);
             }
 
@@ -680,59 +672,17 @@ namespace AlicizaX.UI.Runtime
             return UIRouteResult.Ok;
         }
 
-        private bool IsTargetOpenAfterBatchClose(UIRouteEntry target, bool batchClosedRoutes)
+        private bool IsHandleClosedInRange(int startIndex, int endIndex, RuntimeTypeHandle handle)
         {
-            return batchClosedRoutes
-                   && target != null
-                   && _uiService.IsOpen(target.TypeHandle);
-        }
-
-        private int BuildDeepBackCloseHandles(
-            int targetIndex,
-            RuntimeTypeHandle targetHandle,
-            RuntimeTypeHandle currentHandle,
-            RuntimeTypeHandle[] handles,
-            UICloseManyMode[] modes)
-        {
-            int count = 0;
-            for (int i = _history.Count - 1; i > targetIndex; i--)
+            for (int i = startIndex; i < endIndex; i++)
             {
-                RuntimeTypeHandle handle = _history[i].TypeHandle;
-                if (RuntimeTypeHandleComparer.Instance.Equals(handle, targetHandle))
+                if (RuntimeTypeHandleComparer.Instance.Equals(_history[i].TypeHandle, handle))
                 {
-                    continue;
-                }
-
-                bool duplicate = false;
-                for (int j = 0; j < count; j++)
-                {
-                    if (RuntimeTypeHandleComparer.Instance.Equals(handles[j], handle))
-                    {
-                        duplicate = true;
-                        break;
-                    }
-                }
-
-                if (!duplicate)
-                {
-                    handles[count] = handle;
-                    modes[count] = RuntimeTypeHandleComparer.Instance.Equals(handle, currentHandle)
-                        ? UICloseManyMode.Transition
-                        : UICloseManyMode.SilentFinalize;
-                    count++;
+                    return true;
                 }
             }
 
-            return count;
-        }
-
-        private void ClearCloseManyBuffer(int count)
-        {
-            for (int i = 0; i < count; i++)
-            {
-                _closeManyHandles[i] = default;
-                _closeManyModes[i] = default;
-            }
+            return false;
         }
 
         private bool IsAdjacentRouteOpenAfterCurrentClose(UIRouteEntry current, UIRouteEntry target, bool targetWasDirectlyBelowCurrent)
@@ -749,9 +699,9 @@ namespace AlicizaX.UI.Runtime
             return _uiService.ShowUI(handle, args);
         }
 
-        private async UniTask<UIRouteResult> CloseByRouter(RuntimeTypeHandle handle, bool force = false)
+        private async UniTask<UIRouteResult> CloseByRouter(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false)
         {
-            bool closed = await _uiService.CloseUIFromRouterAsync(handle, force);
+            bool closed = await _uiService.CloseUIFromRouterAsync(handle, force, skipTransition);
             if (closed)
             {
                 return UIRouteResult.Ok;
@@ -760,38 +710,6 @@ namespace AlicizaX.UI.Runtime
             return _uiService.IsLayerCloseBlocked(handle)
                 ? UIRouteResult.From(UIRouteStatus.RejectedBusy)
                 : UIRouteResult.From(UIRouteStatus.CloseFailed);
-        }
-
-        private async UniTask<bool> RollbackOpenedEntry(UIRouteEntry entry)
-        {
-            bool rollbackResult = (await CloseByRouter(entry.TypeHandle)).Success;
-            if (!rollbackResult)
-            {
-                LogRouteFailure(entry.TypeHandle, "Rollback failed after navigation transaction failed.");
-            }
-
-            return rollbackResult;
-        }
-
-        private async UniTask<bool> RollbackNavigateOpen(UIRouteEntry openedEntry, UIRouteEntry oldCurrent)
-        {
-            bool rollbackSucceeded = true;
-            if (oldCurrent == null || !RuntimeTypeHandleComparer.Instance.Equals(openedEntry.TypeHandle, oldCurrent.TypeHandle))
-            {
-                rollbackSucceeded = await RollbackOpenedEntry(openedEntry);
-            }
-
-            if (oldCurrent != null)
-            {
-                UIBase currentRestored = await ShowByRouter(oldCurrent.TypeHandle, oldCurrent.Args);
-                if (currentRestored == null)
-                {
-                    LogRouteFailure(oldCurrent.TypeHandle, "Rollback failed to restore previous current route.");
-                    return false;
-                }
-            }
-
-            return rollbackSucceeded;
         }
 
         // 导航失败只记日志，不再永久熔断 Router

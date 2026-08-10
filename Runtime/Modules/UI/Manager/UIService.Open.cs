@@ -78,8 +78,7 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask<UIShowResult> RefreshExistingShowAsync(UIMetadata meta, object[] userDatas)
         {
-            UIState state = meta.State;
-            if (state == UIState.Opened)
+            if (meta.State == UIState.Opened)
             {
                 RefreshOpenedShowUserData(meta, userDatas);
                 return new UIShowResult(meta.View, UIShowResultState.Opened);
@@ -92,17 +91,7 @@ namespace AlicizaX.UI.Runtime
                 return new UIShowResult(joinedView, UIShowResultState.Opened);
             }
 
-            if (meta.State == UIState.Closing
-                || meta.State == UIState.Closed
-                || meta.State == UIState.Destroying
-                || meta.State == UIState.Destroyed
-                || meta.State == UIState.Uninitialized
-                || joinedView == null)
-            {
-                return UIShowResult.Cancelled;
-            }
-
-            return CreateShowResultFromView(joinedView);
+            return UIShowResult.Cancelled;
         }
 
         private bool ShouldRefreshExistingShow(UIMetadata meta)
@@ -140,27 +129,29 @@ namespace AlicizaX.UI.Runtime
                 return UniTask.FromResult(UIShowResult.Failed);
             }
 
-            // 同类型打开中/已打开：只刷 latest userData，不重复打开
+            return ResolveShowEntryAsync(meta, userDatas, allowShowAfterClose: true);
+        }
+
+        private static bool IsCloseBlockingShow(UIMetadata meta)
+        {
+            return meta.CloseInProgress || meta.State == UIState.Closing;
+        }
+
+        private UniTask<UIShowResult> ResolveShowEntryAsync(UIMetadata meta, object[] userDatas, bool allowShowAfterClose)
+        {
             if (ShouldRefreshExistingShow(meta))
             {
                 return RefreshExistingShowAsync(meta, userDatas);
             }
 
-            // Closing 中：等逻辑关闭完成后再用 latest 打开
             if (IsCloseBlockingShow(meta))
             {
-                return ShowAfterCloseAsync(meta, userDatas);
+                return allowShowAfterClose
+                    ? ShowAfterCloseAsync(meta, userDatas)
+                    : UniTask.FromResult(UIShowResult.Cancelled);
             }
 
-            // per-meta 互斥；同层不同类型可并行，不再走层串行队列
             return ShowUIImplAsync(meta, userDatas);
-        }
-
-        private static bool IsCloseBlockingShow(UIMetadata meta)
-        {
-            return meta != null
-                   && (meta.CloseInProgress
-                       || meta.State == UIState.Closing);
         }
 
         private async UniTask<UIShowResult> ShowAfterCloseAsync(UIMetadata meta, object[] userDatas)
@@ -168,171 +159,96 @@ namespace AlicizaX.UI.Runtime
             ApplyStickyShowUserData(meta, userDatas);
             await meta.WaitForCloseOperationAsync();
 
-            // 多路 Closing Show 的 latest 已合并进 pending；CompleteShow 时再清
             object[] latest = meta.GetPendingShowUserDatas(userDatas);
-
-            if (IsCloseBlockingShow(meta))
-            {
-                return UIShowResult.Cancelled;
-            }
-
-            if (ShouldRefreshExistingShow(meta))
-            {
-                return await RefreshExistingShowAsync(meta, latest);
-            }
-
-            return await ShowUIImplAsync(meta, latest);
+            return await ResolveShowEntryAsync(meta, latest, allowShowAfterClose: false);
         }
 
-        private UniTask<bool> EnqueueCloseCommandAsync(UIMetadata meta, bool force)
+        private UniTask<bool> EnqueueCloseCommandAsync(UIMetadata meta, bool force, bool skipTransition = false)
         {
-            if (meta == null)
-            {
-                return UniTask.FromResult(false);
-            }
-
             if (meta.ShowInProgress)
             {
                 meta.RequestCancelShowLoad();
             }
 
-            if (meta.State == UIState.Uninitialized
-                || meta.State == UIState.Destroying
-                || meta.State == UIState.Destroyed)
+            UIState state = meta.State;
+            if (state == UIState.Uninitialized
+                || state == UIState.Destroying
+                || state == UIState.Destroyed)
             {
                 return UniTask.FromResult(false);
             }
 
-            return CloseUIImplCore(meta, force);
+            return CloseUIImplCore(meta, force, skipTransition);
         }
 
         private bool IsMetaInOpenStack(UIMetadata meta)
         {
-            if (meta == null)
-            {
-                return false;
-            }
-
             LayerData layer = _openUI[meta.MetaInfo.UILayer];
             return layer != null && GetOpenIndex(layer, meta) >= 0;
         }
 
         private async UniTask<UIShowResult> ShowUIImplAsync(UIMetadata metaInfo, object[] userDatas)
         {
-            if (ShouldRefreshExistingShow(metaInfo))
+            if (ShouldRefreshExistingShow(metaInfo) || IsCloseBlockingShow(metaInfo))
             {
-                return await RefreshExistingShowAsync(metaInfo, userDatas);
-            }
-
-            if (IsCloseBlockingShow(metaInfo))
-            {
-                return await ShowAfterCloseAsync(metaInfo, userDatas);
+                return await ResolveShowEntryAsync(metaInfo, userDatas, allowShowAfterClose: true);
             }
 
             CreateMetaUI(metaInfo);
             if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
-                if (IsCloseBlockingShow(metaInfo))
-                {
-                    return await ShowAfterCloseAsync(metaInfo, userDatas);
-                }
-
-                return await RefreshExistingShowAsync(metaInfo, userDatas);
+                return await ResolveShowEntryAsync(metaInfo, userDatas, allowShowAfterClose: true);
             }
 
             CancellationToken cancellationToken = loadCts.Token;
-            UIShowResult showResult = UIShowResult.Failed;
-            bool exceptionThrown = false;
-            bool visualStarted = false;
             try
             {
                 ReserveOpenSlot(metaInfo);
                 await UIHolderFactory.CreateUIResourceAsync(metaInfo, UICacheLayer, cancellationToken);
+
                 if (!IsShowValidAfterResourceCreation(metaInfo, operationVersion))
                 {
                     bool cancelled = IsShowCancelled(metaInfo, operationVersion, cancellationToken);
+#if UNITY_EDITOR
                     if (!cancelled)
                     {
-#if UNITY_EDITOR
                         WarnUIOperation("Show invalid after resource creation", metaInfo, operationVersion);
+                    }
 #endif
-                    }
-
-                    if (CanRollbackShow(metaInfo, operationVersion))
-                    {
-                        await RollbackFailedShowAsync(metaInfo, operationVersion);
-                    }
-
-                    showResult = cancelled ? UIShowResult.Cancelled : UIShowResult.Failed;
+                    return await FailShowAsync(metaInfo, operationVersion, loadCts, cancelled);
                 }
-                else
+
+                FinalizeShow(metaInfo, metaInfo.GetPendingShowUserDatas(userDatas));
+                SortWindowDepth(metaInfo.MetaInfo.UILayer);
+
+                if (metaInfo.State == UIState.Loaded && !await metaInfo.View.InternalInitlized(metaInfo, operationVersion))
                 {
-                    FinalizeShow(metaInfo, metaInfo.GetPendingShowUserDatas(userDatas));
-                    SortWindowDepth(metaInfo.MetaInfo.UILayer);
-                    if (metaInfo.State == UIState.Loaded && !await metaInfo.View.InternalInitlized(metaInfo, operationVersion))
-                    {
-                        bool cancelled = IsShowCancelled(metaInfo, operationVersion, cancellationToken);
-                        if (!cancelled)
-                        {
+                    bool cancelled = IsShowCancelled(metaInfo, operationVersion, cancellationToken);
 #if UNITY_EDITOR
-                            WarnUIOperation("Show init failed", metaInfo, operationVersion);
+                    if (!cancelled)
+                    {
+                        WarnUIOperation("Show init failed", metaInfo, operationVersion);
+                    }
 #endif
-                        }
-
-                        showResult = cancelled ? UIShowResult.Cancelled : UIShowResult.Failed;
-                    }
-                    else if (metaInfo.OperationVersion != operationVersion || cancellationToken.IsCancellationRequested)
-                    {
-                        showResult = UIShowResult.Cancelled;
-                    }
-                    else
-                    {
-                        visualStarted = true;
-                        return await RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts);
-                    }
+                    return await FailShowAsync(metaInfo, operationVersion, loadCts, cancelled);
                 }
 
-                if (!showResult.IsAccepted && CanRollbackShow(metaInfo, operationVersion))
+                if (metaInfo.OperationVersion != operationVersion || cancellationToken.IsCancellationRequested)
                 {
-                    await RollbackFailedShowAsync(metaInfo, operationVersion);
+                    return await FailShowAsync(metaInfo, operationVersion, loadCts, cancelled: true);
                 }
+
+                return await RunPreparedShowVisualAsync(metaInfo, operationVersion, loadCts);
             }
             catch (OperationCanceledException)
             {
-                if (CanRollbackShow(metaInfo, operationVersion))
-                {
-                    await RollbackFailedShowAsync(metaInfo, operationVersion);
-                }
-
-                showResult = UIShowResult.Cancelled;
+                return await FailShowAsync(metaInfo, operationVersion, loadCts, cancelled: true);
             }
             catch (Exception exception)
             {
-                exceptionThrown = true;
-                if (CanRollbackShow(metaInfo, operationVersion))
-                {
-                    await RollbackFailedShowAsync(metaInfo, operationVersion);
-                }
-
-                metaInfo.FailShowOperation(exception);
+                await FailShowAsync(metaInfo, operationVersion, loadCts, cancelled: false, exception);
                 throw;
             }
-            finally
-            {
-                if (!visualStarted)
-                {
-                    UIBase result = showResult.IsAccepted ? metaInfo.View : null;
-                    if (!exceptionThrown)
-                    {
-                        metaInfo.CompleteShowOperation(result);
-                    }
-
-                    metaInfo.EndShowOperation(operationVersion, loadCts);
-                    loadCts.Dispose();
-                }
-            }
-
-            return showResult;
         }
 
         private UIBase ShowUIImplSync(UIMetadata metaInfo, object[] userDatas)
@@ -372,7 +288,7 @@ namespace AlicizaX.UI.Runtime
                         WarnUIOperation("ShowSync invalid after resource creation", metaInfo, operationVersion);
                     }
 #endif
-                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts);
+                    FailShowSync(metaInfo, operationVersion, loadCts);
                     return null;
                 }
 
@@ -383,13 +299,13 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
                     WarnUIOperation("ShowSync init failed", metaInfo, operationVersion);
 #endif
-                    FailPreparedShowSync(metaInfo, operationVersion, loadCts);
+                    FailShowSync(metaInfo, operationVersion, loadCts);
                     return null;
                 }
 
                 if (metaInfo.OperationVersion != operationVersion)
                 {
-                    FailPreparedShowSync(metaInfo, operationVersion, loadCts);
+                    FailShowSync(metaInfo, operationVersion, loadCts);
                     return null;
                 }
 
@@ -404,33 +320,25 @@ namespace AlicizaX.UI.Runtime
                     return view;
                 }
 
-                FailPreparedShowSync(metaInfo, operationVersion, loadCts);
+                FailShowSync(metaInfo, operationVersion, loadCts);
                 return null;
             }
             catch
             {
-                if (CanRollbackShow(metaInfo, operationVersion))
-                {
-                    FailPreparedShowSync(metaInfo, operationVersion, loadCts);
-                }
-                else
-                {
-                    CompletePreparedShowFailureBeforeStackImmediate(metaInfo, operationVersion, loadCts);
-                }
-
+                FailShowSync(metaInfo, operationVersion, loadCts);
                 throw;
             }
         }
 
-        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force)
+        private async UniTask<bool> CloseUIImplCore(UIMetadata meta, bool force, bool skipTransition = false)
         {
-            if (meta == null || meta.State == UIState.Uninitialized || meta.State == UIState.Destroying || meta.State == UIState.Destroyed)
+            UIState state = meta.State;
+            if (state == UIState.Uninitialized || state == UIState.Destroying || state == UIState.Destroyed)
             {
                 return false;
             }
 
-
-            if (meta.CloseInProgress || meta.State == UIState.Closing)
+            if (meta.CloseInProgress || state == UIState.Closing)
             {
                 return await meta.WaitForCloseOperationAsync();
             }
@@ -443,41 +351,34 @@ namespace AlicizaX.UI.Runtime
 
             if (!meta.BeginCloseOperation(out int operationVersion))
             {
-                if (meta.CloseInProgress || meta.State == UIState.Closing)
-                {
-                    return await meta.WaitForCloseOperationAsync();
-                }
-
-                return false;
+                return meta.CloseInProgress || meta.State == UIState.Closing
+                    ? await meta.WaitForCloseOperationAsync()
+                    : false;
             }
 
             bool closeCompleted = false;
             try
             {
-                UIState state = meta.State;
-                UIFinalizeClosedMode finalizeMode = GetFinalizeModeForExplicitClose(meta, interruptedShow);
-                if (state == UIState.CreatedUI)
+                state = meta.State;
+                UIFinalizeClosedMode finalizeMode = GetFinalizeModeForExplicitClose(state, interruptedShow);
+                if (state == UIState.CreatedUI
+                    || state == UIState.Loaded
+                    || state == UIState.Initialized
+                    || state == UIState.Closed)
                 {
-                    UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
-                    closeCompleted = finalizeResult.Success;
-                }
-                else if (state == UIState.Loaded || state == UIState.Initialized || state == UIState.Closed)
-                {
-                    if (meta.View != null)
+                    if (meta.View != null && state != UIState.CreatedUI)
                     {
                         meta.View.Visible = false;
                     }
 
-                    UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
-                    closeCompleted = finalizeResult.Success;
+                    closeCompleted = await FinalizeClosedWindowAsync(meta, force, finalizeMode);
                 }
                 else if (meta.View != null)
                 {
-                    await meta.View.InternalClose(meta, operationVersion);
+                    await meta.View.InternalClose(meta, operationVersion, skipTransition);
                     if (meta.OperationVersion == operationVersion && meta.State == UIState.Closed)
                     {
-                        UIFinalizeClosedResult finalizeResult = await FinalizeClosedWindowAsync(meta, force, finalizeMode, refreshVisual: true);
-                        closeCompleted = finalizeResult.Success;
+                        closeCompleted = await FinalizeClosedWindowAsync(meta, force, finalizeMode);
                     }
 #if UNITY_EDITOR
                     else if (meta.OperationVersion == operationVersion)
@@ -496,30 +397,19 @@ namespace AlicizaX.UI.Runtime
             return closeCompleted;
         }
 
-        private async UniTask<UIFinalizeClosedResult> FinalizeClosedWindowAsync(
+        private async UniTask<bool> FinalizeClosedWindowAsync(
             UIMetadata meta,
             bool force,
-            UIFinalizeClosedMode mode,
-            bool refreshVisual)
+            UIFinalizeClosedMode mode)
         {
-            if (meta == null)
-            {
-                return UIFinalizeClosedResult.Fail(UICloseFailureReason.FinalizeFailed);
-            }
-
             int layerIndex = meta.MetaInfo.UILayer;
             int removedIndex = Pop(meta);
             if (removedIndex < 0)
             {
-                return UIFinalizeClosedResult.Fail(UICloseFailureReason.FinalizeFailed);
+                return false;
             }
 
-
-            if (refreshVisual)
-            {
-                SortWindowDepth(layerIndex, removedIndex);
-            }
-
+            SortWindowDepth(layerIndex, removedIndex);
 
             if (mode == UIFinalizeClosedMode.Dispose)
             {
@@ -530,23 +420,14 @@ namespace AlicizaX.UI.Runtime
                 CacheWindow(meta, force);
             }
 
-            return new UIFinalizeClosedResult(true, removedIndex, UICloseFailureReason.None);
+            return true;
         }
 
-        private static UIFinalizeClosedMode GetFinalizeModeForExplicitClose(UIMetadata meta, bool interruptedShow)
+        private static UIFinalizeClosedMode GetFinalizeModeForExplicitClose(UIState state, bool interruptedShow)
         {
-            if (meta == null)
-            {
-                return UIFinalizeClosedMode.Dispose;
-            }
-
-            UIState state = meta.State;
-            if (state == UIState.CreatedUI || interruptedShow)
-            {
-                return UIFinalizeClosedMode.Dispose;
-            }
-
-            return UIFinalizeClosedMode.Cache;
+            return state == UIState.CreatedUI || interruptedShow
+                ? UIFinalizeClosedMode.Dispose
+                : UIFinalizeClosedMode.Cache;
         }
         private UIBase GetUIImpl(UIMetadata meta)
         {
@@ -640,7 +521,6 @@ namespace AlicizaX.UI.Runtime
         {
             if (metadata == null
                 || metadata.View == null
-                || metadata.StackRemovalPending
                 || !UIStateMachine.IsDisplayActive(metadata.State))
             {
                 return false;
@@ -660,7 +540,7 @@ namespace AlicizaX.UI.Runtime
             if (meta.InCache)
             {
                 RemoveFromCache(meta.MetaInfo.RuntimeTypeHandle);
-                meta.View.SetCanvasEnabled(true);
+                meta.View.ExitCacheVisual();
                 Push(meta);
             }
             else
@@ -693,9 +573,7 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsShowValidAfterResourceCreation(UIMetadata meta, int operationVersion)
         {
-
-            return meta != null
-                   && meta.IsOperationCurrent(operationVersion)
+            return meta.IsOperationCurrent(operationVersion)
                    && meta.View != null
                    && meta.State != UIState.Uninitialized
                    && meta.State != UIState.CreatedUI
@@ -824,107 +702,104 @@ namespace AlicizaX.UI.Runtime
                 : UIShowResult.Failed;
         }
 
-        private static UIShowResult CreateShowResultFromView(UIBase view)
-        {
-            if (view == null)
-            {
-                return UIShowResult.Failed;
-            }
-
-            return view.State == UIState.Opened
-                ? new UIShowResult(view, UIShowResultState.Opened)
-                : UIShowResult.Failed;
-        }
-
         private async UniTask<UIShowResult> RunPreparedShowVisualAsync(
             UIMetadata meta,
             int operationVersion,
             CancellationTokenSource loadCts)
         {
-            UIShowResult showResult = UIShowResult.Failed;
-            bool exceptionThrown = false;
             try
             {
                 bool openResult = meta.View != null && meta.View.InternalOpen(meta, operationVersion);
-
-                showResult = openResult
+                UIShowResult showResult = openResult
                     ? meta.IsOperationCurrent(operationVersion)
                         ? new UIShowResult(meta.View, UIShowResultState.Opened)
                         : UIShowResult.Cancelled
                     : IsShowAcceptedAfterOpenInterruption(meta, operationVersion);
 
-                if (!showResult.IsAccepted && meta.IsOperationCurrent(operationVersion))
+                if (showResult.IsAccepted)
                 {
-                    if (showResult.State == UIShowResultState.Failed)
-                    {
-#if UNITY_EDITOR
-                        WarnUIOperation("Show open rejected", meta, operationVersion);
-#endif
-                    }
-
-                    await RollbackFailedShowAsync(meta, operationVersion);
+                    meta.CompleteShowOperation(meta.View);
+                    meta.EndShowOperation(operationVersion, loadCts);
+                    loadCts.Dispose();
+                    return showResult;
                 }
+
+                if (showResult.State == UIShowResultState.Failed)
+                {
+#if UNITY_EDITOR
+                    WarnUIOperation("Show open rejected", meta, operationVersion);
+#endif
+                }
+
+                return await FailShowAsync(
+                    meta,
+                    operationVersion,
+                    loadCts,
+                    cancelled: showResult.State == UIShowResultState.Cancelled);
             }
             catch (Exception exception)
             {
-                exceptionThrown = true;
+                await FailShowAsync(meta, operationVersion, loadCts, cancelled: false, exception);
+                throw;
+            }
+        }
+
+        private async UniTask<UIShowResult> FailShowAsync(
+            UIMetadata meta,
+            int operationVersion,
+            CancellationTokenSource loadCts,
+            bool cancelled,
+            Exception exception = null)
+        {
+            try
+            {
                 if (CanRollbackShow(meta, operationVersion))
                 {
-                    await RollbackFailedShowAsync(meta, operationVersion);
+                    int removed = Pop(meta);
+                    SortWindowDepth(meta.MetaInfo.UILayer, removed >= 0 ? removed : 0);
+                    await meta.DisposeAsync();
                 }
-
-                meta.FailShowOperation(exception);
-                throw;
             }
             finally
             {
-                UIBase result = showResult.IsAccepted ? meta.View : null;
-                if (!exceptionThrown)
+                if (exception != null)
                 {
-                    meta.CompleteShowOperation(result);
+                    meta.FailShowOperation(exception);
+                }
+                else
+                {
+                    meta.CompleteShowOperation(null);
                 }
 
                 meta.EndShowOperation(operationVersion, loadCts);
                 loadCts.Dispose();
             }
 
-            return showResult;
+            return cancelled ? UIShowResult.Cancelled : UIShowResult.Failed;
         }
 
-        private void FailPreparedShowSync(
-            UIMetadata meta,
-            int operationVersion,
-            CancellationTokenSource loadCts)
-        {
-            if (CanRollbackShow(meta, operationVersion))
-            {
-                int removed = Pop(meta);
-                SortWindowDepth(meta.MetaInfo.UILayer, removed >= 0 ? removed : 0);
-                meta.DisposeImmediate();
-                loadCts?.Dispose();
-                return;
-            }
-
-            CompletePreparedShowFailureBeforeStackImmediate(meta, operationVersion, loadCts);
-        }
-
-        private void CompletePreparedShowFailureBeforeStackImmediate(
-            UIMetadata meta,
-            int operationVersion,
-            CancellationTokenSource loadCts)
+        private void FailShowSync(UIMetadata meta, int operationVersion, CancellationTokenSource loadCts)
         {
             try
             {
-                if (meta != null && meta.IsOperationCurrent(operationVersion) && !CanRollbackShow(meta, operationVersion))
+                if (!meta.IsOperationCurrent(operationVersion))
                 {
-                    meta.DisposeImmediate();
+                    return;
                 }
+
+                if (IsMetaInOpenStack(meta))
+                {
+                    int removed = Pop(meta);
+                    SortWindowDepth(meta.MetaInfo.UILayer, removed >= 0 ? removed : 0);
+                }
+
+                meta.DisposeImmediate();
             }
             finally
             {
-                meta?.CompleteShowOperation(null);
-                meta?.EndShowOperation(operationVersion, loadCts);
-                loadCts?.Dispose();
+                meta.CompleteShowOperation(null);
+                meta.EndShowOperation(operationVersion, loadCts);
+                loadCts.Dispose();
             }
         }
 
@@ -963,59 +838,9 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private async UniTask RollbackFailedShowAsync(UIMetadata meta, int operationVersion)
-        {
-            if (!CanRollbackShow(meta, operationVersion))
-            {
-                return;
-            }
-
-            int removed = Pop(meta);
-            int layerIndex = meta.MetaInfo.UILayer;
-            SortWindowDepth(layerIndex, removed >= 0 ? removed : 0);
-            await meta.DisposeAsync();
-        }
-
         private bool CanRollbackShow(UIMetadata meta, int operationVersion)
         {
-            return meta != null
-                   && meta.IsOperationCurrent(operationVersion)
-                   && IsMetaInOpenStack(meta);
-        }
-
-        public UniTask<bool> RebuildLayerVisualStateAsync(UILayer layer)
-        {
-            int layerIndex = (int)layer;
-            if ((uint)layerIndex >= (uint)_openUI.Length)
-            {
-                return UniTask.FromResult(false);
-            }
-
-            LayerData layerData = _openUI[layerIndex];
-            if (layerData != null)
-            {
-                ClearStackRemovalPendingOnLayer(layerData);
-                SortWindowDepth(layerIndex, 0);
-            }
-
-            return UniTask.FromResult(true);
-        }
-
-        private static void ClearStackRemovalPendingOnLayer(LayerData layerData)
-        {
-            if (layerData == null)
-            {
-                return;
-            }
-
-            for (int i = 0; i < layerData.Count; i++)
-            {
-                UIMetadata meta = layerData.Items[i];
-                if (meta != null)
-                {
-                    meta.StackRemovalPending = false;
-                }
-            }
+            return meta.IsOperationCurrent(operationVersion) && IsMetaInOpenStack(meta);
         }
 
         private void AddUpdateableWindow(UIMetadata meta)
@@ -1066,7 +891,7 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
         private static void WarnUIOperation(string title, UIMetadata meta, int expectedOperationVersion)
         {
-            if (!UIWarningSettings.OtherWarningsEnabled)
+            if (!UIWarningSettings.Enabled)
             {
                 return;
             }

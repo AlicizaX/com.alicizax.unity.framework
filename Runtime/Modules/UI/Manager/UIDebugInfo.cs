@@ -15,23 +15,24 @@ namespace AlicizaX.UI.Runtime
         int FillCacheDebugInfo(UIWindowDebugInfo[] infos, int capacity);
     }
 
+    // Editor 运行时 UI 告警开关（Service/Router/Registry 共用）
     internal static class UIWarningSettings
     {
-        private const string OtherWarningsKey = "AlicizaX.UI.Warning.Other";
+        private const string WarningsKey = "AlicizaX.UI.Warning.Enabled";
 
-        private static bool? _otherWarningsEnabled;
+        private static bool? _enabled;
 
-        public static bool OtherWarningsEnabled
+        public static bool Enabled
         {
-            get => _otherWarningsEnabled ??= EditorPrefs.GetBool(OtherWarningsKey, true);
+            get => _enabled ??= EditorPrefs.GetBool(WarningsKey, true);
             set
             {
-                _otherWarningsEnabled = value;
-                EditorPrefs.SetBool(OtherWarningsKey, value);
+                _enabled = value;
+                EditorPrefs.SetBool(WarningsKey, value);
             }
         }
 
-        public static bool AnyWarningsEnabled => OtherWarningsEnabled;
+        public static bool AnyWarningsEnabled => Enabled;
     }
 
     internal sealed class UIServiceDebugInfo

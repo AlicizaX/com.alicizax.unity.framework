@@ -46,7 +46,7 @@ namespace AlicizaX.UI.Runtime
 
             view.PauseEventListeners();
             view.ClearUserData();
-            view.SetCanvasEnabled(false);
+            view.EnterCacheVisual();
             view.Holder.transform.SetParent(UICacheLayer, false);
             if (uiMetadata.MetaInfo.CacheTime > 0)
             {
@@ -62,7 +62,7 @@ namespace AlicizaX.UI.Runtime
                 if (timerHandle == 0UL)
                 {
 #if UNITY_EDITOR
-                    if (UIWarningSettings.OtherWarningsEnabled)
+                    if (UIWarningSettings.Enabled)
                     {
                         Log.Warning("Failed to create cache timer for {0}", uiMetadata.UILogicTypeName);
                     }

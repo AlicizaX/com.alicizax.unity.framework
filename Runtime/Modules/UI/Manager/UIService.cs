@@ -173,37 +173,32 @@ namespace AlicizaX.UI.Runtime
 
         public UniTask<bool> CloseUIAsync(RuntimeTypeHandle handle, bool force = false)
         {
-            return CloseUIAsyncDirect(handle, force);
+            if (_routerInternal != null && _routerInternal.IsCurrent(handle))
+            {
+                return CloseViaRouterAsync(handle, force);
+            }
+
+            return CloseLayerUIAsync(handle, force);
         }
 
-        internal UniTask<bool> CloseUIFromRouterAsync(RuntimeTypeHandle handle, bool force = false)
+        internal UniTask<bool> CloseUIFromRouterAsync(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false)
         {
-            return CloseUIAsyncCore(handle, force);
+            return CloseLayerUIAsync(handle, force, skipTransition);
         }
 
         internal bool IsLayerCloseBlocked(RuntimeTypeHandle handle)
         {
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
-            if (metadata == null)
-            {
-                return false;
-            }
-
-            return metadata.CloseInProgress || metadata.ShowInProgress;
+            return metadata != null && (metadata.CloseInProgress || metadata.ShowInProgress);
         }
 
-        private async UniTask<bool> CloseUIAsyncDirect(RuntimeTypeHandle handle, bool force)
+        private async UniTask<bool> CloseViaRouterAsync(RuntimeTypeHandle handle, bool force)
         {
-            if (_routerInternal != null && _routerInternal.IsCurrent(handle))
-            {
-                UIRouteResult routeResult = await _routerInternal.CloseCurrent(handle, force);
-                return routeResult.Success;
-            }
-
-            return await CloseUIAsyncCore(handle, force);
+            UIRouteResult routeResult = await _routerInternal.CloseCurrent(handle, force);
+            return routeResult.Success;
         }
 
-        private UniTask<bool> CloseUIAsyncCore(RuntimeTypeHandle handle, bool force)
+        private UniTask<bool> CloseLayerUIAsync(RuntimeTypeHandle handle, bool force, bool skipTransition = false)
         {
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
             if (metadata == null)
@@ -217,7 +212,7 @@ namespace AlicizaX.UI.Runtime
                 return UniTask.FromResult(false);
             }
 
-            return EnqueueCloseCommandAsync(metadata, force);
+            return EnqueueCloseCommandAsync(metadata, force, skipTransition);
         }
 
         public bool IsOpen<T>() where T : UIBase

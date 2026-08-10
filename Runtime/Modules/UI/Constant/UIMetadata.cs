@@ -15,8 +15,14 @@ namespace AlicizaX.UI.Runtime
         public readonly string UILogicTypeName;
         public readonly string UIHolderTypeName;
         public bool InCache = false;
-        public bool StackRemovalPending;
         public readonly bool IsValid;
+
+        private enum OperationKind : byte
+        {
+            Idle = 0,
+            Showing = 1,
+            Closing = 2,
+        }
 
         private CancellationTokenSource _loadCancellationTokenSource;
         private UniTaskCompletionSource<UIBase> _showCompletionSource;
@@ -24,12 +30,11 @@ namespace AlicizaX.UI.Runtime
         private System.Object[] _pendingShowUserDatas;
         private bool _hasPendingShowUserDatas;
         private int _operationVersion;
-        private bool _showInProgress;
-        private bool _closeInProgress;
+        private OperationKind _operation;
 
         public int OperationVersion => _operationVersion;
-        public bool ShowInProgress => _showInProgress;
-        public bool CloseInProgress => _closeInProgress;
+        public bool ShowInProgress => _operation == OperationKind.Showing;
+        public bool CloseInProgress => _operation == OperationKind.Closing;
 
         public bool IsOperationCurrent(int operationVersion)
         {
@@ -61,12 +66,9 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-
-        // Window Show / Widget Create 共用同一操作入口
         public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts)
         {
-            // 关闭进行中禁止开加载，避免清掉 Close 标志 / version 错位
-            if (_showInProgress || _closeInProgress)
+            if (_operation != OperationKind.Idle)
             {
                 operationVersion = -1;
                 loadCts = null;
@@ -79,13 +81,13 @@ namespace AlicizaX.UI.Runtime
 
             CompleteShowOperation(null);
             operationVersion = ++_operationVersion;
-            _showInProgress = true;
+            _operation = OperationKind.Showing;
             return true;
         }
 
         public bool BeginCloseOperation(out int operationVersion)
         {
-            if (_closeInProgress)
+            if (_operation == OperationKind.Closing)
             {
                 operationVersion = -1;
                 return false;
@@ -94,21 +96,18 @@ namespace AlicizaX.UI.Runtime
             _loadCancellationTokenSource?.Cancel();
             _loadCancellationTokenSource = null;
             operationVersion = ++_operationVersion;
-            _closeInProgress = true;
-            _showInProgress = false;
+            _operation = OperationKind.Closing;
 
-            // 打断 Show 等待者并清 pending；Closing 再开由之后的 Show 重新写入
             CompleteShowOperation(null, clearPendingUserDatas: true);
-            // 预先创建，确保 Close join / Show-after-close 可挂接
             _closeCompletionSource ??= new UniTaskCompletionSource<bool>();
             return true;
         }
 
         public void EndShowOperation(int operationVersion, CancellationTokenSource loadCts)
         {
-            if (_operationVersion == operationVersion)
+            if (_operationVersion == operationVersion && _operation == OperationKind.Showing)
             {
-                _showInProgress = false;
+                _operation = OperationKind.Idle;
             }
 
             if (ReferenceEquals(_loadCancellationTokenSource, loadCts))
@@ -119,9 +118,9 @@ namespace AlicizaX.UI.Runtime
 
         public void EndCloseOperation(int operationVersion)
         {
-            if (_operationVersion == operationVersion)
+            if (_operationVersion == operationVersion && _operation == OperationKind.Closing)
             {
-                _closeInProgress = false;
+                _operation = OperationKind.Idle;
             }
         }
 
@@ -139,7 +138,7 @@ namespace AlicizaX.UI.Runtime
                 return _closeCompletionSource.Task;
             }
 
-            if (_closeInProgress)
+            if (_operation == OperationKind.Closing)
             {
                 _closeCompletionSource = new UniTaskCompletionSource<bool>();
                 return _closeCompletionSource.Task;
@@ -153,15 +152,14 @@ namespace AlicizaX.UI.Runtime
             _loadCancellationTokenSource?.Cancel();
             _loadCancellationTokenSource = null;
             _operationVersion++;
-            _showInProgress = false;
-            _closeInProgress = false;
+            _operation = OperationKind.Idle;
             CompleteShowOperation(null);
             CompleteCloseOperation(false);
         }
 
         public void RequestCancelShowLoad()
         {
-            if (!_showInProgress)
+            if (_operation != OperationKind.Showing)
             {
                 return;
             }
@@ -169,7 +167,6 @@ namespace AlicizaX.UI.Runtime
             _loadCancellationTokenSource?.Cancel();
         }
 
-        // Opened/稳定显示：只刷 View，不写 sticky pending
         public void RefreshLiveShowUserDatas(System.Object[] userDatas)
         {
             View?.RefreshParams(userDatas);
@@ -179,7 +176,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        // 仅 ShowInProgress（加载中 latest）或 Closing 再开意图
         public void SetPendingShowUserDatas(System.Object[] userDatas)
         {
             _pendingShowUserDatas = userDatas;
@@ -200,13 +196,29 @@ namespace AlicizaX.UI.Runtime
                 return _showCompletionSource.Task;
             }
 
-            if (_showInProgress)
+            if (_operation == OperationKind.Showing)
             {
                 _showCompletionSource = new UniTaskCompletionSource<UIBase>();
                 return _showCompletionSource.Task;
             }
 
             return UniTask.FromResult(State == UIState.Opened ? View : null);
+        }
+
+        public int BeginWidgetCreate(out CancellationTokenSource loadCts)
+        {
+            _loadCancellationTokenSource?.Cancel();
+            loadCts = new CancellationTokenSource();
+            _loadCancellationTokenSource = loadCts;
+            return ++_operationVersion;
+        }
+
+        public void EndWidgetCreate(int operationVersion, CancellationTokenSource loadCts)
+        {
+            if (ReferenceEquals(_loadCancellationTokenSource, loadCts))
+            {
+                _loadCancellationTokenSource = null;
+            }
         }
 
 
@@ -242,9 +254,7 @@ namespace AlicizaX.UI.Runtime
         internal void ResetRuntimeState()
         {
             CancelAsyncOperations();
-            _showInProgress = false;
-            _closeInProgress = false;
-            StackRemovalPending = false;
+            _operation = OperationKind.Idle;
             View = null;
             InCache = false;
         }
