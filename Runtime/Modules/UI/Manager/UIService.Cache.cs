@@ -46,7 +46,6 @@ namespace AlicizaX.UI.Runtime
 
             view.PauseEventListeners();
             view.ClearUserData();
-            // 缓存关 Canvas；显示态用 Layer/Raycaster（Visible）
             view.SetCanvasEnabled(false);
             view.Holder.transform.SetParent(UICacheLayer, false);
             if (uiMetadata.MetaInfo.CacheTime > 0)

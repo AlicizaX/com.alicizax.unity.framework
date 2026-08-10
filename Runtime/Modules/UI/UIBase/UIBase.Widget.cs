@@ -35,7 +35,6 @@ namespace AlicizaX.UI.Runtime
                 UIBase view = metadata?.View;
                 if (view != null && view.Visible)
                 {
-                    // Cancel 先 bump 作废 create/show；teardown 关场只靠状态机，不绑 Meta version
                     metadata.CancelAsyncOperations();
                     await view.InternalClose(skipTransition: true);
                 }
@@ -309,7 +308,6 @@ namespace AlicizaX.UI.Runtime
                 }
                 else
                 {
-                    // Sync：逻辑 Open（含 OnOpen）必须在返回前完成；转场后台并行
                     if (visible)
                     {
                         if (metadata.View != null
@@ -458,7 +456,6 @@ namespace AlicizaX.UI.Runtime
 
             if (meta != null)
             {
-                // Cancel 先 bump 作废 create/show；teardown 关场只靠状态机
                 meta.CancelAsyncOperations();
                 if (UIStateMachine.IsDisplayActive(widget.State))
                 {

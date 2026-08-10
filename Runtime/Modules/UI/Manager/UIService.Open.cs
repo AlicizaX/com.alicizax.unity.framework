@@ -40,13 +40,11 @@ namespace AlicizaX.UI.Runtime
     {
         private readonly LayerData[] _openUI = new LayerData[(int)UILayer.All];
 
-        // Opened：只刷 View，不 sticky
         private static void RefreshOpenedShowUserData(UIMetadata meta, object[] userDatas)
         {
             meta?.RefreshLiveShowUserDatas(userDatas);
         }
 
-        // 加载中 latest 或 Closing 再开意图（唯一 sticky 入口）
         private static void ApplyStickyShowUserData(UIMetadata meta, object[] userDatas)
         {
             meta?.SetPendingShowUserDatas(userDatas);
@@ -87,7 +85,6 @@ namespace AlicizaX.UI.Runtime
                 return new UIShowResult(meta.View, UIShowResultState.Opened);
             }
 
-            // 加载中 join：更新 latest，等待本次打开结果（被 Close 打断则 Cancelled，需再 Show）
             ApplyStickyShowUserData(meta, userDatas);
             UIBase joinedView = await meta.WaitForShowOperationAsync();
             if (joinedView != null && joinedView.State == UIState.Opened)
@@ -127,7 +124,6 @@ namespace AlicizaX.UI.Runtime
                 return refreshed;
             }
 
-            // Sync 无法 await 关闭；不写 sticky（关后再开请用异步 Show）
             if (IsCloseBlockingShow(meta))
             {
                 Log.Warning("[UI] ShowUISync rejected while closing: {0}", meta.UILogicTypeName);
@@ -236,7 +232,6 @@ namespace AlicizaX.UI.Runtime
             CreateMetaUI(metaInfo);
             if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
-                // Begin 失败：可能是 Show 并发，或 Close 抢占
                 if (IsCloseBlockingShow(metaInfo))
                 {
                     return await ShowAfterCloseAsync(metaInfo, userDatas);
@@ -356,7 +351,6 @@ namespace AlicizaX.UI.Runtime
             CreateMetaUI(metaInfo);
             if (!metaInfo.BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts))
             {
-                // Close 抢占：无法同步等待；Show 并发：写入 in-flight latest
                 if (IsCloseBlockingShow(metaInfo))
                 {
                     Log.Warning("[UI] ShowUISync rejected while closing: {0}", metaInfo.UILogicTypeName);
@@ -399,7 +393,6 @@ namespace AlicizaX.UI.Runtime
                     return null;
                 }
 
-                // Sync：逻辑 Open（含 OnOpen）必须在返回前完成；转场后台并行
                 bool openResult = metaInfo.View != null
                                  && metaInfo.View.InternalOpen(metaInfo, operationVersion);
                 if (openResult && metaInfo.IsOperationCurrent(operationVersion))
@@ -436,7 +429,7 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            // 二次 Close：join 同一关闭流程
+
             if (meta.CloseInProgress || meta.State == UIState.Closing)
             {
                 return await meta.WaitForCloseOperationAsync();
@@ -450,7 +443,6 @@ namespace AlicizaX.UI.Runtime
 
             if (!meta.BeginCloseOperation(out int operationVersion))
             {
-                // 并发 Begin 失败：join 已在进行中的 Close
                 if (meta.CloseInProgress || meta.State == UIState.Closing)
                 {
                     return await meta.WaitForCloseOperationAsync();
@@ -481,7 +473,6 @@ namespace AlicizaX.UI.Runtime
                 }
                 else if (meta.View != null)
                 {
-                    // InternalClose await 关场；失败也会尽量落到 Closed。Finalize/Cache 在 Closed 之后
                     await meta.View.InternalClose(meta, operationVersion);
                     if (meta.OperationVersion == operationVersion && meta.State == UIState.Closed)
                     {
@@ -562,7 +553,6 @@ namespace AlicizaX.UI.Runtime
             return meta?.State == UIState.Opened ? meta.View : null;
         }
 
-        // 仅 Opened；过渡态不算打开
         private static bool IsOpenImpl(UIMetadata meta)
         {
             return meta != null && meta.State == UIState.Opened;
@@ -670,7 +660,6 @@ namespace AlicizaX.UI.Runtime
             if (meta.InCache)
             {
                 RemoveFromCache(meta.MetaInfo.RuntimeTypeHandle);
-                // 缓存路径关闭 Canvas；出缓存时恢复渲染
                 meta.View.SetCanvasEnabled(true);
                 Push(meta);
             }
@@ -856,7 +845,6 @@ namespace AlicizaX.UI.Runtime
             bool exceptionThrown = false;
             try
             {
-                // InternalOpen 仅完成逻辑 Open；转场在 View 后台并行
                 bool openResult = meta.View != null && meta.View.InternalOpen(meta, operationVersion);
 
                 showResult = openResult
@@ -903,7 +891,6 @@ namespace AlicizaX.UI.Runtime
             return showResult;
         }
 
-        // Sync 失败：同步 Pop + DisposeImmediate，返回前结束 ShowInProgress，避免半残 View 被复用
         private void FailPreparedShowSync(
             UIMetadata meta,
             int operationVersion,
@@ -913,7 +900,6 @@ namespace AlicizaX.UI.Runtime
             {
                 int removed = Pop(meta);
                 SortWindowDepth(meta.MetaInfo.UILayer, removed >= 0 ? removed : 0);
-                // DisposeImmediate 内 CancelAsyncOperations：清 ShowInProgress / CompleteShow / 销毁 View
                 meta.DisposeImmediate();
                 loadCts?.Dispose();
                 return;

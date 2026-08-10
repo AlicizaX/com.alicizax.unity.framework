@@ -163,7 +163,6 @@ namespace AlicizaX.UI.Runtime
 
         public UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false)
         {
-            // 不 Forget：把关闭任务交给 UICloseHandle，便于 AwaitViewTransition
             return new UICloseHandle(CloseUIAsync(handle, force));
         }
 

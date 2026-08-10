@@ -134,7 +134,6 @@ namespace AlicizaX.UI.Runtime
                     else
                         Object.DestroyImmediate(holder.gameObject);
                 }
-
             }
 
             Holder = null;
@@ -190,10 +189,12 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
         private void SetSceneViewVisible(bool visible)
         {
-            if (_canvas == null)
-            {
+            if (_canvas == null || !Application.isPlaying)
                 return;
-            }
+            if (!EditorApplication.isPlayingOrWillChangePlaymode)
+                return;
+            if (_canvas == null)
+                return;
 
             if (visible)
             {
@@ -358,20 +359,16 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        // Widget 自主打开：不查 Meta version，只靠状态机。
         internal bool InternalOpen()
         {
             return InternalOpenCore(null, -1);
         }
 
-        // Window / Widget create：带 Begin 拿到的 Meta operation version。
         internal bool InternalOpen(UIMetadata metadata, int expectedOperationVersion)
         {
             return InternalOpenCore(metadata, expectedOperationVersion);
         }
 
-        // 逻辑打开：OnOpen + Opened。转场默认并行，可用 AwaitViewTransition 等待。
-        // Meta 路径：OnOpen 后必须查 version（防 OnOpen 内 Close 重入 bump）。
         private bool InternalOpenCore(UIMetadata metadata, int expectedOperationVersion)
         {
             if (!TryBeginOpen(out bool skippedResult))
@@ -384,7 +381,6 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            // 业务 OnOpen 异常直接抛出，便于编辑器定位
             OnOpen();
 
             if (!IsStillInState(UIState.Opening, metadata, expectedOperationVersion))
@@ -422,20 +418,17 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        // Widget 自主关闭：不查 Meta version。
         internal UniTask<bool> InternalClose(bool skipTransition = false)
         {
             return InternalCloseCore(skipTransition, null, -1);
         }
 
-        // Window / 批量关闭：带 BeginClose 的 Meta operation version，跨 await 防过期复活。
         internal UniTask<bool> InternalClose(UIMetadata metadata, int expectedOperationVersion, bool skipTransition = false)
         {
             return InternalCloseCore(skipTransition, metadata, expectedOperationVersion);
         }
 
-        // 逻辑关闭：OnClose 后 await 关场转场；skipTransition 时立即收尾。
-        // 服务侧 await 完整流程，保证 Finalize/Cache 发生在转场之后。
+
         private async UniTask<bool> InternalCloseCore(bool skipTransition, UIMetadata metadata, int expectedOperationVersion)
         {
             if (_state == UIState.Closed)
@@ -443,7 +436,6 @@ namespace AlicizaX.UI.Runtime
                 return true;
             }
 
-            // 二次 Close：join 当前关场转场
             if (_state == UIState.Closing)
             {
                 await AwaitViewTransition();
@@ -455,7 +447,6 @@ namespace AlicizaX.UI.Runtime
                 return skippedResult;
             }
 
-            // 业务 OnClose 异常直接抛出，便于编辑器定位
             OnClose();
 
             if (!IsStillInState(UIState.Closing, metadata, expectedOperationVersion))
@@ -463,9 +454,6 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            // OnClose 已执行：无论转场成败都尽量落到 Closed，避免卡在 Closing。
-            // await 后只看 State：仍为 Closing 则收尾；Destroying 由 Dispose 路径推进，不在此覆盖。
-            // Meta version 只在 await 前拦截“已被更新代际取代”的关闭，避免过期操作开跑转场。
             BeginViewTransitionTracking();
             bool closed = false;
             try
@@ -528,7 +516,6 @@ namespace AlicizaX.UI.Runtime
             if (!UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Destroying))
                 return;
 
-            // 代际作废只在 Meta.Cancel/Dispose；View 只打断转场跟踪
             InterruptViewTransition();
             SetState(UIState.Destroying);
             Holder?.OnWindowDestroyEvent?.Invoke();
@@ -651,7 +638,7 @@ namespace AlicizaX.UI.Runtime
             CompleteViewTransitionTracking();
         }
 
-        // expectedOperationVersion < 0：Widget 自主路径，只看 State
+
         private bool IsStillInState(UIState state, UIMetadata metadata, int expectedOperationVersion)
         {
             if (_state != state)
@@ -716,7 +703,6 @@ namespace AlicizaX.UI.Runtime
 
         private void RollbackOpeningState()
         {
-            // 已被 Close/Destroy 推走状态时不要回滚，避免覆盖 Closing
             if (_state != UIState.Opening)
             {
                 return;
