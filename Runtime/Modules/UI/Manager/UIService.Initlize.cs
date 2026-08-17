@@ -78,7 +78,7 @@ namespace AlicizaX.UI.Runtime
 
         public RectTransform GetLayer(UILayer layer)
         {
-            if ((uint)layer >= (uint)UILayer.All)
+            if ((uint)layer > (uint)UILayer.All)
             {
                 Log.Error("[UI] Invalid layer: {0}", layer);
                 return null;
