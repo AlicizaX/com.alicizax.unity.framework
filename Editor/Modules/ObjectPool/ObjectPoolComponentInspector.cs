@@ -179,7 +179,7 @@ namespace AlicizaX.Editor
         private bool DrawObjectPoolHeader(ObjectPoolBase objectPool, bool expanded)
         {
             Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            Event currentEvent = Event.current;
+            UnityEngine.Event currentEvent = UnityEngine.Event.current;
             bool hovered = rowRect.Contains(currentEvent.mousePosition);
             AlicizaEditorGUI.DrawListItemBackground(rowRect, expanded, hovered);
 
