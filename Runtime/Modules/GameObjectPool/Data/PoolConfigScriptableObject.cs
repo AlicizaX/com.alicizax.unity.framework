@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -12,42 +11,7 @@ namespace AlicizaX
         internal PoolCompiledCatalog BuildCatalog()
         {
             Normalize();
-
-            if (entries == null || entries.Count == 0)
-            {
-                return PoolCompiledCatalog.Empty();
-            }
-
-            int validCount = 0;
-            for (int i = 0; i < entries.Count; i++)
-            {
-                PoolEntry entry = entries[i];
-                if (entry != null && !string.IsNullOrEmpty(entry.assetPath))
-                {
-                    validCount++;
-                }
-            }
-
-            if (validCount == 0)
-            {
-                return PoolCompiledCatalog.Empty();
-            }
-
-            var normalizedEntries = new PoolEntry[validCount];
-            int writeIndex = 0;
-            for (int i = 0; i < entries.Count; i++)
-            {
-                PoolEntry entry = entries[i];
-                if (entry == null || string.IsNullOrEmpty(entry.assetPath))
-                {
-                    continue;
-                }
-
-                normalizedEntries[writeIndex++] = entry;
-            }
-
-            Array.Sort(normalizedEntries, PoolEntry.CompareByPriority);
-            return PoolCompiledCatalog.Build(normalizedEntries);
+            return PoolCompiledCatalog.Build(entries);
         }
 
         public void Normalize()

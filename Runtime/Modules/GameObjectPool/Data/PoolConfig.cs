@@ -1,15 +1,8 @@
 using System;
-using AlicizaX.ObjectPool;
 using UnityEngine;
 
 namespace AlicizaX
 {
-    public enum PoolResourceLoaderType
-    {
-        AssetBundle = 0,
-        Resources = 1
-    }
-
     [Serializable]
     public sealed class PoolEntry
     {
@@ -19,43 +12,42 @@ namespace AlicizaX
         public string entryName = DefaultEntryName;
         public string group = DefaultGroup;
         public string assetPath = string.Empty;
-        public PoolResourceLoaderType loaderType = PoolResourceLoaderType.AssetBundle;
+        public PoolPolicy policy = PoolPolicy.Burst;
+
+        [Min(0)]
+        public int minIdle;
 
         [Min(1)]
         public int softCapacity = 8;
 
         [Min(1)]
         public int hardCapacity = 16;
+
+        [Min(0f)]
+        public float idleSeconds = 15f;
+
+        public bool unloadPrefab = true;
         public int priority;
 
         public void Normalize()
         {
             entryName = string.IsNullOrWhiteSpace(entryName) ? DefaultEntryName : entryName.Trim();
             group = string.IsNullOrWhiteSpace(group) ? DefaultGroup : group.Trim();
-            if (!IsValidLoaderType(loaderType))
+            assetPath = NormalizeLocation(assetPath);
+            if (!Enum.IsDefined(typeof(PoolPolicy), policy))
             {
-                loaderType = PoolResourceLoaderType.AssetBundle;
+                policy = PoolPolicy.Burst;
             }
 
-            assetPath = NormalizeConfigAssetPath(assetPath, loaderType);
+            minIdle = Mathf.Max(0, minIdle);
             softCapacity = Mathf.Max(1, softCapacity);
             hardCapacity = Mathf.Max(softCapacity, hardCapacity);
-        }
-
-        public bool Matches(string requestedAssetPath, string requestedGroup = null)
-        {
-            if (string.IsNullOrEmpty(assetPath) || string.IsNullOrEmpty(requestedAssetPath))
+            if (minIdle > hardCapacity)
             {
-                return false;
+                minIdle = hardCapacity;
             }
 
-            if (!string.IsNullOrEmpty(requestedGroup) &&
-                !string.Equals(group, requestedGroup, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            return PoolGlobMatcher.Compile(assetPath).IsMatch(requestedAssetPath);
+            idleSeconds = policy == PoolPolicy.Burst ? Mathf.Max(0f, idleSeconds) : 0f;
         }
 
         public static int CompareByPriority(PoolEntry left, PoolEntry right)
@@ -92,7 +84,7 @@ namespace AlicizaX
             return string.Compare(left.group, right.group, StringComparison.Ordinal);
         }
 
-        public static string NormalizeAssetPath(string value)
+        public static string NormalizeLocation(string value)
         {
             if (string.IsNullOrWhiteSpace(value))
             {
@@ -131,354 +123,31 @@ namespace AlicizaX
                 }
             }
 
-            if (!hasBackslash && start == 0 && end == value.Length - 1)
+            string normalized = start == 0 && end == value.Length - 1
+                ? value
+                : value.Substring(start, end - start + 1);
+            if (hasBackslash)
             {
-                return value;
+                normalized = normalized.Replace('\\', '/');
             }
 
-            string normalized = value.Substring(start, end - start + 1);
-            return hasBackslash ? normalized.Replace('\\', '/') : normalized;
-        }
-
-        public static string NormalizeConfigAssetPath(string value, PoolResourceLoaderType loaderType)
-        {
-            string normalized = NormalizeAssetPath(value);
-            if (string.IsNullOrEmpty(normalized))
+            int lastSlash = normalized.LastIndexOf('/');
+            int extension = normalized.LastIndexOf('.');
+            if (extension > lastSlash)
             {
-                return string.Empty;
+                normalized = normalized.Substring(0, extension);
             }
 
-            if (loaderType == PoolResourceLoaderType.AssetBundle)
+            if (normalized.StartsWith("Assets/Bundles/", StringComparison.OrdinalIgnoreCase))
             {
-                normalized = TrimAssetBundleRoot(normalized);
+                normalized = normalized.Substring("Assets/Bundles/".Length);
             }
-            else
+            else if (normalized.StartsWith("Assets/Bundle/", StringComparison.OrdinalIgnoreCase))
             {
-                int resourcesMarkerIndex = normalized.IndexOf("/Resources/", StringComparison.OrdinalIgnoreCase);
-                if (resourcesMarkerIndex >= 0)
-                {
-                    normalized = normalized.Substring(resourcesMarkerIndex + "/Resources/".Length);
-                }
-                else if (normalized.StartsWith("Assets/Resources/", StringComparison.OrdinalIgnoreCase))
-                {
-                    normalized = normalized.Substring("Assets/Resources/".Length);
-                }
+                normalized = normalized.Substring("Assets/Bundle/".Length);
             }
 
-            int lastSlashIndex = normalized.LastIndexOf('/');
-            int extensionIndex = normalized.LastIndexOf('.');
-            if (extensionIndex > lastSlashIndex)
-            {
-                normalized = normalized.Substring(0, extensionIndex);
-            }
-
-            return TrimTrailingSeparators(normalized);
-        }
-
-        public static bool IsValidLoaderType(PoolResourceLoaderType loaderType)
-        {
-            return loaderType == PoolResourceLoaderType.AssetBundle ||
-                   loaderType == PoolResourceLoaderType.Resources;
-        }
-
-        private static string TrimTrailingSeparators(string value)
-        {
-            int length = value.Length;
-            while (length > 0 && value[length - 1] == '/')
-            {
-                length--;
-            }
-
-            return length == value.Length ? value : value.Substring(0, length);
-        }
-
-        private static string TrimAssetBundleRoot(string value)
-        {
-            if (!value.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
-            {
-                return value;
-            }
-
-            int firstSlash = value.IndexOf('/');
-            if (firstSlash < 0)
-            {
-                return value;
-            }
-
-            int secondSlash = value.IndexOf('/', firstSlash + 1);
-            if (secondSlash < 0)
-            {
-                return value;
-            }
-
-            string rootFolder = value.Substring(firstSlash + 1, secondSlash - firstSlash - 1);
-            if (string.Equals(rootFolder, "Bundle", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(rootFolder, "Bundles", StringComparison.OrdinalIgnoreCase))
-            {
-                return value.Substring(secondSlash + 1);
-            }
-
-            return value;
-        }
-    }
-
-    internal struct PoolCompiledRule
-    {
-        public int ruleIndex;
-        public string entryName;
-        public string group;
-        public string assetPath;
-        public PoolResourceLoaderType loaderType;
-        public PoolGlobMatcher globMatcher;
-        public int softCapacity;
-        public int hardCapacity;
-        public int priority;
-
-        public bool IsLiteralPattern => globMatcher.IsValid && globMatcher.IsLiteralPattern;
-
-        public static PoolCompiledRule FromEntry(PoolEntry entry, int ruleIndex)
-        {
-            return new PoolCompiledRule
-            {
-                ruleIndex = ruleIndex,
-                entryName = entry.entryName,
-                group = entry.group,
-                assetPath = entry.assetPath,
-                loaderType = entry.loaderType,
-                globMatcher = PoolGlobMatcher.Compile(entry.assetPath),
-                softCapacity = entry.softCapacity,
-                hardCapacity = entry.hardCapacity,
-                priority = entry.priority
-            };
-        }
-    }
-
-    internal sealed class PoolCompiledCatalog
-    {
-        private readonly PoolCompiledRule[] _rules;
-        private StringOpenHashMap _groupIndexMap;
-        private PoolCompiledGroup[] _groups;
-        private int[][] _globalRuleIndices;
-        private int[] _globalRuleCounts;
-        private StringOpenHashMap[] _globalExactRuleMaps;
-
-        private PoolCompiledCatalog(
-            PoolCompiledRule[] rules,
-            StringOpenHashMap groupIndexMap,
-            PoolCompiledGroup[] groups,
-            int[][] globalRuleIndices,
-            int[] globalRuleCounts,
-            StringOpenHashMap[] globalExactRuleMaps)
-        {
-            _rules = rules;
-            _groupIndexMap = groupIndexMap;
-            _groups = groups;
-            _globalRuleIndices = globalRuleIndices;
-            _globalRuleCounts = globalRuleCounts;
-            _globalExactRuleMaps = globalExactRuleMaps;
-        }
-
-        public bool IsEmpty => _rules == null || _rules.Length == 0;
-
-        public int RuleCount => _rules == null ? 0 : _rules.Length;
-
-        public ref readonly PoolCompiledRule GetRule(int ruleIndex)
-        {
-            return ref _rules[ruleIndex];
-        }
-
-        public int Resolve(string assetPath, PoolResourceLoaderType loaderType, string group)
-        {
-            if (string.IsNullOrEmpty(assetPath) ||
-                _rules == null ||
-                _rules.Length == 0 ||
-                !PoolEntry.IsValidLoaderType(loaderType))
-            {
-                return -1;
-            }
-
-            if (!string.IsNullOrEmpty(group))
-            {
-                if (_groupIndexMap.TryGetValue(group, out int groupIndex))
-                {
-                    return _groups[groupIndex].Resolve(assetPath, loaderType, _rules);
-                }
-
-                return -1;
-            }
-
-            int loaderIndex = (int)loaderType;
-            if (_globalExactRuleMaps[loaderIndex].TryGetValue(assetPath, out int exactRuleIndex) &&
-                _globalRuleCounts[loaderIndex] > 0 &&
-                _globalRuleIndices[loaderIndex][0] == exactRuleIndex)
-            {
-                return exactRuleIndex;
-            }
-
-            int count = _globalRuleCounts[loaderIndex];
-            int[] indices = _globalRuleIndices[loaderIndex];
-            for (int i = 0; i < count; i++)
-            {
-                if (_rules[indices[i]].globMatcher.IsMatch(assetPath))
-                {
-                    return indices[i];
-                }
-            }
-
-            return -1;
-        }
-
-        public void Dispose()
-        {
-            _groupIndexMap.Dispose();
-            if (_globalExactRuleMaps != null)
-            {
-                for (int i = 0; i < _globalExactRuleMaps.Length; i++)
-                {
-                    _globalExactRuleMaps[i].Dispose();
-                }
-            }
-        }
-
-        public static PoolCompiledCatalog Empty()
-        {
-            return new PoolCompiledCatalog(
-                Array.Empty<PoolCompiledRule>(),
-                new StringOpenHashMap(8),
-                Array.Empty<PoolCompiledGroup>(),
-                new[] { Array.Empty<int>(), Array.Empty<int>() },
-                new int[2],
-                new[] { new StringOpenHashMap(8), new StringOpenHashMap(8) });
-        }
-
-        public static PoolCompiledCatalog Build(PoolEntry[] entries)
-        {
-            if (entries == null || entries.Length == 0)
-            {
-                return Empty();
-            }
-
-            int entryCount = entries.Length;
-            var groupIndexMap = new StringOpenHashMap(entryCount);
-            var groupNames = new string[entryCount];
-            int groupCount = 0;
-
-            for (int i = 0; i < entryCount; i++)
-            {
-                PoolEntry entry = entries[i];
-                if (entry == null ||
-                    string.IsNullOrEmpty(entry.assetPath) ||
-                    !PoolEntry.IsValidLoaderType(entry.loaderType))
-                {
-                    continue;
-                }
-
-                if (!groupIndexMap.TryGetValue(entry.group, out _))
-                {
-                    groupIndexMap.AddOrUpdate(entry.group, groupCount);
-                    groupNames[groupCount] = entry.group;
-                    groupCount++;
-                }
-            }
-
-            var groups = new PoolCompiledGroup[groupCount];
-            for (int i = 0; i < groupCount; i++)
-            {
-                groups[i] = new PoolCompiledGroup(groupNames[i]);
-            }
-
-            var rules = new PoolCompiledRule[entryCount];
-            var globalRuleIndices = new int[2][];
-            var globalRuleCounts = new int[2];
-            var globalExactRuleMaps = new StringOpenHashMap[2];
-            globalRuleIndices[0] = new int[entryCount];
-            globalRuleIndices[1] = new int[entryCount];
-            globalExactRuleMaps[0] = new StringOpenHashMap(entryCount);
-            globalExactRuleMaps[1] = new StringOpenHashMap(entryCount);
-
-            for (int i = 0; i < entryCount; i++)
-            {
-                PoolEntry entry = entries[i];
-                if (entry == null ||
-                    string.IsNullOrEmpty(entry.assetPath) ||
-                    !PoolEntry.IsValidLoaderType(entry.loaderType))
-                {
-                    continue;
-                }
-
-                PoolCompiledRule rule = PoolCompiledRule.FromEntry(entry, i);
-                rules[i] = rule;
-
-                groupIndexMap.TryGetValue(rule.group, out int groupIndex);
-                groups[groupIndex].Register(in rule);
-
-                int loaderIndex = (int)rule.loaderType;
-                globalRuleIndices[loaderIndex][globalRuleCounts[loaderIndex]++] = i;
-                if (rule.IsLiteralPattern)
-                {
-                    globalExactRuleMaps[loaderIndex].AddOrUpdate(rule.assetPath, i);
-                }
-            }
-
-            return new PoolCompiledCatalog(rules, groupIndexMap, groups, globalRuleIndices, globalRuleCounts, globalExactRuleMaps);
-        }
-    }
-
-    internal sealed class PoolCompiledGroup
-    {
-        private readonly string _name;
-        private int[][] _ruleIndices;
-        private int[] _ruleCounts;
-
-        public PoolCompiledGroup(string name)
-        {
-            _name = name;
-            _ruleIndices = new int[2][];
-            _ruleIndices[0] = new int[4];
-            _ruleIndices[1] = new int[4];
-            _ruleCounts = new int[2];
-        }
-
-        public void Register(in PoolCompiledRule rule)
-        {
-            if (!PoolEntry.IsValidLoaderType(rule.loaderType))
-            {
-                return;
-            }
-
-            int loaderIndex = (int)rule.loaderType;
-            int count = _ruleCounts[loaderIndex];
-            if (count >= _ruleIndices[loaderIndex].Length)
-            {
-                int newCapacity = _ruleIndices[loaderIndex].Length << 1;
-                var newArray = new int[newCapacity];
-                Array.Copy(_ruleIndices[loaderIndex], 0, newArray, 0, count);
-                _ruleIndices[loaderIndex] = newArray;
-            }
-
-            _ruleIndices[loaderIndex][count] = rule.ruleIndex;
-            _ruleCounts[loaderIndex] = count + 1;
-        }
-
-        public int Resolve(string assetPath, PoolResourceLoaderType loaderType, PoolCompiledRule[] rules)
-        {
-            if (!PoolEntry.IsValidLoaderType(loaderType))
-            {
-                return -1;
-            }
-
-            int loaderIndex = (int)loaderType;
-            int count = _ruleCounts[loaderIndex];
-            int[] indices = _ruleIndices[loaderIndex];
-            for (int i = 0; i < count; i++)
-            {
-                if (rules[indices[i]].globMatcher.IsMatch(assetPath))
-                {
-                    return indices[i];
-                }
-            }
-
-            return -1;
+            return normalized;
         }
     }
 }

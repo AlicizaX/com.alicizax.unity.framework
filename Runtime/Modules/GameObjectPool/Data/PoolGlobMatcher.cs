@@ -1,4 +1,3 @@
-using System;
 using System.Runtime.CompilerServices;
 
 namespace AlicizaX
@@ -13,19 +12,19 @@ namespace AlicizaX
         private readonly byte[] _kinds;
         private readonly string[] _texts;
         private readonly int _segmentCount;
-        private readonly bool _implicitPrefix;
+        private readonly bool _isLiteral;
 
-        private PoolGlobMatcher(byte[] kinds, string[] texts, int segmentCount, bool implicitPrefix)
+        private PoolGlobMatcher(byte[] kinds, string[] texts, int segmentCount, bool isLiteral)
         {
             _kinds = kinds;
             _texts = texts;
             _segmentCount = segmentCount;
-            _implicitPrefix = implicitPrefix;
+            _isLiteral = isLiteral;
         }
 
         public bool IsValid => _kinds != null && _segmentCount > 0;
 
-        public bool IsLiteralPattern => _implicitPrefix;
+        public bool IsLiteralPattern => _isLiteral;
 
         public static PoolGlobMatcher Compile(string pattern)
         {
@@ -48,7 +47,6 @@ namespace AlicizaX
             var texts = new string[maxSegments];
             int count = 0;
             bool hasWildcard = false;
-
             int segStart = 0;
             for (int i = 0; i <= len; i++)
             {
@@ -65,7 +63,6 @@ namespace AlicizaX
 
                 string seg = pattern.Substring(segStart, i - segStart);
                 segStart = i + 1;
-
                 if (seg == "**")
                 {
                     if (count > 0 && kinds[count - 1] == KindRecursiveWild)
@@ -100,23 +97,13 @@ namespace AlicizaX
                 }
             }
 
-            if (count == 0)
-            {
-                return default;
-            }
-
-            return new PoolGlobMatcher(kinds, texts, count, !hasWildcard);
+            return count == 0 ? default : new PoolGlobMatcher(kinds, texts, count, !hasWildcard);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsMatch(string path)
         {
-            if (_kinds == null || _segmentCount == 0 || string.IsNullOrEmpty(path))
-            {
-                return false;
-            }
-
-            return MatchCore(path);
+            return _kinds != null && _segmentCount > 0 && !string.IsNullOrEmpty(path) && MatchCore(path);
         }
 
         private bool MatchCore(string path)
@@ -124,18 +111,15 @@ namespace AlicizaX
             int pathLen = path.Length;
             int patIdx = 0;
             int pathSegStart = 0;
-
             int starPatIdx = -1;
             int starPathSegStart = -1;
 
             while (pathSegStart <= pathLen)
             {
                 int pathSegEnd = IndexOfSlash(path, pathSegStart);
-
                 if (patIdx < _segmentCount)
                 {
                     byte kind = _kinds[patIdx];
-
                     if (kind == KindRecursiveWild)
                     {
                         starPatIdx = patIdx;
@@ -157,21 +141,20 @@ namespace AlicizaX
                     }
                 }
 
-                if (starPatIdx >= 0)
+                if (starPatIdx < 0)
                 {
-                    if (starPathSegStart >= pathLen)
-                    {
-                        return false;
-                    }
-
-                    int nextSeg = IndexOfSlash(path, starPathSegStart);
-                    starPathSegStart = nextSeg < pathLen ? nextSeg + 1 : pathLen + 1;
-                    pathSegStart = starPathSegStart;
-                    patIdx = starPatIdx + 1;
-                    continue;
+                    break;
                 }
 
-                break;
+                if (starPathSegStart >= pathLen)
+                {
+                    return false;
+                }
+
+                int nextSeg = IndexOfSlash(path, starPathSegStart);
+                starPathSegStart = nextSeg < pathLen ? nextSeg + 1 : pathLen + 1;
+                pathSegStart = starPathSegStart;
+                patIdx = starPatIdx + 1;
             }
 
             while (patIdx < _segmentCount && _kinds[patIdx] == KindRecursiveWild)
@@ -179,17 +162,7 @@ namespace AlicizaX
                 patIdx++;
             }
 
-            if (patIdx < _segmentCount)
-            {
-                return false;
-            }
-
-            if (_implicitPrefix)
-            {
-                return true;
-            }
-
-            return pathSegStart > pathLen;
+            return patIdx >= _segmentCount && pathSegStart > pathLen;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -232,12 +205,10 @@ namespace AlicizaX
         {
             int pLen = pattern.Length;
             int sLen = end - start;
-
             int pi = 0;
             int si = 0;
             int starPi = -1;
             int starSi = -1;
-
             while (si < sLen)
             {
                 if (pi < pLen && (pattern[pi] == '?' || pattern[pi] == path[start + si]))

@@ -6,15 +6,35 @@ namespace AlicizaX
 {
     public interface IGameObjectPoolService : IService
     {
-        GameObject GetGameObject(string assetName, Transform parent = null);
+        GameObject Spawn(string location, Transform parent = null);
 
-        UniTask<GameObject> GetGameObjectAsync(string assetName, Transform parent = null, CancellationToken cancellationToken = default);
+        T Spawn<T>(string location, Transform parent = null) where T : Component;
 
-        UniTask PreloadAsync(string assetName, int count = 1, CancellationToken cancellationToken = default);
+        bool TrySpawn(string location, Transform parent, out GameObject instance);
 
-        void Release(GameObject gameObject);
+        UniTask<GameObject> SpawnAsync(string location, Transform parent = null, CancellationToken cancellationToken = default);
 
-        void ForceCleanup();
+        UniTask<T> SpawnAsync<T>(string location, Transform parent = null, CancellationToken cancellationToken = default) where T : Component;
+
+        GameObject LoadPrefab(string location);
+
+        UniTask<GameObject> LoadPrefabAsync(string location, CancellationToken cancellationToken = default);
+
+        UniTask WarmupAsync(string location, int count, CancellationToken cancellationToken = default);
+
+        void Despawn(GameObject instance);
+
+        void Despawn(GameObjectPoolHandle handle);
+
+        void Flush(string location);
+
+        void FlushGroup(string group);
+
+        void FlushAll();
+
+        void LoadCatalog(PoolConfigScriptableObject config);
+
+        void LoadCatalog(string poolConfigPath);
     }
 
     internal interface IGameObjectPoolDebugService : IService
@@ -22,5 +42,11 @@ namespace AlicizaX
         GameObjectPoolSummarySnapshot GetDebugSummary();
 
         int GetDebugSnapshots(GameObjectPoolSnapshot[] snapshots);
+
+        void FillDebugInstances(GameObjectPoolSnapshot snapshot);
+
+        void Flush(string location);
+
+        void FlushGroup(string group);
     }
 }

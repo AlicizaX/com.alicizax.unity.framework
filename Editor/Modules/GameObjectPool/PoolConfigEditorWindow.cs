@@ -19,7 +19,7 @@ namespace AlicizaX
         private static readonly Color LeftPanelColor = new Color(0.22f, 0.22f, 0.22f, 1f);
         private static readonly Color RightPanelColor = new Color(0.16f, 0.16f, 0.16f, 1f);
         private static readonly Color DescriptionColor = new Color(0.72f, 0.72f, 0.72f, 1f);
-        private static readonly List<string> LoaderTypeOptions = new List<string> { "AssetBundle", "Resources" };
+        private static readonly List<string> PolicyOptions = new List<string> { "Fixed", "Burst", "Sticky" };
 
         [SerializeField]
         private PoolConfigScriptableObject _asset;
@@ -384,7 +384,7 @@ namespace AlicizaX
                     continue;
                 }
 
-                string label = GetPrimaryLabel(entry);
+                string label = GetListLabel(entry);
                 bool isSelected = displayIndex == _selectedIndex;
 
                 Rect rowRect = GUILayoutUtility.GetRect(0f, ListItemHeight + 6f, GUILayout.ExpandWidth(true));
@@ -447,7 +447,7 @@ namespace AlicizaX
 
             rect.y += 5f;
 
-            string primaryLabel = GetPrimaryLabel(entry);
+            string primaryLabel = GetListLabel(entry);
             string assetPath = entry.FindPropertyRelative("assetPath").stringValue;
             string tooltip = string.IsNullOrWhiteSpace(assetPath) || string.Equals(primaryLabel, assetPath, System.StringComparison.Ordinal)
                 ? primaryLabel
@@ -758,9 +758,12 @@ namespace AlicizaX
             property.FindPropertyRelative("entryName").stringValue = Utility.Text.Format("对象池规则{0}", index + 1);
             property.FindPropertyRelative("group").stringValue = PoolEntry.DefaultGroup;
             property.FindPropertyRelative("assetPath").stringValue = string.Empty;
-            property.FindPropertyRelative("loaderType").enumValueIndex = (int)PoolResourceLoaderType.AssetBundle;
+            property.FindPropertyRelative("policy").enumValueIndex = (int)PoolPolicy.Burst;
+            property.FindPropertyRelative("minIdle").intValue = 0;
             property.FindPropertyRelative("softCapacity").intValue = 8;
             property.FindPropertyRelative("hardCapacity").intValue = 16;
+            property.FindPropertyRelative("idleSeconds").floatValue = 15f;
+            property.FindPropertyRelative("unloadPrefab").boolValue = true;
             property.FindPropertyRelative("priority").intValue = index;
         }
 
@@ -852,17 +855,40 @@ namespace AlicizaX
             return string.IsNullOrWhiteSpace(assetPath) ? "<未命名规则>" : assetPath;
         }
 
+        private string GetListLabel(SerializedProperty property)
+        {
+            if (property == null)
+            {
+                return "<规则缺失>";
+            }
+
+            string group = property.FindPropertyRelative("group").stringValue;
+            string pattern = property.FindPropertyRelative("assetPath").stringValue;
+            PoolPolicy policy = (PoolPolicy)property.FindPropertyRelative("policy").enumValueIndex;
+            int minIdle = property.FindPropertyRelative("minIdle").intValue;
+            int soft = property.FindPropertyRelative("softCapacity").intValue;
+            int hard = property.FindPropertyRelative("hardCapacity").intValue;
+            string patternLabel = string.IsNullOrWhiteSpace(pattern) ? "<未填路径>" : pattern;
+            return Utility.Text.Format("{0} / {1}  {2}  {3}-{4}-{5}", group, patternLabel, policy, minIdle, soft, hard);
+        }
+
         private static List<string> GetEnumOptions(string propertyName)
         {
             return propertyName switch
             {
-                "loaderType" => LoaderTypeOptions,
+                "policy" => PolicyOptions,
                 _ => null
             };
         }
 
-        private static bool ShouldDisplayField(string propertyName)
+        private bool ShouldDisplayField(string propertyName)
         {
+            if (propertyName == "idleSeconds")
+            {
+                SerializedProperty selected = GetSelectedProperty();
+                return selected != null && selected.FindPropertyRelative("policy").enumValueIndex == (int)PoolPolicy.Burst;
+            }
+
             return true;
         }
 
@@ -878,9 +904,12 @@ namespace AlicizaX
                 "entryName" => "规则名称",
                 "group" => "分组",
                 "assetPath" => "资源路径",
-                "loaderType" => "加载器类型",
+                "policy" => "策略",
+                "minIdle" => "常驻空闲",
                 "softCapacity" => "软容量",
-                "hardCapacity" => "容量",
+                "hardCapacity" => "硬顶",
+                "idleSeconds" => "空闲秒数",
+                "unloadPrefab" => "空池卸载Prefab",
                 "priority" => "优先级",
                 _ => propertyName
             };
@@ -890,13 +919,16 @@ namespace AlicizaX
         {
             return propertyName switch
             {
-                "entryName" => "规则名称就是主定位信息。列表、调试和问题排查都直接看这个名字。",
-                "group" => "用于 GameObjectPoolManager 下的空闲节点归类。不填或空值会自动回落到 DefaultGroup。",
-                "assetPath" => "要匹配的资源路径。支持 glob 语法：* 匹配单级目录，** 递归匹配，? 匹配单字符。不含通配符时按前缀匹配（向后兼容）。",
-                "loaderType" => "决定 Prefab 从哪个资源通道加载。AssetBundle 走包体资源，Resources 走内置目录。",
-                "softCapacity" => "超过该值后，维护阶段会优先回收空闲实例。",
-                "hardCapacity" => "基础容量。超过这个值会自动扩容并输出警告，后续维护回收会再收回到这个基准。",
-                "priority" => "由左侧拖拽顺序自动维护，越靠上优先级越高。",
+                "entryName" => "调试名。列表和运行时 Inspector 都看这个。",
+                "group" => "空闲实例挂到 [Group] 节点下。空值回落到 DefaultGroup。",
+                "assetPath" => "YooAsset location 或 glob。* 单级，** 递归，? 单字符。不含通配符则精确匹配。",
+                "policy" => "Fixed：超 soft 立刻剪。Burst：idleSeconds 后剪回。Sticky：只涨，等 Flush / 低内存。",
+                "minIdle" => "维护后至少保留的空闲实例数。",
+                "softCapacity" => "空闲修剪目标上限。Burst / Fixed 超了会剪。",
+                "hardCapacity" => "总实例硬顶（含在场）。到达后 Spawn 返回 null。",
+                "idleSeconds" => "仅 Burst：最老空闲超过该秒数才剪。",
+                "unloadPrefab" => "池被剪空后是否 UnloadAsset Prefab。",
+                "priority" => "由左侧拖拽顺序自动维护，越靠上越先匹配。",
                 _ => string.Empty
             };
         }

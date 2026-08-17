@@ -11,253 +11,194 @@ namespace AlicizaX
 {
     internal sealed class GameObjectPoolService : ServiceBase, IServiceTickable, IGameObjectPoolService, IGameObjectPoolDebugService
     {
-        public GameObjectPoolService(Transform transform)
-        {
-            _containerRoot = transform;
-        }
-
-        internal readonly struct ResolvedAssetRequest
-        {
-            public readonly int RuleIndex;
-            public readonly string RequestPath;
-            public readonly string LogicalPath;
-            public readonly string LoadPath;
-            public readonly string PoolKey;
-            public readonly PoolResourceLoaderType LoaderType;
-
-            public ResolvedAssetRequest(
-                int ruleIndex,
-                string requestPath,
-                string logicalPath,
-                string loadPath,
-                string poolKey,
-                PoolResourceLoaderType loaderType)
-            {
-                RuleIndex = ruleIndex;
-                RequestPath = requestPath;
-                LogicalPath = logicalPath;
-                LoadPath = loadPath;
-                PoolKey = poolKey;
-                LoaderType = loaderType;
-            }
-        }
-
-        private readonly struct ParsedRequestPath
-        {
-            public readonly string OriginalPath;
-            public readonly string LogicalPath;
-            public readonly bool HasExplicitLoaderType;
-            public readonly PoolResourceLoaderType LoaderType;
-
-            public ParsedRequestPath(
-                string originalPath,
-                string logicalPath,
-                bool hasExplicitLoaderType,
-                PoolResourceLoaderType loaderType)
-            {
-                OriginalPath = originalPath;
-                LogicalPath = logicalPath;
-                HasExplicitLoaderType = hasExplicitLoaderType;
-                LoaderType = loaderType;
-            }
-        }
-
         private struct MaintenanceNode
         {
             public float dueTime;
             public int poolIndex;
         }
 
-        private const int ResolveCacheCapacityLimit = 4096;
-
         private static readonly Comparison<GameObjectPoolSnapshot> SnapshotComparer = CompareSnapshot;
 
-        private readonly IResourceLoader[] _resourceLoaders = new IResourceLoader[2];
+        private readonly IPrefabLoader _loader;
+        private readonly Transform _containerRoot;
         private readonly List<GameObjectPoolSnapshot> _debugSnapshots = new List<GameObjectPoolSnapshot>(16);
+        private readonly StringOpenHashMap _unregisteredWarned = new StringOpenHashMap(8);
+        private readonly StringOpenHashMap _unhandledDespawnWarned = new StringOpenHashMap(8);
+        private readonly StringOpenHashMap _groupRootMap = new StringOpenHashMap(8);
+        private readonly StringOpenHashMap _poolByLocation = new StringOpenHashMap(32);
 
         private RuntimeGameObjectPool[] _pools = new RuntimeGameObjectPool[8];
         private int _poolCount;
         private PoolCompiledCatalog _catalog = PoolCompiledCatalog.Empty();
-        private int _catalogVersion;
-        private StringOpenHashMap[] _rulePoolMaps = Array.Empty<StringOpenHashMap>();
-        private bool[] _rulePoolMapInitialized = Array.Empty<bool>();
-        private StringOpenHashMap _directLoadWarnedPaths = new StringOpenHashMap(8);
-        private StringOpenHashMap _groupRootMap = new StringOpenHashMap(8);
         private Transform[] _groupRoots = new Transform[4];
         private int _groupRootCount;
-        private CancellationTokenSource _shutdownTokenSource;
-
         private MaintenanceNode[] _maintenanceHeap = new MaintenanceNode[8];
         private int _maintenanceCount;
-        private int _pendingAcquireCancellationRequested;
-
-        private StringOpenHashMap _resolveCache = new StringOpenHashMap(32);
-        private ResolvedAssetRequest[] _resolveCacheEntries = new ResolvedAssetRequest[32];
-        private int _resolveCacheVersion;
-
-        internal CancellationToken ShutdownToken => _shutdownTokenSource == null ? default : _shutdownTokenSource.Token;
-
-        private Transform _containerRoot;
-
         private bool _enabled;
+
+        public GameObjectPoolService(Transform transform)
+        {
+            _containerRoot = transform;
+            _loader = new YooAssetPrefabLoader();
+        }
 
         protected override void OnInitialize()
         {
-            _shutdownTokenSource = new CancellationTokenSource();
-            EnsureDefaultResourceLoaders();
             Application.lowMemory += OnLowMemory;
         }
 
         protected override void OnDestroyService()
         {
             Application.lowMemory -= OnLowMemory;
-            _shutdownTokenSource?.Cancel();
             ClearAllPools();
-            ReleaseRulePoolMaps();
             _catalog.Dispose();
             _catalog = null;
-            _directLoadWarnedPaths.Dispose();
+            _unregisteredWarned.Dispose();
+            _unhandledDespawnWarned.Dispose();
             _groupRootMap.Dispose();
-            _resolveCache.Dispose();
-
-            _shutdownTokenSource?.Dispose();
-            _shutdownTokenSource = null;
+            _poolByLocation.Dispose();
         }
 
         public void Tick(float deltaTime)
         {
-            if (!_enabled && Volatile.Read(ref _pendingAcquireCancellationRequested) == 0) return;
-            float now = Time.time;
-            ProcessPendingAcquireCancellations();
-            ProcessDueMaintenance(now);
-            _enabled = _maintenanceCount > 0 || Volatile.Read(ref _pendingAcquireCancellationRequested) != 0;
-        }
-
-        public GameObject GetGameObject(string assetName, Transform parent = null)
-        {
-            ResolvedAssetRequest request = ResolveOrCached(assetName);
-            PoolSpawnContext context = PoolSpawnContext.Create(request.LogicalPath, parent);
-            if (request.RuleIndex < 0)
-            {
-                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
-                return LoadDirect(request.LoadPath, context.Parent, request.LoaderType);
-            }
-
-            ref readonly PoolCompiledRule rule = ref _catalog.GetRule(request.RuleIndex);
-            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
-            return pool == null ? null : pool.Acquire(context.WithGroup(rule.group));
-        }
-
-        public async UniTask<GameObject> GetGameObjectAsync(
-            string assetName,
-            Transform parent = null,
-            CancellationToken cancellationToken = default)
-        {
-            ResolvedAssetRequest request = ResolveOrCached(assetName);
-            PoolSpawnContext context = PoolSpawnContext.Create(request.LogicalPath, parent);
-            if (request.RuleIndex < 0)
-            {
-                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
-                return await LoadDirectAsync(request.LoadPath, context.Parent, request.LoaderType, cancellationToken);
-            }
-
-            string ruleGroup = _catalog.GetRule(request.RuleIndex).group;
-            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
-            return pool == null ? null : await pool.AcquireAsync(context.WithGroup(ruleGroup), cancellationToken);
-        }
-
-        public async UniTask PreloadAsync(string assetName, int count = 1, CancellationToken cancellationToken = default)
-        {
-            if (count <= 0)
+            if (!_enabled)
             {
                 return;
             }
 
-            ResolvedAssetRequest request = ResolveOrCached(assetName);
-            if (request.RuleIndex < 0)
-            {
-                WarnDirectLoadFallback(request.RequestPath, request.LogicalPath, request.LoaderType);
-                return;
-            }
+            ProcessDueMaintenance(Time.time);
+            _enabled = _maintenanceCount > 0;
+        }
 
-            RuntimeGameObjectPool pool = GetOrCreatePool(request.RuleIndex, request.PoolKey, request.LoadPath);
+        public bool TrySpawn(string location, Transform parent, out GameObject instance)
+        {
+            instance = Spawn(location, parent);
+            return instance != null;
+        }
+
+        public GameObject Spawn(string location, Transform parent = null)
+        {
+            RuntimeGameObjectPool pool = ResolvePool(location);
+            return pool == null ? null : pool.Spawn(parent);
+        }
+
+        public T Spawn<T>(string location, Transform parent = null) where T : Component
+        {
+            GameObject instance = Spawn(location, parent);
+            return instance == null ? null : instance.GetComponent<T>();
+        }
+
+        public async UniTask<GameObject> SpawnAsync(string location, Transform parent = null, CancellationToken cancellationToken = default)
+        {
+            RuntimeGameObjectPool pool = ResolvePool(location);
+            return pool == null ? null : await pool.SpawnAsync(parent, cancellationToken);
+        }
+
+        public async UniTask<T> SpawnAsync<T>(string location, Transform parent = null, CancellationToken cancellationToken = default) where T : Component
+        {
+            GameObject instance = await SpawnAsync(location, parent, cancellationToken);
+            return instance == null ? null : instance.GetComponent<T>();
+        }
+
+        public GameObject LoadPrefab(string location)
+        {
+            RuntimeGameObjectPool pool = ResolvePool(location);
+            return pool == null ? null : pool.LoadPrefab();
+        }
+
+        public async UniTask<GameObject> LoadPrefabAsync(string location, CancellationToken cancellationToken = default)
+        {
+            RuntimeGameObjectPool pool = ResolvePool(location);
+            return pool == null ? null : await pool.LoadPrefabAsync(cancellationToken);
+        }
+
+        public async UniTask WarmupAsync(string location, int count, CancellationToken cancellationToken = default)
+        {
+            RuntimeGameObjectPool pool = ResolvePool(location);
             if (pool != null)
             {
                 await pool.WarmupAsync(count, cancellationToken);
             }
         }
 
-        public void Release(GameObject gameObject)
+        public void Despawn(GameObject instance)
         {
-            if (gameObject == null)
+            if (instance == null)
             {
                 return;
             }
 
-            if (gameObject.TryGetComponent(out GameObjectPoolHandle handle) && handle.TryRelease())
+            if (instance.TryGetComponent(out GameObjectPoolHandle handle) && handle.TryRelease())
             {
                 return;
             }
 
-            DestroyRuntimeObject(gameObject);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            WarnUnhandledDespawn(instance);
+#endif
+            UnityEngine.Object.Destroy(instance);
         }
 
-        public void ForceCleanup()
+        public void Despawn(GameObjectPoolHandle handle)
         {
-            float now = Time.time;
+            if (handle == null || handle.TryRelease())
+            {
+                return;
+            }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            WarnUnhandledDespawn(handle.gameObject);
+#endif
+            if (handle != null)
+            {
+                UnityEngine.Object.Destroy(handle.gameObject);
+            }
+        }
+
+        public void Flush(string location)
+        {
+            RuntimeGameObjectPool pool = FindPool(location);
+            pool?.Flush();
+        }
+
+        public void FlushGroup(string group)
+        {
+            string groupName = string.IsNullOrWhiteSpace(group) ? PoolEntry.DefaultGroup : group.Trim();
             for (int i = 0; i < _poolCount; i++)
             {
                 RuntimeGameObjectPool pool = _pools[i];
-                if (pool != null)
+                if (pool != null && string.Equals(pool.Group, groupName, StringComparison.Ordinal))
                 {
-                    pool.ExecuteMaintenance(now, false);
+                    pool.Flush();
                 }
             }
         }
 
-        public void ClearAllPools()
+        public void FlushAll()
         {
             for (int i = 0; i < _poolCount; i++)
             {
-                RuntimeGameObjectPool pool = _pools[i];
-                if (pool == null)
-                {
-                    continue;
-                }
-
-                pool.Shutdown();
-                MemoryPool.Release(pool);
-                _pools[i] = null;
+                _pools[i]?.Flush();
             }
-
-            _poolCount = 0;
-            _maintenanceCount = 0;
-
-            for (int i = 0; i < _rulePoolMapInitialized.Length; i++)
-            {
-                if (_rulePoolMapInitialized[i])
-                {
-                    _rulePoolMaps[i].Clear();
-                }
-            }
-
-            ClearGroupRoots();
-            _directLoadWarnedPaths.Clear();
-            ReleaseDebugSnapshots();
         }
 
-        private void ReleaseRulePoolMaps()
+        public void LoadCatalog(PoolConfigScriptableObject config)
         {
-            for (int i = 0; i < _rulePoolMapInitialized.Length; i++)
-            {
-                if (_rulePoolMapInitialized[i])
-                {
-                    _rulePoolMaps[i].Dispose();
-                }
-            }
+            ClearAllPools();
+            _catalog.Dispose();
+            _catalog = config == null ? PoolCompiledCatalog.Empty() : config.BuildCatalog();
+            _enabled = false;
+        }
 
-            _rulePoolMaps = Array.Empty<StringOpenHashMap>();
-            _rulePoolMapInitialized = Array.Empty<bool>();
+        public void LoadCatalog(string poolConfigPath)
+        {
+            IResourceService resourceService = AppServices.App.Require<IResourceService>();
+            PoolConfigScriptableObject config = resourceService.LoadAsset<PoolConfigScriptableObject>(poolConfigPath);
+            LoadCatalog(config);
+            if (config != null)
+            {
+                resourceService.UnloadAsset(config);
+            }
         }
 
         public GameObjectPoolSummarySnapshot GetDebugSummary()
@@ -266,7 +207,6 @@ namespace AlicizaX
             int totalInstanceCount = 0;
             int activeInstanceCount = 0;
             int inactiveInstanceCount = 0;
-
             for (int i = 0; i < _poolCount; i++)
             {
                 RuntimeGameObjectPool pool = _pools[i];
@@ -287,7 +227,6 @@ namespace AlicizaX
 
             return new GameObjectPoolSummarySnapshot(
                 true,
-                false,
                 _poolCount,
                 loadedPrefabCount,
                 totalInstanceCount,
@@ -305,13 +244,12 @@ namespace AlicizaX
             }
 
             ReleaseDebugSnapshots();
-
             for (int i = 0; i < _poolCount; i++)
             {
                 RuntimeGameObjectPool pool = _pools[i];
                 if (pool != null)
                 {
-                    _debugSnapshots.Add(pool.CreateSnapshot());
+                    _debugSnapshots.Add(pool.CreateSnapshot(false));
                 }
             }
 
@@ -323,6 +261,16 @@ namespace AlicizaX
             }
 
             return copyCount;
+        }
+
+        public void FillDebugInstances(GameObjectPoolSnapshot snapshot)
+        {
+            if (snapshot == null || string.IsNullOrEmpty(snapshot.location))
+            {
+                return;
+            }
+
+            FindPool(snapshot.location)?.FillInstances(snapshot);
         }
 
         internal void ScheduleMaintenance(int poolIndex, float dueTime, ref int heapIndex)
@@ -365,180 +313,101 @@ namespace AlicizaX
             heapIndex = -1;
         }
 
-        internal void NotifyPendingAcquireCancellationRequested()
+        private RuntimeGameObjectPool ResolvePool(string location)
         {
-            Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 1);
-            _enabled = true;
-        }
-
-
-        public void LoadCatalog(string poolConfigPath)
-        {
-            ClearAllPools();
-            ReleaseRulePoolMaps();
-            _catalog.Dispose();
-
-            IResourceService resourceService = AppServices.App.Require<IResourceService>();
-            PoolConfigScriptableObject configAsset = resourceService.LoadAsset<PoolConfigScriptableObject>(poolConfigPath);
-            _catalog = configAsset == null ? PoolCompiledCatalog.Empty() : configAsset.BuildCatalog();
-            if (configAsset != null)
+            string normalized = PoolEntry.NormalizeLocation(location);
+            if (string.IsNullOrEmpty(normalized))
             {
-                resourceService.UnloadAsset(configAsset);
+                return null;
             }
 
-            _rulePoolMaps = _catalog.RuleCount == 0 ? Array.Empty<StringOpenHashMap>() : new StringOpenHashMap[_catalog.RuleCount];
-            _rulePoolMapInitialized = _catalog.RuleCount == 0 ? Array.Empty<bool>() : new bool[_catalog.RuleCount];
-            unchecked
-            {
-                _catalogVersion++;
-            }
-
-            _enabled = _maintenanceCount > 0;
-        }
-
-        private ResolvedAssetRequest ResolveOrCached(string assetName)
-        {
-            string normalized = PoolEntry.NormalizeAssetPath(assetName);
-            if (_resolveCacheVersion == _catalogVersion &&
-                _resolveCache.TryGetValue(normalized, out int cacheIndex))
-            {
-                return _resolveCacheEntries[cacheIndex];
-            }
-
-            if (_resolveCacheVersion != _catalogVersion)
-            {
-                _resolveCache.Clear();
-                _resolveCacheVersion = _catalogVersion;
-            }
-
-            ResolvedAssetRequest request = ResolveAssetRequest(normalized);
-            int index = _resolveCache.Count;
-            if (index >= ResolveCacheCapacityLimit)
-            {
-                return request;
-            }
-
-            if (index >= _resolveCacheEntries.Length)
-            {
-                int newCapacity = Mathf.Min(_resolveCacheEntries.Length << 1, ResolveCacheCapacityLimit);
-                var newEntries = new ResolvedAssetRequest[newCapacity];
-                Array.Copy(_resolveCacheEntries, 0, newEntries, 0, _resolveCacheEntries.Length);
-                _resolveCacheEntries = newEntries;
-            }
-
-            _resolveCacheEntries[index] = request;
-            _resolveCache.AddOrUpdate(normalized, index);
-            return request;
-        }
-
-        private RuntimeGameObjectPool GetOrCreatePool(int ruleIndex, string poolKey, string loadPath)
-        {
-            if (!_rulePoolMapInitialized[ruleIndex])
-            {
-                _rulePoolMaps[ruleIndex] = new StringOpenHashMap(4);
-                _rulePoolMapInitialized[ruleIndex] = true;
-            }
-
-            if (_rulePoolMaps[ruleIndex].TryGetValue(poolKey, out int poolIndex))
+            if (_poolByLocation.TryGetValue(normalized, out int poolIndex))
             {
                 return _pools[poolIndex];
+            }
+
+            int ruleIndex = _catalog.Resolve(normalized);
+            if (ruleIndex < 0)
+            {
+                WarnUnregistered(normalized);
+                return null;
+            }
+
+            return GetOrCreatePool(ruleIndex, normalized);
+        }
+
+        private RuntimeGameObjectPool FindPool(string location)
+        {
+            string normalized = PoolEntry.NormalizeLocation(location);
+            return !string.IsNullOrEmpty(normalized) && _poolByLocation.TryGetValue(normalized, out int poolIndex)
+                ? _pools[poolIndex]
+                : null;
+        }
+
+        private RuntimeGameObjectPool GetOrCreatePool(int ruleIndex, string location)
+        {
+            if (_poolByLocation.TryGetValue(location, out int existing))
+            {
+                return _pools[existing];
             }
 
             EnsurePoolCapacity(_poolCount + 1);
             ref readonly PoolCompiledRule rule = ref _catalog.GetRule(ruleIndex);
             var pool = MemoryPool.Acquire<RuntimeGameObjectPool>();
-            IResourceLoader loader = GetResourceLoader(rule.loaderType);
-            if (loader == null)
-            {
-                MemoryPool.Release(pool);
-                return null;
-            }
-
-            pool.Initialize(this, _poolCount, rule, poolKey, loadPath, loader, GetOrCreateGroupRoot(rule.group));
+            pool.Initialize(this, _poolCount, rule, location, _loader, GetOrCreateGroupRoot(rule.Group));
             _pools[_poolCount] = pool;
-            _rulePoolMaps[ruleIndex].AddOrUpdate(poolKey, _poolCount);
+            _poolByLocation.AddOrUpdate(location, _poolCount);
             _poolCount++;
-            _enabled = true;
             return pool;
         }
-
-        private GameObject LoadDirect(string assetPath, Transform parent, PoolResourceLoaderType loaderType)
-        {
-            IResourceLoader loader = GetResourceLoader(loaderType);
-            return loader == null ? null : loader.LoadGameObject(assetPath, parent);
-        }
-
-        private async UniTask<GameObject> LoadDirectAsync(
-            string assetPath,
-            Transform parent,
-            PoolResourceLoaderType loaderType,
-            CancellationToken cancellationToken)
-        {
-            IResourceLoader loader = GetResourceLoader(loaderType);
-            return loader == null ? null : await loader.LoadGameObjectAsync(assetPath, parent, cancellationToken);
-        }
-
-        private IResourceLoader GetResourceLoader(PoolResourceLoaderType loaderType)
-        {
-            int loaderIndex = (int)loaderType;
-            if ((uint)loaderIndex >= (uint)_resourceLoaders.Length)
-            {
-                return null;
-            }
-
-            IResourceLoader loader = _resourceLoaders[(int)loaderType];
-            return loader;
-        }
-
-        private void EnsureDefaultResourceLoaders()
-        {
-            if (_resourceLoaders[(int)PoolResourceLoaderType.AssetBundle] == null)
-            {
-                _resourceLoaders[(int)PoolResourceLoaderType.AssetBundle] = new AssetBundleResourceLoader();
-            }
-
-            if (_resourceLoaders[(int)PoolResourceLoaderType.Resources] == null)
-            {
-                _resourceLoaders[(int)PoolResourceLoaderType.Resources] = new UnityResourcesLoader();
-            }
-        }
-
 
         private Transform GetOrCreateGroupRoot(string group)
         {
             string groupName = string.IsNullOrWhiteSpace(group) ? PoolEntry.DefaultGroup : group.Trim();
             if (_groupRootMap.TryGetValue(groupName, out int groupIndex))
             {
-                Transform existingRoot = _groupRoots[groupIndex];
-                if (existingRoot != null)
+                Transform existing = _groupRoots[groupIndex];
+                if (existing != null)
                 {
-                    return existingRoot;
+                    return existing;
                 }
             }
 
-            EnsureGroupRootCapacity(_groupRootCount + 1);
-            GameObject rootObject = new GameObject(ZString.Format("[{0}]", groupName));
+            if (_groupRootCount >= _groupRoots.Length)
+            {
+                Array.Resize(ref _groupRoots, _groupRoots.Length << 1);
+            }
+
+            var rootObject = new GameObject(ZString.Format("[{0}]", groupName));
             Transform root = rootObject.transform;
             root.SetParent(_containerRoot, false);
-            rootObject.SetActive(true);
-
             int newIndex = _groupRootCount++;
             _groupRoots[newIndex] = root;
             _groupRootMap.AddOrUpdate(groupName, newIndex);
             return root;
         }
 
-        private void EnsureGroupRootCapacity(int required)
+        private void ClearAllPools()
         {
-            if (_groupRoots.Length >= required)
+            for (int i = 0; i < _poolCount; i++)
             {
-                return;
+                RuntimeGameObjectPool pool = _pools[i];
+                if (pool == null)
+                {
+                    continue;
+                }
+
+                pool.Shutdown();
+                MemoryPool.Release(pool);
+                _pools[i] = null;
             }
 
-            int newCapacity = Mathf.Max(required, _groupRoots.Length << 1);
-            var newRoots = new Transform[newCapacity];
-            Array.Copy(_groupRoots, 0, newRoots, 0, _groupRootCount);
-            _groupRoots = newRoots;
+            _poolCount = 0;
+            _maintenanceCount = 0;
+            _poolByLocation.Clear();
+            _unregisteredWarned.Clear();
+            ClearGroupRoots();
+            ReleaseDebugSnapshots();
         }
 
         private void ClearGroupRoots()
@@ -548,7 +417,7 @@ namespace AlicizaX
                 Transform root = _groupRoots[i];
                 if (root != null)
                 {
-                    DestroyRuntimeObject(root.gameObject);
+                    UnityEngine.Object.Destroy(root.gameObject);
                     _groupRoots[i] = null;
                 }
             }
@@ -557,190 +426,37 @@ namespace AlicizaX
             _groupRootMap.Clear();
         }
 
-        private void WarnDirectLoadFallback(string assetPath, string logicalPath, PoolResourceLoaderType loaderType)
+        private void WarnUnregistered(string location)
         {
-#if !UNITY_EDITOR && !DEVELOPMENT_BUILD
-            return;
-#else
-            if (_directLoadWarnedPaths.TryGetValue(assetPath, out _))
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (_unregisteredWarned.TryGetValue(location, out _))
             {
                 return;
             }
 
-            _directLoadWarnedPaths.AddOrUpdate(assetPath, 1);
-            Log.Warning(ZString.Format(
-                "[GameObjectPool] Asset not found in PoolConfig. Fallback to direct load and Release() will destroy it. Request:{0}, Logical:{1}, Loader:{2}",
-                assetPath,
-                string.IsNullOrEmpty(logicalPath) ? "<none>" : logicalPath,
-                loaderType));
+            _unregisteredWarned.AddOrUpdate(location, 1);
+            Log.Error(ZString.Format("[GameObjectPool] Location is not in PoolConfig: {0}", location));
 #endif
         }
 
-        private static void DestroyRuntimeObject(UnityEngine.Object target)
+        private void WarnUnhandledDespawn(GameObject instance)
         {
-            if (target == null)
+            string name = instance == null ? "<null>" : instance.name;
+            if (_unhandledDespawnWarned.TryGetValue(name, out _))
             {
                 return;
             }
 
-            if (target is GameObject gameObject)
-            {
-                ResourceOwner.ReleaseBindingsInHierarchy(gameObject);
-            }
-
-#if UNITY_EDITOR
-            if (!Application.isPlaying)
-            {
-                UnityEngine.Object.DestroyImmediate(target);
-                return;
-            }
-#endif
-            UnityEngine.Object.Destroy(target);
+            _unhandledDespawnWarned.AddOrUpdate(name, 1);
+            Log.Warning(ZString.Format("[GameObjectPool] Despawn target is not a pooled instance and will be destroyed: {0}", name));
         }
-
-        private ResolvedAssetRequest ResolveAssetRequest(string requestPath)
-        {
-            ParsedRequestPath parsedRequest = ParseRequestPath(requestPath);
-            if (parsedRequest.HasExplicitLoaderType)
-            {
-                return ResolveAssetRequest(parsedRequest.LogicalPath, parsedRequest.OriginalPath, parsedRequest.LoaderType);
-            }
-
-            ResolvedAssetRequest resourcesRequest = ResolveAssetRequest(parsedRequest.LogicalPath, parsedRequest.OriginalPath, PoolResourceLoaderType.Resources);
-            bool resourcesMatched = resourcesRequest.RuleIndex >= 0;
-
-            ResolvedAssetRequest assetBundleRequest = ResolveAssetRequest(parsedRequest.LogicalPath, parsedRequest.OriginalPath, PoolResourceLoaderType.AssetBundle);
-            bool assetBundleMatched = assetBundleRequest.RuleIndex >= 0;
-
-            if (resourcesMatched && assetBundleMatched)
-            {
-                Log.Error(ZString.Format(
-                    "[GameObjectPool] Ambiguous logical path '{0}'. Both Resources and AssetBundle rules matched. Use 'res:' or 'ab:' prefix.",
-                    parsedRequest.LogicalPath));
-                return new ResolvedAssetRequest(-1, parsedRequest.OriginalPath, parsedRequest.LogicalPath, parsedRequest.LogicalPath, parsedRequest.LogicalPath, PoolResourceLoaderType.Resources);
-            }
-
-            if (resourcesMatched)
-            {
-                return resourcesRequest;
-            }
-
-            if (assetBundleMatched)
-            {
-                return assetBundleRequest;
-            }
-
-            if (TryResolveAssetBundleAssetPath(parsedRequest.LogicalPath, out _))
-            {
-                return new ResolvedAssetRequest(
-                    -1,
-                    parsedRequest.OriginalPath,
-                    parsedRequest.LogicalPath,
-                    parsedRequest.LogicalPath,
-                    parsedRequest.LogicalPath,
-                    PoolResourceLoaderType.AssetBundle);
-            }
-
-            return new ResolvedAssetRequest(
-                -1,
-                parsedRequest.OriginalPath,
-                parsedRequest.LogicalPath,
-                parsedRequest.LogicalPath,
-                parsedRequest.LogicalPath,
-                GuessDirectLoaderType(parsedRequest.LogicalPath));
-        }
-
-        private ResolvedAssetRequest ResolveAssetRequest(string logicalPath, string originalPath, PoolResourceLoaderType loaderType)
-        {
-            string resolvedLogicalPath = logicalPath;
-            if (loaderType == PoolResourceLoaderType.AssetBundle &&
-                TryResolveAssetBundleAssetPath(logicalPath, out string assetBundleAssetPath))
-            {
-                string normalizedAssetBundlePath = PoolEntry.NormalizeConfigAssetPath(assetBundleAssetPath, PoolResourceLoaderType.AssetBundle);
-                if (!string.IsNullOrEmpty(normalizedAssetBundlePath))
-                {
-                    resolvedLogicalPath = normalizedAssetBundlePath;
-                }
-            }
-
-            int ruleIndex = _catalog.Resolve(resolvedLogicalPath, loaderType, null);
-            if (ruleIndex < 0)
-            {
-                return new ResolvedAssetRequest(-1, originalPath, resolvedLogicalPath, logicalPath, resolvedLogicalPath, loaderType);
-            }
-
-            ref readonly PoolCompiledRule rule = ref _catalog.GetRule(ruleIndex);
-            return new ResolvedAssetRequest(
-                ruleIndex,
-                originalPath,
-                resolvedLogicalPath,
-                logicalPath,
-                resolvedLogicalPath,
-                rule.loaderType);
-        }
-
-        private static ParsedRequestPath ParseRequestPath(string requestPath)
-        {
-            const string assetBundlePrefix = "ab:";
-            const string resourcesPrefix = "res:";
-
-            if (requestPath.StartsWith(assetBundlePrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                string logicalPath = PoolEntry.NormalizeAssetPath(requestPath.Substring(assetBundlePrefix.Length));
-                return new ParsedRequestPath(requestPath, logicalPath, true, PoolResourceLoaderType.AssetBundle);
-            }
-
-            if (requestPath.StartsWith(resourcesPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                string logicalPath = PoolEntry.NormalizeAssetPath(requestPath.Substring(resourcesPrefix.Length));
-                return new ParsedRequestPath(requestPath, logicalPath, true, PoolResourceLoaderType.Resources);
-            }
-
-            return new ParsedRequestPath(requestPath, requestPath, false, default);
-        }
-
-        private bool TryResolveAssetBundleAssetPath(string location, out string assetPath)
-        {
-            assetPath = null;
-            if (!AppServices.HasWorld || !AppServices.App.TryGet(out IResourceService resourceService))
-            {
-                return false;
-            }
-
-            var assetInfo = resourceService.GetAssetInfo(location);
-            if (assetInfo == null || !string.IsNullOrEmpty(assetInfo.Error) || string.IsNullOrEmpty(assetInfo.AssetPath))
-            {
-                return false;
-            }
-
-            assetPath = assetInfo.AssetPath;
-            return true;
-        }
-
-        private static PoolResourceLoaderType GuessDirectLoaderType(string requestPath)
-        {
-            if (requestPath.StartsWith("Assets/Resources/", StringComparison.OrdinalIgnoreCase) ||
-                requestPath.IndexOf("/Resources/", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return PoolResourceLoaderType.Resources;
-            }
-
-            return requestPath.StartsWith("Assets/", StringComparison.Ordinal)
-                ? PoolResourceLoaderType.AssetBundle
-                : PoolResourceLoaderType.Resources;
-        }
-
 
         private void OnLowMemory()
         {
             float now = Time.time;
             for (int i = 0; i < _poolCount; i++)
             {
-                RuntimeGameObjectPool pool = _pools[i];
-                if (pool != null)
-                {
-                    pool.ExecuteMaintenance(now, true);
-                }
+                _pools[i]?.ExecuteMaintenance(now, true);
             }
         }
 
@@ -755,32 +471,7 @@ namespace AlicizaX
                 }
 
                 RemoveMaintenanceAt(0);
-                RuntimeGameObjectPool pool = _pools[node.poolIndex];
-                pool?.ExecuteMaintenance(now, false);
-            }
-        }
-
-        private void ProcessPendingAcquireCancellations()
-        {
-            if (Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 0) == 0)
-            {
-                return;
-            }
-
-            bool hasPendingCancellation = false;
-            for (int i = 0; i < _poolCount; i++)
-            {
-                RuntimeGameObjectPool pool = _pools[i];
-                if (pool != null && pool.ProcessPendingAcquireCancellations())
-                {
-                    hasPendingCancellation = true;
-                }
-            }
-
-            if (hasPendingCancellation)
-            {
-                Interlocked.Exchange(ref _pendingAcquireCancellationRequested, 1);
-                _enabled = true;
+                _pools[node.poolIndex]?.ExecuteMaintenance(now, false);
             }
         }
 
@@ -791,10 +482,7 @@ namespace AlicizaX
                 return;
             }
 
-            int newCapacity = Mathf.Max(required, _pools.Length << 1);
-            var newPools = new RuntimeGameObjectPool[newCapacity];
-            Array.Copy(_pools, 0, newPools, 0, _poolCount);
-            _pools = newPools;
+            Array.Resize(ref _pools, Mathf.Max(required, _pools.Length << 1));
         }
 
         private void EnsureMaintenanceCapacity(int required)
@@ -804,25 +492,19 @@ namespace AlicizaX
                 return;
             }
 
-            int newCapacity = Mathf.Max(required, _maintenanceHeap.Length << 1);
-            var newHeap = new MaintenanceNode[newCapacity];
-            Array.Copy(_maintenanceHeap, 0, newHeap, 0, _maintenanceCount);
-            _maintenanceHeap = newHeap;
+            Array.Resize(ref _maintenanceHeap, Mathf.Max(required, _maintenanceHeap.Length << 1));
         }
 
         private void RemoveMaintenanceAt(int heapIndex)
         {
             MaintenanceNode removed = _maintenanceHeap[heapIndex];
-            RuntimeGameObjectPool removedPool = _pools[removed.poolIndex];
-            removedPool?.SetMaintenanceHeapIndex(-1);
-
+            _pools[removed.poolIndex]?.SetMaintenanceHeapIndex(-1);
             int lastIndex = _maintenanceCount - 1;
             if (heapIndex != lastIndex)
             {
                 MaintenanceNode moved = _maintenanceHeap[lastIndex];
                 _maintenanceHeap[heapIndex] = moved;
-                RuntimeGameObjectPool movedPool = _pools[moved.poolIndex];
-                movedPool?.SetMaintenanceHeapIndex(heapIndex);
+                _pools[moved.poolIndex]?.SetMaintenanceHeapIndex(heapIndex);
             }
 
             _maintenanceHeap[lastIndex] = default;
@@ -909,13 +591,8 @@ namespace AlicizaX
                 return -1;
             }
 
-            int groupCompare = string.Compare(left.group, right.group, StringComparison.Ordinal);
-            if (groupCompare != 0)
-            {
-                return groupCompare;
-            }
-
-            return string.Compare(left.assetPath, right.assetPath, StringComparison.Ordinal);
+            int groupCompare = string.CompareOrdinal(left.group, right.group);
+            return groupCompare != 0 ? groupCompare : string.CompareOrdinal(left.location, right.location);
         }
     }
 }
