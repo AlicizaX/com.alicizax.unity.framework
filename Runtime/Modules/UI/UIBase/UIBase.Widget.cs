@@ -33,7 +33,7 @@ namespace AlicizaX.UI.Runtime
                 UIMetadata metadata = _children[--_childCount];
                 _children[_childCount] = null;
                 UIBase view = metadata?.View;
-                if (view != null && view.Visible)
+                if (view != null && UIStateMachine.IsDisplayActive(view.State))
                 {
                     metadata.CancelAsyncOperations();
                     await view.InternalClose(skipTransition: true);

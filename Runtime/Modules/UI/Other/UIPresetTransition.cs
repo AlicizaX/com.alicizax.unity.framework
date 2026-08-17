@@ -1,3 +1,4 @@
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -28,7 +29,7 @@ namespace AlicizaX.UI.Runtime
     }
 
     [DisallowMultipleComponent]
-    public sealed class UIPresetTransition : MonoBehaviour, IUITransitionPlayer
+    public sealed class UIPresetTransition : MonoBehaviour, IUITransitionSource
     {
         private struct VisualState
         {
@@ -54,7 +55,6 @@ namespace AlicizaX.UI.Runtime
 
         private bool _initialized;
         private bool _initialClosedStatePending;
-        private int _playVersion;
         private VisualState _openState;
 
 #if UNITY_EDITOR
@@ -71,56 +71,45 @@ namespace AlicizaX.UI.Runtime
 
         private void OnDisable()
         {
-            Stop();
 #if UNITY_EDITOR
             EditorStopPreview();
 #endif
         }
 
-        public UniTask PlayOpenAsync()
+        public UniTask Play(bool open, CancellationToken cancellationToken)
         {
             EnsureInitialized(false);
-            PrepareInitialClosedStateForOpen();
-            return PlayAsync(_openState, openDuration, openEase, true);
+            if (open)
+            {
+                PrepareInitialClosedStateForOpen();
+                return PlayAsync(_openState, openDuration, openEase, true, cancellationToken);
+            }
+
+            return PlayAsync(BuildClosedState(closePreset), closeDuration, closeEase, false, cancellationToken);
         }
 
-        public UniTask PlayCloseAsync()
-        {
-            EnsureInitialized(false);
-            return PlayAsync(BuildClosedState(closePreset), closeDuration, closeEase, false);
-        }
-
-        public void ApplyOpenState()
+        public void Snap(bool open)
         {
             EnsureInitialized(false);
             _initialClosedStatePending = false;
-            _playVersion++;
-            ApplyVisualState(_openState);
-            RestoreInteractionState(true);
-        }
+            if (open)
+            {
+                ApplyVisualState(_openState);
+                RestoreInteractionState(true);
+                return;
+            }
 
-        public void ApplyClosedState()
-        {
-            EnsureInitialized(false);
-            _initialClosedStatePending = false;
-            _playVersion++;
             ApplyVisualState(BuildClosedState(GetClosedStatePreset()));
             RestoreInteractionState(false);
-        }
-
-        public void Stop()
-        {
-            _playVersion++;
-            RestoreInteractionState(true);
         }
 
         private async UniTask PlayAsync(
             VisualState targetState,
             float duration,
             UITransitionEase ease,
-            bool isOpening)
+            bool isOpening,
+            CancellationToken cancellationToken)
         {
-            int playVersion = ++_playVersion;
             RestoreInteractionState(false);
 
             VisualState currentState = CaptureCurrentState();
@@ -134,22 +123,14 @@ namespace AlicizaX.UI.Runtime
             float elapsed = 0f;
             while (elapsed < duration)
             {
-                if (playVersion != _playVersion)
-                {
-                    return;
-                }
-
+                cancellationToken.ThrowIfCancellationRequested();
                 elapsed = Mathf.Min(elapsed + GetDeltaTime(), duration);
                 float t = Evaluate(ease, elapsed / duration);
                 ApplyVisualState(Lerp(currentState, targetState, t));
-                await UniTask.Yield(PlayerLoopTiming.Update);
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
             }
 
-            if (playVersion != _playVersion)
-            {
-                return;
-            }
-
+            cancellationToken.ThrowIfCancellationRequested();
             ApplyVisualState(targetState);
             RestoreInteractionState(isOpening);
         }

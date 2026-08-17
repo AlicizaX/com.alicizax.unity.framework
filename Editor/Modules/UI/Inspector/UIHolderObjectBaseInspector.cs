@@ -62,7 +62,7 @@ public class UIHolderObjectBaseEditor : Editor
         if (transitionPlayerComponentProperty != null)
         {
             EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.PropertyField(transitionPlayerComponentProperty, new GUIContent("Transition Player"));
+            EditorGUILayout.PropertyField(transitionPlayerComponentProperty, new GUIContent("Transition Source"));
             EditorGUI.EndDisabledGroup();
         }
 

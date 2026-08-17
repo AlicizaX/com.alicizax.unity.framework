@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -17,22 +17,28 @@ namespace AlicizaX.UI.Runtime
 
         private GameObject _target;
         [SerializeField, HideInInspector] private Component _transitionPlayerComponent;
-        private IUITransitionPlayer _transitionPlayer;
+        private IUITransitionSource _transitionSource;
+        private CancellationTokenSource _transitionCts;
         public GameObject Target => _target ??= gameObject;
 
         private RectTransform _rectTransform;
         public RectTransform RectTransform => _rectTransform ??= Target.transform as RectTransform;
 
-        private IUITransitionPlayer TransitionPlayer
+        private IUITransitionSource TransitionSource
         {
             get
             {
+                if (_transitionSource != null)
+                {
+                    return _transitionSource;
+                }
+
                 if (_transitionPlayerComponent == null)
                 {
                     return null;
                 }
 
-                return _transitionPlayer ??= _transitionPlayerComponent as IUITransitionPlayer;
+                return _transitionSource = _transitionPlayerComponent as IUITransitionSource;
             }
         }
 
@@ -45,7 +51,10 @@ namespace AlicizaX.UI.Runtime
         public virtual void Awake()
         {
             _target = gameObject;
-            _transitionPlayer = _transitionPlayerComponent as IUITransitionPlayer;
+            if (_transitionSource == null)
+            {
+                _transitionSource = _transitionPlayerComponent as IUITransitionSource;
+            }
         }
 
         private bool _isAlive = true;
@@ -55,72 +64,108 @@ namespace AlicizaX.UI.Runtime
             return this != null && _isAlive;
         }
 
+        public void SetTransition(IUITransitionSource source)
+        {
+            CancelTransitionPlay();
+            _transitionSource = source;
+        }
+
+        public void SetTransition(Func<bool, CancellationToken, UniTask> play, Action<bool> snap)
+        {
+            SetTransition(new UIDelegateTransitionSource(play, snap));
+        }
+
         internal UniTask PlayOpenTransitionAsync()
         {
-            if (!_isAlive || this == null)
-            {
-                return UniTask.CompletedTask;
-            }
-
-            IUITransitionPlayer transitionPlayer = TransitionPlayer;
-            return transitionPlayer != null
-                ? transitionPlayer.PlayOpenAsync()
-                : UniTask.CompletedTask;
+            return PlayTransition(true);
         }
 
         internal UniTask PlayCloseTransitionAsync()
         {
+            return PlayTransition(false);
+        }
+
+        internal void ApplyOpenTransitionState()
+        {
+            SnapTransition(true);
+        }
+
+        internal void ApplyClosedTransitionState()
+        {
+            SnapTransition(false);
+        }
+
+        internal void StopTransition()
+        {
+            CancelTransitionPlay();
+        }
+
+        private UniTask PlayTransition(bool open)
+        {
             if (!_isAlive || this == null)
             {
                 return UniTask.CompletedTask;
             }
 
-            IUITransitionPlayer transitionPlayer = TransitionPlayer;
-            return transitionPlayer != null
-                ? transitionPlayer.PlayCloseAsync()
-                : UniTask.CompletedTask;
+            IUITransitionSource source = TransitionSource;
+            if (source == null)
+            {
+                return UniTask.CompletedTask;
+            }
+
+            CancellationToken cancellationToken = RestartTransitionPlay();
+            return PlayTransitionGuarded(source, open, cancellationToken);
         }
 
-        internal void ApplyOpenTransitionState()
+        private async UniTask PlayTransitionGuarded(
+            IUITransitionSource source,
+            bool open,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await source.Play(open, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        private void SnapTransition(bool open)
         {
             if (!_isAlive || this == null)
             {
                 return;
             }
 
-            IUITransitionPlayer transitionPlayer = TransitionPlayer;
-            transitionPlayer?.ApplyOpenState();
+            CancelTransitionPlay();
+            TransitionSource?.Snap(open);
         }
 
-        internal void ApplyClosedTransitionState()
+        private CancellationToken RestartTransitionPlay()
         {
-            if (!_isAlive || this == null)
+            CancelTransitionPlay();
+            _transitionCts = new CancellationTokenSource();
+            return _transitionCts.Token;
+        }
+
+        private void CancelTransitionPlay()
+        {
+            if (_transitionCts == null)
             {
                 return;
             }
 
-            IUITransitionPlayer transitionPlayer = TransitionPlayer;
-            transitionPlayer?.ApplyClosedState();
-        }
-
-        internal void StopTransition()
-        {
-            if (!_isAlive || this == null)
-            {
-                return;
-            }
-
-            IUITransitionPlayer transitionPlayer = TransitionPlayer;
-            if (transitionPlayer != null)
-            {
-                transitionPlayer.Stop();
-            }
+            _transitionCts.Cancel();
+            _transitionCts.Dispose();
+            _transitionCts = null;
         }
 
         private void OnDestroy()
         {
             _isAlive = false;
-            _transitionPlayer = null;
+            CancelTransitionPlay();
+            _transitionSource = null;
         }
 
 #if UNITY_EDITOR
@@ -143,7 +188,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             _transitionPlayerComponent = transitionPlayer;
-            _transitionPlayer = transitionPlayer as IUITransitionPlayer;
+            _transitionSource = transitionPlayer as IUITransitionSource;
         }
 
         internal Component FindTransitionPlayerInEditor()
@@ -197,7 +242,7 @@ namespace AlicizaX.UI.Runtime
             Component[] components = transform.GetComponents<Component>();
             for (int i = 0; i < components.Length; i++)
             {
-                if (components[i] is IUITransitionPlayer)
+                if (components[i] is IUITransitionSource)
                 {
                     return components[i];
                 }

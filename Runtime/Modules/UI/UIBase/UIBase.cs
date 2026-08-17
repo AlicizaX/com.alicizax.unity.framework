@@ -143,15 +143,10 @@ namespace AlicizaX.UI.Runtime
 
         internal bool Visible
         {
-            get => _visible && _canvas != null;
+            get => _visible;
 
             set
             {
-                if (_canvas == null)
-                {
-                    return;
-                }
-
                 if (_visible == value)
                 {
 #if UNITY_EDITOR
@@ -161,12 +156,27 @@ namespace AlicizaX.UI.Runtime
                 }
 
                 _visible = value;
-                _canvas.gameObject.layer = value ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+                ApplyHolderLayer(value);
                 ChildVisible(value);
                 Interactable = value;
 #if UNITY_EDITOR
                 SetSceneViewVisible(value);
 #endif
+            }
+        }
+
+        private void ApplyHolderLayer(bool visible)
+        {
+            if (Holder == null || !Holder.IsValid())
+            {
+                return;
+            }
+
+            int layer = visible ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+            GameObject go = Holder.gameObject;
+            if (go.layer != layer)
+            {
+                go.layer = layer;
             }
         }
 
@@ -189,18 +199,18 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
         private void SetSceneViewVisible(bool visible)
         {
-            if (_canvas == null || !Application.isPlaying || !EditorApplication.isPlayingOrWillChangePlaymode)
+            if (Holder == null || !Holder.IsValid() || !Application.isPlaying || !EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 return;
             }
 
             if (visible)
             {
-                SceneVisibilityManager.instance.Show(_canvas.gameObject, true);
+                SceneVisibilityManager.instance.Show(Holder.gameObject, true);
             }
             else
             {
-                SceneVisibilityManager.instance.Hide(_canvas.gameObject, true);
+                SceneVisibilityManager.instance.Hide(Holder.gameObject, true);
             }
         }
 #endif
@@ -284,6 +294,16 @@ namespace AlicizaX.UI.Runtime
             _destroyHolderOnDispose = value;
         }
 
+        protected void SetTransition(IUITransitionSource source)
+        {
+            Holder?.SetTransition(source);
+        }
+
+        protected void SetTransition(Func<bool, CancellationToken, UniTask> play, Action<bool> snap)
+        {
+            Holder?.SetTransition(play, snap);
+        }
+
         protected void BindHolderCommon(UIHolderObjectBase holder, bool overrideSorting, bool stretchToParent)
         {
             Holder = holder;
@@ -293,7 +313,7 @@ namespace AlicizaX.UI.Runtime
                 _canvas.overrideSorting = overrideSorting;
             }
 
-            _visible = _canvas != null && _canvas.gameObject.layer == UIComponent.UIShowLayer;
+            _visible = Holder.gameObject.layer == UIComponent.UIShowLayer;
 
             _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
             if (stretchToParent)
@@ -495,7 +515,7 @@ namespace AlicizaX.UI.Runtime
 
         internal void InternalUpdate()
         {
-            if (_state != UIState.Opened || !Visible) return;
+            if (_state != UIState.Opened || !_visible) return;
             OnUpdate();
             UpdateChildren();
         }
