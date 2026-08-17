@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
-    public abstract class UITabWindow<T> : UIWindowBase<T> where T : UIHolderObjectBase
+    public abstract class UITabWindow<T> : UIWindow<T> where T : UIHolderObjectBase
     {
         private UIWidget _activeTab;
         private readonly List<RuntimeTypeHandle> _typeOrder = new();
