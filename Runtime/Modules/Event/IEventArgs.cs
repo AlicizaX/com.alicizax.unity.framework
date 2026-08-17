@@ -6,17 +6,15 @@ namespace AlicizaX
 {
     public delegate void InEventHandler<T>(in T evt) where T : struct, IPayloadEventArgs;
 
-    public interface IEventArgs { }
+    public interface IPayloadEventArgs { }
 
-    public interface IPayloadEventArgs : IEventArgs { }
-
-    public interface IEmptyEventArgs : IEventArgs { }
+    public interface IEmptyEventArgs { }
 
 #if UNITY_EDITOR
     internal static class EventArgsGuard
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void ThrowIfDualEventKind<T>() where T : struct, IEventArgs
+        internal static void ThrowIfDualEventKind<T>() where T : struct
         {
             Type type = typeof(T);
             if (typeof(IPayloadEventArgs).IsAssignableFrom(type) &&
@@ -44,7 +42,7 @@ namespace AlicizaX
     }
 #endif
     
-    public static class EventInitialSize<T> where T : struct, IEventArgs
+    public static class EventInitialSize<T> where T : struct
     {
         public static int Size = 4; // default
     }

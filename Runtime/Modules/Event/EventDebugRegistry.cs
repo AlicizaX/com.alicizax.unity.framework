@@ -221,7 +221,7 @@ namespace AlicizaX
             Func<int> capacityProvider,
             Func<int> inSubscriberCountProvider,
             Func<EventDebugSubscriberInfo[]> subscribersProvider)
-            where T : struct, IEventArgs
+            where T : struct
         {
             State state = GetOrCreateState(typeof(T));
             state.PayloadSubscriberCountProvider = subscriberCountProvider;
@@ -235,7 +235,7 @@ namespace AlicizaX
             Func<int> subscriberCountProvider,
             Func<int> capacityProvider,
             Func<EventDebugSubscriberInfo[]> subscribersProvider)
-            where T : struct, IEventArgs
+            where T : struct
         {
             State state = GetOrCreateState(typeof(T));
             state.EmptySubscriberCountProvider = subscriberCountProvider;
@@ -244,7 +244,7 @@ namespace AlicizaX
             state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCountProvider());
         }
 
-        internal static void RecordSubscribe<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordSubscribe<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.SubscribeCount++;
@@ -252,14 +252,14 @@ namespace AlicizaX
             MarkOperation(state, EventDebugOperationKind.Subscribe, subscriberCount, capacity, DetailedHistoryEnabled);
         }
 
-        internal static void RecordUnsubscribe<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordUnsubscribe<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.UnsubscribeCount++;
             MarkOperation(state, EventDebugOperationKind.Unsubscribe, subscriberCount, capacity, DetailedHistoryEnabled);
         }
 
-        internal static void RecordPublish<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordPublish<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.PublishCount++;
@@ -269,7 +269,7 @@ namespace AlicizaX
             }
         }
 
-        internal static void RecordSafePublish<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordSafePublish<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.SafePublishCount++;
@@ -279,35 +279,35 @@ namespace AlicizaX
             }
         }
 
-        internal static void RecordResize<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordResize<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.ResizeCount++;
             MarkOperation(state, EventDebugOperationKind.Resize, subscriberCount, capacity, true);
         }
 
-        internal static void RecordClear<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordClear<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.ClearCount++;
             MarkOperation(state, EventDebugOperationKind.Clear, subscriberCount, capacity, true);
         }
 
-        internal static void RecordMutationRejected<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordMutationRejected<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.MutationRejectedCount++;
             MarkOperation(state, EventDebugOperationKind.MutationRejected, subscriberCount, capacity, true);
         }
 
-        internal static void RecordHandlerException<T>(int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordHandlerException<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.HandlerExceptionCount++;
             MarkOperation(state, EventDebugOperationKind.HandlerException, subscriberCount, capacity, true);
         }
 
-        internal static void RecordDeferredMutation<T>(int pendingCount, int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordDeferredMutation<T>(int pendingCount, int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.DeferredMutationCount++;
@@ -315,7 +315,7 @@ namespace AlicizaX
             MarkOperation(state, EventDebugOperationKind.DeferredMutation, subscriberCount, capacity, DetailedHistoryEnabled);
         }
 
-        internal static void RecordFlush<T>(int flushedCount, int subscriberCount, int capacity) where T : struct, IEventArgs
+        internal static void RecordFlush<T>(int flushedCount, int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
             state.FlushCount++;
@@ -386,7 +386,7 @@ namespace AlicizaX
             _historyCount = 0;
         }
 
-        private static State GetState<T>() where T : struct, IEventArgs
+        private static State GetState<T>() where T : struct
         {
             Type eventType = typeof(T);
             if (_states.TryGetValue(eventType, out State state))

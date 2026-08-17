@@ -648,17 +648,26 @@ namespace AlicizaX.Editor
         {
             s_KnownEventTypes.Clear();
             s_InitialCapacityCache.Clear();
-            foreach (Type eventType in TypeCache.GetTypesDerivedFrom<IEventArgs>())
+            AddKnownEventTypes(TypeCache.GetTypesDerivedFrom<IPayloadEventArgs>());
+            AddKnownEventTypes(TypeCache.GetTypesDerivedFrom<IEmptyEventArgs>());
+
+            s_KnownEventTypes.Sort((x, y) => string.CompareOrdinal(x.FullName, y.FullName));
+        }
+
+        private static void AddKnownEventTypes(TypeCache.TypeCollection eventTypes)
+        {
+            foreach (Type eventType in eventTypes)
             {
                 if (!eventType.IsValueType || eventType.IsAbstract)
                 {
                     continue;
                 }
 
-                s_KnownEventTypes.Add(eventType);
+                if (!s_KnownEventTypes.Contains(eventType))
+                {
+                    s_KnownEventTypes.Add(eventType);
+                }
             }
-
-            s_KnownEventTypes.Sort((x, y) => string.CompareOrdinal(x.FullName, y.FullName));
         }
 
         private static int GetInitialCapacity(Type eventType)
