@@ -29,12 +29,7 @@ namespace AlicizaX.ObjectPool
             Initialize(string.Empty, target, false);
         }
 
-        protected void Initialize(string name, object target)
-        {
-            Initialize(name, target, false);
-        }
-
-        protected void Initialize(string name, object target, bool locked)
+        protected void Initialize(string name, object target, bool locked = false)
         {
             m_Name = name ?? string.Empty;
             m_Target = target;
@@ -61,15 +56,10 @@ namespace AlicizaX.ObjectPool
 
         protected void Initialize(TTarget target)
         {
-            base.Initialize(string.Empty, target, false);
+            Initialize(string.Empty, target, false);
         }
 
-        protected void Initialize(string name, TTarget target)
-        {
-            base.Initialize(name, target, false);
-        }
-
-        protected void Initialize(string name, TTarget target, bool locked)
+        protected void Initialize(string name, TTarget target, bool locked = false)
         {
             base.Initialize(name, target, locked);
         }

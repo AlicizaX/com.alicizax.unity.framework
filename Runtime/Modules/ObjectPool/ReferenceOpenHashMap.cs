@@ -1,11 +1,9 @@
 using System;
+using System.Buffers;
 using System.Runtime.CompilerServices;
 
 namespace AlicizaX.ObjectPool
 {
-    /// <summary>
-    /// 引用类型键的开放寻址哈希表，使用身份相等性（ReferenceEquals）
-    /// </summary>
     internal struct ReferenceOpenHashMap
     {
         private int[] m_Buckets;
@@ -25,10 +23,10 @@ namespace AlicizaX.ObjectPool
         {
             int cap = NextPowerOf2(Math.Max(capacity, MinCapacity));
             m_Mask = cap - 1;
-            m_Buckets = SlotArrayPool<int>.Rent(cap);
-            m_Keys = SlotArrayPool<object>.Rent(cap);
-            m_Values = SlotArrayPool<int>.Rent(cap);
-            m_Next = SlotArrayPool<int>.Rent(cap);
+            m_Buckets = ArrayPool<int>.Shared.Rent(cap);
+            m_Keys = ArrayPool<object>.Shared.Rent(cap);
+            m_Values = ArrayPool<int>.Shared.Rent(cap);
+            m_Next = ArrayPool<int>.Shared.Rent(cap);
             Array.Clear(m_Buckets, 0, m_Buckets.Length);
             Array.Clear(m_Keys, 0, m_Keys.Length);
             Array.Clear(m_Values, 0, m_Values.Length);
@@ -116,28 +114,16 @@ namespace AlicizaX.ObjectPool
             }
             return false;
         }
-        public void Clear()
-        {
-            if (m_Buckets == null) return;
-            int cap = m_Mask + 1;
-            Array.Clear(m_Buckets, 0, cap);
-            Array.Clear(m_Keys, 0, cap);
-            Array.Clear(m_Values, 0, cap);
-            Array.Clear(m_Next, 0, cap);
-            m_Count = 0;
-            m_FreeList = 0;
-            m_AllocCount = 0;
-        }
 
         private void Grow()
         {
             int newCap = (m_Mask + 1) << 1;
             if (newCap < MinCapacity) newCap = MinCapacity;
             int newMask = newCap - 1;
-            var newBuckets = SlotArrayPool<int>.Rent(newCap);
-            var newKeys = SlotArrayPool<object>.Rent(newCap);
-            var newValues = SlotArrayPool<int>.Rent(newCap);
-            var newNext = SlotArrayPool<int>.Rent(newCap);
+            var newBuckets = ArrayPool<int>.Shared.Rent(newCap);
+            var newKeys = ArrayPool<object>.Shared.Rent(newCap);
+            var newValues = ArrayPool<int>.Shared.Rent(newCap);
+            var newNext = ArrayPool<int>.Shared.Rent(newCap);
             Array.Clear(newBuckets, 0, newBuckets.Length);
             Array.Clear(newKeys, 0, newKeys.Length);
             Array.Clear(newValues, 0, newValues.Length);
@@ -162,10 +148,10 @@ namespace AlicizaX.ObjectPool
                 }
             }
 
-            SlotArrayPool<int>.Return(m_Buckets, true);
-            SlotArrayPool<object>.Return(m_Keys, true);
-            SlotArrayPool<int>.Return(m_Values, true);
-            SlotArrayPool<int>.Return(m_Next, true);
+            ArrayPool<int>.Shared.Return(m_Buckets, true);
+            ArrayPool<object>.Shared.Return(m_Keys, true);
+            ArrayPool<int>.Shared.Return(m_Values, true);
+            ArrayPool<int>.Shared.Return(m_Next, true);
 
             m_Buckets = newBuckets;
             m_Keys = newKeys;
@@ -178,10 +164,14 @@ namespace AlicizaX.ObjectPool
 
         public void Dispose()
         {
-            SlotArrayPool<int>.Return(m_Buckets, true);
-            SlotArrayPool<object>.Return(m_Keys, true);
-            SlotArrayPool<int>.Return(m_Values, true);
-            SlotArrayPool<int>.Return(m_Next, true);
+            if (m_Buckets != null)
+                ArrayPool<int>.Shared.Return(m_Buckets, true);
+            if (m_Keys != null)
+                ArrayPool<object>.Shared.Return(m_Keys, true);
+            if (m_Values != null)
+                ArrayPool<int>.Shared.Return(m_Values, true);
+            if (m_Next != null)
+                ArrayPool<int>.Shared.Return(m_Next, true);
             m_Buckets = null;
             m_Keys = null;
             m_Values = null;

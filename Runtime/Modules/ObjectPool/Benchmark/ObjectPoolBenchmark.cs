@@ -94,6 +94,15 @@ namespace AlicizaX.ObjectPool
 
                 if (includeReleaseAllUnused)
                     RunCase("ReleaseAllUnused", RunReleaseAllUnused);
+
+                RunCase("GetOrCreate Isolation", RunGetOrCreateIsolation);
+                RunCase("Register Fail Recycle", RunRegisterFailRecycle);
+                RunCase("UnspawnTarget", RunUnspawnTarget);
+                RunCase("Spawn Empty Occupied", RunSpawnEmptyAndOccupied);
+                RunCase("Tick Capacity Budget", RunTickCapacityBudget);
+                RunCase("Tick Expire Release", RunTickExpireRelease);
+                RunCase("MultiSpawn Release One", RunMultiSpawnReleaseOne);
+                RunCase("Release Count Skip Locked", RunReleaseCountSkipLocked);
             }
 
             Debug.Log(BuildLog("ObjectPool benchmark finished. cases=", m_CaseCount, ", fails=", m_FailCount));
@@ -594,13 +603,231 @@ namespace AlicizaX.ObjectPool
             }
         }
 
-        private IObjectPool<BenchmarkObject> CreatePool(string poolName, bool multiSpawn, int capacity, float expireTime)
+        private void RunGetOrCreateIsolation()
+        {
+            string nameA = MakePoolName("get-or-create-a");
+            string nameB = MakePoolName("get-or-create-b");
+            DestroyPool(nameA);
+            DestroyPool(nameB);
+
+            RestartCaseMeasure();
+            IObjectPool<BenchmarkObject> first = m_Service.GetOrCreatePool<BenchmarkObject>(
+                new ObjectPoolCreateOptions(nameA, false, float.MaxValue, 4, float.MaxValue, 0));
+            IObjectPool<BenchmarkObject> second = m_Service.GetOrCreatePool<BenchmarkObject>(
+                new ObjectPoolCreateOptions(nameA, true, 1f, 8, 1f, 3));
+            IObjectPool<BenchmarkObject> other = m_Service.GetOrCreatePool<BenchmarkObject>(
+                new ObjectPoolCreateOptions(nameB, false, float.MaxValue, 4, float.MaxValue, 0));
+
+            AssertTrue(m_Service.HasObjectPool<BenchmarkObject>(nameA), "HasObjectPool missed existing pool");
+            AssertReference(first, second, "GetOrCreate did not return the same pool");
+            AssertTrue(!ReferenceEquals(first, other), "different names shared one pool");
+            AssertTrue(m_Service.GetObjectPool<BenchmarkObject>(nameA) == first, "GetObjectPool returned a different instance");
+            AssertTrue(!first.AllowMultiSpawn, "GetOrCreate overwrote AllowMultiSpawn");
+            AssertEqual(first.Capacity, 4, "GetOrCreate overwrote Capacity");
+            AssertTrue(m_Service.DestroyObjectPool<BenchmarkObject>(nameA), "Destroy existing pool failed");
+            AssertTrue(!m_Service.HasObjectPool<BenchmarkObject>(nameA), "Destroy did not remove pool");
+            AssertTrue(!m_Service.DestroyObjectPool<BenchmarkObject>(nameA), "Destroy missing pool returned true");
+            AssertTrue(m_Service.GetObjectPool<BenchmarkObject>(nameA) == null, "Get after destroy was not null");
+            StopCaseMeasure();
+
+            DestroyPool(nameB);
+        }
+
+        private void RunRegisterFailRecycle()
+        {
+            string poolName = MakePoolName("register-fail");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 1, float.MaxValue);
+            int usingBefore = GetBenchmarkObjectUsingCount();
+
+            RestartCaseMeasure();
+            BenchmarkObject first = BenchmarkObject.Create("cap", new BenchmarkTarget(1), false, true);
+            AssertTrue(pool.Register(first, true), "first register should succeed");
+            int usingAfterFirst = GetBenchmarkObjectUsingCount();
+            AssertEqual(usingAfterFirst, usingBefore + 1, "successful register should keep ObjectBase leased");
+            AssertEqual(pool.Count, 1, "first register did not enter pool");
+
+            BenchmarkObject duplicate = BenchmarkObject.Create("cap", first.Target, false, true);
+            AssertTrue(!pool.Register(duplicate, false), "duplicate target register should fail");
+            AssertEqual(GetBenchmarkObjectUsingCount(), usingAfterFirst, "duplicate register leaked ObjectBase");
+            AssertEqual(pool.Count, 1, "duplicate register changed pool count");
+
+            BenchmarkObject overflow = BenchmarkObject.Create("cap", new BenchmarkTarget(2), false, true);
+            AssertTrue(!pool.Register(overflow, true), "in-use capacity overflow register should fail");
+            AssertEqual(GetBenchmarkObjectUsingCount(), usingAfterFirst, "overflow register leaked ObjectBase");
+            AssertEqual(pool.Count, 1, "overflow register changed pool count");
+            StopCaseMeasure();
+
+            pool.Unspawn(first);
+            DestroyPool(poolName);
+        }
+
+        private void RunUnspawnTarget()
+        {
+            string poolName = MakePoolName("unspawn-target");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 4, float.MaxValue);
+            BenchmarkTarget target = new BenchmarkTarget(3);
+            BenchmarkObject obj = BenchmarkObject.Create("target", target, false, true);
+            pool.Register(obj, true);
+
+            RestartCaseMeasure();
+            pool.UnspawnTarget(target);
+            BenchmarkObject spawned = pool.Spawn("target");
+            AssertReference(spawned, obj, "UnspawnTarget did not return object to available chain");
+            pool.Unspawn(spawned);
+            StopCaseMeasure();
+
+            DestroyPool(poolName);
+        }
+
+        private void RunSpawnEmptyAndOccupied()
+        {
+            string poolName = MakePoolName("spawn-empty");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 4, float.MaxValue);
+
+            RestartCaseMeasure();
+            AssertTrue(pool.Spawn() == null, "empty pool Spawn should return null");
+            AssertTrue(pool.Spawn("missing") == null, "missing name Spawn should return null");
+
+            BenchmarkObject obj = BenchmarkObject.Create("only", new BenchmarkTarget(4), false, true);
+            pool.Register(obj, false);
+            BenchmarkObject spawned = pool.Spawn("only");
+            AssertReference(spawned, obj, "occupied setup spawn failed");
+            AssertTrue(pool.Spawn("only") == null, "fully occupied Spawn should return null");
+            pool.Unspawn(spawned);
+            StopCaseMeasure();
+
+            DestroyPool(poolName);
+        }
+
+        private void RunTickCapacityBudget()
+        {
+            string poolName = MakePoolName("tick-budget");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 20, float.MaxValue, 10f);
+            for (int i = 0; i < 20; i++)
+                pool.Register(BenchmarkObject.Create("budget", new BenchmarkTarget(i), false, true), false);
+
+            RestartCaseMeasure();
+            pool.Capacity = 0;
+            AssertEqual(pool.Count, 20, "capacity setter should not release immediately");
+            TickService();
+            AssertEqual(pool.Count, 12, "first tick did not honor per-frame release budget");
+            TickService();
+            AssertEqual(pool.Count, 4, "second tick did not continue budgeted release");
+            TickService();
+            AssertEqual(pool.Count, 0, "third tick did not finish budgeted release");
+            StopCaseMeasure();
+
+            DestroyPool(poolName);
+        }
+
+        private void RunTickExpireRelease()
+        {
+            string poolName = MakePoolName("tick-expire");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 8, 0f);
+            BenchmarkObject locked = BenchmarkObject.Create("expire", new BenchmarkTarget(100), true, true);
+            pool.Register(locked, false);
+            for (int i = 0; i < 3; i++)
+                pool.Register(BenchmarkObject.Create("expire", new BenchmarkTarget(i), false, true), false);
+
+            RestartCaseMeasure();
+            AssertEqual(pool.Count, 4, "expire setup register failed");
+            TickService();
+            AssertEqual(pool.Count, 1, "expire tick released locked object or failed to release expired unused");
+            locked.Locked = false;
+            TickService();
+            AssertEqual(pool.Count, 0, "expire tick did not release unlocked leftover");
+            StopCaseMeasure();
+
+            DestroyPool(poolName);
+        }
+
+        private void RunMultiSpawnReleaseOne()
+        {
+            string poolName = MakePoolName("multi-release-one");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, true, 8, float.MaxValue);
+            BenchmarkObject first = BenchmarkObject.Create("multi", new BenchmarkTarget(1), false, true);
+            BenchmarkObject second = BenchmarkObject.Create("multi", new BenchmarkTarget(2), false, true);
+            pool.Register(first, false);
+            pool.Register(second, false);
+
+            RestartCaseMeasure();
+            BenchmarkObject spawned = pool.Spawn("multi");
+            AssertReference(spawned, second, "multi spawn should take latest all-name head");
+            pool.ReleaseAllUnused();
+            AssertEqual(pool.Count, 1, "multi unused sibling was not released");
+            AssertTrue(pool.Spawn("missing") == null, "multi spawn of missing name should return null");
+            pool.Unspawn(spawned);
+            BenchmarkObject again = pool.Spawn("multi");
+            AssertReference(again, second, "multi spawn after sibling release returned wrong object");
+            pool.Unspawn(again);
+            StopCaseMeasure();
+
+            DestroyPool(poolName);
+        }
+
+        private void RunReleaseCountSkipLocked()
+        {
+            string poolName = MakePoolName("release-skip-locked");
+            IObjectPool<BenchmarkObject> pool = CreatePool(poolName, false, 8, float.MaxValue);
+            BenchmarkObject locked = BenchmarkObject.Create("skip", new BenchmarkTarget(1), true, true);
+            BenchmarkObject first = BenchmarkObject.Create("skip", new BenchmarkTarget(2), false, true);
+            BenchmarkObject second = BenchmarkObject.Create("skip", new BenchmarkTarget(3), false, true);
+            BenchmarkObject third = BenchmarkObject.Create("skip", new BenchmarkTarget(4), false, true);
+            pool.Register(locked, false);
+            pool.Register(first, false);
+            pool.Register(second, false);
+            pool.Register(third, false);
+
+            RestartCaseMeasure();
+            pool.Release(2);
+            AssertEqual(pool.Count, 2, "Release(int) did not skip locked and release two free objects");
+            AssertTrue(pool.Spawn("skip") != null, "remaining unlocked object should still spawn");
+            StopCaseMeasure();
+
+            DestroyPool(poolName);
+        }
+
+        private void TickService()
+        {
+            if (m_Service is IServiceTickable tickable)
+                tickable.Tick(1f);
+        }
+
+        private static MemoryPoolInfo[] s_MemoryPoolInfoBuffer = new MemoryPoolInfo[64];
+
+        private static int GetBenchmarkObjectUsingCount()
+        {
+            int count;
+            while (true)
+            {
+                try
+                {
+                    count = MemoryPool.GetAllMemoryPoolInfos(s_MemoryPoolInfoBuffer);
+                    break;
+                }
+                catch (ArgumentException)
+                {
+                    s_MemoryPoolInfoBuffer = new MemoryPoolInfo[s_MemoryPoolInfoBuffer.Length * 2];
+                }
+            }
+
+            Type targetType = typeof(BenchmarkObject);
+            for (int i = 0; i < count; i++)
+            {
+                if (s_MemoryPoolInfoBuffer[i].Type == targetType)
+                    return s_MemoryPoolInfoBuffer[i].UsingCount;
+            }
+
+            return 0;
+        }
+
+        private IObjectPool<BenchmarkObject> CreatePool(string poolName, bool multiSpawn, int capacity, float expireTime, float autoReleaseInterval = float.MaxValue)
         {
             if (m_Service.HasObjectPool<BenchmarkObject>(poolName))
                 m_Service.DestroyObjectPool<BenchmarkObject>(poolName);
 
-            return m_Service.CreatePool<BenchmarkObject>(
-                new ObjectPoolCreateOptions(poolName, multiSpawn, float.MaxValue, capacity, expireTime, 0));
+            return m_Service.GetOrCreatePool<BenchmarkObject>(
+                new ObjectPoolCreateOptions(poolName, multiSpawn, autoReleaseInterval, capacity, expireTime, 0));
         }
 
         private void DestroyPool(string poolName)
@@ -655,6 +882,15 @@ namespace AlicizaX.ObjectPool
 
             m_FailCount++;
             Debug.LogError(BuildLog(message, " actual=", actual, ", expected=", expected));
+        }
+
+        private void AssertTrue(bool condition, string message)
+        {
+            if (condition)
+                return;
+
+            m_FailCount++;
+            Debug.LogError(message);
         }
 
         private static string BuildLog(object a, string b, object c, string d,object e)

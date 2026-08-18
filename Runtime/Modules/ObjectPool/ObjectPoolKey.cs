@@ -9,10 +9,6 @@ namespace AlicizaX.ObjectPool
         private readonly string m_Name;
         private readonly int m_HashCode;
 
-        public ObjectPoolKey(Type type) : this(type, string.Empty)
-        {
-        }
-
         public ObjectPoolKey(Type type, string name)
         {
             m_Type = type ?? throw new ArgumentNullException(nameof(type));
@@ -22,9 +18,6 @@ namespace AlicizaX.ObjectPool
                 m_HashCode = (m_Type.GetHashCode() * 397) ^ StringComparer.Ordinal.GetHashCode(m_Name);
             }
         }
-
-        public Type Type => m_Type;
-        public string Name => m_Name;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool Equals(ObjectPoolKey other)

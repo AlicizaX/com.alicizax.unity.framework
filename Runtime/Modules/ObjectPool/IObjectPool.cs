@@ -14,9 +14,7 @@ namespace AlicizaX.ObjectPool
         float ExpireTime { get; set; }
         int Priority { get; set; }
 
-        void Register(T obj, bool spawned);
-        bool CanSpawn();
-        bool CanSpawn(string name);
+        bool Register(T obj, bool spawned);
         T Spawn();
         T Spawn(string name);
         void Unspawn(T obj);

@@ -11,24 +11,24 @@ namespace AlicizaX
     {
         private IObjectPoolService _mObjectPoolService;
 
-        public int Count => _mObjectPoolService.Count;
+        public int Count => _mObjectPoolService != null ? _mObjectPoolService.Count : 0;
 
         private void Awake()
         {
             _mObjectPoolService = AppServices.App.Register<IObjectPoolService>(new ObjectPoolService());
-            Application.lowMemory += OnLowMemory;
         }
 
         private void OnDestroy()
         {
-            Application.lowMemory -= OnLowMemory;
-            _mObjectPoolService = null;
-        }
+            if (_mObjectPoolService != null
+                && AppServices.HasWorld
+                && AppServices.App.TryGet<IObjectPoolService>(out IObjectPoolService registered)
+                && ReferenceEquals(registered, _mObjectPoolService))
+            {
+                AppServices.App.Unregister(_mObjectPoolService);
+            }
 
-        private void OnLowMemory()
-        {
-            if (_mObjectPoolService is ObjectPoolService svc)
-                svc.OnLowMemory();
+            _mObjectPoolService = null;
         }
 
         internal int GetAllObjectPools(bool sort, ObjectPoolBase[] results)

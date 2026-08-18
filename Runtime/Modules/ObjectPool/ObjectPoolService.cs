@@ -3,7 +3,6 @@ using UnityEngine;
 
 namespace AlicizaX.ObjectPool
 {
-
     [UnityEngine.Scripting.Preserve]
     internal sealed partial class ObjectPoolService : ServiceBase, IObjectPoolService, IServiceTickable
     {
@@ -12,21 +11,19 @@ namespace AlicizaX.ObjectPool
         private const float DefaultExpireTime = float.MaxValue;
         private const int InitPoolArrayCapacity = 8;
 
-        private ObjectPoolKeyOpenHashMap m_PoolMap;
-        private ReferenceOpenHashMap m_PoolRefMap;
+        private OpenHashMap<ObjectPoolKey> m_PoolMap;
         private ObjectPoolBase[] m_Pools;
         private int m_PoolCount;
-        private ObjectPoolBase[] m_CachedSortedPools;
-        private int m_CachedSortedCount;
+        private ObjectPoolBase[] m_ActivePools;
+        private int m_ActiveCount;
 
         public ObjectPoolService()
         {
-            m_PoolMap = new ObjectPoolKeyOpenHashMap(InitPoolArrayCapacity);
-            m_PoolRefMap = new ReferenceOpenHashMap(InitPoolArrayCapacity);
+            m_PoolMap = new OpenHashMap<ObjectPoolKey>(InitPoolArrayCapacity);
             m_Pools = new ObjectPoolBase[InitPoolArrayCapacity];
+            m_ActivePools = new ObjectPoolBase[InitPoolArrayCapacity];
             m_PoolCount = 0;
-            m_CachedSortedPools = Array.Empty<ObjectPoolBase>();
-            m_CachedSortedCount = 0;
+            m_ActiveCount = 0;
         }
 
         public int Priority => 1;
@@ -35,11 +32,19 @@ namespace AlicizaX.ObjectPool
         void IServiceTickable.Tick(float deltaTime)
         {
             float unscaled = Time.unscaledDeltaTime;
-            for (int i = 0; i < m_PoolCount; i++)
+            int i = m_ActiveCount - 1;
+            while (i >= 0)
             {
-                var pool = m_Pools[i];
-                if (pool.IsActive)
-                    pool.Update(deltaTime, unscaled);
+                var pool = m_ActivePools[i];
+                pool.Update(deltaTime, unscaled);
+                if (pool.ActiveIndex < 0)
+                {
+                    if (i >= m_ActiveCount)
+                        i = m_ActiveCount - 1;
+                    continue;
+                }
+
+                i--;
             }
         }
 
@@ -50,69 +55,26 @@ namespace AlicizaX.ObjectPool
             for (int i = m_PoolCount - 1; i >= 0; i--)
                 m_Pools[i].Shutdown();
             m_PoolMap.Dispose();
-            m_PoolRefMap.Dispose();
             Array.Clear(m_Pools, 0, m_PoolCount);
-            Array.Clear(m_CachedSortedPools, 0, m_CachedSortedCount);
+            Array.Clear(m_ActivePools, 0, m_ActiveCount);
             m_PoolCount = 0;
-            m_CachedSortedCount = 0;
+            m_ActiveCount = 0;
         }
 
-        // ========== Has ==========
-
-        public bool HasObjectPool<T>() where T : ObjectBase
-            => m_PoolMap.ContainsKey(new ObjectPoolKey(typeof(T)));
-
-        public bool HasObjectPool<T>(string name) where T : ObjectBase
+        public bool HasObjectPool<T>(string name = "") where T : ObjectBase
             => m_PoolMap.ContainsKey(new ObjectPoolKey(typeof(T), name));
 
-        // ========== Get ==========
-
-        public IObjectPool<T> GetObjectPool<T>() where T : ObjectBase
-            => (IObjectPool<T>)InternalGet(new ObjectPoolKey(typeof(T)));
-
-        public IObjectPool<T> GetObjectPool<T>(string name) where T : ObjectBase
+        public IObjectPool<T> GetObjectPool<T>(string name = "") where T : ObjectBase
             => (IObjectPool<T>)InternalGet(new ObjectPoolKey(typeof(T), name));
 
-        // ========== GetAll ==========
-
-        internal int GetAllObjectPools(bool sort, ObjectPoolBase[] results)
-        {
-            if (results == null)
-            {
-#if UNITY_EDITOR
-                UnityEngine.Debug.LogError("Results is invalid.");
-#endif
-                return 0;
-            }
-
-            if (sort)
-            {
-                CacheSortedObjectPools();
-                int copyCount = results.Length < m_CachedSortedCount ? results.Length : m_CachedSortedCount;
-                Array.Copy(m_CachedSortedPools, 0, results, 0, copyCount);
-                return m_CachedSortedCount;
-            }
-
-            int count = m_PoolCount;
-            int copy = results.Length < count ? results.Length : count;
-            Array.Copy(m_Pools, 0, results, 0, copy);
-            return count;
-        }
-
-        // ========== Create (single entry point) ==========
-
-        public IObjectPool<T> CreatePool<T>(ObjectPoolCreateOptions options = default) where T : ObjectBase
+        public IObjectPool<T> GetOrCreatePool<T>(ObjectPoolCreateOptions options = default) where T : ObjectBase
         {
             var key = new ObjectPoolKey(typeof(T), options.Name);
-            if (m_PoolMap.ContainsKey(key))
-            {
-#if UNITY_EDITOR
-                UnityEngine.Debug.LogError($"Already exist object pool '{key}'.");
-#endif
-                return null;
-            }
+            if (m_PoolMap.TryGetValue(key, out int idx))
+                return (IObjectPool<T>)m_Pools[idx];
 
             var pool = new ObjectPool<T>(
+                this,
                 options.Name ?? string.Empty,
                 options.AllowMultiSpawn,
                 options.AutoReleaseInterval ?? DefaultAutoReleaseInterval,
@@ -120,75 +82,69 @@ namespace AlicizaX.ObjectPool
                 options.ExpireTime ?? DefaultExpireTime,
                 options.Priority);
 
-            int idx = m_PoolCount;
-            if (idx >= m_Pools.Length)
+            int storageIndex = m_PoolCount;
+            if (storageIndex >= m_Pools.Length)
             {
                 var newArr = new ObjectPoolBase[m_Pools.Length * 2];
                 Array.Copy(m_Pools, 0, newArr, 0, m_PoolCount);
                 m_Pools = newArr;
             }
-            m_Pools[idx] = pool;
+
+            m_Pools[storageIndex] = pool;
             m_PoolCount++;
-            m_PoolMap.AddOrUpdate(key, idx);
-            m_PoolRefMap.AddOrUpdate(pool, idx);
+            m_PoolMap.AddOrUpdate(key, storageIndex);
             return pool;
         }
 
-        // ========== Destroy ==========
-
-        public bool DestroyObjectPool<T>() where T : ObjectBase
-            => InternalDestroy(new ObjectPoolKey(typeof(T)));
-
-        public bool DestroyObjectPool<T>(string name) where T : ObjectBase
+        public bool DestroyObjectPool<T>(string name = "") where T : ObjectBase
             => InternalDestroy(new ObjectPoolKey(typeof(T), name));
 
-        public bool DestroyObjectPool<T>(IObjectPool<T> objectPool) where T : ObjectBase
+        internal int GetAllObjectPools(bool sort, ObjectPoolBase[] results)
         {
-            if (objectPool == null)
+            if (results == null)
             {
-#if UNITY_EDITOR
-                UnityEngine.Debug.LogError("Object pool is invalid.");
-#endif
-                return false;
+                UnityEngine.Debug.LogError("Results is invalid.");
+                return 0;
             }
-            if (!m_PoolRefMap.TryGetValue(objectPool, out int idx)
-                || idx < 0
-                || idx >= m_PoolCount
-                || !ReferenceEquals(m_Pools[idx], objectPool))
-            {
-#if UNITY_EDITOR
-                UnityEngine.Debug.LogError("Object pool is not registered in this service.");
-#endif
-                return false;
-            }
-            return InternalDestroy(new ObjectPoolKey(typeof(T), objectPool.Name));
-        }
 
-        // ========== Release ==========
+            int count = m_PoolCount;
+            int copy = results.Length < count ? results.Length : count;
+            if (sort)
+            {
+                for (int i = 0; i < copy; i++)
+                    results[i] = m_Pools[i];
+                for (int i = 1; i < copy; i++)
+                {
+                    var key = results[i];
+                    int keyPriority = key.Priority;
+                    int j = i - 1;
+                    while (j >= 0 && results[j].Priority > keyPriority)
+                    {
+                        results[j + 1] = results[j];
+                        j--;
+                    }
+                    results[j + 1] = key;
+                }
+            }
+            else
+            {
+                Array.Copy(m_Pools, 0, results, 0, copy);
+            }
+
+            return count;
+        }
 
         public void Release()
         {
-            CacheSortedObjectPools();
-            for (int i = 0; i < m_CachedSortedCount; i++)
-                m_CachedSortedPools[i].Release();
+            for (int i = 0; i < m_PoolCount; i++)
+                m_Pools[i].Release();
         }
 
         public void ReleaseAllUnused()
         {
-            CacheSortedObjectPools();
-            for (int i = 0; i < m_CachedSortedCount; i++)
-                m_CachedSortedPools[i].ReleaseAllUnused();
-        }
-
-        // ========== Low memory ==========
-
-        public void OnLowMemory()
-        {
             for (int i = 0; i < m_PoolCount; i++)
-                m_Pools[i].OnLowMemory();
+                m_Pools[i].ReleaseAllUnused();
         }
-
-        // ========== Internal ==========
 
         private ObjectPoolBase InternalGet(ObjectPoolKey key)
         {
@@ -203,6 +159,7 @@ namespace AlicizaX.ObjectPool
                 return false;
 
             var pool = m_Pools[idx];
+            SetPoolActive(pool, false);
             pool.Shutdown();
 
             int lastIndex = m_PoolCount - 1;
@@ -210,45 +167,51 @@ namespace AlicizaX.ObjectPool
             {
                 var lastPool = m_Pools[lastIndex];
                 m_Pools[idx] = lastPool;
-                m_PoolRefMap.AddOrUpdate(lastPool, idx);
-                var lastKey = new ObjectPoolKey(lastPool.ObjectType, lastPool.Name);
-                m_PoolMap.AddOrUpdate(lastKey, idx);
+                m_PoolMap.AddOrUpdate(new ObjectPoolKey(lastPool.ObjectType, lastPool.Name), idx);
             }
+
             m_Pools[lastIndex] = null;
             m_PoolCount--;
-
             m_PoolMap.Remove(key);
-            m_PoolRefMap.Remove(pool);
-            if (m_CachedSortedCount > 0)
-                Array.Clear(m_CachedSortedPools, 0, m_CachedSortedCount);
-            m_CachedSortedCount = 0;
             return true;
         }
 
-        private void CacheSortedObjectPools()
+        internal void SetPoolActive(ObjectPoolBase pool, bool active)
         {
-            int count = m_PoolCount;
-            if (m_CachedSortedPools.Length < count)
-                m_CachedSortedPools = new ObjectPoolBase[Math.Max(count, 8)];
-
-            Array.Copy(m_Pools, 0, m_CachedSortedPools, 0, count);
-            if (m_CachedSortedCount > count)
-                Array.Clear(m_CachedSortedPools, count, m_CachedSortedCount - count);
-            m_CachedSortedCount = count;
-
-            for (int i = 1; i < count; i++)
+            if (active)
             {
-                var key = m_CachedSortedPools[i];
-                int keyPriority = key.Priority;
-                int j = i - 1;
-                while (j >= 0 && m_CachedSortedPools[j].Priority > keyPriority)
-                {
-                    m_CachedSortedPools[j + 1] = m_CachedSortedPools[j];
-                    j--;
-                }
-                m_CachedSortedPools[j + 1] = key;
-            }
-        }
+                if (pool.ActiveIndex >= 0)
+                    return;
 
+                if (m_ActiveCount >= m_ActivePools.Length)
+                {
+                    var newArr = new ObjectPoolBase[m_ActivePools.Length * 2];
+                    Array.Copy(m_ActivePools, 0, newArr, 0, m_ActiveCount);
+                    m_ActivePools = newArr;
+                }
+
+                pool.ActiveIndex = m_ActiveCount;
+                m_ActivePools[m_ActiveCount++] = pool;
+                pool.IsActive = true;
+                return;
+            }
+
+            int activeIndex = pool.ActiveIndex;
+            if (activeIndex < 0)
+                return;
+
+            int last = m_ActiveCount - 1;
+            if (activeIndex < last)
+            {
+                var lastPool = m_ActivePools[last];
+                m_ActivePools[activeIndex] = lastPool;
+                lastPool.ActiveIndex = activeIndex;
+            }
+
+            m_ActivePools[last] = null;
+            m_ActiveCount = last;
+            pool.ActiveIndex = -1;
+            pool.IsActive = false;
+        }
     }
 }

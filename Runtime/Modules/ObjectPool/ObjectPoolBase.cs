@@ -7,10 +7,9 @@ namespace AlicizaX.ObjectPool
         private readonly string m_Name;
         private string m_FullName;
         internal bool IsActive;
+        internal int ActiveIndex = -1;
 
-        public ObjectPoolBase() : this(null) { }
-
-        public ObjectPoolBase(string name)
+        protected ObjectPoolBase(string name)
         {
             m_Name = name ?? string.Empty;
         }
@@ -47,25 +46,12 @@ namespace AlicizaX.ObjectPool
         public abstract float ExpireTime { get; set; }
         public abstract int Priority { get; set; }
 
-
-        public virtual int ReleasePerFrameBudget
-        {
-            get => 8;
-            set { }
-        }
-
         public abstract void Release();
         public abstract void Release(int toReleaseCount);
         public abstract void ReleaseAllUnused();
 
-        public abstract int GetAllObjectInfos(ObjectInfo[] results);
-
+        internal abstract int GetAllObjectInfos(ObjectInfo[] results);
         internal abstract void Update(float elapseSeconds, float realElapseSeconds);
         internal abstract void Shutdown();
-
-        internal virtual void OnLowMemory()
-        {
-            ReleaseAllUnused();
-        }
     }
 }

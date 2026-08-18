@@ -1,11 +1,7 @@
-using System;
 using System.Buffers;
 
 namespace AlicizaX.ObjectPool
 {
-    /// <summary>
-    /// 数组池管理器，避免频繁分配数组
-    /// </summary>
     internal static class SlotArrayPool<T>
     {
         public static T[] Rent(int minimumLength)
