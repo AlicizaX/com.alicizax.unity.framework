@@ -20,23 +20,6 @@ namespace AlicizaX
         private int _idleFrames;
         private int _pageCapacity;
 
-        public MemoryPoolInfo(Type type, int unusedCount, int usingCount,
-            int acquireCount, int releaseCount, int createCount,
-            int targetFreeReserve, int maxCapacity,
-            int idleFrames, int pageCapacity)
-        {
-            _type = type;
-            _unusedCount = unusedCount;
-            _usingCount = usingCount;
-            _acquireCount = acquireCount;
-            _releaseCount = releaseCount;
-            _createCount = createCount;
-            _targetFreeReserve = targetFreeReserve;
-            _maxCapacity = maxCapacity;
-            _idleFrames = idleFrames;
-            _pageCapacity = pageCapacity;
-        }
-
         public Type Type => _type;
 
         public int UnusedCount => _unusedCount;

@@ -19,11 +19,11 @@ namespace AlicizaX
     public sealed class MemoryPoolSetting : MonoBehaviour
     {
         [Header("Idle Trim Settings")]
-        [Tooltip("池空闲多少帧后开始缓慢缩容（每tick释放4个）。@60fps: 1800帧≈30秒")]
+        [Tooltip("池空闲多少帧后开始衰减目标空闲水位。每 tick 驱逐数量由 Phase 预算决定（Gameplay=2）。@60fps: 1800帧≈30秒")]
         [SerializeField]
         private int m_ShortDecayStartFrames = 1800;
 
-        [Tooltip("池空闲多少帧后加速缩容（每tick释放16个）。@60fps: 7200帧≈2分钟")]
+        [Tooltip("池空闲多少帧后加速衰减目标空闲水位。每 tick 驱逐数量由 Phase 预算决定（Background=16, LowMemory=32）。@60fps: 7200帧≈2分钟")]
         [SerializeField]
         private int m_LongDecayStartFrames = 7200;
 
@@ -76,7 +76,7 @@ namespace AlicizaX
 
         private void OnDestroy()
         {
-            MemoryPoolRegistry.ClearAllNativeMetadata();
+            MemoryPoolRegistry.TrimAllNativeMetadata();
         }
 
         private void NormalizeSettings()

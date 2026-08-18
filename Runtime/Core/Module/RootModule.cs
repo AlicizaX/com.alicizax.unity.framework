@@ -171,7 +171,7 @@ namespace AlicizaX
         {
             Destroy(gameObject);
             Utility.Unity.Shutdown();
-            MemoryPool.ClearAll();
+            MemoryPoolRegistry.ClearAllNativeMetadata();
             Utility.Marshal.FreeCachedHGlobal();
         }
 

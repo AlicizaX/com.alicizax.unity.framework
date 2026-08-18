@@ -71,7 +71,9 @@ namespace AlicizaX
         private static MemoryPoolHandle[] s_HandleValues = new MemoryPoolHandle[64];
         private static int s_HandleCount;
 
-        private static MemoryPoolHandle[] s_ActivePools = Array.Empty<MemoryPoolHandle>();
+        private static MemoryPoolHandle[] s_ActivePools = new MemoryPoolHandle[16];
+        private static Action[] s_NativeReleasers = Array.Empty<Action>();
+        private static int s_NativeReleaserCount;
         private static int s_ActiveCount;
         private static int s_NextPoolId;
         private static MemoryPoolPhase s_Phase = MemoryPoolPhase.Gameplay;
@@ -101,6 +103,35 @@ namespace AlicizaX
         private static void InitializeMainThreadOnLoad()
         {
             InitializeMainThread();
+            AppDomain.CurrentDomain.DomainUnload -= ReleaseNativeOnDomainUnload;
+            AppDomain.CurrentDomain.DomainUnload += ReleaseNativeOnDomainUnload;
+        }
+
+        private static void ReleaseNativeOnDomainUnload(object sender, EventArgs e)
+        {
+            ForceReleaseAllNativeMetadata();
+        }
+
+        internal static void RegisterNativeReleaser(Action releaser)
+        {
+            if (releaser == null)
+                return;
+            if (s_NativeReleaserCount == s_NativeReleasers.Length)
+            {
+                int newLength = s_NativeReleasers.Length == 0 ? 16 : s_NativeReleasers.Length << 1;
+                var releasers = new Action[newLength];
+                Array.Copy(s_NativeReleasers, 0, releasers, 0, s_NativeReleaserCount);
+                s_NativeReleasers = releasers;
+            }
+
+            s_NativeReleasers[s_NativeReleaserCount++] = releaser;
+        }
+
+        private static void ForceReleaseAllNativeMetadata()
+        {
+            for (int i = 0; i < s_NativeReleaserCount; i++)
+                s_NativeReleasers[i]?.Invoke();
+            ClearActiveScheduleState();
         }
 
         [System.Diagnostics.Conditional("UNITY_EDITOR")]
@@ -248,13 +279,6 @@ namespace AlicizaX
             }
 
             return count;
-        }
-
-        public static MemoryPoolInfo[] GetAllInfos()
-        {
-            var infos = new MemoryPoolInfo[s_HandleCount];
-            GetAllInfos(infos);
-            return infos;
         }
 
         public static void ClearAll()

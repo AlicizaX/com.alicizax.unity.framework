@@ -8,12 +8,12 @@ namespace AlicizaX
         public const int MinimumFreeReserveLimit = 4;
 
         /// <summary>
-        /// 池空闲多少帧后开始缓慢缩容（每 tick 释放 4 个）。默认 1800 帧（@60fps ≈ 30秒）。
+        /// 池空闲多少帧后开始衰减目标空闲水位。实际每 tick 驱逐数量由 Phase 预算决定（Gameplay=2）。默认 1800 帧（@60fps ≈ 30秒）。
         /// </summary>
         public static int ShortDecayStartFrames = 1800;
 
         /// <summary>
-        /// 池空闲多少帧后加速缩容（每 tick 释放 16 个）。默认 7200 帧（@60fps ≈ 2分钟）。
+        /// 池空闲多少帧后加速衰减目标空闲水位。实际每 tick 驱逐数量由 Phase 预算决定。默认 7200 帧（@60fps ≈ 2分钟）。
         /// </summary>
         public static int LongDecayStartFrames = 7200;
 

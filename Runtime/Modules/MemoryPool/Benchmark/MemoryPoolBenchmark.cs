@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Cysharp.Text;
 using Unity.Profiling;
 using UnityEngine;
@@ -111,6 +112,17 @@ namespace AlicizaX
                 RunCase("Page Boundary Reuse", RunPageBoundaryReuse);
                 RunCase("LowMemory Phase Budget", RunLowMemoryPhaseBudget);
                 RunCase("Many Type Handle Cache", RunManyTypeHandleCache);
+                RunCase("Idle Shrink While Leased", RunIdleShrinkWhileLeased);
+                RunCase("Trim Native Respects Lease", RunTrimNativeRespectsLease);
+                RunCase("Pending Native Clear On Last Release", RunPendingNativeClearOnLastRelease);
+                RunCase("Clear Callback Exception Rollback", RunClearCallbackExceptionRollback);
+                RunCase("Evict Callback Exception", RunEvictCallbackException);
+                RunCase("Callback Reentry Guard", RunCallbackReentryGuard);
+                RunCase("Cross Pool Release Reject", RunCrossPoolReleaseReject);
+                RunCase("Loading Phase Growth Budget", RunLoadingPhaseGrowthBudget);
+                RunCase("Auto Trim Native After Idle", RunAutoTrimNativeAfterIdle);
+                RunCase("Info Buffer Guards", RunInfoBufferGuards);
+                RunCase("Default Capacity Remove Compact", RunDefaultCapacityRemoveCompact);
             }
 
             Debug.Log(BuildLog("MemoryPool benchmark finished. cases=", m_CaseCount, ", fails=", m_FailCount));
@@ -252,12 +264,18 @@ namespace AlicizaX
                     m_SimpleBuffer[i] = MemoryPool<SimpleMemory>.Acquire();
                 StopCaseMeasure();
 
+                MemoryPoolInfo leased = GetBenchmarkInfo(typeof(SimpleMemory));
+                AssertEqual(leased.UsingCount, 48, "capacity learning did not keep leased count");
+
                 for (int i = 0; i < 48; i++)
                 {
                     MemoryPool<SimpleMemory>.Release(m_SimpleBuffer[i]);
                     m_SimpleBuffer[i] = null;
                 }
 
+                MemoryPoolInfo released = GetBenchmarkInfo(typeof(SimpleMemory));
+                AssertEqual(released.UsingCount, 0, "capacity learning left objects in use");
+                AssertEqual(released.UnusedCount, 48, "capacity learning did not retain released objects");
                 MemoryPool<SimpleMemory>.ClearAll();
             }
         }
@@ -889,6 +907,232 @@ namespace AlicizaX
                 MemoryPoolRegistry.ClearType(types[i]);
         }
 
+        private void RunIdleShrinkWhileLeased()
+        {
+            int previousShort = MemoryPool.ShortDecayStartFrames;
+            int previousLong = MemoryPool.LongDecayStartFrames;
+            int previousZero = MemoryPool.ZeroFreeReserveStartFrames;
+            int previousUnschedule = MemoryPool.UnscheduleIdleFrames;
+            try
+            {
+                MemoryPool.ShortDecayStartFrames = 8;
+                MemoryPool.LongDecayStartFrames = 16;
+                MemoryPool.ZeroFreeReserveStartFrames = 16;
+                MemoryPool.UnscheduleIdleFrames = 128;
+                MemoryPool<PolicyMemory>.ClearAll();
+                MemoryPool<PolicyMemory>.SetCapacity(32, 64);
+                WarmPool<PolicyMemory>(16);
+
+                PolicyMemory leased = MemoryPool<PolicyMemory>.Acquire();
+                int unusedAfterLease = MemoryPool<PolicyMemory>.UnusedCount;
+                RestartCaseMeasure();
+                for (int frame = 0; frame < 80; frame++)
+                    MemoryPoolRegistry.TickAll(60000 + frame);
+                StopCaseMeasure();
+
+                MemoryPoolInfo info = GetBenchmarkInfo(typeof(PolicyMemory));
+                AssertEqual(info.UsingCount, 1, "idle shrink while leased dropped the leased object");
+                AssertTrue(info.UnusedCount < unusedAfterLease, "idle shrink while leased did not reduce unused objects");
+                MemoryPool<PolicyMemory>.Release(leased);
+            }
+            finally
+            {
+                MemoryPool.ShortDecayStartFrames = previousShort;
+                MemoryPool.LongDecayStartFrames = previousLong;
+                MemoryPool.ZeroFreeReserveStartFrames = previousZero;
+                MemoryPool.UnscheduleIdleFrames = previousUnschedule;
+                MemoryPool<PolicyMemory>.ClearAll();
+            }
+        }
+
+        private void RunTrimNativeRespectsLease()
+        {
+            MemoryPool<PolicyMemory>.ClearAll();
+            PolicyMemory leased = MemoryPool<PolicyMemory>.Acquire();
+            RestartCaseMeasure();
+            MemoryPool.TrimAllNativeMetadata();
+            StopCaseMeasure();
+
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(PolicyMemory));
+            AssertEqual(info.UsingCount, 1, "trim native released a leased object");
+            AssertTrue(info.PageCapacity > 0, "trim native freed pages while a lease was live");
+            MemoryPool<PolicyMemory>.Release(leased);
+            MemoryPool<PolicyMemory>.TrimNativeMetadata();
+            info = GetBenchmarkInfo(typeof(PolicyMemory));
+            AssertEqual(info.UsingCount, 0, "trim native after release left objects in use");
+            AssertEqual(info.PageCapacity, 0, "trim native after release did not free pages");
+            MemoryPool<PolicyMemory>.ClearAll();
+        }
+
+        private void RunPendingNativeClearOnLastRelease()
+        {
+            MemoryPool<PolicyMemory>.ClearAll();
+            PolicyMemory leased = MemoryPool<PolicyMemory>.Acquire();
+            MemoryPool<PolicyMemory>.ClearAll();
+            MemoryPoolInfo afterClear = GetBenchmarkInfo(typeof(PolicyMemory));
+            AssertEqual(afterClear.UsingCount, 1, "clear all with lease should keep the leased object");
+
+            RestartCaseMeasure();
+            MemoryPool<PolicyMemory>.Release(leased);
+            StopCaseMeasure();
+
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(PolicyMemory));
+            AssertEqual(info.UsingCount, 0, "pending native clear left object in use");
+            AssertEqual(info.UnusedCount, 0, "pending native clear retained unused objects");
+            AssertEqual(info.PageCapacity, 0, "pending native clear did not free pages");
+            MemoryPool<PolicyMemory>.ClearAll();
+        }
+
+        private void RunClearCallbackExceptionRollback()
+        {
+            ThrowingClearMemory.ThrowOnClear = true;
+            MemoryPool<ThrowingClearMemory>.ClearAll();
+            ThrowingClearMemory item = MemoryPool<ThrowingClearMemory>.Acquire();
+            AssertThrows<InvalidOperationException>(() => MemoryPool<ThrowingClearMemory>.Release(item), "clear exception was swallowed");
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(ThrowingClearMemory));
+            AssertEqual(info.UsingCount, 1, "clear exception did not keep object leased");
+            ThrowingClearMemory.ThrowOnClear = false;
+            MemoryPool<ThrowingClearMemory>.Release(item);
+            MemoryPool<ThrowingClearMemory>.ClearAll();
+        }
+
+        private void RunEvictCallbackException()
+        {
+            ThrowingEvictMemory.ThrowOnEvict = true;
+            const int hardCapacity = 4;
+            MemoryPool<ThrowingEvictMemory>.ClearAll();
+            MemoryPool<ThrowingEvictMemory>.SetCapacity(hardCapacity, hardCapacity);
+            ThrowingEvictMemory[] items = new ThrowingEvictMemory[hardCapacity + 1];
+            for (int i = 0; i < items.Length; i++)
+                items[i] = MemoryPool<ThrowingEvictMemory>.Acquire();
+            for (int i = 0; i < hardCapacity; i++)
+                MemoryPool<ThrowingEvictMemory>.Release(items[i]);
+            AssertThrows<InvalidOperationException>(() => MemoryPool<ThrowingEvictMemory>.Release(items[hardCapacity]), "evict exception was swallowed");
+            MemoryPoolInfo info = GetBenchmarkInfo(typeof(ThrowingEvictMemory));
+            AssertEqual(info.UsingCount, 0, "evict exception left object in use");
+            AssertEqual(info.UnusedCount, hardCapacity, "evict exception corrupted free reserve");
+            ThrowingEvictMemory.ThrowOnEvict = false;
+            MemoryPool<ThrowingEvictMemory>.ClearAll();
+        }
+
+        private void RunCallbackReentryGuard()
+        {
+            ReentryMemory.ReenterOnClear = true;
+            MemoryPool<ReentryMemory>.ClearAll();
+            ReentryMemory item = MemoryPool<ReentryMemory>.Acquire();
+            AssertThrows<InvalidOperationException>(() => MemoryPool<ReentryMemory>.Release(item), "callback reentry was accepted");
+            ReentryMemory.ReenterOnClear = false;
+            MemoryPool<ReentryMemory>.Release(item);
+            MemoryPool<ReentryMemory>.ClearAll();
+        }
+
+        private void RunCrossPoolReleaseReject()
+        {
+            MemoryPool<PolicyMemory>.ClearAll();
+            MemoryPool<CrossPoolMemory>.ClearAll();
+            PolicyMemory item = MemoryPool<PolicyMemory>.Acquire();
+            AssertThrows<InvalidOperationException>(() => MemoryPool<CrossPoolMemory>.Release(Unsafe.As<PolicyMemory, CrossPoolMemory>(ref item)), "typed cross-pool release was accepted");
+            MemoryPool<PolicyMemory>.Release(item);
+            MemoryPool<PolicyMemory>.ClearAll();
+            MemoryPool<CrossPoolMemory>.ClearAll();
+        }
+
+        private void RunLoadingPhaseGrowthBudget()
+        {
+            MemoryPoolPhase previous = MemoryPoolRegistry.Phase;
+            try
+            {
+                MemoryPool<PolicyMemory>.ClearAll();
+                MemoryPoolRegistry.Phase = MemoryPoolPhase.Loading;
+                MemoryPool<PolicyMemory>.Add(8);
+                MemoryPoolInfo afterAdd = GetBenchmarkInfo(typeof(PolicyMemory));
+                AssertTrue(afterAdd.UnusedCount >= 8, "Loading phase did not grow immediately");
+
+                MemoryPoolRegistry.Phase = MemoryPoolPhase.Background;
+                WarmPool<PolicyMemory>(16);
+                MemoryPool<PolicyMemory>.Shrink(0);
+                MemoryPoolInfo afterShrink = GetBenchmarkInfo(typeof(PolicyMemory));
+                AssertTrue(afterShrink.UnusedCount < 16, "Background phase did not evict");
+            }
+            finally
+            {
+                MemoryPoolRegistry.Phase = previous;
+                MemoryPool<PolicyMemory>.ClearAll();
+            }
+        }
+
+        private void RunAutoTrimNativeAfterIdle()
+        {
+            int previousShort = MemoryPool.ShortDecayStartFrames;
+            int previousLong = MemoryPool.LongDecayStartFrames;
+            int previousZero = MemoryPool.ZeroFreeReserveStartFrames;
+            int previousUnschedule = MemoryPool.UnscheduleIdleFrames;
+            int previousAutoTrim = MemoryPool.AutoTrimNativeMetadataFrames;
+            try
+            {
+                MemoryPool.ShortDecayStartFrames = 4;
+                MemoryPool.LongDecayStartFrames = 8;
+                MemoryPool.ZeroFreeReserveStartFrames = 8;
+                MemoryPool.UnscheduleIdleFrames = 16;
+                MemoryPool.AutoTrimNativeMetadataFrames = 24;
+                MemoryPool<PolicyMemory>.ClearAll();
+                MemoryPool<PolicyMemory>.SetCapacity(16, 32);
+                WarmPool<PolicyMemory>(8);
+                MemoryPool<PolicyMemory>.Shrink(0);
+                for (int i = 0; i < 8 && MemoryPool<PolicyMemory>.UnusedCount > 0; i++)
+                    MemoryPoolRegistry.TickAll(70000 + i);
+
+                RestartCaseMeasure();
+                for (int frame = 0; frame < 40; frame++)
+                    MemoryPoolRegistry.TickAll(71000 + frame);
+                StopCaseMeasure();
+
+                MemoryPoolInfo info = GetBenchmarkInfo(typeof(PolicyMemory));
+                AssertEqual(info.UsingCount, 0, "auto trim left objects in use");
+                AssertEqual(info.UnusedCount, 0, "auto trim left unused objects");
+                AssertEqual(info.PageCapacity, 0, "auto trim did not release native pages");
+            }
+            finally
+            {
+                MemoryPool.ShortDecayStartFrames = previousShort;
+                MemoryPool.LongDecayStartFrames = previousLong;
+                MemoryPool.ZeroFreeReserveStartFrames = previousZero;
+                MemoryPool.UnscheduleIdleFrames = previousUnschedule;
+                MemoryPool.AutoTrimNativeMetadataFrames = previousAutoTrim;
+                MemoryPool<PolicyMemory>.ClearAll();
+            }
+        }
+
+        private void RunInfoBufferGuards()
+        {
+            AssertThrows<ArgumentNullException>(() => MemoryPool.GetAllMemoryPoolInfos(null), "null info buffer was accepted");
+            AssertThrows<ArgumentException>(() => MemoryPool.GetAllMemoryPoolInfos(Array.Empty<MemoryPoolInfo>()), "undersized info buffer was accepted");
+        }
+
+        private void RunDefaultCapacityRemoveCompact()
+        {
+            int previousSoft = MemoryPool.DefaultSoftFreeReserveLimit;
+            int previousHard = MemoryPool.DefaultHardFreeReserveLimit;
+            try
+            {
+                MemoryPool<PolicyMemory>.ClearAll();
+                MemoryPool<PolicyMemory>.SetCapacity(8, 16);
+                WarmPool<PolicyMemory>(12);
+                MemoryPool.SetDefaultCapacity(8, 16);
+                MemoryPool.Remove<PolicyMemory>(4);
+                MemoryPoolInfo afterRemove = GetBenchmarkInfo(typeof(PolicyMemory));
+                AssertTrue(afterRemove.UnusedCount <= 8, "Remove did not shrink unused objects");
+                MemoryPool.CompactAll();
+                MemoryPoolInfo afterCompact = GetBenchmarkInfo(typeof(PolicyMemory));
+                AssertTrue(afterCompact.UnusedCount <= afterRemove.UnusedCount, "CompactAll increased unused objects");
+            }
+            finally
+            {
+                MemoryPool.SetDefaultCapacity(previousSoft, previousHard);
+                MemoryPool<PolicyMemory>.ClearAll();
+            }
+        }
+
         private MemoryPoolInfo GetBenchmarkInfo(Type targetType)
         {
             EnsureInfoBuffer(Math.Max(1, MemoryPool.Count));
@@ -1114,6 +1358,57 @@ namespace AlicizaX
             public void OnEvict()
             {
                 EvictCount++;
+            }
+        }
+
+        private sealed class PolicyMemory : MemoryObject
+        {
+            public override void Clear()
+            {
+            }
+        }
+
+        private sealed class CrossPoolMemory : MemoryObject
+        {
+            public override void Clear()
+            {
+            }
+        }
+
+        private sealed class ThrowingClearMemory : MemoryObject
+        {
+            public static bool ThrowOnClear;
+
+            public override void Clear()
+            {
+                if (ThrowOnClear)
+                    throw new InvalidOperationException("clear failed");
+            }
+        }
+
+        private sealed class ThrowingEvictMemory : MemoryObject, IPoolEvictable
+        {
+            public static bool ThrowOnEvict;
+
+            public override void Clear()
+            {
+            }
+
+            public void OnEvict()
+            {
+                if (ThrowOnEvict)
+                    throw new InvalidOperationException("evict failed");
+            }
+        }
+
+        private sealed class ReentryMemory : MemoryObject
+        {
+            public static bool ReenterOnClear;
+
+            public override void Clear()
+            {
+                if (ReenterOnClear)
+                    MemoryPool<ReentryMemory>.Acquire();
             }
         }
 
