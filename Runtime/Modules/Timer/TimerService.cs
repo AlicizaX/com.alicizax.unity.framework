@@ -23,7 +23,7 @@ namespace AlicizaX.Timer.Runtime
     [UnityEngine.Scripting.Preserve]
     [Il2CppSetOption(Option.NullChecks, false)]
     [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
-    internal sealed class TimerService : ServiceBase, ITimerService, ITimerCapacityService, ITimerDebugService, IServiceTickable
+    internal sealed class TimerService : ServiceBase, ITimerService, ITimerDebugService, IServiceTickable
 #if UNITY_EDITOR
         , ITimerEditorDebugService
 #endif
@@ -31,7 +31,6 @@ namespace AlicizaX.Timer.Runtime
         private const int PAGE_SHIFT = 8;
         private const int PAGE_SIZE = 1 << PAGE_SHIFT;
         private const int PAGE_MASK = PAGE_SIZE - 1;
-        private const int DEFAULT_INITIAL_CAPACITY = 1024;
         private const int MAX_PAGE_COUNT = 4096;
         private const int INVALID_INDEX = -1;
         private const int WHEEL_SHIFT = 8;
@@ -43,7 +42,9 @@ namespace AlicizaX.Timer.Runtime
         private const int MAX_WHEEL_TICKS_PER_FRAME = 64;
         private const double TICKS_PER_SECOND = 1000d;
         private const double MINIMUM_DELAY_SECONDS = 0.000001d;
+#if UNITY_EDITOR
         private const double STALE_ONE_SHOT_SECONDS = 300d;
+#endif
 
         private const byte HANDLER_NONE = 0;
         private const byte HANDLER_NO_ARGS = 1;
@@ -64,7 +65,9 @@ namespace AlicizaX.Timer.Runtime
             public readonly double[] TriggerTimes = new double[PAGE_SIZE];
             public readonly double[] Durations = new double[PAGE_SIZE];
             public readonly double[] RemainingTimes = new double[PAGE_SIZE];
+#if UNITY_EDITOR
             public readonly double[] CreationTimes = new double[PAGE_SIZE];
+#endif
             public readonly long[] DueTicks = new long[PAGE_SIZE];
             public readonly int[] QueueIndices = new int[PAGE_SIZE];
             public readonly int[] QueueNextIndices = new int[PAGE_SIZE];
@@ -109,11 +112,6 @@ namespace AlicizaX.Timer.Runtime
         private long _scaledCurrentTick;
         private long _unscaledCurrentTick;
         private int _executingSlotIndex;
-        private double _executingCurrentTime;
-
-        public TimerService() : this(DEFAULT_INITIAL_CAPACITY)
-        {
-        }
 
         public TimerService(int initialCapacity)
         {
@@ -131,13 +129,8 @@ namespace AlicizaX.Timer.Runtime
             Prewarm(normalizedCapacity);
         }
 
-        public int Order
-        {
-            get { return 0; }
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Prewarm(int capacity)
+        private void Prewarm(int capacity)
         {
             int targetCapacity = NormalizeCapacity(capacity);
             if (targetCapacity > MAX_PAGE_COUNT * PAGE_SIZE)
@@ -323,13 +316,8 @@ namespace AlicizaX.Timer.Runtime
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            RecoverInterruptedExecution();
             AdvanceQueue(false, Time.timeAsDouble);
             AdvanceQueue(true, Time.unscaledTimeAsDouble);
-        }
-
-        protected override void OnInitialize()
-        {
         }
 
         protected override void OnDestroyService()
@@ -355,7 +343,11 @@ namespace AlicizaX.Timer.Runtime
             int count = 0;
             double scaledTime = Time.timeAsDouble;
             double unscaledTime = Time.unscaledTimeAsDouble;
+#if UNITY_EDITOR
             double realtime = Time.realtimeSinceStartupAsDouble;
+#else
+            const double realtime = 0d;
+#endif
             int limit = results.Length;
             for (int i = 0; i < _activeCount && count < limit; i++)
             {
@@ -491,7 +483,9 @@ namespace AlicizaX.Timer.Runtime
             page.TriggerTimes[offset] = GetCurrentTime(isUnscaled) + duration;
             page.Durations[offset] = duration;
             page.RemainingTimes[offset] = 0d;
+#if UNITY_EDITOR
             page.CreationTimes[offset] = Time.realtimeSinceStartupAsDouble;
+#endif
             page.DueTicks[offset] = 0L;
             page.QueueIndices[offset] = INVALID_INDEX;
             page.QueueNextIndices[offset] = INVALID_INDEX;
@@ -588,7 +582,9 @@ namespace AlicizaX.Timer.Runtime
             SetRemainingTime(slotIndex, 0d);
             SetTriggerTime(slotIndex, 0d);
             SetDuration(slotIndex, 0d);
+#if UNITY_EDITOR
             SetCreationTime(slotIndex, 0d);
+#endif
             SetDueTick(slotIndex, 0L);
             SetHandle(slotIndex, 0UL);
 
@@ -637,45 +633,6 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RecoverInterruptedExecution()
-        {
-            int slotIndex = _executingSlotIndex;
-            if (slotIndex < 0)
-            {
-                return;
-            }
-
-            _executingSlotIndex = INVALID_INDEX;
-            if ((uint)slotIndex >= (uint)_slotCapacity)
-            {
-                return;
-            }
-
-            byte state = GetState(slotIndex);
-            if ((state & STATE_RELEASE_PENDING) != 0)
-            {
-                FreeReleasedExecutingSlot(slotIndex);
-                return;
-            }
-
-            if ((state & STATE_ACTIVE) == 0 || GetQueueIndex(slotIndex) >= 0)
-            {
-                return;
-            }
-
-            if ((state & STATE_LOOP) == 0)
-            {
-                ReleaseSlot(slotIndex);
-                return;
-            }
-
-            if ((state & STATE_RUNNING) != 0)
-            {
-                RescheduleLoop(slotIndex, _executingCurrentTime);
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ProcessDueTimer(int slotIndex, double currentTime)
         {
             byte state = GetState(slotIndex);
@@ -685,7 +642,6 @@ namespace AlicizaX.Timer.Runtime
             }
 
             _executingSlotIndex = slotIndex;
-            _executingCurrentTime = currentTime;
 
             try
             {
@@ -1177,6 +1133,7 @@ namespace AlicizaX.Timer.Runtime
             GetPage(slotIndex).RemainingTimes[GetOffset(slotIndex)] = value;
         }
 
+#if UNITY_EDITOR
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private double GetCreationTime(int slotIndex)
         {
@@ -1188,6 +1145,7 @@ namespace AlicizaX.Timer.Runtime
         {
             GetPage(slotIndex).CreationTimes[GetOffset(slotIndex)] = value;
         }
+#endif
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private long GetDueTick(int slotIndex)
@@ -1328,7 +1286,11 @@ namespace AlicizaX.Timer.Runtime
             info.TimerHandle = GetHandle(slotIndex);
             info.LeftTime = (float)leftTime;
             info.Duration = (float)GetDuration(slotIndex);
+#if UNITY_EDITOR
             info.Age = (float)(realtime - GetCreationTime(slotIndex));
+#else
+            info.Age = 0f;
+#endif
             info.Flags = flags;
         }
     }

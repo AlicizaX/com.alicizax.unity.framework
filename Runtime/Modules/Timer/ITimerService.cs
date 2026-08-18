@@ -38,12 +38,6 @@ namespace AlicizaX.Timer.Runtime
     }
 
     [UnityEngine.Scripting.Preserve]
-    public interface ITimerCapacityService
-    {
-        void Prewarm(int capacity);
-    }
-
-    [UnityEngine.Scripting.Preserve]
     public interface ITimerDebugService
     {
         int GetAllTimers(TimerDebugInfo[] results);
