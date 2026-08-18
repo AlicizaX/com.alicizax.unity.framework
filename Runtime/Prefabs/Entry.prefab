@@ -10,6 +10,7 @@ GameObject:
   m_Component:
   - component: {fileID: 9160912643551877041}
   - component: {fileID: 2004497887649975646}
+  - component: {fileID: 2726659731133421729}
   m_Layer: 0
   m_Name: UI
   m_TagString: Untagged
@@ -46,6 +47,19 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   uiRoot: {fileID: 4612363183729467837, guid: 9368ff38b2090b2468f8358242026e4b, type: 3}
   _isOrthographic: 1
+--- !u!114 &2726659731133421729
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 863045549519453050}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0ee14a1bb27fe964883b6fd3ff57d7a6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _profile: {fileID: 11400000, guid: cef231f3c2d791d47afcf0efb00696be, type: 2}
 --- !u!1 &2077363682113217780
 GameObject:
   m_ObjectHideFlags: 0
@@ -277,6 +291,8 @@ MonoBehaviour:
   bindingSlotCapacity: 128
   registeredTargetCapacity: 128
   idleAssetExpireTime: 60
+  expireProcessCountPerFrame: 16
+  expireProcessCountWhenUnloading: 256
 --- !u!1 &6601518982324708866
 GameObject:
   m_ObjectHideFlags: 0
@@ -330,6 +346,8 @@ MonoBehaviour:
     m_Mute: 0
     m_Volume: 1
     m_AgentHelperCount: 24
+    m_InitialSourceCount: 2
+    m_MaxSourceCount: 8
     m_ExposedVolumeParameter: SoundVolume
     m_SpatialBlend: 1
     m_DopplerLevel: 1
@@ -352,6 +370,8 @@ MonoBehaviour:
     m_Mute: 0
     m_Volume: 1
     m_AgentHelperCount: 12
+    m_InitialSourceCount: 2
+    m_MaxSourceCount: 8
     m_ExposedVolumeParameter: UISoundVolume
     m_SpatialBlend: 0
     m_DopplerLevel: 1
@@ -374,6 +394,8 @@ MonoBehaviour:
     m_Mute: 0
     m_Volume: 1
     m_AgentHelperCount: 2
+    m_InitialSourceCount: 2
+    m_MaxSourceCount: 8
     m_ExposedVolumeParameter: MusicVolume
     m_SpatialBlend: 0
     m_DopplerLevel: 1
@@ -396,6 +418,8 @@ MonoBehaviour:
     m_Mute: 0
     m_Volume: 1
     m_AgentHelperCount: 6
+    m_InitialSourceCount: 2
+    m_MaxSourceCount: 8
     m_ExposedVolumeParameter: VoiceVolume
     m_SpatialBlend: 1
     m_DopplerLevel: 1
@@ -418,6 +442,8 @@ MonoBehaviour:
     m_Mute: 0
     m_Volume: 1
     m_AgentHelperCount: 6
+    m_InitialSourceCount: 2
+    m_MaxSourceCount: 8
     m_ExposedVolumeParameter: AmbientVolume
     m_SpatialBlend: 1
     m_DopplerLevel: 1
@@ -435,6 +461,10 @@ MonoBehaviour:
     audioRolloffMode: 0
     minDistance: 2
     maxDistance: 80
+  m_ServiceConfig:
+    ClipCacheCapacity: 128
+    ClipCacheTtl: 30
+    DefaultClipCachePolicy: 2
 --- !u!81 &2681275099927180165
 AudioListener:
   m_ObjectHideFlags: 0
