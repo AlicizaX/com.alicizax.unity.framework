@@ -650,7 +650,6 @@ namespace AlicizaX.Resource.Editor
             {
                 1 => "AssetHandle",
                 2 => "SubAssetsHandle",
-                3 => "ExternalHandleLease",
                 _ => "None"
             };
         }

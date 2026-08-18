@@ -89,6 +89,7 @@ namespace AlicizaX.Resource.Runtime
         /// 卸载资源。
         /// </summary>
         /// <param name="asset">要卸载的资源。每次成功调用直接返回资源的 LoadAsset 接口后，都需要成对调用一次。</param>
+        [Obsolete("Use ResourceAssetLease<T> or Binding instead of LoadAsset/UnloadAsset.")]
         void UnloadAsset(object asset);
 
         /// <summary>
@@ -169,9 +170,15 @@ namespace AlicizaX.Resource.Runtime
         int GetAssetInfos(ResourceAssetInfo[] results, int startIndex, int maxCount);
 
         /// <summary>
-        /// 资源回收（卸载引用计数为零的资源）
+        /// 资源回收（卸载引用计数为零且已过期的资源）
         /// </summary>
         void UnloadUnusedAssets();
+
+        /// <summary>
+        /// 资源回收。
+        /// </summary>
+        /// <param name="force">为 true 时忽略 Idle 过期时间，立即释放无引用记录。</param>
+        void UnloadUnusedAssets(bool force);
 
         /// <summary>
         /// 强制回收所有资源
@@ -231,6 +238,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="loadAssetCallbacks">加载资源回调函数集。</param>
         /// <param name="userData">用户自定义数据。</param>
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包。</param>
+        [Obsolete("Use LoadLeaseAsync<T> for explicit ownership.")]
         UniTask LoadAssetAsync(string location, int priority, LoadAssetCallbacks loadAssetCallbacks, object userData, string packageName = "");
 
         /// <summary>
@@ -242,6 +250,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="loadAssetCallbacks">加载资源回调函数集。</param>
         /// <param name="userData">用户自定义数据。</param>
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包。</param>
+        [Obsolete("Use LoadLeaseAsync<T> for explicit ownership.")]
         UniTask LoadAssetAsync(string location, Type assetType, int priority, LoadAssetCallbacks loadAssetCallbacks, object userData, string packageName = "");
 
         /// <summary>
@@ -251,6 +260,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包</param>
         /// <typeparam name="T">要加载资源的类型。</typeparam>
         /// <returns>资源实例。</returns>
+        [Obsolete("Use LoadLease<T> for explicit ownership.")]
         T LoadAsset<T>(string location, string packageName = "") where T : UnityEngine.Object;
 
         /// <summary>
@@ -270,6 +280,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="callback">回调函数。</param>
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包</param>
         /// <typeparam name="T">要加载资源的类型。</typeparam>
+        [Obsolete("Use LoadLeaseAsync<T> for explicit ownership.")]
         UniTask LoadAsset<T>(string location, Action<T> callback, string packageName = "") where T : UnityEngine.Object;
 
         /// <summary>
@@ -280,6 +291,7 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="packageName">指定资源包的名称。不传使用默认资源包</param>
         /// <typeparam name="T">要加载资源的类型。</typeparam>
         /// <returns>异步资源实例。</returns>
+        [Obsolete("Use LoadLeaseAsync<T> for explicit ownership.")]
         UniTask<T> LoadAssetAsync<T>(string location, CancellationToken cancellationToken = default, string packageName = "") where T : UnityEngine.Object;
 
         /// <summary>
@@ -292,24 +304,6 @@ namespace AlicizaX.Resource.Runtime
         /// <returns>异步游戏物体实例。</returns>
         /// <remarks>会实例化资源到场景，无需主动UnloadAsset，Destroy时自动UnloadAsset。</remarks>
         UniTask<GameObject> LoadGameObjectAsync(string location, Transform parent = null, CancellationToken cancellationToken = default, string packageName = "");
-
-        /// <summary>
-        /// 获取同步加载的资源操作句柄。
-        /// </summary>
-        /// <param name="location">资源定位地址。</param>
-        /// <param name="packageName">资源包名称。</param>
-        /// <typeparam name="T">资源类型。</typeparam>
-        /// <returns>资源操作句柄。</returns>
-        AssetHandle LoadAssetSyncHandle<T>(string location, string packageName = "") where T : UnityEngine.Object;
-
-        /// <summary>
-        /// 获取异步加载的资源操作句柄。
-        /// </summary>
-        /// <param name="location">资源定位地址。</param>
-        /// <param name="packageName">资源包名称。</param>
-        /// <typeparam name="T">资源类型。</typeparam>
-        /// <returns>资源操作句柄。</returns>
-        AssetHandle LoadAssetAsyncHandle<T>(string location, string packageName = "") where T : UnityEngine.Object;
 
         /// <summary>
         /// 清理包裹未使用的缓存文件。

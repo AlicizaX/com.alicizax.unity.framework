@@ -1,9 +1,9 @@
 using System;
 using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Audio;
-using YooAsset;
 
 namespace AlicizaX.Audio.Runtime
 {
@@ -599,7 +599,7 @@ namespace AlicizaX.Audio.Runtime
                 return true;
             }
 
-            if (entry.Handle != null)
+            if (entry.Loading)
             {
                 return false;
             }
@@ -625,7 +625,7 @@ namespace AlicizaX.Audio.Runtime
             request.Completed = completed;
             entry.AddPending(request);
 
-            if (entry.Handle == null)
+            if (!entry.Loading && !entry.Lease.IsValid)
             {
                 BeginLoad(entry, true);
             }
@@ -846,7 +846,7 @@ namespace AlicizaX.Audio.Runtime
             entry.AddPending(request);
             loadRequest = request;
 
-            if (entry.Handle == null)
+            if (!entry.Loading && !entry.Lease.IsValid)
             {
                 BeginLoad(entry, async);
                 if (request.Entry == null)
@@ -964,30 +964,26 @@ namespace AlicizaX.Audio.Runtime
             }
         }
 
-        internal void OnClipLoadCompleted(AudioClipCacheEntry entry, AssetHandle handle)
+        internal void OnClipLoadCompleted(AudioClipCacheEntry entry, ResourceAssetLease<AudioClip> lease)
         {
             if (entry == null || !TryGetClipEntry(entry.Address, out AudioClipCacheEntry mapped) || !ReferenceEquals(mapped, entry))
             {
-                if (handle != null && handle.IsValid)
-                {
-                    handle.Dispose();
-                }
-
+                lease.Dispose();
                 return;
             }
 
             entry.Loading = false;
-            if (handle != null)
-            {
-                handle.Completed -= entry.CompletedCallback;
-            }
-
-            bool success = handle != null && handle.IsValid && handle.AssetObject is AudioClip;
+            bool success = lease.IsValid && lease.Asset != null;
             if (success)
             {
-                entry.Handle = handle;
-                entry.Clip = (AudioClip)handle.AssetObject;
+                entry.Lease.Dispose();
+                entry.Lease = lease;
+                entry.Clip = lease.Asset;
                 TouchClip(entry);
+            }
+            else
+            {
+                lease.Dispose();
             }
 
             AudioLoadRequest request = entry.PendingHead;
@@ -1442,25 +1438,22 @@ namespace AlicizaX.Audio.Runtime
 
         private bool BeginLoad(AudioClipCacheEntry entry, bool async)
         {
-            entry.Loading = async;
             if (async)
             {
-                entry.Handle = _resourceService.LoadAssetAsyncHandle<AudioClip>(entry.Address);
-                if (entry.Handle == null)
-                {
-                    OnClipLoadCompleted(entry, null);
-                    return false;
-                }
-
-                entry.Handle.Completed += entry.CompletedCallback;
+                entry.Loading = true;
+                BeginLoadAsync(entry).Forget();
                 return true;
             }
 
-            AssetHandle handle = _resourceService.LoadAssetSyncHandle<AudioClip>(entry.Address);
-            entry.Handle = handle;
-            bool success = handle != null && handle.IsValid && handle.AssetObject is AudioClip;
-            OnClipLoadCompleted(entry, handle);
-            return success;
+            ResourceAssetLease<AudioClip> lease = _resourceService.LoadLease<AudioClip>(entry.Address);
+            OnClipLoadCompleted(entry, lease);
+            return entry.IsLoaded;
+        }
+
+        private async UniTaskVoid BeginLoadAsync(AudioClipCacheEntry entry)
+        {
+            ResourceAssetLease<AudioClip> lease = await _resourceService.LoadLeaseAsync<AudioClip>(entry.Address);
+            OnClipLoadCompleted(entry, lease);
         }
 
         private void TouchClip(AudioClipCacheEntry entry)

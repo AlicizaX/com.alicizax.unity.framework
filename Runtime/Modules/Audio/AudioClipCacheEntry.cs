@@ -1,17 +1,14 @@
-using System;
 using AlicizaX;
+using AlicizaX.Resource.Runtime;
 using UnityEngine;
-using YooAsset;
 
 namespace AlicizaX.Audio.Runtime
 {
     internal sealed class AudioClipCacheEntry : MemoryObject
     {
-        private readonly Action<AssetHandle> _completedCallback;
-
         public AudioService Owner;
         public string Address;
-        public AssetHandle Handle;
+        public ResourceAssetLease<AudioClip> Lease;
         public AudioClip Clip;
         public AudioLoadRequest PendingHead;
         public AudioLoadRequest PendingTail;
@@ -30,14 +27,7 @@ namespace AlicizaX.Audio.Runtime
         public bool InLru;
         public float LastUseTime;
 
-        public AudioClipCacheEntry()
-        {
-            _completedCallback = OnLoadCompleted;
-        }
-
-        public Action<AssetHandle> CompletedCallback => _completedCallback;
-
-        public bool IsLoaded => Clip != null && Handle != null && Handle.IsValid && !Loading;
+        public bool IsLoaded => Clip != null && Lease.IsValid && !Loading;
 
         public void Initialize(AudioService owner, string address, int addressHash, AudioCachePolicy cachePolicy, int slotIndex)
         {
@@ -136,21 +126,13 @@ namespace AlicizaX.Audio.Runtime
             info.CacheAfterUse = CacheAfterUse;
             info.InLru = InLru;
             info.IsLoaded = IsLoaded;
-            info.HasValidHandle = Handle != null && Handle.IsValid;
+            info.HasValidHandle = Lease.IsValid;
             info.LastUseTime = LastUseTime;
         }
 
         public override void Clear()
         {
-            if (Handle != null && Handle.IsValid)
-            {
-                if (Loading)
-                {
-                    Handle.Completed -= _completedCallback;
-                }
-
-                Handle.Dispose();
-            }
+            Lease.Dispose();
 
             AudioLoadRequest request = PendingHead;
             while (request != null)
@@ -162,7 +144,7 @@ namespace AlicizaX.Audio.Runtime
 
             Owner = null;
             Address = null;
-            Handle = null;
+            Lease = default;
             Clip = null;
             PendingHead = null;
             PendingTail = null;
@@ -180,19 +162,6 @@ namespace AlicizaX.Audio.Runtime
             CacheAfterUse = false;
             InLru = false;
             LastUseTime = 0f;
-        }
-
-        private void OnLoadCompleted(AssetHandle handle)
-        {
-            AudioService owner = Owner;
-            if (owner != null)
-            {
-                owner.OnClipLoadCompleted(this, handle);
-            }
-            else if (handle != null && handle.IsValid)
-            {
-                handle.Dispose();
-            }
         }
     }
 }

@@ -10,16 +10,9 @@ namespace AlicizaX.Resource.Runtime
         private static readonly List<ResourceOwner> releaseBuffer = new List<ResourceOwner>(DefaultReleaseBufferCapacity);
         private static int releaseBufferCapacity = DefaultReleaseBufferCapacity;
 
-        [SerializeField]
         private int ownerId;
-
-        [SerializeField]
         private int gameObjectId;
-
-        [SerializeField]
         private uint generation;
-
-        [SerializeField]
         private bool isRegistered;
 
         public int OwnerId => ownerId;

@@ -19,25 +19,5 @@
         /// 存在资源且存储在磁盘上。
         /// </summary>
         AssetOnDisk,
-
-        /// <summary>
-        /// 存在资源且存储在文件系统里。
-        /// </summary>
-        AssetOnFileSystem,
-
-        /// <summary>
-        /// 存在二进制资源且存储在磁盘上。
-        /// </summary>
-        BinaryOnDisk,
-
-        /// <summary>
-        /// 存在二进制资源且存储在文件系统里。
-        /// </summary>
-        BinaryOnFileSystem,
-
-        /// <summary>
-        /// 资源定位地址无效。
-        /// </summary>
-        Valid,
     }
 }

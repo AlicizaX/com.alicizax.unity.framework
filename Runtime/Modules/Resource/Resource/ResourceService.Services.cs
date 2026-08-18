@@ -10,27 +10,36 @@ namespace AlicizaX.Resource.Runtime
     /// </summary>
     class RemoteServices : IRemoteService
     {
-        private readonly string _defaultHostServer;
-        private readonly string _fallbackHostServer;
+        private readonly string _defaultHostPrefix;
+        private readonly string _fallbackHostPrefix;
+        private readonly string[] _urls;
 
         public RemoteServices(string defaultHostServer, string fallbackHostServer)
         {
-            _defaultHostServer = defaultHostServer;
-            _fallbackHostServer = fallbackHostServer;
+            _defaultHostPrefix = NormalizeHostPrefix(defaultHostServer);
+            _fallbackHostPrefix = string.IsNullOrEmpty(fallbackHostServer) ? null : NormalizeHostPrefix(fallbackHostServer);
+            _urls = _fallbackHostPrefix == null ? new string[1] : new string[2];
         }
 
         IReadOnlyList<string> IRemoteService.GetRemoteUrls(string fileName)
         {
-            if (string.IsNullOrEmpty(_fallbackHostServer))
+            _urls[0] = ZString.Concat(_defaultHostPrefix, fileName);
+            if (_fallbackHostPrefix != null)
             {
-                return new[] { ZString.Concat(_defaultHostServer, "/", fileName) };
+                _urls[1] = ZString.Concat(_fallbackHostPrefix, fileName);
             }
 
-            return new[]
+            return _urls;
+        }
+
+        private static string NormalizeHostPrefix(string hostServer)
+        {
+            if (string.IsNullOrEmpty(hostServer))
             {
-                ZString.Concat(_defaultHostServer, "/", fileName),
-                ZString.Concat(_fallbackHostServer, "/", fileName)
-            };
+                return string.Empty;
+            }
+
+            return hostServer[hostServer.Length - 1] == '/' ? hostServer : ZString.Concat(hostServer, "/");
         }
     }
 

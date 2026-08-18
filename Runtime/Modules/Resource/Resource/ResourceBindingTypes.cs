@@ -13,7 +13,6 @@ namespace AlicizaX.Resource.Runtime
         MissingOwner = 2,
         MissingTarget = 3,
         StaleOwner = 4,
-        CapacityExceeded = 5,
         LoadFailed = 6,
         ApplyFailed = 7,
         ServiceShutdown = 8,

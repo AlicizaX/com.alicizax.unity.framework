@@ -14,7 +14,6 @@ namespace AlicizaX.Resource.Runtime
         private const int RecordPageSize = 1 << RecordPageBits;
         private const int RecordPageMask = RecordPageSize - 1;
         private const int KeepAliveBucketCount = 256;
-        private const int KeepAliveSeconds = 5;
         private const int IdleBucketCount = 256;
 
         private AssetSlot[][] _assetSlotPages;
@@ -37,9 +36,6 @@ namespace AlicizaX.Resource.Runtime
         private struct AssetSlot
         {
             public ulong Key;
-            public string PackageName;
-            public string Location;
-            public Type AssetType;
             public int LoadKeyId;
             public int AssetInstanceId;
             public Object Asset;
@@ -158,7 +154,6 @@ namespace AlicizaX.Resource.Runtime
             _assetRecordsByKey.Clear();
             _assetRecordByLoadKeyId.Clear();
             _assetRecordHeadByUnityObjectId.Clear();
-            TrimResourceKeyRegistryIfUnused();
             _assetSlotPages = null;
             _leaseSlotPages = null;
             _unusedAssetCandidates = null;
@@ -197,7 +192,7 @@ namespace AlicizaX.Resource.Runtime
         internal async UniTask<ResourceLeaseHandle> AcquireSubAssetsBindingAsync(string location, string packageName, ResourceLeaseOptions leaseOptions, CancellationToken cancellationToken = default)
         {
             string normalizedPackageName = NormalizePackageName(packageName);
-            if (string.IsNullOrEmpty(location) || !IsLocationValid(location, normalizedPackageName))
+            if (string.IsNullOrEmpty(location))
             {
                 return ResourceLeaseHandle.Invalid;
             }
@@ -237,25 +232,24 @@ namespace AlicizaX.Resource.Runtime
             }
 
             SubAssetsHandle handle = package.LoadSubAssetsAsync<Sprite>(location);
+            AttachLoadingSubAssetsHandle(loadingKey, handle);
 
             bool callerCancellationRequested = false;
-            while (handle is { IsValid: true, IsDone: false })
+            if (handle is { IsValid: true, IsDone: false })
             {
-                if (!IsLoadingStateCurrent(loadGeneration))
-                {
-                    DisposeSubAssetsHandle(handle);
-                    FailLoading(loadingKey, null);
-                    return ResourceLeaseHandle.Invalid;
-                }
+                await handle.ToUniTask(cancellationToken: cancellationToken);
+            }
 
-                if (ShouldAbortLoadingAfterCallerCancellation(loadingKey, cancellationToken, ref callerCancellationRequested))
-                {
-                    DisposeSubAssetsHandle(handle);
-                    FailLoading(loadingKey, null);
-                    return ResourceLeaseHandle.Invalid;
-                }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                callerCancellationRequested = true;
+            }
 
-                await UniTask.Yield();
+            if (ShouldAbortLoadingAfterCallerCancellation(loadingKey, cancellationToken, ref callerCancellationRequested))
+            {
+                DisposeSubAssetsHandle(handle);
+                FailLoading(loadingKey, null);
+                return ResourceLeaseHandle.Invalid;
             }
 
             if (!IsLoadingStateCurrent(loadGeneration))
@@ -330,11 +324,6 @@ namespace AlicizaX.Resource.Runtime
 
             string packageName = NormalizePackageName(key.PackageName);
             Type assetType = NormalizeAssetType(key.AssetType, key.AssetKind);
-            if (!IsLocationValid(key.Location, packageName))
-            {
-                return ResourceLeaseHandle.Invalid;
-            }
-
             ResourceAssetKind assetKind = key.AssetKind == ResourceAssetKind.Unknown ? InferAssetKind(assetType) : key.AssetKind;
             ulong assetLoadingKey = GetLoadingOperationKey(key.Location, packageName, assetType, assetKind);
             UnityEngine.Object asset = await GetOrLoadAssetAsync(key.Location, assetType, assetKind, packageName, assetLoadingKey, cancellationToken: cancellationToken);
@@ -396,11 +385,6 @@ namespace AlicizaX.Resource.Runtime
 
             string packageName = NormalizePackageName(key.PackageName);
             Type assetType = NormalizeAssetType(key.AssetType, key.AssetKind);
-            if (!IsLocationValid(key.Location, packageName))
-            {
-                return false;
-            }
-
             ResourceAssetKind assetKind = key.AssetKind == ResourceAssetKind.Unknown ? InferAssetKind(assetType) : key.AssetKind;
             if (TryGetCachedAssetRecord(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle, out int cachedAssetId, out _))
             {
@@ -408,14 +392,17 @@ namespace AlicizaX.Resource.Runtime
                 return handle.IsValid;
             }
 
-            AssetHandle assetHandle = GetHandleSync(key.Location, assetType, packageName);
-            if (assetHandle == null || assetHandle.AssetObject == null || assetHandle.Status == EOperationStatus.Failed)
+            UnityEngine.Object asset = GetOrLoadAsset(key.Location, assetType, assetKind, packageName);
+            if (asset == null)
             {
-                DisposeHandle(assetHandle);
                 return false;
             }
 
-            int assetId = GetOrCreateAssetRecord(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle, assetHandle.AssetObject, assetHandle);
+            ulong recordKey = GetAssetRecordKey(packageName, key.Location, assetType, assetKind, ResourceHandleKind.AssetHandle);
+            if (!_assetRecordsByKey.TryGetValue(recordKey, out int assetId) || !IsValidAssetId(assetId))
+            {
+                return false;
+            }
 
             handle = AcquireLease(assetId, leaseKind, ResourceLeaseOptions.None);
             return handle.IsValid;
@@ -431,7 +418,6 @@ namespace AlicizaX.Resource.Runtime
             ref LeaseSlot lease = ref GetLeaseSlotRef(leaseIndex);
             int assetId = lease.AssetId;
             ResourceLeaseKind leaseKind = lease.Kind;
-            byte leaseFlags = lease.Flags;
             if (!IsValidActiveAssetId(assetId))
             {
                 FreeLeaseSlot(leaseIndex);
@@ -452,13 +438,6 @@ namespace AlicizaX.Resource.Runtime
                 {
                     asset.BindingRefCount--;
                 }
-            }
-
-            if (leaseKind == ResourceLeaseKind.Binding &&
-                (leaseFlags & (byte)ResourceLeaseOptions.KeepAliveOnRelease) != 0 &&
-                CanEnterKeepAlive(ref asset))
-            {
-                EnterKeepAlive(assetId, ref asset);
             }
 
             UpdateAssetStateAndIdleQueue(assetId, ref asset);
@@ -689,9 +668,10 @@ namespace AlicizaX.Resource.Runtime
                 ref AssetSlot slot = ref GetAssetSlotRef(index);
                 ref ResourceAssetInfo info = ref results[written];
                 info.LoadKeyId = slot.LoadKeyId;
-                info.Package = slot.PackageName;
-                info.Location = slot.Location;
-                info.TypeName = slot.AssetType != null ? slot.AssetType.Name : string.Empty;
+                info.Package = GetPackageNameById(UnpackPackageId(slot.Key));
+                info.Location = GetLocationNameById(UnpackLocationId(slot.Key));
+                Type assetType = GetAssetTypeById(UnpackTypeId(slot.Key));
+                info.TypeName = assetType != null ? assetType.Name : string.Empty;
                 info.Kind = slot.AssetKind;
                 info.State = slot.State;
                 info.DirectRefCount = slot.DirectRefCount;
@@ -780,7 +760,6 @@ namespace AlicizaX.Resource.Runtime
 
             _leaseSlotNextIndex = 0;
             _leaseSlotFreeHead = -1;
-            TrimResourceKeyRegistryIfUnused();
         }
 
         internal ResourceLeaseHandle AcquirePrefabSourceLease(string location, string packageName)
@@ -797,11 +776,6 @@ namespace AlicizaX.Resource.Runtime
             }
 
             string normalizedPackageName = NormalizePackageName(packageName);
-            if (!IsLocationValid(location, normalizedPackageName))
-            {
-                return ResourceLeaseHandle.Invalid;
-            }
-
             ulong assetLoadingKey = GetLoadingOperationKey(location, normalizedPackageName, typeof(GameObject), ResourceAssetKind.Prefab);
             UnityEngine.Object asset = await GetOrLoadAssetAsync(location, typeof(GameObject), ResourceAssetKind.Prefab, normalizedPackageName, assetLoadingKey, cancellationToken: cancellationToken);
             if (asset == null)
@@ -872,10 +846,17 @@ namespace AlicizaX.Resource.Runtime
                     LinkAssetByUnityObject(existingId, ref existing);
                 }
 
-                if (existing.AssetHandle == null && assetHandle != null)
+                if (assetHandle != null)
                 {
-                    existing.AssetHandle = assetHandle;
-                    existing.HandleKind = handleKind;
+                    if (existing.AssetHandle == null || !existing.AssetHandle.IsValid)
+                    {
+                        existing.AssetHandle = assetHandle;
+                        existing.HandleKind = handleKind;
+                    }
+                    else if (!ReferenceEquals(existing.AssetHandle, assetHandle))
+                    {
+                        DisposeHandle(assetHandle);
+                    }
                 }
 
                 UpdateAssetStateAndIdleQueue(existingId, ref existing);
@@ -885,9 +866,6 @@ namespace AlicizaX.Resource.Runtime
             int assetId = AllocateAssetSlot();
             ref AssetSlot slot = ref GetAssetSlotRef(assetId);
             slot.Key = key;
-            slot.PackageName = normalizedPackageName;
-            slot.Location = location;
-            slot.AssetType = assetType;
             slot.LoadKeyId = AllocateLoadKeyId();
             slot.Asset = asset;
             slot.AssetInstanceId = UnityObjectId.Get(asset);
@@ -931,9 +909,6 @@ namespace AlicizaX.Resource.Runtime
             int assetId = AllocateAssetSlot();
             ref AssetSlot slot = ref GetAssetSlotRef(assetId);
             slot.Key = key;
-            slot.PackageName = normalizedPackageName;
-            slot.Location = location;
-            slot.AssetType = typeof(Sprite);
             slot.LoadKeyId = AllocateLoadKeyId();
             slot.Asset = null;
             slot.AssetInstanceId = 0;
@@ -1047,7 +1022,6 @@ namespace AlicizaX.Resource.Runtime
             if (matchCount > 1)
             {
                 Log.Warning(ZString.Format("Legacy asset acquire is ambiguous. Asset instance id {0} maps to {1} Resource records. Use ResourceLeaseHandle for explicit ownership.", instanceId, matchCount));
-                return false;
             }
 
             ref AssetSlot matched = ref GetAssetSlotRef(matchedAssetId);
@@ -1092,8 +1066,7 @@ namespace AlicizaX.Resource.Runtime
 
             if (matchCount > 1)
             {
-                Log.Warning(ZString.Format("UnloadAsset(object) is ambiguous. Asset instance id {0} maps to {1} legacy direct records. No Resource record was released; use ResourceLeaseHandle for explicit ownership.", instanceId, matchCount));
-                return false;
+                Log.Warning(ZString.Format("UnloadAsset(object) is ambiguous. Asset instance id {0} maps to {1} legacy direct records. Releasing the first matching record; prefer ResourceLeaseHandle for explicit ownership.", instanceId, matchCount));
             }
 
             ref AssetSlot matched = ref GetAssetSlotRef(matchedAssetId);
@@ -1254,42 +1227,6 @@ namespace AlicizaX.Resource.Runtime
             return slot.HandleKind == ResourceHandleKind.SubAssetsHandle
                 ? IsSubAssetsHandleValid(slot.SubAssetsHandle)
                 : slot.AssetHandle is { IsValid: true };
-        }
-
-        private static bool CanEnterKeepAlive(ref AssetSlot slot)
-        {
-            return slot.DirectRefCount == 0 &&
-                   slot.LegacyDirectRefCount == 0 &&
-                   slot.BindingRefCount == 0 &&
-                   IsSlotHandleValid(ref slot);
-        }
-
-        private void EnterKeepAlive(int assetId, ref AssetSlot slot)
-        {
-            RemoveFromExpiryQueue(assetId, ref slot);
-            int expireTick = ToKeepAliveTick(Time.unscaledTime) + KeepAliveSeconds;
-            if (slot.KeepAliveRefCount == 0)
-            {
-                slot.KeepAliveRefCount = 1;
-            }
-
-            slot.KeepAliveExpireTick = expireTick;
-            if (slot.ExpireQueueKind == 1)
-            {
-                RemoveFromKeepAliveBucket(assetId, ref slot);
-            }
-
-            int bucket = expireTick & (KeepAliveBucketCount - 1);
-            slot.ExpireQueuePrev = -1;
-            slot.ExpireQueueNext = _keepAliveBuckets[bucket];
-            if (slot.ExpireQueueNext >= 0)
-            {
-                ref AssetSlot next = ref GetAssetSlotRef(slot.ExpireQueueNext);
-                next.ExpireQueuePrev = assetId;
-            }
-
-            _keepAliveBuckets[bucket] = assetId;
-            slot.ExpireQueueKind = 1;
         }
 
         private void EnterIdle(int assetId, ref AssetSlot slot)

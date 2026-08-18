@@ -253,12 +253,13 @@ namespace AlicizaX.Resource.Runtime
             _lastGCCollectElapseSeconds += Time.unscaledDeltaTime;
             if (shouldUnloadUnusedAssets)
             {
+                bool force = _forceUnloadUnusedAssets;
                 bool useSystemUnload = _forceSystemUnloadUnusedAssets && useSystemUnloadUnusedAssets;
                 _forceUnloadUnusedAssets = false;
                 _forceSystemUnloadUnusedAssets = false;
                 _preorderUnloadUnusedAssets = false;
                 _lastUnloadUnusedAssetsOperationElapseSeconds = 0f;
-                _resourceService.UnloadUnusedAssets();
+                _resourceService.UnloadUnusedAssets(force);
                 _asyncOperation = useSystemUnload ? Resources.UnloadUnusedAssets() : null;
             }
 

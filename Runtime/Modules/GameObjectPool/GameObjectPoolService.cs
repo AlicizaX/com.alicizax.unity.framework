@@ -193,12 +193,9 @@ namespace AlicizaX
         public void LoadCatalog(string poolConfigPath)
         {
             IResourceService resourceService = AppServices.App.Require<IResourceService>();
-            PoolConfigScriptableObject config = resourceService.LoadAsset<PoolConfigScriptableObject>(poolConfigPath);
-            LoadCatalog(config);
-            if (config != null)
-            {
-                resourceService.UnloadAsset(config);
-            }
+            using ResourceAssetLease<PoolConfigScriptableObject> lease =
+                resourceService.LoadLease<PoolConfigScriptableObject>(poolConfigPath);
+            LoadCatalog(lease.Asset);
         }
 
         public GameObjectPoolSummarySnapshot GetDebugSummary()

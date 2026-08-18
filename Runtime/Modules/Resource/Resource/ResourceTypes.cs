@@ -95,7 +95,6 @@ namespace AlicizaX.Resource.Runtime
         Material = 3,
         Prefab = 4,
         SubAssets = 5,
-        ExternalHandle = 6,
     }
 
     public enum ResourceAssetState : byte
@@ -112,7 +111,6 @@ namespace AlicizaX.Resource.Runtime
         None = 0,
         AssetHandle = 1,
         SubAssetsHandle = 2,
-        ExternalHandleLease = 3,
     }
 
     internal enum ResourceLeaseKind : byte
