@@ -52,7 +52,7 @@ namespace AlicizaX
                 return;
             }
 
-            int instanceId = prefab.GetInstanceID();
+            int instanceId = UnityObjectId.Get(prefab);
             if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases) || leases.Count == 0)
             {
                 return;
@@ -76,7 +76,7 @@ namespace AlicizaX
                 return null;
             }
 
-            int instanceId = lease.Asset.GetInstanceID();
+            int instanceId = UnityObjectId.Get(lease.Asset);
             if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases))
             {
                 leases = new List<ResourceAssetLease<GameObject>>(1);

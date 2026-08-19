@@ -786,8 +786,11 @@ namespace AlicizaX.UI.Editor
 
         private static GameObject ResolveGenerationTarget()
         {
+            GameObject instanceTarget = null;
+#if !UNITY_6000_5_OR_NEWER
             var instanceId = EditorPrefs.GetInt(GenerateInstanceIdKey, -1);
-            var instanceTarget = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            instanceTarget = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+#endif
             if (instanceTarget != null)
             {
                 return instanceTarget;

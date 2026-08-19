@@ -62,10 +62,17 @@ namespace AlicizaX
             window.Show();
         }
 
+#if UNITY_6000_5_OR_NEWER
+        [OnOpenAsset(0)]
+        private static bool OnOpenAsset(EntityId instanceId, int line)
+        {
+            Object obj = EditorUtility.EntityIdToObject(instanceId);
+#else
         [OnOpenAsset(0)]
         private static bool OnOpenAsset(int instanceId, int line)
         {
             Object obj = EditorUtility.InstanceIDToObject(instanceId);
+#endif
             if (obj is not PoolConfigScriptableObject asset)
             {
                 return false;
