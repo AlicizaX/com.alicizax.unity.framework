@@ -15,8 +15,8 @@ namespace AlicizaX
 
     internal sealed class YooAssetPrefabLoader : IPrefabLoader
     {
-        private readonly Dictionary<int, List<ResourceAssetLease<GameObject>>> _leases =
-            new Dictionary<int, List<ResourceAssetLease<GameObject>>>();
+        private readonly Dictionary<ulong, List<ResourceAssetLease<GameObject>>> _leases =
+            new Dictionary<ulong, List<ResourceAssetLease<GameObject>>>();
 
         private IResourceService _resourceService;
 
@@ -52,7 +52,7 @@ namespace AlicizaX
                 return;
             }
 
-            int instanceId = UnityObjectId.Get(prefab);
+            ulong instanceId = UnityObjectId.Get(prefab);
             if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases) || leases.Count == 0)
             {
                 return;
@@ -76,7 +76,7 @@ namespace AlicizaX
                 return null;
             }
 
-            int instanceId = UnityObjectId.Get(lease.Asset);
+            ulong instanceId = UnityObjectId.Get(lease.Asset);
             if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases))
             {
                 leases = new List<ResourceAssetLease<GameObject>>(1);

@@ -160,9 +160,9 @@ namespace AlicizaX.Resource.Runtime
         public int BindingIndex;
         public int OwnerId;
         public uint OwnerGeneration;
-        public int TargetGameObjectId;
-        public int TargetComponentId;
-        public long SlotKey;
+        public ulong TargetGameObjectId;
+        public ulong TargetComponentId;
+        public ulong SlotKey;
         public int AssetId;
         public int ViewKeyId;
         public ResourceLeaseHandle Lease;
@@ -181,7 +181,7 @@ namespace AlicizaX.Resource.Runtime
         public bool Active;
         public int OwnerIndex;
         public int OwnerId;
-        public int GameObjectId;
+        public ulong GameObjectId;
         public uint Generation;
         public int BindingCount;
         public int RegisteredTargetCount;

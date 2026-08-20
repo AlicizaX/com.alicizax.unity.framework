@@ -317,7 +317,6 @@ namespace AlicizaX.UI.Editor
             var scriptFilePath = Path.Combine(scriptFolderPath, $"{className}.cs");
 
             Directory.CreateDirectory(scriptFolderPath);
-            scriptContent = scriptContent.Replace("#Controller#", string.Empty);
 
             if (File.Exists(scriptFilePath) && IsContentUnchanged(scriptFilePath, scriptContent))
             {

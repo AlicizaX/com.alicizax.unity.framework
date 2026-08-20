@@ -11,16 +11,16 @@ namespace AlicizaX.Resource.Runtime
         private static int releaseBufferCapacity = DefaultReleaseBufferCapacity;
 
         private int ownerId;
-        private int gameObjectId;
+        private ulong gameObjectId;
         private uint generation;
         private bool isRegistered;
 
         public int OwnerId => ownerId;
-        public int GameObjectId => gameObjectId;
+        public ulong GameObjectId => gameObjectId;
         public uint Generation => generation;
         public bool IsRegistered => isRegistered;
 
-        internal void SetRegistered(int newOwnerId, int newGameObjectId, uint newGeneration)
+        internal void SetRegistered(int newOwnerId, ulong newGameObjectId, uint newGeneration)
         {
             ownerId = newOwnerId;
             gameObjectId = newGameObjectId;

@@ -641,7 +641,9 @@ namespace AlicizaX.UI.Editor
 
         private static void InitializeGenerationContext(GameObject targetObject)
         {
-            EditorPrefs.SetInt(GenerateInstanceIdKey, UnityObjectId.Get(targetObject));
+#if !UNITY_6000_5_OR_NEWER
+            EditorPrefs.SetInt(GenerateInstanceIdKey, targetObject.GetInstanceID());
+#endif
             var assetPath = UIGenerateQuick.GetPrefabAssetPath(targetObject);
             if (!string.IsNullOrEmpty(assetPath))
             {
