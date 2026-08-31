@@ -109,7 +109,8 @@ namespace AlicizaX.UI.Runtime
                 if (info != null)
                 {
                     CacheEntry entry = m_CacheWindow[i];
-                    FillWindowDebugInfo(entry.Metadata, entry.Metadata.MetaInfo.UILayer, index, entry.TimerHandle, info);
+                    UIMetadata metadata = entry.Metadata;
+                    FillWindowDebugInfo(metadata, metadata != null ? metadata.MetaInfo.UILayer : 0, index, entry.TimerHandle, info);
                 }
 
                 index++;
@@ -135,10 +136,8 @@ namespace AlicizaX.UI.Runtime
             info.HolderTypeName = metadata.UIHolderTypeName;
             info.State = metadata.State;
             info.Visible = view != null && view.Visible;
-            info.InCache = metadata.InCache;
+            info.Processing = metadata.IsProcessing;
             info.NeedUpdate = metadata.MetaInfo.NeedUpdate;
-            info.ShowInProgress = metadata.ShowInProgress;
-            info.CloseInProgress = metadata.CloseInProgress;
             info.Depth = view != null ? view.Depth : 0;
             info.CacheTime = metadata.MetaInfo.CacheTime;
             info.CacheTimerHandle = timerHandle;

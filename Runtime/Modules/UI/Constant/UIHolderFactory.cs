@@ -54,9 +54,17 @@ namespace AlicizaX.UI.Runtime
         internal static async UniTask CreateUIResourceAsync(UIMetadata meta, Transform parent, CancellationToken cancellationToken, UIBase owner = null)
         {
             if (meta.State != UIState.CreatedUI) return;
-            int operationVersion = meta.OperationVersion;
-            GameObject obj = await LoadUIResourcesAsync(meta.ResInfo, parent, cancellationToken);
-            if (operationVersion != meta.OperationVersion || cancellationToken.IsCancellationRequested || meta.View == null || meta.State != UIState.CreatedUI)
+            GameObject obj;
+            try
+            {
+                obj = await LoadUIResourcesAsync(meta.ResInfo, parent, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested || meta.View == null || meta.State != UIState.CreatedUI)
             {
                 if (obj != null)
                 {

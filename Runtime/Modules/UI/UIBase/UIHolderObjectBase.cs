@@ -75,6 +75,8 @@ namespace AlicizaX.UI.Runtime
             SetTransition(new UIDelegateTransitionSource(play, snap));
         }
 
+        internal bool HasTransition => TransitionSource != null;
+
         internal UniTask PlayOpenTransitionAsync()
         {
             return PlayTransition(true);
@@ -83,11 +85,6 @@ namespace AlicizaX.UI.Runtime
         internal UniTask PlayCloseTransitionAsync()
         {
             return PlayTransition(false);
-        }
-
-        internal void ApplyOpenTransitionState()
-        {
-            SnapTransition(true);
         }
 
         internal void ApplyClosedTransitionState()
@@ -144,27 +141,36 @@ namespace AlicizaX.UI.Runtime
 
         private CancellationToken RestartTransitionPlay()
         {
-            CancelTransitionPlay();
+            if (_transitionCts != null)
+            {
+                if (!_transitionCts.IsCancellationRequested)
+                    return _transitionCts.Token;
+
+                _transitionCts.Dispose();
+                _transitionCts = null;
+            }
+
             _transitionCts = new CancellationTokenSource();
             return _transitionCts.Token;
         }
 
         private void CancelTransitionPlay()
         {
-            if (_transitionCts == null)
-            {
+            if (_transitionCts == null || _transitionCts.IsCancellationRequested)
                 return;
-            }
 
             _transitionCts.Cancel();
-            _transitionCts.Dispose();
-            _transitionCts = null;
         }
 
         private void OnDestroy()
         {
             _isAlive = false;
             CancelTransitionPlay();
+            if (_transitionCts != null)
+            {
+                _transitionCts.Dispose();
+                _transitionCts = null;
+            }
             _transitionSource = null;
         }
 

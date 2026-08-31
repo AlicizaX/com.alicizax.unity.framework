@@ -1,7 +1,6 @@
 using System;
 using AlicizaX;
 using AlicizaX.Timer.Runtime;
-using Cysharp.Text;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -27,9 +26,9 @@ namespace AlicizaX.UI.Runtime
         private void CacheWindow(UIMetadata uiMetadata, bool force)
         {
             UIBase view = uiMetadata?.View;
-            if (view == null || view.Holder == null || !view.Holder.IsValid())
+            if (view == null || view.Holder == null || !view.Holder.IsValid() || view.State != UIState.Closed)
             {
-                Log.Error("Cannot cache null UI metadata or holder");
+                Log.Error("Cannot cache UI that is not fully closed");
                 uiMetadata?.DisposeImmediate();
                 return;
             }
@@ -42,71 +41,76 @@ namespace AlicizaX.UI.Runtime
             }
 
             RemoveFromCache(uiMetadata.MetaInfo.TypeId);
-            ulong timerHandle = 0UL;
-
-            view.PauseEventListeners();
             view.ClearUserData();
             view.EnterCacheVisual();
+            view.InternalEnterCache();
             view.Holder.transform.SetParent(UICacheLayer, false);
-            if (uiMetadata.MetaInfo.CacheTime > 0)
-            {
-                ITimerService timerService = GetTimerService();
-                _onTimerDisposeWindow ??= OnTimerDisposeWindow;
-                timerHandle = timerService.AddTimer(
-                    _onTimerDisposeWindow,
-                    uiMetadata,
-                    uiMetadata.MetaInfo.CacheTime,
-                    isLoop: false,
-                    isUnscaled: true);
+            uiMetadata.CacheTimerHandle = 0UL;
+            AddToCache(uiMetadata, 0UL);
 
-                if (timerHandle == 0UL)
-                {
+            ITimerService timerService = GetTimerService();
+            _onTimerDisposeWindow ??= OnTimerDisposeWindow;
+            ulong timerHandle = timerService.AddTimer(
+                _onTimerDisposeWindow,
+                uiMetadata,
+                uiMetadata.MetaInfo.CacheTime,
+                isLoop: false,
+                isUnscaled: true);
+
+            if (timerHandle == 0UL)
+            {
 #if UNITY_EDITOR
-                    if (UIWarningSettings.Enabled)
-                    {
-                        Log.Warning("Failed to create cache timer for {0}", uiMetadata.UILogicTypeName);
-                    }
+                if (UIWarningSettings.Enabled)
+                    Log.Warning("Failed to create cache timer for {0}", uiMetadata.UILogicTypeName);
 #endif
-                    uiMetadata.DisposeImmediate();
-                    return;
-                }
+                RemoveFromCache(uiMetadata.MetaInfo.TypeId);
+                uiMetadata.DisposeImmediate();
+                return;
             }
 
-            uiMetadata.InCache = true;
-            AddToCache(uiMetadata, timerHandle);
+            int typeId = uiMetadata.MetaInfo.TypeId;
+            if ((uint)typeId >= (uint)m_CacheTypeIdToIndex.Length || m_CacheTypeIdToIndex[typeId] < 0)
+                return;
+
+            uiMetadata.CacheTimerHandle = timerHandle;
+            m_CacheWindow[m_CacheTypeIdToIndex[typeId]] = new CacheEntry(uiMetadata, timerHandle);
         }
 
         private void OnTimerDisposeWindow(UIMetadata meta)
         {
-            if (meta != null)
-            {
-                RemoveFromCache(meta.MetaInfo.TypeId);
+            if (meta == null)
+                return;
+
+            if (IsMetaInOpenStack(meta))
+                return;
+
+            RemoveFromCache(meta.MetaInfo.TypeId);
+            if (meta.State == UIState.Cached)
                 meta.DisposeImmediate();
-            }
         }
 
         private void RemoveFromCache(RuntimeTypeHandle typeHandle)
         {
             if (UIMetaRegistry.TryGet(typeHandle, out UIMetaRegistry.UIMetaInfo metaInfo))
-            {
                 RemoveFromCache(metaInfo.TypeId);
-            }
         }
 
         private void RemoveFromCache(int typeId)
         {
             if ((uint)typeId >= (uint)m_CacheTypeIdToIndex.Length)
-            {
                 return;
-            }
 
             int index = m_CacheTypeIdToIndex[typeId];
             if (index < 0 || index >= m_CacheWindowCount)
-            {
                 return;
-            }
 
+            RemoveFromCacheAt(index);
+        }
+
+        private void RemoveFromCacheAt(int index)
+        {
             CacheEntry entry = m_CacheWindow[index];
+            int typeId = entry.Metadata.MetaInfo.TypeId;
             int lastIndex = m_CacheWindowCount - 1;
             CacheEntry last = m_CacheWindow[lastIndex];
             m_CacheWindow[index] = last;
@@ -114,33 +118,30 @@ namespace AlicizaX.UI.Runtime
             m_CacheWindowCount = lastIndex;
             m_CacheTypeIdToIndex[typeId] = -1;
             if (index != lastIndex && last.Metadata != null)
-            {
                 m_CacheTypeIdToIndex[last.Metadata.MetaInfo.TypeId] = index;
-            }
 
-            entry.Metadata.InCache = false;
-            if (entry.TimerHandle != 0UL && _timerService != null)
+            ulong timerHandle = entry.TimerHandle != 0UL ? entry.TimerHandle : entry.Metadata.CacheTimerHandle;
+            if (timerHandle != 0UL && _timerService != null)
             {
-                _timerService.RemoveTimer(entry.TimerHandle);
+                _timerService.RemoveTimer(timerHandle);
+                entry.Metadata.CacheTimerHandle = 0UL;
             }
         }
 
-        private void AddToCache(UIMetadata metadata, ulong timerHandle)
+        private void AddToCache(UIMetadata meta, ulong timerHandle)
         {
-            int typeId = metadata.MetaInfo.TypeId;
+            int typeId = meta.MetaInfo.TypeId;
             EnsureCacheIndexCapacity(typeId);
             EnsureCacheCapacity();
             int index = m_CacheWindowCount++;
-            m_CacheWindow[index] = new CacheEntry(metadata, timerHandle);
+            m_CacheWindow[index] = new CacheEntry(meta, timerHandle);
             m_CacheTypeIdToIndex[typeId] = index;
         }
 
         private void EnsureCacheCapacity()
         {
             if (m_CacheWindowCount < m_CacheWindow.Length)
-            {
                 return;
-            }
 
             Array.Resize(ref m_CacheWindow, m_CacheWindow.Length << 1);
         }
@@ -153,9 +154,7 @@ namespace AlicizaX.UI.Runtime
         private ITimerService GetTimerService()
         {
             if (_timerService != null)
-            {
                 return _timerService;
-            }
 
             _timerService = AppServices.App.Require<ITimerService>();
             return _timerService;
