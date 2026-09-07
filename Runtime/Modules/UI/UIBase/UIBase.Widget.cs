@@ -136,42 +136,58 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, VisualElement parent, bool visible)
+        internal async UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, VisualElement parent, bool visible)
         {
-            return CreateWidgetCoreAsync(
-                metadata,
-                visible,
-                async (meta, cts) =>
-                {
-                    await UIHolderFactory.CreateUIResourceAsync(meta, Holder.transform, cts.Token, this);
-                    if (meta.View?.Holder is not UIToolkitHolderBase toolkitHolder)
-                    {
-                        Log.Error("UI Toolkit widget holder is required: {0}", meta.View?.GetType().Name);
-                        return false;
-                    }
+            if (!TryBeginWidgetCreate(metadata))
+                return null;
 
-                    toolkitHolder.AttachTo(parent);
-                    return true;
-                });
+            CancellationTokenSource loadCts = metadata.BeginResourceLoad();
+            UIBase widget = null;
+            try
+            {
+                await UIHolderFactory.CreateUIResourceAsync(metadata, Holder.transform, loadCts.Token, this);
+                if (metadata.View?.Holder is not UIToolkitHolderBase toolkitHolder)
+                {
+                    Log.Error("UI Toolkit widget holder is required: {0}", metadata.View?.GetType().Name);
+                    return null;
+                }
+
+                toolkitHolder.AttachTo(parent);
+                widget = await FinishWidgetCreateAsync(metadata, visible);
+                return widget;
+            }
+            finally
+            {
+                metadata.EndResourceLoad(loadCts);
+                if (widget == null)
+                    await FailWidgetCreateAsync(metadata);
+            }
         }
 
         internal UIBase CreateWidgetUISync(UIMetadata metadata, VisualElement parent, bool visible)
         {
-            return CreateWidgetCoreSync(
-                metadata,
-                visible,
-                meta =>
-                {
-                    UIHolderFactory.CreateUIResourceSync(meta, Holder.transform, this);
-                    if (meta.View?.Holder is not UIToolkitHolderBase toolkitHolder)
-                    {
-                        Log.Error("UI Toolkit widget holder is required: {0}", meta.View?.GetType().Name);
-                        return false;
-                    }
+            if (!TryBeginWidgetCreate(metadata))
+                return null;
 
-                    toolkitHolder.AttachTo(parent);
-                    return true;
-                });
+            UIBase widget = null;
+            try
+            {
+                UIHolderFactory.CreateUIResourceSync(metadata, Holder.transform, this);
+                if (metadata.View?.Holder is not UIToolkitHolderBase toolkitHolder)
+                {
+                    Log.Error("UI Toolkit widget holder is required: {0}", metadata.View?.GetType().Name);
+                    return null;
+                }
+
+                toolkitHolder.AttachTo(parent);
+                widget = FinishWidgetCreateSync(metadata, visible);
+                return widget;
+            }
+            finally
+            {
+                if (widget == null)
+                    FailWidgetCreateImmediate(metadata);
+            }
         }
 
         #region CreateWidget

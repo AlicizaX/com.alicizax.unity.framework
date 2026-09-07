@@ -149,12 +149,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            int layer = visible ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
-            GameObject go = Holder.gameObject;
-            if (go.layer != layer)
-            {
-                go.layer = layer;
-            }
+            Holder.SetFrameworkVisible(visible);
         }
 
         internal void SetCanvasEnabled(bool value)
@@ -165,8 +160,21 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal void EnterCacheVisual() => SetCanvasEnabled(false);
-        internal void ExitCacheVisual() => SetCanvasEnabled(true);
+        internal void EnterCacheVisual()
+        {
+            if (Holder?.Backend == UIBackend.UIToolkit)
+                Holder.EnterFrameworkCache();
+            else
+                SetCanvasEnabled(false);
+        }
+
+        internal void ExitCacheVisual()
+        {
+            if (Holder?.Backend == UIBackend.UIToolkit)
+                Holder.ExitFrameworkCache();
+            else
+                SetCanvasEnabled(true);
+        }
 
         internal void InternalEnterCache()
         {
@@ -200,10 +208,18 @@ namespace AlicizaX.UI.Runtime
 
         private bool Interactable
         {
-            get => _raycaster != null && _raycaster.enabled;
+            get => Holder?.Backend == UIBackend.UIToolkit
+                ? Holder.FrameworkVisible
+                : _raycaster != null && _raycaster.enabled;
 
             set
             {
+                if (Holder?.Backend == UIBackend.UIToolkit)
+                {
+                    Holder.SetFrameworkInteractable(value);
+                    return;
+                }
+
                 if (_raycaster != null && _raycaster.enabled != value)
                 {
                     _raycaster.enabled = value;
@@ -213,10 +229,19 @@ namespace AlicizaX.UI.Runtime
 
         internal int Depth
         {
-            get => _canvas != null ? _canvas.sortingOrder : 0;
+            get => Holder?.Backend == UIBackend.UIToolkit
+                ? Holder.FrameworkSortingOrder
+                : _canvas != null ? _canvas.sortingOrder : 0;
 
             set
             {
+                if (Holder?.Backend == UIBackend.UIToolkit)
+                {
+                    Holder.SetFrameworkDepth(value);
+                    SyncChildDepth();
+                    return;
+                }
+
                 if (_canvas == null)
                     return;
 
@@ -290,23 +315,31 @@ namespace AlicizaX.UI.Runtime
         protected void BindHolderCommon(UIHolderObjectBase holder, bool overrideSorting, bool stretchToParent)
         {
             Holder = holder;
+            if (!Holder.EnsureBackendReady())
+            {
+                return;
+            }
+
             _canvas = Holder.transform.GetComponent<Canvas>();
             if (_canvas != null && overrideSorting)
                 _canvas.overrideSorting = true;
 
-            _visible = Holder.gameObject.layer == UIComponent.UIShowLayer;
+            _visible = Holder.FrameworkVisible;
 
             _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
             if (stretchToParent)
             {
                 RectTransform rectTransform = Holder.RectTransform;
-                rectTransform.localPosition = Vector3.zero;
-                rectTransform.pivot = new Vector2(0.5f, 0.5f);
-                rectTransform.anchorMin = Vector2.zero;
-                rectTransform.anchorMax = Vector2.one;
-                rectTransform.offsetMin = Vector2.zero;
-                rectTransform.offsetMax = Vector2.zero;
-                rectTransform.localScale = Vector3.one;
+                if (rectTransform != null)
+                {
+                    rectTransform.localPosition = Vector3.zero;
+                    rectTransform.pivot = new Vector2(0.5f, 0.5f);
+                    rectTransform.anchorMin = Vector2.zero;
+                    rectTransform.anchorMax = Vector2.one;
+                    rectTransform.offsetMin = Vector2.zero;
+                    rectTransform.offsetMax = Vector2.zero;
+                    rectTransform.localScale = Vector3.one;
+                }
             }
 
             SetState(UIState.Loaded);
