@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using AlicizaX.UI.Runtime;
 using UnityEditor;
 using UnityEditor.Callbacks;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.UI.Editor
 {
@@ -568,6 +570,14 @@ namespace AlicizaX.UI.Editor
 
         public static void GenerateUIBindScript(GameObject targetObject, UIScriptGenerateData scriptGenerateData)
         {
+            GenerateUIBindScript(targetObject, scriptGenerateData, null);
+        }
+
+        public static void GenerateUIBindScript(
+            GameObject targetObject,
+            UIScriptGenerateData scriptGenerateData,
+            UIBackend? forcedBackend)
+        {
             if (targetObject == null) throw new ArgumentNullException(nameof(targetObject));
             if (scriptGenerateData == null) throw new ArgumentNullException(nameof(scriptGenerateData));
 
@@ -583,7 +593,11 @@ namespace AlicizaX.UI.Editor
             }
 
             InitializeGenerationContext(targetObject);
-            CollectBindData(targetObject.transform);
+            UIBackend backend = forcedBackend ?? ResolveBackend(targetObject);
+            if (backend == UIBackend.UGUI)
+            {
+                CollectBindData(targetObject.transform);
+            }
 
             var generationContext = new UIGenerationContext(targetObject, scriptGenerateData, _uiBindDatas)
             {
@@ -597,6 +611,12 @@ namespace AlicizaX.UI.Editor
                 return;
             }
 
+            if (backend == UIBackend.UIToolkit)
+            {
+                GenerateUIToolkitScript(generationContext);
+                return;
+            }
+
             var validationResult = ValidateGeneration(generationContext);
             if (!validationResult.IsValid)
             {
@@ -606,6 +626,186 @@ namespace AlicizaX.UI.Editor
             }
 
             GenerateScript(generationContext);
+        }
+
+        private static UIBackend ResolveBackend(GameObject targetObject)
+        {
+            return targetObject != null && targetObject.GetComponent<UIDocument>() != null
+                ? UIBackend.UIToolkit
+                : UIBackend.UGUI;
+        }
+
+        private static void GenerateUIToolkitScript(UIGenerationContext context)
+        {
+            UIDocument document = context.TargetObject.GetComponent<UIDocument>();
+            if (document == null)
+            {
+                Debug.LogError("UI Toolkit generation requires a UIDocument on the selected prefab root.");
+                CleanupContext();
+                return;
+            }
+
+            if (document.visualTreeAsset == null)
+            {
+                Debug.LogError("UI Toolkit generation requires VisualTreeAsset on UIDocument.");
+                CleanupContext();
+                return;
+            }
+
+            if (document.panelSettings == null)
+            {
+                Debug.LogError("UI Toolkit generation requires PanelSettings on UIDocument.");
+                CleanupContext();
+                return;
+            }
+
+            if (!TryCollectUIToolkitBindings(document.visualTreeAsset, out List<UIToolkitBindingData> bindings))
+            {
+                CleanupContext();
+                return;
+            }
+
+            string scriptContent = BuildUIToolkitScript(context, bindings);
+            EditorPrefs.SetString(GenerateTypeNameKey, context.FullTypeName);
+            WriteScriptContent(context, scriptContent);
+        }
+
+        private static bool TryCollectUIToolkitBindings(
+            VisualTreeAsset visualTreeAsset,
+            out List<UIToolkitBindingData> bindings)
+        {
+            bindings = new List<UIToolkitBindingData>();
+            TemplateContainer clonedTree = visualTreeAsset.CloneTree();
+            var elementNames = new HashSet<string>(StringComparer.Ordinal);
+            var identifiers = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (VisualElement element in clonedTree.Query<VisualElement>().ToList())
+            {
+                string elementName = element.name;
+                if (string.IsNullOrWhiteSpace(elementName)
+                    || elementName.StartsWith("unity-", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!elementNames.Add(elementName))
+                {
+                    Debug.LogError($"[UI Toolkit Generate] Duplicate element name: {elementName}");
+                    return false;
+                }
+
+                string publicName = MakeToolkitIdentifier(elementName);
+                if (!identifiers.Add(publicName))
+                {
+                    Debug.LogError($"[UI Toolkit Generate] Element names resolve to duplicate identifier: {publicName}");
+                    return false;
+                }
+
+                Type elementType = element.GetType();
+                if (!typeof(VisualElement).IsAssignableFrom(elementType)
+                    || (!elementType.IsPublic && !elementType.IsNestedPublic))
+                {
+                    elementType = typeof(VisualElement);
+                }
+
+                bindings.Add(new UIToolkitBindingData(elementName, publicName, elementType));
+            }
+
+            bindings.Sort((left, right) => string.Compare(left.PublicName, right.PublicName, StringComparison.Ordinal));
+            return true;
+        }
+
+        private static string BuildUIToolkitScript(
+            UIGenerationContext context,
+            IReadOnlyList<UIToolkitBindingData> bindings)
+        {
+            var builder = new StringBuilder(1024);
+            builder.AppendLine("using AlicizaX.UI.Runtime;");
+            builder.AppendLine("using UnityEngine.UIElements;");
+            builder.AppendLine();
+            builder.Append("namespace ").AppendLine(context.ScriptGenerateData.NameSpace);
+            builder.AppendLine("{");
+            builder.Append("\t[UIRes(").Append(context.ClassName)
+                .Append(".ResTag, EUIResLoadType.").Append(context.ScriptGenerateData.LoadType)
+                .AppendLine(", UIBackend.UIToolkit)]");
+            builder.Append("\tpublic partial class ").Append(context.ClassName)
+                .AppendLine(" : UIToolkitHolderBase");
+            builder.AppendLine("\t{");
+            builder.Append("\t\tpublic const string ResTag = \"")
+                .Append(EscapeCSharpString(GetResourceSavePath(context))).AppendLine("\";");
+            builder.AppendLine();
+
+            foreach (UIToolkitBindingData binding in bindings)
+            {
+                string typeName = GetCSharpTypeName(binding.ElementType);
+                builder.Append("\t\tprivate ").Append(typeName).Append(" m")
+                    .Append(binding.PublicName).AppendLine(";");
+                builder.Append("\t\tpublic ").Append(typeName).Append(' ')
+                    .Append(binding.PublicName).Append(" => m").Append(binding.PublicName).AppendLine(";");
+                builder.AppendLine();
+            }
+
+            builder.AppendLine("\t\tprotected override void BindElements(VisualElement root)");
+            builder.AppendLine("\t\t{");
+            foreach (UIToolkitBindingData binding in bindings)
+            {
+                string typeName = GetCSharpTypeName(binding.ElementType);
+                builder.Append("\t\t\tm").Append(binding.PublicName).Append(" = QueryRequired<")
+                    .Append(typeName).Append(">(root, \"")
+                    .Append(EscapeCSharpString(binding.ElementName)).AppendLine("\");");
+            }
+            builder.AppendLine("\t\t}");
+            builder.AppendLine("\t}");
+            builder.AppendLine("}");
+            return builder.ToString();
+        }
+
+        private static string MakeToolkitIdentifier(string value)
+        {
+            var builder = new StringBuilder(value.Length + 1);
+            bool upperNext = true;
+            foreach (char character in value)
+            {
+                if (!char.IsLetterOrDigit(character) && character != '_')
+                {
+                    upperNext = true;
+                    continue;
+                }
+
+                char append = upperNext ? char.ToUpperInvariant(character) : character;
+                if (builder.Length == 0 && char.IsDigit(append))
+                {
+                    builder.Append('_');
+                }
+                builder.Append(append);
+                upperNext = false;
+            }
+
+            return builder.Length > 0 ? builder.ToString() : "Element";
+        }
+
+        private static string GetCSharpTypeName(Type type)
+        {
+            return "global::" + (type.FullName ?? typeof(VisualElement).FullName).Replace('+', '.');
+        }
+
+        private static string EscapeCSharpString(string value)
+        {
+            return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        private sealed class UIToolkitBindingData
+        {
+            public readonly string ElementName;
+            public readonly string PublicName;
+            public readonly Type ElementType;
+
+            public UIToolkitBindingData(string elementName, string publicName, Type elementType)
+            {
+                ElementName = elementName;
+                PublicName = publicName;
+                ElementType = elementType;
+            }
         }
 
         public static void CopyVariableContentToClipboard(GameObject targetObject)
@@ -641,7 +841,9 @@ namespace AlicizaX.UI.Editor
 
         private static void InitializeGenerationContext(GameObject targetObject)
         {
+#if !UNITY_6000_5_OR_NEWER
             EditorPrefs.SetInt(GenerateInstanceIdKey, UnityObjectId.Get(targetObject));
+#endif
             var assetPath = UIGenerateQuick.GetPrefabAssetPath(targetObject);
             if (!string.IsNullOrEmpty(assetPath))
             {

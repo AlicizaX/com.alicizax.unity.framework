@@ -8,6 +8,12 @@ using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Runtime
 {
+#if UNITY_6000_5_OR_NEWER
+    using UnityObjectIdValue = System.UInt64;
+#else
+    using UnityObjectIdValue = System.Int32;
+#endif
+
     internal sealed partial class ResourceService
     {
         private const int RecordPageBits = 8;
@@ -31,13 +37,13 @@ namespace AlicizaX.Resource.Runtime
         private int _lastIdleProcessTick;
         private readonly ResourceUlongIntMap _assetRecordsByKey = new ResourceUlongIntMap();
         private readonly ResourceIndexMap<int, int> _assetRecordByLoadKeyId = new ResourceIndexMap<int, int>();
-        private readonly ResourceIndexMap<int, int> _assetRecordHeadByUnityObjectId = new ResourceIndexMap<int, int>();
+        private readonly ResourceIndexMap<UnityObjectIdValue, int> _assetRecordHeadByUnityObjectId = new ResourceIndexMap<UnityObjectIdValue, int>();
 
         private struct AssetSlot
         {
             public ulong Key;
             public int LoadKeyId;
-            public int AssetInstanceId;
+            public UnityObjectIdValue AssetInstanceId;
             public Object Asset;
             public AssetHandle AssetHandle;
             public SubAssetsHandle SubAssetsHandle;
@@ -990,7 +996,7 @@ namespace AlicizaX.Resource.Runtime
                 return false;
             }
 
-            int instanceId = UnityObjectId.Get(asset);
+            UnityObjectIdValue instanceId = UnityObjectId.Get(asset);
             if (!_assetRecordHeadByUnityObjectId.TryGetValue(instanceId, out int current))
             {
                 return false;
@@ -1035,7 +1041,7 @@ namespace AlicizaX.Resource.Runtime
                 return false;
             }
 
-            int instanceId = UnityObjectId.Get(unityObject);
+            UnityObjectIdValue instanceId = UnityObjectId.Get(unityObject);
             if (!_assetRecordHeadByUnityObjectId.TryGetValue(instanceId, out int current))
             {
                 return false;
@@ -1471,7 +1477,7 @@ namespace AlicizaX.Resource.Runtime
 
         private void UnlinkAssetByUnityObject(int assetId, ref AssetSlot slot)
         {
-            int instanceId = slot.AssetInstanceId;
+            UnityObjectIdValue instanceId = slot.AssetInstanceId;
             if (instanceId == 0 || !_assetRecordHeadByUnityObjectId.TryGetValue(instanceId, out int current))
             {
                 return;

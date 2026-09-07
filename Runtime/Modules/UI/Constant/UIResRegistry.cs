@@ -11,22 +11,24 @@ namespace AlicizaX.UI.Runtime
         {
             public readonly string Location;
             public readonly EUIResLoadType LoadType;
+            public readonly UIBackend Backend;
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public UIResInfo(string location, EUIResLoadType loadType)
+            public UIResInfo(string location, EUIResLoadType loadType, UIBackend backend)
             {
                 Location = location;
                 LoadType = loadType;
+                Backend = backend;
             }
         }
 
         private static readonly Dictionary<RuntimeTypeHandle, UIResInfo> _typeHandleMap = new();
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Register(Type holderType, string location, EUIResLoadType loadType)
+        public static void Register(Type holderType, string location, EUIResLoadType loadType, UIBackend backend = UIBackend.UGUI)
         {
             RuntimeTypeHandle handle = holderType.TypeHandle;
-            _typeHandleMap[handle] = new UIResInfo(location, loadType);
+            _typeHandleMap[handle] = new UIResInfo(location, loadType, backend);
         }
 
         public static bool TryGet(RuntimeTypeHandle handle, out UIResInfo info)
@@ -65,11 +67,17 @@ namespace AlicizaX.UI.Runtime
 
                 IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
                 string resLocation = args.Count > 0 ? (string)(args[0].Value ?? string.Empty) : string.Empty;
-                EUIResLoadType resLoadType = args.Count > 1
-                    ? (EUIResLoadType)(args[1].Value ?? EUIResLoadType.AssetBundle)
+                EUIResLoadType resLoadType = args.Count > 1 && args[1].Value != null
+                    ? (EUIResLoadType)Convert.ToByte(args[1].Value)
                     : EUIResLoadType.AssetBundle;
+                UIBackend declaredBackend = args.Count > 2 && args[2].Value != null
+                    ? (UIBackend)Convert.ToByte(args[2].Value)
+                    : UIBackend.UGUI;
+                UIBackend backend = typeof(UIToolkitHolderBase).IsAssignableFrom(holderType)
+                    ? UIBackend.UIToolkit
+                    : declaredBackend;
 
-                Register(holderType, resLocation, resLoadType);
+                Register(holderType, resLocation, resLoadType, backend);
                 info = _typeHandleMap[holderType.TypeHandle];
                 return true;
             }

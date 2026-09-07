@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using AlicizaX;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -11,6 +12,7 @@ namespace AlicizaX.UI.Runtime
         private UIWidget _activeTab;
         private readonly List<RuntimeTypeHandle> _typeOrder = new();
         private readonly Dictionary<RuntimeTypeHandle, Transform> _tabParents = new(RuntimeTypeHandleComparer.Instance);
+        private readonly Dictionary<RuntimeTypeHandle, VisualElement> _toolkitTabParents = new(RuntimeTypeHandleComparer.Instance);
         private readonly Dictionary<RuntimeTypeHandle, UIWidget> _loadedTabs = new(RuntimeTypeHandleComparer.Instance);
         private readonly HashSet<RuntimeTypeHandle> _loadingTabs = new(RuntimeTypeHandleComparer.Instance);
 
@@ -31,15 +33,46 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        protected void InitTabVirtuallyView<TTab>(VisualElement parent) where TTab : UIWidget
+        {
+            CacheTabMetadata(typeof(TTab).TypeHandle, parent);
+        }
+
+        protected void InitTabVirtuallyView(string typeName, VisualElement parent)
+        {
+            if (UIMetaRegistry.TryGet(typeName, out var metaRegistry))
+            {
+                CacheTabMetadata(metaRegistry.RuntimeTypeHandle, parent);
+            }
+        }
+
         private void CacheTabMetadata(RuntimeTypeHandle typeHandle, Transform parent)
         {
-            if (_tabParents.ContainsKey(typeHandle))
+            if (_tabParents.ContainsKey(typeHandle) || _toolkitTabParents.ContainsKey(typeHandle))
             {
                 return;
             }
 
             _typeOrder.Add(typeHandle);
-            _tabParents[typeHandle] = parent ?? baseui.RectTransform;
+            if (parent != null || baseui is not UIToolkitHolderBase toolkitHolder)
+            {
+                _tabParents[typeHandle] = parent ?? baseui.RectTransform;
+            }
+            else
+            {
+                _toolkitTabParents[typeHandle] = toolkitHolder.RootVisualElement;
+            }
+        }
+
+        private void CacheTabMetadata(RuntimeTypeHandle typeHandle, VisualElement parent)
+        {
+            if (_tabParents.ContainsKey(typeHandle) || _toolkitTabParents.ContainsKey(typeHandle))
+            {
+                return;
+            }
+
+            _typeOrder.Add(typeHandle);
+            _toolkitTabParents[typeHandle] = parent;
         }
 
         public void SwitchTab(int index)
@@ -85,7 +118,9 @@ namespace AlicizaX.UI.Runtime
             try
             {
                 UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata(typeHandle);
-                UIBase widget = await CreateWidgetUIAsync(metadata, _tabParents[typeHandle], false);
+                UIBase widget = _toolkitTabParents.TryGetValue(typeHandle, out VisualElement toolkitParent)
+                    ? await CreateWidgetUIAsync(metadata, toolkitParent, false)
+                    : await CreateWidgetUIAsync(metadata, _tabParents[typeHandle], false);
                 if (widget is not UIWidget tabWidget)
                 {
                     Log.Error("Tab load failed: {0}", Type.GetTypeFromHandle(typeHandle)?.Name);

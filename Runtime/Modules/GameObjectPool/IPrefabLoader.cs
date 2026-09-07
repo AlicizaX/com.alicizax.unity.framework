@@ -6,6 +6,12 @@ using UnityEngine;
 
 namespace AlicizaX
 {
+#if UNITY_6000_5_OR_NEWER
+    using UnityObjectIdValue = System.UInt64;
+#else
+    using UnityObjectIdValue = System.Int32;
+#endif
+
     public interface IPrefabLoader
     {
         GameObject LoadPrefab(string location);
@@ -15,8 +21,8 @@ namespace AlicizaX
 
     internal sealed class YooAssetPrefabLoader : IPrefabLoader
     {
-        private readonly Dictionary<int, List<ResourceAssetLease<GameObject>>> _leases =
-            new Dictionary<int, List<ResourceAssetLease<GameObject>>>();
+        private readonly Dictionary<UnityObjectIdValue, List<ResourceAssetLease<GameObject>>> _leases =
+            new Dictionary<UnityObjectIdValue, List<ResourceAssetLease<GameObject>>>();
 
         private IResourceService _resourceService;
 
@@ -52,7 +58,7 @@ namespace AlicizaX
                 return;
             }
 
-            int instanceId = UnityObjectId.Get(prefab);
+            UnityObjectIdValue instanceId = UnityObjectId.Get(prefab);
             if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases) || leases.Count == 0)
             {
                 return;
@@ -76,7 +82,7 @@ namespace AlicizaX
                 return null;
             }
 
-            int instanceId = UnityObjectId.Get(lease.Asset);
+            UnityObjectIdValue instanceId = UnityObjectId.Get(lease.Asset);
             if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases))
             {
                 leases = new List<ResourceAssetLease<GameObject>>(1);

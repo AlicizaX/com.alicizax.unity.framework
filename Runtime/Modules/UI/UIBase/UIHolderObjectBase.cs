@@ -21,6 +21,20 @@ namespace AlicizaX.UI.Runtime
         private CancellationTokenSource _transitionCts;
         public GameObject Target => _target ??= gameObject;
 
+        public virtual UIBackend Backend => UIBackend.UGUI;
+
+        public virtual bool FrameworkVisible =>
+            Target != null && Target.activeInHierarchy && Target.layer == UIComponent.UIShowLayer;
+
+        public virtual int FrameworkSortingOrder
+        {
+            get
+            {
+                Canvas canvas = GetComponent<Canvas>() ?? GetComponentInParent<Canvas>(true);
+                return canvas != null ? canvas.sortingOrder : int.MinValue;
+            }
+        }
+
         private RectTransform _rectTransform;
         public RectTransform RectTransform => _rectTransform ??= Target.transform as RectTransform;
 
@@ -55,6 +69,29 @@ namespace AlicizaX.UI.Runtime
             {
                 _transitionSource = _transitionPlayerComponent as IUITransitionSource;
             }
+        }
+
+        internal virtual bool EnsureBackendReady() => true;
+
+        internal virtual void SetFrameworkVisible(bool visible)
+        {
+            Target.layer = visible ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+        }
+
+        internal virtual void SetFrameworkInteractable(bool interactable)
+        {
+        }
+
+        internal virtual void SetFrameworkDepth(int depth)
+        {
+        }
+
+        internal virtual void EnterFrameworkCache()
+        {
+        }
+
+        internal virtual void ExitFrameworkCache()
+        {
         }
 
         private bool _isAlive = true;
@@ -161,7 +198,7 @@ namespace AlicizaX.UI.Runtime
             _transitionCts = null;
         }
 
-        private void OnDestroy()
+        protected virtual void OnDestroy()
         {
             _isAlive = false;
             CancelTransitionPlay();

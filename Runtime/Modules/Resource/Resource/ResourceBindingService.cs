@@ -7,6 +7,12 @@ using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Runtime
 {
+#if UNITY_6000_5_OR_NEWER
+    using UnityObjectIdValue = System.UInt64;
+#else
+    using UnityObjectIdValue = System.Int32;
+#endif
+
     internal sealed class ResourceBindingService : IResourceBindingService
     {
         private const int PageBits = 8;
@@ -23,15 +29,15 @@ namespace AlicizaX.Resource.Runtime
         private int _ownerFreeHead = -1;
         private int _bindingFreeHead = -1;
         private int _registeredTargetFreeHead = -1;
-        private readonly ResourceIndexMap<int, int> _ownerIndexByGameObjectId = new ResourceIndexMap<int, int>();
+        private readonly ResourceIndexMap<UnityObjectIdValue, int> _ownerIndexByGameObjectId = new ResourceIndexMap<UnityObjectIdValue, int>();
         private readonly ResourceIndexMap<OwnerSlotKey, int> _bindingIndexByOwnerSlot = new ResourceIndexMap<OwnerSlotKey, int>();
-        private readonly ResourceIndexMap<int, TargetOwnerEntry> _ownerByTargetComponentId = new ResourceIndexMap<int, TargetOwnerEntry>();
+        private readonly ResourceIndexMap<UnityObjectIdValue, TargetOwnerEntry> _ownerByTargetComponentId = new ResourceIndexMap<UnityObjectIdValue, TargetOwnerEntry>();
         private bool _isShutdown;
 
         private struct OwnerSlot
         {
             public int OwnerId;
-            public int GameObjectId;
+            public UnityObjectIdValue GameObjectId;
             public uint Generation;
             public int BindingHead;
             public int RegisteredTargetHead;
@@ -44,10 +50,10 @@ namespace AlicizaX.Resource.Runtime
 
         private struct BindingSlot
         {
-            public long SlotKey;
+            public ResourceBindingSlotKey SlotKey;
             public int OwnerId;
-            public int TargetGameObjectId;
-            public int TargetComponentId;
+            public UnityObjectIdValue TargetGameObjectId;
+            public UnityObjectIdValue TargetComponentId;
             public uint OwnerGeneration;
             public Object Target;
             public Object AppliedAsset;
@@ -65,7 +71,7 @@ namespace AlicizaX.Resource.Runtime
 
         private struct RegisteredTargetSlot
         {
-            public int TargetComponentId;
+            public UnityObjectIdValue TargetComponentId;
             public int OwnerId;
             public uint OwnerGeneration;
             public int NextByOwner;
@@ -76,9 +82,9 @@ namespace AlicizaX.Resource.Runtime
         private readonly struct OwnerSlotKey : IEquatable<OwnerSlotKey>
         {
             public readonly int OwnerId;
-            public readonly long SlotKey;
+            public readonly ResourceBindingSlotKey SlotKey;
 
-            public OwnerSlotKey(int ownerId, long slotKey)
+            public OwnerSlotKey(int ownerId, ResourceBindingSlotKey slotKey)
             {
                 OwnerId = ownerId;
                 SlotKey = slotKey;
@@ -86,7 +92,7 @@ namespace AlicizaX.Resource.Runtime
 
             public bool Equals(OwnerSlotKey other)
             {
-                return OwnerId == other.OwnerId && SlotKey == other.SlotKey;
+                return OwnerId == other.OwnerId && SlotKey.Equals(other.SlotKey);
             }
 
             public override bool Equals(object obj)
@@ -187,7 +193,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingOwner;
             }
 
-            int gameObjectId = UnityObjectId.Get(owner.gameObject);
+            UnityObjectIdValue gameObjectId = UnityObjectId.Get(owner.gameObject);
             if (_ownerIndexByGameObjectId.TryGetValue(gameObjectId, out int existingIndex))
             {
                 ref OwnerSlot existing = ref GetOwnerSlotRef(existingIndex);
@@ -288,7 +294,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            int targetComponentId = UnityObjectId.Get(target);
+            UnityObjectIdValue targetComponentId = UnityObjectId.Get(target);
             ref OwnerSlot ownerSlot = ref GetOwnerSlotRef(ownerIndex);
             if (_ownerByTargetComponentId.TryGetValue(targetComponentId, out TargetOwnerEntry existingEntry))
             {
@@ -327,7 +333,7 @@ namespace AlicizaX.Resource.Runtime
                 return ResourceBindStatus.MissingTarget;
             }
 
-            int targetComponentId = UnityObjectId.Get(target);
+            UnityObjectIdValue targetComponentId = UnityObjectId.Get(target);
             if (_ownerByTargetComponentId.TryGetValue(targetComponentId, out TargetOwnerEntry entry) &&
                 entry.OwnerId == owner.OwnerId &&
                 entry.OwnerGeneration == owner.Generation)
@@ -538,7 +544,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             ref OwnerSlot ownerSlot = ref GetOwnerSlotRef(ownerIndex);
-            long slotKey = BuildSlotKey(ownerSlot.GameObjectId, ResourceBindingSlotType.PrefabSource, 0);
+            ResourceBindingSlotKey slotKey = BuildSlotKey(ownerSlot.GameObjectId, ResourceBindingSlotType.PrefabSource, 0);
             OwnerSlotKey key = new OwnerSlotKey(ownerSlot.OwnerId, slotKey);
             if (!_bindingIndexByOwnerSlot.TryGetValue(key, out int bindingIndex))
             {
@@ -651,7 +657,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             ResourceBindStatus reserveStatus = ReserveBindingRequest(ownerIndex, target, slotType, out int ownerId, out uint ownerGeneration,
-                out int targetComponentId, out int targetGameObjectId, out long slotKey, out uint requestVersion);
+                out UnityObjectIdValue targetComponentId, out UnityObjectIdValue targetGameObjectId, out ResourceBindingSlotKey slotKey, out uint requestVersion);
             if (reserveStatus != ResourceBindStatus.Success)
             {
                 return reserveStatus;
@@ -760,7 +766,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             ref OwnerSlot ownerSlot = ref GetOwnerSlotRef(ownerIndex);
-            long slotKey = BuildSlotKey(UnityObjectId.Get(target), slotType, 0);
+            ResourceBindingSlotKey slotKey = BuildSlotKey(UnityObjectId.Get(target), slotType, 0);
             OwnerSlotKey ownerSlotKey = new OwnerSlotKey(ownerSlot.OwnerId, slotKey);
             if (!_bindingIndexByOwnerSlot.TryGetValue(ownerSlotKey, out int bindingIndex))
             {
@@ -872,7 +878,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             ref OwnerSlot ownerSlot = ref GetOwnerSlotRef(ownerIndex);
-            long slotKey = BuildSlotKey(UnityObjectId.Get(target), slotType, 0);
+            ResourceBindingSlotKey slotKey = BuildSlotKey(UnityObjectId.Get(target), slotType, 0);
             OwnerSlotKey ownerSlotKey = new OwnerSlotKey(ownerSlot.OwnerId, slotKey);
             if (!_bindingIndexByOwnerSlot.TryGetValue(ownerSlotKey, out int bindingIndex))
             {
@@ -960,7 +966,7 @@ namespace AlicizaX.Resource.Runtime
             }
 
             ResourceBindStatus reserveStatus = ReserveBindingRequest(ownerIndex, target, slotType, out int ownerId, out uint ownerGeneration,
-                out int targetComponentId, out int targetGameObjectId, out long slotKey, out uint requestVersion);
+                out UnityObjectIdValue targetComponentId, out UnityObjectIdValue targetGameObjectId, out ResourceBindingSlotKey slotKey, out uint requestVersion);
             if (reserveStatus != ResourceBindStatus.Success)
             {
                 return reserveStatus;
@@ -1006,13 +1012,13 @@ namespace AlicizaX.Resource.Runtime
         }
 
         private ResourceBindStatus ReserveBindingRequest(int ownerIndex, Component target, ResourceBindingSlotType slotType,
-            out int ownerId, out uint ownerGeneration, out int targetComponentId, out int targetGameObjectId, out long slotKey, out uint requestVersion)
+            out int ownerId, out uint ownerGeneration, out UnityObjectIdValue targetComponentId, out UnityObjectIdValue targetGameObjectId, out ResourceBindingSlotKey slotKey, out uint requestVersion)
         {
             ownerId = 0;
             ownerGeneration = 0;
             targetComponentId = 0;
             targetGameObjectId = 0;
-            slotKey = 0;
+            slotKey = default;
             requestVersion = 0;
 
             if (target == null || target.gameObject == null)
@@ -1050,7 +1056,7 @@ namespace AlicizaX.Resource.Runtime
             return ResourceBindStatus.Success;
         }
 
-        private void CancelReservedBindingRequest(int ownerId, uint ownerGeneration, long slotKey, uint requestVersion)
+        private void CancelReservedBindingRequest(int ownerId, uint ownerGeneration, ResourceBindingSlotKey slotKey, uint requestVersion)
         {
             OwnerSlotKey ownerSlotKey = new OwnerSlotKey(ownerId, slotKey);
             if (!_bindingIndexByOwnerSlot.TryGetValue(ownerSlotKey, out int bindingIndex))
@@ -1082,7 +1088,7 @@ namespace AlicizaX.Resource.Runtime
             FreeBindingSlot(bindingIndex);
         }
 
-        private void RemoveRegisteredTargetSlot(int ownerId, uint ownerGeneration, int targetComponentId)
+        private void RemoveRegisteredTargetSlot(int ownerId, uint ownerGeneration, UnityObjectIdValue targetComponentId)
         {
             int ownerIndex = ownerId - 1;
             if (!IsValidOwnerIndex(ownerIndex))
@@ -1163,7 +1169,7 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private bool IsBindingRequestCurrent(int ownerId, uint ownerGeneration, int targetComponentId, int targetGameObjectId, long slotKey, uint requestVersion, Component target)
+        private bool IsBindingRequestCurrent(int ownerId, uint ownerGeneration, UnityObjectIdValue targetComponentId, UnityObjectIdValue targetGameObjectId, ResourceBindingSlotKey slotKey, uint requestVersion, Component target)
         {
             if (_isShutdown || target == null || UnityObjectId.Get(target) != targetComponentId)
             {
@@ -1345,9 +1351,9 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private static long BuildSlotKey(int targetComponentId, ResourceBindingSlotType slotType, ushort subIndex)
+        private static ResourceBindingSlotKey BuildSlotKey(UnityObjectIdValue targetComponentId, ResourceBindingSlotType slotType, ushort subIndex)
         {
-            return ((long)(uint)targetComponentId << 32) | ((long)slotType << 16) | subIndex;
+            return new ResourceBindingSlotKey(targetComponentId, slotType, subIndex);
         }
 
         private static ResourceLeaseOptions ToLeaseOptions(ResourceBindingOptions options)

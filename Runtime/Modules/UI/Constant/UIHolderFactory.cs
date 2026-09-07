@@ -140,6 +140,12 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
+            if (!holder.EnsureBackendReady())
+            {
+                DestroyLoadedObject(holderObject);
+                return false;
+            }
+
             meta.View.BindUIHolder(holder, owner);
             meta.View.SetDestroyHolderOnDispose(true);
             return true;

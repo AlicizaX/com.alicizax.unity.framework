@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using AlicizaX.UI.Runtime;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -10,6 +11,23 @@ namespace AlicizaX.UI.Editor
     {
         [MenuItem("GameObject/UI生成/绑定", priority = -1000)]
         public static void UIGenerateBind()
+        {
+            GenerateSelected(null);
+        }
+
+        [MenuItem("GameObject/UI生成/UGUI绑定", priority = -999)]
+        public static void UIGenerateUGUIBind()
+        {
+            GenerateSelected(UIBackend.UGUI);
+        }
+
+        [MenuItem("GameObject/UI生成/UI Toolkit绑定", priority = -998)]
+        public static void UIGenerateUIToolkitBind()
+        {
+            GenerateSelected(UIBackend.UIToolkit);
+        }
+
+        private static void GenerateSelected(UIBackend? forcedBackend)
         {
             GameObject selectedObject = Selection.gameObjects.FirstOrDefault();
             if (selectedObject == null)
@@ -29,7 +47,7 @@ namespace AlicizaX.UI.Editor
             {
                 if (CheckCanGenerate(selectedObject, config))
                 {
-                    UIScriptGeneratorHelper.GenerateUIBindScript(selectedObject, config);
+                    UIScriptGeneratorHelper.GenerateUIBindScript(selectedObject, config, forcedBackend);
                     return;
                 }
             }

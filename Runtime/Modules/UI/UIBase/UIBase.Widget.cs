@@ -3,6 +3,7 @@ using System.Threading;
 using AlicizaX;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -119,6 +120,44 @@ namespace AlicizaX.UI.Runtime
                 });
         }
 
+        internal UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, VisualElement parent, bool visible)
+        {
+            return CreateWidgetCoreAsync(
+                metadata,
+                visible,
+                async (meta, cts) =>
+                {
+                    await UIHolderFactory.CreateUIResourceAsync(meta, Holder.transform, cts.Token, this);
+                    if (meta.View?.Holder is not UIToolkitHolderBase toolkitHolder)
+                    {
+                        Log.Error("UI Toolkit widget holder is required: {0}", meta.View?.GetType().Name);
+                        return false;
+                    }
+
+                    toolkitHolder.AttachTo(parent);
+                    return true;
+                });
+        }
+
+        internal UIBase CreateWidgetUISync(UIMetadata metadata, VisualElement parent, bool visible)
+        {
+            return CreateWidgetCoreSync(
+                metadata,
+                visible,
+                meta =>
+                {
+                    UIHolderFactory.CreateUIResourceSync(meta, Holder.transform, this);
+                    if (meta.View?.Holder is not UIToolkitHolderBase toolkitHolder)
+                    {
+                        Log.Error("UI Toolkit widget holder is required: {0}", meta.View?.GetType().Name);
+                        return false;
+                    }
+
+                    toolkitHolder.AttachTo(parent);
+                    return true;
+                });
+        }
+
         #region CreateWidget
 
         #region Async
@@ -135,6 +174,12 @@ namespace AlicizaX.UI.Runtime
         }
 
         protected async UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true) where T : UIBase
+        {
+            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
+            return (T)await CreateWidgetUIAsync(metadata, parent, visible);
+        }
+
+        protected async UniTask<T> CreateWidgetAsync<T>(VisualElement parent, bool visible = true) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
             return (T)await CreateWidgetUIAsync(metadata, parent, visible);
@@ -173,6 +218,12 @@ namespace AlicizaX.UI.Runtime
         }
 
         protected T CreateWidgetSync<T>(Transform parent, bool visible = true) where T : UIBase
+        {
+            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
+            return (T)CreateWidgetUISync(metadata, parent, visible);
+        }
+
+        protected T CreateWidgetSync<T>(VisualElement parent, bool visible = true) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
             return (T)CreateWidgetUISync(metadata, parent, visible);

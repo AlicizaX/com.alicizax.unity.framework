@@ -3,6 +3,12 @@ using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
+    public enum UIBackend : byte
+    {
+        UGUI = 0,
+        UIToolkit = 1,
+    }
+
     [AttributeUsage(AttributeTargets.Class)]
     public class WindowAttribute : Attribute
     {
@@ -41,11 +47,13 @@ namespace AlicizaX.UI.Runtime
     {
         public readonly string ResLocation;
         public readonly EUIResLoadType ResLoadType;
+        public readonly UIBackend Backend;
 
-        public UIResAttribute(string location, EUIResLoadType loadType)
+        public UIResAttribute(string location, EUIResLoadType loadType, UIBackend backend = UIBackend.UGUI)
         {
             ResLocation = location;
             ResLoadType = loadType;
+            Backend = backend;
         }
     }
 
