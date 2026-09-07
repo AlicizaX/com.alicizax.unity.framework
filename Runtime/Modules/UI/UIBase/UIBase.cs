@@ -12,7 +12,7 @@ using Object = UnityEngine.Object;
 
 namespace AlicizaX.UI.Runtime
 {
-    public abstract partial class UIBase : IDisposable
+    public abstract partial class UIBase
     {
         protected UIBase()
         {
@@ -39,7 +39,6 @@ namespace AlicizaX.UI.Runtime
         protected System.Object[] UserDatas => _userDatas;
 
         private RuntimeTypeHandle _runtimeTypeHandle;
-        private int _uiTypeId = -1;
         private string _cachedTypeName;
         private bool _destroyHolderOnDispose = true;
 
@@ -92,34 +91,12 @@ namespace AlicizaX.UI.Runtime
         {
         }
 
-        public void Dispose()
-        {
-            Dispose(true);
-        }
-
-        internal int UITypeId
-        {
-            get
-            {
-                if (_uiTypeId < 0 && UIMetaRegistry.TryGet(RuntimeTypeHandler, out UIMetaRegistry.UIMetaInfo metaInfo))
-                {
-                    _uiTypeId = metaInfo.TypeId;
-                }
-
-                return _uiTypeId;
-            }
-        }
-
-        private void Dispose(bool disposing)
+        private void DisposeResources()
         {
             if (_disposed) return;
 
-            if (disposing)
-            {
-                _canvas = null;
-                _raycaster = null;
-            }
-
+            _canvas = null;
+            _raycaster = null;
             _userDatas = null;
 
             UIHolderObjectBase holder = Holder;
@@ -172,7 +149,12 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            Holder.SetFrameworkVisible(visible);
+            int layer = visible ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+            GameObject go = Holder.gameObject;
+            if (go.layer != layer)
+            {
+                go.layer = layer;
+            }
         }
 
         internal void SetCanvasEnabled(bool value)
@@ -183,20 +165,13 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal void EnterCacheVisual()
-        {
-            if (Holder?.Backend == UIBackend.UIToolkit)
-                Holder.EnterFrameworkCache();
-            else
-                SetCanvasEnabled(false);
-        }
+        internal void EnterCacheVisual() => SetCanvasEnabled(false);
+        internal void ExitCacheVisual() => SetCanvasEnabled(true);
 
-        internal void ExitCacheVisual()
+        internal void InternalEnterCache()
         {
-            if (Holder?.Backend == UIBackend.UIToolkit)
-                Holder.ExitFrameworkCache();
-            else
-                SetCanvasEnabled(true);
+            if (UIStateMachine.ValidateTransition(CachedTypeName, _state, UIState.Cached))
+                SetState(UIState.Cached);
         }
 
         internal void ClearUserData()
@@ -225,18 +200,10 @@ namespace AlicizaX.UI.Runtime
 
         private bool Interactable
         {
-            get => Holder?.Backend == UIBackend.UIToolkit
-                ? Holder.FrameworkVisible
-                : _raycaster != null && _raycaster.enabled;
+            get => _raycaster != null && _raycaster.enabled;
 
             set
             {
-                if (Holder?.Backend == UIBackend.UIToolkit)
-                {
-                    Holder.SetFrameworkInteractable(value);
-                    return;
-                }
-
                 if (_raycaster != null && _raycaster.enabled != value)
                 {
                     _raycaster.enabled = value;
@@ -246,24 +213,19 @@ namespace AlicizaX.UI.Runtime
 
         internal int Depth
         {
-            get => Holder?.Backend == UIBackend.UIToolkit
-                ? Holder.FrameworkSortingOrder
-                : _canvas != null ? _canvas.sortingOrder : 0;
+            get => _canvas != null ? _canvas.sortingOrder : 0;
 
             set
             {
-                if (Holder?.Backend == UIBackend.UIToolkit)
-                {
-                    Holder.SetFrameworkDepth(value);
-                    SyncChildDepth();
+                if (_canvas == null)
                     return;
-                }
 
-                if (_canvas != null && _canvas.sortingOrder != value)
-                {
+                bool changed = !_canvas.overrideSorting || _canvas.sortingOrder != value;
+                _canvas.overrideSorting = true;
+                if (_canvas.sortingOrder != value)
                     _canvas.sortingOrder = value;
+                if (changed)
                     SyncChildDepth();
-                }
             }
         }
 
@@ -298,12 +260,8 @@ namespace AlicizaX.UI.Runtime
 
         internal void PauseEventListeners()
         {
-            if (!_eventsRegistered)
-            {
-                return;
-            }
-
-            ReleaseEventListenerProxy();
+            if (_eventsRegistered)
+                ReleaseEventListenerProxy();
         }
 
         #endregion
@@ -332,38 +290,29 @@ namespace AlicizaX.UI.Runtime
         protected void BindHolderCommon(UIHolderObjectBase holder, bool overrideSorting, bool stretchToParent)
         {
             Holder = holder;
-            if (!Holder.EnsureBackendReady())
-            {
-                return;
-            }
             _canvas = Holder.transform.GetComponent<Canvas>();
-            if (_canvas != null)
-            {
-                _canvas.overrideSorting = overrideSorting;
-            }
+            if (_canvas != null && overrideSorting)
+                _canvas.overrideSorting = true;
 
-            _visible = Holder.FrameworkVisible;
+            _visible = Holder.gameObject.layer == UIComponent.UIShowLayer;
 
             _raycaster = Holder.transform.GetComponent<GraphicRaycaster>();
             if (stretchToParent)
             {
                 RectTransform rectTransform = Holder.RectTransform;
-                if (rectTransform != null)
-                {
-                    rectTransform.localPosition = Vector3.zero;
-                    rectTransform.pivot = new Vector2(0.5f, 0.5f);
-                    rectTransform.anchorMin = Vector2.zero;
-                    rectTransform.anchorMax = Vector2.one;
-                    rectTransform.offsetMin = Vector2.zero;
-                    rectTransform.offsetMax = Vector2.zero;
-                    rectTransform.localScale = Vector3.one;
-                }
+                rectTransform.localPosition = Vector3.zero;
+                rectTransform.pivot = new Vector2(0.5f, 0.5f);
+                rectTransform.anchorMin = Vector2.zero;
+                rectTransform.anchorMax = Vector2.one;
+                rectTransform.offsetMin = Vector2.zero;
+                rectTransform.offsetMax = Vector2.zero;
+                rectTransform.localScale = Vector3.one;
             }
 
             SetState(UIState.Loaded);
         }
 
-        internal async UniTask<bool> InternalInitlized(UIMetadata metadata, int operationVersion)
+        internal async UniTask<bool> InternalInitlized()
         {
             if (!TryBeginInitialize())
                 return false;
@@ -379,14 +328,10 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!IsInitializeStillValid(metadata, operationVersion))
-                return false;
-
-            CompleteInitialize();
             return true;
         }
 
-        internal bool InternalInitlizedSync(UIMetadata metadata, int operationVersion)
+        internal bool InternalInitlizedSync()
         {
             if (!TryBeginInitialize())
                 return false;
@@ -402,24 +347,15 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            if (!IsInitializeStillValid(metadata, operationVersion))
-                return false;
-
-            CompleteInitialize();
             return true;
         }
 
         internal bool InternalOpen()
         {
-            return InternalOpenCore(null, -1);
+            return InternalOpenCore();
         }
 
-        internal bool InternalOpen(UIMetadata metadata, int expectedOperationVersion)
-        {
-            return InternalOpenCore(metadata, expectedOperationVersion);
-        }
-
-        private bool InternalOpenCore(UIMetadata metadata, int expectedOperationVersion)
+        private bool InternalOpenCore()
         {
             if (!TryBeginOpen(out bool skippedResult))
             {
@@ -433,13 +369,7 @@ namespace AlicizaX.UI.Runtime
 
             OnOpen();
 
-            if (!IsStillInState(UIState.Opening, metadata, expectedOperationVersion))
-            {
-                RollbackOpeningState();
-                return false;
-            }
-
-            if (!CompleteOpenTransition(metadata, expectedOperationVersion))
+            if (!CompleteOpenTransition())
             {
                 return false;
             }
@@ -456,30 +386,13 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal void InternalRefreshAfterInitialize()
-        {
-            if (_state == UIState.Initialized
-                || _state == UIState.Opening
-                || _state == UIState.Opened
-                || _state == UIState.Closing
-                || _state == UIState.Closed)
-            {
-                OnRefresh();
-            }
-        }
-
         internal UniTask<bool> InternalClose(bool skipTransition = false)
         {
-            return InternalCloseCore(skipTransition, null, -1);
-        }
-
-        internal UniTask<bool> InternalClose(UIMetadata metadata, int expectedOperationVersion, bool skipTransition = false)
-        {
-            return InternalCloseCore(skipTransition, metadata, expectedOperationVersion);
+            return InternalCloseCore(skipTransition);
         }
 
 
-        private async UniTask<bool> InternalCloseCore(bool skipTransition, UIMetadata metadata, int expectedOperationVersion)
+        private async UniTask<bool> InternalCloseCore(bool skipTransition)
         {
             if (_state == UIState.Closed)
             {
@@ -499,21 +412,18 @@ namespace AlicizaX.UI.Runtime
 
             OnClose();
 
-            if (!IsStillInState(UIState.Closing, metadata, expectedOperationVersion))
-            {
-                return false;
-            }
-
-            BeginViewTransitionTracking();
             bool closed = false;
+            UniTaskCompletionSource completion = null;
             try
             {
-                if (skipTransition)
+                if (skipTransition || Holder == null || !Holder.HasTransition)
                 {
-                    Holder?.ApplyClosedTransitionState();
+                    if (skipTransition)
+                        Holder?.ApplyClosedTransitionState();
                 }
-                else if (Holder != null)
+                else
                 {
+                    completion = BeginViewTransitionTracking();
                     await Holder.PlayCloseTransitionAsync();
                 }
             }
@@ -528,11 +438,8 @@ namespace AlicizaX.UI.Runtime
             finally
             {
                 if (_state == UIState.Closing)
-                {
                     closed = CompleteCloseTransition();
-                }
-
-                CompleteViewTransitionTracking();
+                CompleteViewTransitionTracking(completion);
             }
 
             return closed;
@@ -563,7 +470,7 @@ namespace AlicizaX.UI.Runtime
             await DestroyAllChildren();
             OnDestroy();
             ReleaseEventListenerProxy();
-            Dispose();
+            DisposeResources();
             SetState(UIState.Destroyed);
         }
 
@@ -580,7 +487,7 @@ namespace AlicizaX.UI.Runtime
             DestroyAllChildrenImmediate();
             OnDestroy();
             ReleaseEventListenerProxy();
-            Dispose();
+            DisposeResources();
             SetState(UIState.Destroyed);
         }
 
@@ -597,16 +504,6 @@ namespace AlicizaX.UI.Runtime
             SetState(UIState.Initialized);
             Holder.OnWindowInitEvent?.Invoke();
             return true;
-        }
-
-        private bool IsInitializeStillValid(UIMetadata metadata, int operationVersion)
-        {
-            return metadata != null && metadata.IsOperationCurrent(operationVersion);
-        }
-
-        private void CompleteInitialize()
-        {
-            RegisterEventListenersIfNeeded();
         }
 
         private bool TryBeginOpen(out bool skippedResult)
@@ -629,9 +526,9 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private bool CompleteOpenTransition(UIMetadata metadata, int expectedOperationVersion)
+        private bool CompleteOpenTransition()
         {
-            if (!IsStillInState(UIState.Opening, metadata, expectedOperationVersion))
+            if (_state != UIState.Opening)
                 return false;
 
             SetState(UIState.Opened);
@@ -665,54 +562,51 @@ namespace AlicizaX.UI.Runtime
                 return false;
 
             Visible = false;
+            PauseEventListeners();
             SetState(UIState.Closed);
             Holder.OnWindowAfterClosedEvent?.Invoke();
-            PauseEventListeners();
             return true;
         }
 
         private void InterruptViewTransition()
         {
             Holder?.StopTransition();
-            CompleteViewTransitionTracking();
-        }
-
-
-        private bool IsStillInState(UIState state, UIMetadata metadata, int expectedOperationVersion)
-        {
-            if (_state != state)
-            {
-                return false;
-            }
-
-            if (expectedOperationVersion < 0 || metadata == null)
-            {
-                return true;
-            }
-
-            return metadata.IsOperationCurrent(expectedOperationVersion);
-        }
-
-        private void BeginViewTransitionTracking()
-        {
-            CompleteViewTransitionTracking();
-            _viewTransitionCompletion = new UniTaskCompletionSource();
-        }
-
-        private void CompleteViewTransitionTracking()
-        {
             UniTaskCompletionSource completion = _viewTransitionCompletion;
             _viewTransitionCompletion = null;
             completion?.TrySetResult();
         }
 
-        private void StartOpenTransitionInBackground()
+
+        private UniTaskCompletionSource BeginViewTransitionTracking()
         {
-            BeginViewTransitionTracking();
-            PlayOpenTransitionInBackgroundAsync().Forget();
+            InterruptViewTransition();
+            if (Holder == null || !Holder.HasTransition)
+                return null;
+
+            UniTaskCompletionSource completion = new UniTaskCompletionSource();
+            _viewTransitionCompletion = completion;
+            return completion;
         }
 
-        private async UniTaskVoid PlayOpenTransitionInBackgroundAsync()
+        private void CompleteViewTransitionTracking(UniTaskCompletionSource completion)
+        {
+            if (completion == null)
+                return;
+            if (ReferenceEquals(_viewTransitionCompletion, completion))
+                _viewTransitionCompletion = null;
+            completion.TrySetResult();
+        }
+
+        private void StartOpenTransitionInBackground()
+        {
+            if (Holder == null || !Holder.HasTransition)
+                return;
+
+            UniTaskCompletionSource completion = BeginViewTransitionTracking();
+            PlayOpenTransitionInBackgroundAsync(completion).Forget();
+        }
+
+        private async UniTaskVoid PlayOpenTransitionInBackgroundAsync(UniTaskCompletionSource completion)
         {
             try
             {
@@ -728,7 +622,7 @@ namespace AlicizaX.UI.Runtime
             }
             finally
             {
-                CompleteViewTransitionTracking();
+                CompleteViewTransitionTracking(completion);
             }
         }
 
@@ -740,28 +634,5 @@ namespace AlicizaX.UI.Runtime
 #endif
         }
 
-        private void RollbackOpeningState()
-        {
-            if (_state != UIState.Opening)
-            {
-                return;
-            }
-
-            InterruptViewTransition();
-            try
-            {
-                Holder?.ApplyClosedTransitionState();
-            }
-            catch (Exception exception)
-            {
-                Log.Error("[UI] Rollback opening state failed for {0}.", CachedTypeName);
-                Log.Exception(exception);
-            }
-
-            Visible = false;
-            Interactable = false;
-            SetState(UIState.Initialized);
-            PauseEventListeners();
-        }
     }
 }

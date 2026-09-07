@@ -36,7 +36,7 @@ namespace AlicizaX.UI.Runtime
                 UIBase view = metadata?.View;
                 if (view != null && UIStateMachine.IsDisplayActive(view.State))
                 {
-                    metadata.CancelAsyncOperations();
+                    metadata.CancelResourceLoad();
                     await view.InternalClose(skipTransition: true);
                 }
 
@@ -70,8 +70,8 @@ namespace AlicizaX.UI.Runtime
         {
             for (int i = 0; i < _childCount; i++)
             {
-                UIBase view = _children[i].View;
-                if (view.State == UIState.Opened)
+                UIBase view = _children[i]?.View;
+                if (view != null && view.State == UIState.Opened)
                 {
                     view.Visible = value;
                 }
@@ -96,28 +96,44 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible)
+        internal async UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible)
         {
-            return CreateWidgetCoreAsync(
-                metadata,
-                visible,
-                async (meta, cts) =>
-                {
-                    await UIHolderFactory.CreateUIResourceAsync(meta, parent, cts.Token, this);
-                    return true;
-                });
+            if (!TryBeginWidgetCreate(metadata))
+                return null;
+
+            CancellationTokenSource loadCts = metadata.BeginResourceLoad();
+            UIBase widget = null;
+            try
+            {
+                await UIHolderFactory.CreateUIResourceAsync(metadata, parent, loadCts.Token, this);
+                widget = await FinishWidgetCreateAsync(metadata, visible);
+                return widget;
+            }
+            finally
+            {
+                metadata.EndResourceLoad(loadCts);
+                if (widget == null)
+                    await FailWidgetCreateAsync(metadata);
+            }
         }
 
         internal UIBase CreateWidgetUISync(UIMetadata metadata, Transform parent, bool visible)
         {
-            return CreateWidgetCoreSync(
-                metadata,
-                visible,
-                meta =>
-                {
-                    UIHolderFactory.CreateUIResourceSync(meta, parent, this);
-                    return true;
-                });
+            if (!TryBeginWidgetCreate(metadata))
+                return null;
+
+            UIBase widget = null;
+            try
+            {
+                UIHolderFactory.CreateUIResourceSync(metadata, parent, this);
+                widget = FinishWidgetCreateSync(metadata, visible);
+                return widget;
+            }
+            finally
+            {
+                if (widget == null)
+                    FailWidgetCreateImmediate(metadata);
+            }
         }
 
         internal UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, VisualElement parent, bool visible)
@@ -188,17 +204,22 @@ namespace AlicizaX.UI.Runtime
         protected async UniTask<T> CreateWidgetAsync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = false) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
-            UIBase view = await CreateWidgetCoreAsync(
-                metadata,
-                visible: true,
-                (meta, _) =>
-                {
-                    UIBase widget = meta.View;
-                    widget.BindUIHolder(holder, this);
-                    widget.SetDestroyHolderOnDispose(destroyHolderOnDispose);
-                    return UniTask.FromResult(true);
-                });
-            return (T)view;
+            if (!TryBeginWidgetCreate(metadata))
+                return null;
+
+            UIBase widget = null;
+            try
+            {
+                metadata.View.BindUIHolder(holder, this);
+                metadata.View.SetDestroyHolderOnDispose(destroyHolderOnDispose);
+                widget = await FinishWidgetCreateAsync(metadata, visible: true);
+                return (T)widget;
+            }
+            finally
+            {
+                if (widget == null)
+                    await FailWidgetCreateAsync(metadata);
+            }
         }
 
         #endregion
@@ -232,150 +253,74 @@ namespace AlicizaX.UI.Runtime
         protected T CreateWidgetSync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = false) where T : UIBase
         {
             UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
-            return (T)CreateWidgetCoreSync(
-                metadata,
-                visible: true,
-                meta =>
-                {
-                    UIBase widget = meta.View;
-                    widget.BindUIHolder(holder, this);
-                    widget.SetDestroyHolderOnDispose(destroyHolderOnDispose);
-                    return true;
-                });
+            if (!TryBeginWidgetCreate(metadata))
+                return null;
+
+            UIBase widget = null;
+            try
+            {
+                metadata.View.BindUIHolder(holder, this);
+                metadata.View.SetDestroyHolderOnDispose(destroyHolderOnDispose);
+                widget = FinishWidgetCreateSync(metadata, visible: true);
+                return (T)widget;
+            }
+            finally
+            {
+                if (widget == null)
+                    FailWidgetCreateImmediate(metadata);
+            }
         }
 
         #endregion
 
         #endregion
 
-        // Widget 轻量路径：create → load → init → open；仅用 generation + CTS，不进入 Window Showing 态
-        private async UniTask<UIBase> CreateWidgetCoreAsync(
-            UIMetadata metadata,
-            bool visible,
-            Func<UIMetadata, CancellationTokenSource, UniTask<bool>> resourceStep)
+        private bool TryBeginWidgetCreate(UIMetadata metadata)
         {
             if (metadata == null)
-            {
-                return null;
-            }
+                return false;
 
             metadata.CreateUI();
-            if (metadata.View == null)
-            {
-                await metadata.DisposeAsync();
-                UIMetadataFactory.ReturnToPool(metadata);
-                return null;
-            }
+            if (metadata.View != null)
+                return true;
 
-            int createVersion = metadata.BeginWidgetCreate(out CancellationTokenSource loadCts);
-            try
-            {
-                if (!await resourceStep(metadata, loadCts)
-                    || !IsWidgetCreateStillValid(metadata, createVersion))
-                {
-                    await FailWidgetCreateAsync(metadata, createVersion);
-                    return null;
-                }
-
-                AddWidget(metadata);
-                if (!await metadata.View.InternalInitlized(metadata, createVersion)
-                    || !metadata.IsOperationCurrent(createVersion)
-                    || State == UIState.Destroying
-                    || State == UIState.Destroyed)
-                {
-                    await FailWidgetCreateAsync(metadata, createVersion);
-                    return null;
-                }
-
-                metadata.View.Visible = visible;
-                if (!visible)
-                {
-                    return metadata.View;
-                }
-
-                if (metadata.View.InternalOpen(metadata, createVersion)
-                    && metadata.IsOperationCurrent(createVersion))
-                {
-                    return metadata.View;
-                }
-
-                await FailWidgetCreateAsync(metadata, createVersion);
-                return null;
-            }
-            catch
-            {
-                await FailWidgetCreateAsync(metadata, createVersion);
-                throw;
-            }
-            finally
-            {
-                metadata.EndWidgetCreate(createVersion, loadCts);
-                loadCts.Dispose();
-            }
+            metadata.DisposeImmediate();
+            UIMetadataFactory.ReturnToPool(metadata);
+            return false;
         }
 
-        private UIBase CreateWidgetCoreSync(
-            UIMetadata metadata,
-            bool visible,
-            Func<UIMetadata, bool> resourceStep)
+        private async UniTask<UIBase> FinishWidgetCreateAsync(UIMetadata metadata, bool visible)
         {
-            if (metadata == null)
-            {
+            UIBase view = metadata.View;
+            if (!CanContinueWidgetCreate(metadata, view, UIState.Loaded))
                 return null;
-            }
 
-            metadata.CreateUI();
-            if (metadata.View == null)
-            {
-                metadata.DisposeImmediate();
-                UIMetadataFactory.ReturnToPool(metadata);
+            AddWidget(metadata);
+            if (!await view.InternalInitlized() || !CanContinueWidgetCreate(metadata, view, UIState.Initialized))
                 return null;
-            }
 
-            int createVersion = metadata.BeginWidgetCreate(out CancellationTokenSource loadCts);
-            try
-            {
-                if (!resourceStep(metadata) || !IsWidgetCreateStillValid(metadata, createVersion))
-                {
-                    FailWidgetCreateImmediate(metadata, createVersion);
-                    return null;
-                }
+            view.Visible = visible;
+            if (!visible)
+                return view;
 
-                AddWidget(metadata);
-                if (!metadata.View.InternalInitlizedSync(metadata, createVersion)
-                    || !metadata.IsOperationCurrent(createVersion)
-                    || State == UIState.Destroying
-                    || State == UIState.Destroyed)
-                {
-                    FailWidgetCreateImmediate(metadata, createVersion);
-                    return null;
-                }
+            return view.InternalOpen() ? view : null;
+        }
 
-                metadata.View.Visible = visible;
-                if (!visible)
-                {
-                    return metadata.View;
-                }
-
-                if (metadata.View.InternalOpen(metadata, createVersion)
-                    && metadata.IsOperationCurrent(createVersion))
-                {
-                    return metadata.View;
-                }
-
-                FailWidgetCreateImmediate(metadata, createVersion);
+        private UIBase FinishWidgetCreateSync(UIMetadata metadata, bool visible)
+        {
+            UIBase view = metadata.View;
+            if (!CanContinueWidgetCreate(metadata, view, UIState.Loaded))
                 return null;
-            }
-            catch
-            {
-                FailWidgetCreateImmediate(metadata, createVersion);
-                throw;
-            }
-            finally
-            {
-                metadata.EndWidgetCreate(createVersion, loadCts);
-                loadCts.Dispose();
-            }
+
+            AddWidget(metadata);
+            if (!view.InternalInitlizedSync() || !CanContinueWidgetCreate(metadata, view, UIState.Initialized))
+                return null;
+
+            view.Visible = visible;
+            if (!visible)
+                return view;
+
+            return view.InternalOpen() ? view : null;
         }
 
         private void AddWidget(UIMetadata meta)
@@ -391,34 +336,29 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private bool IsWidgetCreateStillValid(UIMetadata meta, int createVersion)
+        private bool CanContinueWidgetCreate(UIMetadata meta, UIBase widget, UIState expectedState)
         {
-            return meta != null
-                   && meta.IsOperationCurrent(createVersion)
-                   && State != UIState.Destroying
+            return State != UIState.Destroying
                    && State != UIState.Destroyed
-                   && meta.View != null
-                   && meta.State == UIState.Loaded;
+                   && ReferenceEquals(meta?.View, widget)
+                   && widget != null
+                   && widget.State == expectedState;
         }
 
-        private async UniTask FailWidgetCreateAsync(UIMetadata meta, int createVersion)
+        private async UniTask FailWidgetCreateAsync(UIMetadata meta)
         {
-            if (meta == null || !meta.IsOperationCurrent(createVersion))
-            {
+            if (meta == null)
                 return;
-            }
 
             RemoveChildMetadata(meta);
             await meta.DisposeAsync();
             UIMetadataFactory.ReturnToPool(meta);
         }
 
-        private void FailWidgetCreateImmediate(UIMetadata meta, int createVersion)
+        private void FailWidgetCreateImmediate(UIMetadata meta)
         {
-            if (meta == null || !meta.IsOperationCurrent(createVersion))
-            {
+            if (meta == null)
                 return;
-            }
 
             RemoveChildMetadata(meta);
             meta.DisposeImmediate();
@@ -436,7 +376,7 @@ namespace AlicizaX.UI.Runtime
 
             if (meta != null)
             {
-                meta.CancelAsyncOperations();
+                meta.CancelResourceLoad();
                 if (UIStateMachine.IsDisplayActive(widget.State))
                 {
                     await widget.InternalClose(skipTransition: true);

@@ -6,6 +6,60 @@ using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
 {
+    internal enum UIOperationKind : byte
+    {
+        Idle = 0,
+        Showing = 1,
+        Closing = 2,
+    }
+
+    internal enum UIRequestKind : byte
+    {
+        Show = 0,
+        Close = 1,
+    }
+
+    internal sealed class UIRequest : MemoryObject
+    {
+        public UIRequestKind Kind;
+        public object[] UserDatas;
+        public bool Force;
+        public bool SkipTransition;
+        public bool Cancelled;
+        public UniTaskCompletionSource<UIShowResult> ShowCompletion;
+        public UniTaskCompletionSource<bool> CloseCompletion;
+
+        public static UIRequest AcquireShow(object[] userDatas)
+        {
+            UIRequest request = MemoryPool.Acquire<UIRequest>();
+            request.Kind = UIRequestKind.Show;
+            request.UserDatas = userDatas;
+            request.ShowCompletion = new UniTaskCompletionSource<UIShowResult>();
+            return request;
+        }
+
+        public static UIRequest AcquireClose(bool force, bool skipTransition)
+        {
+            UIRequest request = MemoryPool.Acquire<UIRequest>();
+            request.Kind = UIRequestKind.Close;
+            request.Force = force;
+            request.SkipTransition = skipTransition;
+            request.CloseCompletion = new UniTaskCompletionSource<bool>();
+            return request;
+        }
+
+        public override void Clear()
+        {
+            Kind = UIRequestKind.Show;
+            UserDatas = null;
+            Force = false;
+            SkipTransition = false;
+            Cancelled = false;
+            ShowCompletion = null;
+            CloseCompletion = null;
+        }
+    }
+
     internal sealed class UIMetadata
     {
         public UIBase View { get; private set; }
@@ -14,271 +68,261 @@ namespace AlicizaX.UI.Runtime
         public readonly Type UILogicType;
         public readonly string UILogicTypeName;
         public readonly string UIHolderTypeName;
-        public bool InCache = false;
         public readonly bool IsValid;
+        internal ulong CacheTimerHandle;
+        internal int LastShowOrder;
 
-        private enum OperationKind : byte
-        {
-            Idle = 0,
-            Showing = 1,
-            Closing = 2,
-        }
+        private UIRequest _active;
+        private UIRequest _pendingShow;
+        private UIRequest _pendingClose;
+        private CancellationTokenSource _resourceLoadCancellation;
+        private UIOperationKind _operation;
+        private bool _processorRunning;
+        private bool _retainView;
 
-        private CancellationTokenSource _loadCancellationTokenSource;
-        private UniTaskCompletionSource<UIBase> _showCompletionSource;
-        private UniTaskCompletionSource<bool> _closeCompletionSource;
-        private System.Object[] _pendingShowUserDatas;
-        private bool _hasPendingShowUserDatas;
-        private int _operationVersion;
-        private OperationKind _operation;
-
-        public int OperationVersion => _operationVersion;
-        public bool ShowInProgress => _operation == OperationKind.Showing;
-        public bool CloseInProgress => _operation == OperationKind.Closing;
-
-        public bool IsOperationCurrent(int operationVersion)
-        {
-            return _operationVersion == operationVersion;
-        }
-
-        public UIState State
-        {
-            get
-            {
-                if (View == null) return UIState.Uninitialized;
-                return View.State;
-            }
-        }
+        public UIState State => View == null ? UIState.Uninitialized : View.State;
+        internal bool IsProcessing => _processorRunning;
+        internal bool IsShowing => _operation == UIOperationKind.Showing;
+        internal bool IsClosing => _operation == UIOperationKind.Closing;
+        internal bool HasPendingWork => _pendingShow != null || _pendingClose != null;
+        internal bool HasPendingClose => _pendingClose != null;
+        internal bool IsShowLoadCancelled => _active != null && _active.Kind == UIRequestKind.Show && _active.Cancelled;
+        internal bool ShouldRetainView => _retainView;
+        internal object[] LatestShowUserDatas => _active != null ? _active.UserDatas : _pendingShow?.UserDatas;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void CreateUI()
         {
-            if (View is null)
-            {
-                if (!UIStateMachine.ValidateTransition(UILogicTypeName, UIState.Uninitialized, UIState.CreatedUI))
-                    return;
-
-                View = (UIBase)Utility.InstanceFactory.CreateInstanceOptimized(UILogicType);
-                if (View == null)
-                {
-                    Log.Error("[UI] Failed to create UI instance: {0}", UILogicTypeName);
-                }
-            }
-        }
-
-        public bool BeginShowOperation(out int operationVersion, out CancellationTokenSource loadCts)
-        {
-            if (_operation != OperationKind.Idle)
-            {
-                operationVersion = -1;
-                loadCts = null;
-                return false;
-            }
-
-            _loadCancellationTokenSource?.Cancel();
-            loadCts = new CancellationTokenSource();
-            _loadCancellationTokenSource = loadCts;
-
-            CompleteShowOperation(null);
-            operationVersion = ++_operationVersion;
-            _operation = OperationKind.Showing;
-            return true;
-        }
-
-        public bool BeginCloseOperation(out int operationVersion)
-        {
-            if (_operation == OperationKind.Closing)
-            {
-                operationVersion = -1;
-                return false;
-            }
-
-            _loadCancellationTokenSource?.Cancel();
-            _loadCancellationTokenSource = null;
-            operationVersion = ++_operationVersion;
-            _operation = OperationKind.Closing;
-
-            CompleteShowOperation(null, clearPendingUserDatas: true);
-            _closeCompletionSource ??= new UniTaskCompletionSource<bool>();
-            return true;
-        }
-
-        public void EndShowOperation(int operationVersion, CancellationTokenSource loadCts)
-        {
-            if (_operationVersion == operationVersion && _operation == OperationKind.Showing)
-            {
-                _operation = OperationKind.Idle;
-            }
-
-            if (ReferenceEquals(_loadCancellationTokenSource, loadCts))
-            {
-                _loadCancellationTokenSource = null;
-            }
-        }
-
-        public void EndCloseOperation(int operationVersion)
-        {
-            if (_operationVersion == operationVersion && _operation == OperationKind.Closing)
-            {
-                _operation = OperationKind.Idle;
-            }
-        }
-
-        public void CompleteCloseOperation(bool success)
-        {
-            UniTaskCompletionSource<bool> closeCompletionSource = _closeCompletionSource;
-            _closeCompletionSource = null;
-            closeCompletionSource?.TrySetResult(success);
-        }
-
-        public UniTask<bool> WaitForCloseOperationAsync()
-        {
-            if (_closeCompletionSource != null)
-            {
-                return _closeCompletionSource.Task;
-            }
-
-            if (_operation == OperationKind.Closing)
-            {
-                _closeCompletionSource = new UniTaskCompletionSource<bool>();
-                return _closeCompletionSource.Task;
-            }
-
-            return UniTask.FromResult(true);
-        }
-
-        public void CancelAsyncOperations()
-        {
-            _loadCancellationTokenSource?.Cancel();
-            _loadCancellationTokenSource = null;
-            _operationVersion++;
-            _operation = OperationKind.Idle;
-            CompleteShowOperation(null);
-            CompleteCloseOperation(false);
-        }
-
-        public void RequestCancelShowLoad()
-        {
-            if (_operation != OperationKind.Showing)
-            {
+            if (View != null)
                 return;
-            }
-
-            _loadCancellationTokenSource?.Cancel();
+            if (!UIStateMachine.ValidateTransition(UILogicTypeName, UIState.Uninitialized, UIState.CreatedUI))
+                return;
+            View = (UIBase)Utility.InstanceFactory.CreateInstanceOptimized(UILogicType);
+            if (View == null)
+                Log.Error("[UI] Failed to create UI instance: {0}", UILogicTypeName);
         }
 
-        public void RefreshLiveShowUserDatas(System.Object[] userDatas)
+        internal UniTask<UIShowResult> EnqueueShow(object[] userDatas)
         {
+            if (_operation == UIOperationKind.Showing && _active != null && !_active.Cancelled)
+            {
+                _active.UserDatas = userDatas;
+                RefreshLiveShowUserDatas(userDatas);
+                return _active.ShowCompletion.Task;
+            }
+
+            if (_pendingShow != null)
+            {
+                _pendingShow.UserDatas = userDatas;
+                View?.RefreshParams(userDatas);
+                return _pendingShow.ShowCompletion.Task;
+            }
+
+            _pendingShow = UIRequest.AcquireShow(userDatas);
+            View?.RefreshParams(userDatas);
+            return _pendingShow.ShowCompletion.Task;
+        }
+
+        internal UniTask<bool> EnqueueClose(bool force, bool skipTransition)
+        {
+            if (_operation == UIOperationKind.Showing && _active != null)
+            {
+                _active.Cancelled = true;
+                CancelResourceLoad();
+            }
+
+            if (_pendingClose != null)
+            {
+                _pendingClose.Force |= force;
+                _pendingClose.SkipTransition |= skipTransition;
+                return _pendingClose.CloseCompletion.Task;
+            }
+
+            _pendingClose = UIRequest.AcquireClose(force, skipTransition);
+            return _pendingClose.CloseCompletion.Task;
+        }
+
+        internal bool TryStartProcessor()
+        {
+            if (_processorRunning)
+                return false;
+
+            _processorRunning = true;
+            return true;
+        }
+
+        internal bool TryDequeueClose(out UIRequest request)
+        {
+            request = _pendingClose;
+            if (request == null)
+                return false;
+
+            _pendingClose = null;
+            _active = request;
+            _operation = UIOperationKind.Closing;
+            return true;
+        }
+
+        internal bool TryDequeueShow(out UIRequest request)
+        {
+            request = _pendingShow;
+            if (request == null)
+                return false;
+
+            _pendingShow = null;
+            request.Cancelled = false;
+            _active = request;
+            _operation = UIOperationKind.Showing;
+            return true;
+        }
+
+        internal void CompleteRequest(UIRequest request, UIShowResult result)
+        {
+            if (request == null)
+                return;
+
+            request.ShowCompletion?.TrySetResult(result);
+            FinishActive(request);
+            MemoryPool.Release(request);
+        }
+
+        internal void CompleteRequest(UIRequest request, bool closed)
+        {
+            if (request == null)
+                return;
+
+            request.CloseCompletion?.TrySetResult(closed);
+            FinishActive(request);
+            MemoryPool.Release(request);
+        }
+
+        internal void StopProcessor()
+        {
+            _processorRunning = false;
+        }
+
+        internal void DropPendingClose()
+        {
+            CompleteAndRelease(ref _pendingClose, cancelled: false);
+        }
+
+        internal void CancelActiveShowLoad()
+        {
+            if (_operation != UIOperationKind.Showing || _active == null)
+                return;
+
+            _active.Cancelled = true;
+            CancelResourceLoad();
+        }
+
+        internal void RetainView()
+        {
+            _retainView = true;
+        }
+
+        internal void ReleaseRetainView()
+        {
+            _retainView = false;
+        }
+
+        internal CancellationTokenSource BeginResourceLoad()
+        {
+            if (_resourceLoadCancellation != null)
+            {
+                if (!_resourceLoadCancellation.IsCancellationRequested)
+                    return _resourceLoadCancellation;
+
+                _resourceLoadCancellation.Dispose();
+                _resourceLoadCancellation = null;
+            }
+
+            _resourceLoadCancellation = new CancellationTokenSource();
+            return _resourceLoadCancellation;
+        }
+
+        internal void EndResourceLoad(CancellationTokenSource cancellation)
+        {
+            if (!ReferenceEquals(_resourceLoadCancellation, cancellation))
+                cancellation?.Dispose();
+        }
+
+        internal void CancelResourceLoad()
+        {
+            if (_resourceLoadCancellation == null || _resourceLoadCancellation.IsCancellationRequested)
+                return;
+
+            _resourceLoadCancellation.Cancel();
+        }
+
+        internal void RefreshLiveShowUserDatas(object[] userDatas)
+        {
+            if (_active != null && _active.Kind == UIRequestKind.Show)
+                _active.UserDatas = userDatas;
+            else if (_pendingShow != null)
+                _pendingShow.UserDatas = userDatas;
+
             View?.RefreshParams(userDatas);
             if (State == UIState.Opened)
+                View.InternalRefreshOpened();
+        }
+
+        internal void CancelRequests()
+        {
+            CancelResourceLoad();
+            if (_active != null)
             {
-                View?.InternalRefreshOpened();
+                _active.Cancelled = true;
+                if (!_processorRunning)
+                {
+                    _active.ShowCompletion?.TrySetResult(UIShowResult.Cancelled);
+                    _active.CloseCompletion?.TrySetResult(false);
+                    MemoryPool.Release(_active);
+                    _active = null;
+                    _operation = UIOperationKind.Idle;
+                }
             }
-        }
-
-        public void SetPendingShowUserDatas(System.Object[] userDatas)
-        {
-            _pendingShowUserDatas = userDatas;
-            _hasPendingShowUserDatas = true;
-            View?.RefreshParams(userDatas);
-        }
-
-        public System.Object[] GetPendingShowUserDatas(System.Object[] fallback)
-        {
-            return _hasPendingShowUserDatas ? _pendingShowUserDatas : fallback;
-        }
-
-
-        public UniTask<UIBase> WaitForShowOperationAsync()
-        {
-            if (_showCompletionSource != null)
+            else
             {
-                return _showCompletionSource.Task;
+                _operation = UIOperationKind.Idle;
             }
 
-            if (_operation == OperationKind.Showing)
-            {
-                _showCompletionSource = new UniTaskCompletionSource<UIBase>();
-                return _showCompletionSource.Task;
-            }
-
-            return UniTask.FromResult(State == UIState.Opened ? View : null);
-        }
-
-        public int BeginWidgetCreate(out CancellationTokenSource loadCts)
-        {
-            _loadCancellationTokenSource?.Cancel();
-            loadCts = new CancellationTokenSource();
-            _loadCancellationTokenSource = loadCts;
-            return ++_operationVersion;
-        }
-
-        public void EndWidgetCreate(int operationVersion, CancellationTokenSource loadCts)
-        {
-            if (ReferenceEquals(_loadCancellationTokenSource, loadCts))
-            {
-                _loadCancellationTokenSource = null;
-            }
-        }
-
-
-        public void CompleteShowOperation(UIBase result, bool clearPendingUserDatas = true)
-        {
-            UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
-            _showCompletionSource = null;
-            if (clearPendingUserDatas)
-            {
-                ClearPendingShowUserDatas();
-            }
-
-            showCompletionSource?.TrySetResult(result);
-        }
-
-
-        public void FailShowOperation(Exception exception)
-        {
-            UniTaskCompletionSource<UIBase> showCompletionSource = _showCompletionSource;
-            _showCompletionSource = null;
-            ClearPendingShowUserDatas();
-            showCompletionSource?.TrySetException(exception);
-        }
-
-        public bool HasPendingShowUserDatas => _hasPendingShowUserDatas;
-
-        private void ClearPendingShowUserDatas()
-        {
-            _pendingShowUserDatas = null;
-            _hasPendingShowUserDatas = false;
+            CompleteAndRelease(ref _pendingShow, cancelled: true);
+            CompleteAndRelease(ref _pendingClose, cancelled: false);
         }
 
         internal void ResetRuntimeState()
         {
-            CancelAsyncOperations();
-            _operation = OperationKind.Idle;
+            CancelRequests();
+            DisposeResourceLoadCancellation();
+            CacheTimerHandle = 0UL;
+            _retainView = false;
             View = null;
-            InCache = false;
         }
 
         internal async UniTask DisposeAsync()
         {
-            CancelAsyncOperations();
+            PrepareDispose();
+            if (View == null)
+                return;
 
-            if (State != UIState.Uninitialized && State != UIState.Destroying)
-            {
+            UIState state = State;
+            if (state != UIState.Uninitialized && state != UIState.Destroying && state != UIState.Destroyed)
                 await View.InternalDestroy();
-                View = null;
-            }
+
+            View = null;
         }
 
         internal void DisposeImmediate()
         {
-            CancelAsyncOperations();
+            PrepareDispose();
+            if (View == null)
+                return;
 
-            if (State != UIState.Uninitialized && State != UIState.Destroying && View != null)
-            {
+            UIState state = State;
+            if (state != UIState.Uninitialized && state != UIState.Destroying && state != UIState.Destroyed)
                 View.InternalDestroyImmediate();
-                View = null;
-            }
+
+            View = null;
         }
 
         public UIMetadata(Type uiType)
@@ -317,6 +361,46 @@ namespace AlicizaX.UI.Runtime
 
             UIHolderTypeName = Type.GetTypeFromHandle(MetaInfo.HolderRuntimeTypeHandle)?.Name;
             IsValid = true;
+        }
+
+        private void PrepareDispose()
+        {
+            if (_processorRunning)
+                CancelResourceLoad();
+            else
+                CancelRequests();
+        }
+
+        private void FinishActive(UIRequest request)
+        {
+            if (!ReferenceEquals(_active, request))
+                return;
+
+            _active = null;
+            if (_operation != UIOperationKind.Idle)
+                _operation = UIOperationKind.Idle;
+        }
+
+        private static void CompleteAndRelease(ref UIRequest request, bool cancelled)
+        {
+            if (request == null)
+                return;
+
+            request.ShowCompletion?.TrySetResult(cancelled ? UIShowResult.Cancelled : UIShowResult.Failed);
+            request.CloseCompletion?.TrySetResult(false);
+            MemoryPool.Release(request);
+            request = null;
+        }
+
+        private void DisposeResourceLoadCancellation()
+        {
+            if (_resourceLoadCancellation == null)
+                return;
+
+            if (!_resourceLoadCancellation.IsCancellationRequested)
+                _resourceLoadCancellation.Cancel();
+            _resourceLoadCancellation.Dispose();
+            _resourceLoadCancellation = null;
         }
     }
 }

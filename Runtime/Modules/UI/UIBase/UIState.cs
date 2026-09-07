@@ -10,6 +10,7 @@
         Opened,
         Closing,
         Closed,
+        Cached,
         Destroying,
         Destroyed,
     }

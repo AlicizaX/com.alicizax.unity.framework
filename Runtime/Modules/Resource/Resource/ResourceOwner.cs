@@ -3,12 +3,6 @@ using UnityEngine;
 
 namespace AlicizaX.Resource.Runtime
 {
-#if UNITY_6000_5_OR_NEWER
-    using UnityObjectIdValue = System.UInt64;
-#else
-    using UnityObjectIdValue = System.Int32;
-#endif
-
     [DisallowMultipleComponent]
     public sealed class ResourceOwner : MonoBehaviour
     {
@@ -17,16 +11,16 @@ namespace AlicizaX.Resource.Runtime
         private static int releaseBufferCapacity = DefaultReleaseBufferCapacity;
 
         private int ownerId;
-        private UnityObjectIdValue gameObjectId;
+        private ulong gameObjectId;
         private uint generation;
         private bool isRegistered;
 
         public int OwnerId => ownerId;
-        public UnityObjectIdValue GameObjectId => gameObjectId;
+        public ulong GameObjectId => gameObjectId;
         public uint Generation => generation;
         public bool IsRegistered => isRegistered;
 
-        internal void SetRegistered(int newOwnerId, UnityObjectIdValue newGameObjectId, uint newGeneration)
+        internal void SetRegistered(int newOwnerId, ulong newGameObjectId, uint newGeneration)
         {
             ownerId = newOwnerId;
             gameObjectId = newGameObjectId;

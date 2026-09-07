@@ -82,7 +82,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             _parent = owner;
-            BindHolderCommon(holder, false, false);
+            BindHolderCommon(holder, true, false);
             Depth = owner.Depth + 5;
         }
     }

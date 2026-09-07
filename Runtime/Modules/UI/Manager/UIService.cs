@@ -189,7 +189,7 @@ namespace AlicizaX.UI.Runtime
         internal bool IsLayerCloseBlocked(RuntimeTypeHandle handle)
         {
             UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
-            return metadata != null && (metadata.CloseInProgress || metadata.ShowInProgress);
+            return metadata != null && metadata.IsProcessing;
         }
 
         private async UniTask<bool> CloseViaRouterAsync(RuntimeTypeHandle handle, bool force)
@@ -245,7 +245,7 @@ namespace AlicizaX.UI.Runtime
                         continue;
                     }
 
-                    meta.CancelAsyncOperations();
+                    meta.CancelRequests();
                     meta.DisposeImmediate();
                 }
 
@@ -266,14 +266,19 @@ namespace AlicizaX.UI.Runtime
                 for (int i = m_CacheWindowCount - 1; i >= 0; i--)
                 {
                     CacheEntry entry = m_CacheWindow[i];
-                    if (entry.TimerHandle != 0UL && _timerService != null)
+                    UIMetadata meta = entry.Metadata;
+                    if (meta == null)
+                        continue;
+
+                    ulong timerHandle = entry.TimerHandle != 0UL ? entry.TimerHandle : meta.CacheTimerHandle;
+                    if (timerHandle != 0UL && _timerService != null)
                     {
-                        _timerService.RemoveTimer(entry.TimerHandle);
+                        _timerService.RemoveTimer(timerHandle);
+                        meta.CacheTimerHandle = 0UL;
                     }
 
-                    entry.Metadata.InCache = false;
-                    entry.Metadata.CancelAsyncOperations();
-                    entry.Metadata.DisposeImmediate();
+                    meta.CancelRequests();
+                    meta.DisposeImmediate();
                     m_CacheWindow[i] = default;
                 }
 

@@ -525,7 +525,7 @@ namespace AlicizaX.UI.Editor
             for (int i = 0; i < cacheCount; i++)
             {
                 UIWindowDebugInfo info = _cacheInfos[i];
-                if (info.InCache && info.Visible)
+                if (info.State == UIState.Cached && info.Visible)
                 {
                     _alerts.Add(GetWindowName(info) + " is cached but still visible.");
                 }
@@ -548,12 +548,12 @@ namespace AlicizaX.UI.Editor
         {
             string windowName = GetWindowName(info);
 
-            if ((info.ShowInProgress || info.CloseInProgress) && info.StateDuration >= OperationStuckSeconds)
+            if (info.Processing && info.StateDuration >= OperationStuckSeconds)
             {
                 _alerts.Add(windowName + " has been in " + info.State + " for " + info.StateDuration.ToString("F1") + "s.");
             }
 
-            if (info.InCache && info.Visible)
+            if (info.State == UIState.Cached && info.Visible)
             {
                 _alerts.Add(windowName + " is marked cached while visible.");
             }
@@ -665,7 +665,7 @@ namespace AlicizaX.UI.Editor
         {
             Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
             bool hovered = rowRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, cached || info.InCache, hovered);
+            AlicizaEditorGUI.DrawListItemBackground(rowRect, cached || info.State == UIState.Cached, hovered);
 
             Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 44f, 18f);
             Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.38f)), 18f);
@@ -680,7 +680,7 @@ namespace AlicizaX.UI.Editor
             DrawDebugRow("Flags", GetFlagLine(info), _mutedLabelStyle);
             if (cached || info.CacheTime > 0f || info.CacheTimerHandle != 0UL)
             {
-                DrawDebugRow("Cache", GetCacheLine(info), cached || info.InCache ? _mutedLabelStyle : _warningLabelStyle);
+                DrawDebugRow("Cache", GetCacheLine(info), cached || info.State == UIState.Cached ? _mutedLabelStyle : _warningLabelStyle);
             }
 
             DrawDebugRow("Holder", string.IsNullOrEmpty(info.HolderTypeName) ? "None" : info.HolderTypeName, string.IsNullOrEmpty(info.HolderTypeName) ? _mutedLabelStyle : _rowLabelStyle);
@@ -706,7 +706,7 @@ namespace AlicizaX.UI.Editor
 
         private static string GetFlagLine(UIWindowDebugInfo info)
         {
-            return "Update " + info.NeedUpdate + " | InCache " + info.InCache + " | ShowOp " + info.ShowInProgress + " | CloseOp " + info.CloseInProgress;
+            return "Update " + info.NeedUpdate + " | Cached " + (info.State == UIState.Cached) + " | Processing " + info.Processing;
         }
 
         private static string GetCacheLine(UIWindowDebugInfo info)
@@ -721,12 +721,12 @@ namespace AlicizaX.UI.Editor
 
         private static string GetWindowBadge(UIWindowDebugInfo info, bool cached)
         {
-            if (info.ShowInProgress || info.CloseInProgress)
+            if (info.Processing)
             {
                 return "OP";
             }
 
-            if (cached || info.InCache)
+            if (cached || info.State == UIState.Cached)
             {
                 return "CCH";
             }
@@ -741,12 +741,12 @@ namespace AlicizaX.UI.Editor
 
         private GUIStyle GetWindowTitleStyle(UIWindowDebugInfo info, bool cached)
         {
-            if (info.ShowInProgress || info.CloseInProgress || !info.Visible)
+            if (info.Processing || !info.Visible)
             {
                 return _warningLabelStyle;
             }
 
-            if (cached || info.InCache)
+            if (cached || info.State == UIState.Cached)
             {
                 return _mutedLabelStyle;
             }

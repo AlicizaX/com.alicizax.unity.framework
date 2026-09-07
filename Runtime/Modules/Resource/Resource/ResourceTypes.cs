@@ -2,44 +2,6 @@ using System;
 
 namespace AlicizaX.Resource.Runtime
 {
-#if UNITY_6000_5_OR_NEWER
-    using UnityObjectIdValue = System.UInt64;
-#else
-    using UnityObjectIdValue = System.Int32;
-#endif
-
-    public readonly struct ResourceBindingSlotKey : IEquatable<ResourceBindingSlotKey>
-    {
-        public readonly UnityObjectIdValue TargetComponentId;
-        public readonly ResourceBindingSlotType SlotType;
-        public readonly ushort SubIndex;
-
-        public ResourceBindingSlotKey(UnityObjectIdValue targetComponentId, ResourceBindingSlotType slotType, ushort subIndex)
-        {
-            TargetComponentId = targetComponentId;
-            SlotType = slotType;
-            SubIndex = subIndex;
-        }
-
-        public bool Equals(ResourceBindingSlotKey other)
-        {
-            return TargetComponentId == other.TargetComponentId && SlotType == other.SlotType && SubIndex == other.SubIndex;
-        }
-
-        public override bool Equals(object obj)
-        {
-            return obj is ResourceBindingSlotKey other && Equals(other);
-        }
-
-        public override int GetHashCode()
-        {
-            unchecked
-            {
-                return (TargetComponentId.GetHashCode() * 397) ^ ((int)SlotType << 16) ^ SubIndex;
-            }
-        }
-    }
-
     public struct ResourceAssetLease<T> : IDisposable where T : UnityEngine.Object
     {
         private IResourceService _resourceService;
@@ -198,9 +160,9 @@ namespace AlicizaX.Resource.Runtime
         public int BindingIndex;
         public int OwnerId;
         public uint OwnerGeneration;
-        public UnityObjectIdValue TargetGameObjectId;
-        public UnityObjectIdValue TargetComponentId;
-        public ResourceBindingSlotKey SlotKey;
+        public ulong TargetGameObjectId;
+        public ulong TargetComponentId;
+        public ulong SlotKey;
         public int AssetId;
         public int ViewKeyId;
         public ResourceLeaseHandle Lease;
@@ -219,7 +181,7 @@ namespace AlicizaX.Resource.Runtime
         public bool Active;
         public int OwnerIndex;
         public int OwnerId;
-        public UnityObjectIdValue GameObjectId;
+        public ulong GameObjectId;
         public uint Generation;
         public int BindingCount;
         public int RegisteredTargetCount;

@@ -92,10 +92,8 @@ namespace AlicizaX.UI.Runtime
         public string HolderTypeName;
         public UIState State;
         public bool Visible;
-        public bool InCache;
+        public bool Processing;
         public bool NeedUpdate;
-        public bool ShowInProgress;
-        public bool CloseInProgress;
         public int Depth;
         public float CacheTime;
         public ulong CacheTimerHandle;
@@ -111,10 +109,8 @@ namespace AlicizaX.UI.Runtime
             HolderTypeName = null;
             State = UIState.Uninitialized;
             Visible = false;
-            InCache = false;
+            Processing = false;
             NeedUpdate = false;
-            ShowInProgress = false;
-            CloseInProgress = false;
             Depth = 0;
             CacheTime = 0f;
             CacheTimerHandle = 0UL;
