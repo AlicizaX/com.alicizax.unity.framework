@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.Resources.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "UniTask.Runtime", "YooAsset", "Unity.ugui"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

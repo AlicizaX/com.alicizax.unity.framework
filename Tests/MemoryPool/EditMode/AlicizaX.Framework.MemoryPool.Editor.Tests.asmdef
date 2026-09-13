@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.MemoryPool.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.MemoryPool.Tests", "AlicizaX.Framework.Resources.Tests", "UniTask.Runtime", "YooAsset", "Unity.ugui"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

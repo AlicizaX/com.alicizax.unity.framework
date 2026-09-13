@@ -1,3 +1,4 @@
+using System;
 using AlicizaX;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -13,26 +14,24 @@ namespace AlicizaX.UI.Runtime
         [SerializeField] private GameObject uiRoot = null;
         [SerializeField] private bool _isOrthographic = true;
 
-        private IUIService _uiService;
-
-        public const int UIHideLayer = 2; // Ignore Raycast
-        public const int UIShowLayer = 5; // UI
+        public const int UIHideLayer = 2;
+        public const int UIShowLayer = 5;
 
 
         private void Awake()
         {
             if (uiRoot == null)
             {
-                Log.Error("UIRoot Prefab is invalid.");
-                return;
+                throw new InvalidOperationException("UIRoot Prefab is invalid.");
             }
 
             GameObject obj = Instantiate(uiRoot, Vector3.zero, Quaternion.identity);
             obj.name = "------UI Root------";
             Transform instanceRoot = obj.transform;
+            var service = new UIService();
+            service.Initialize(instanceRoot, _isOrthographic);
+            AppServices.App.Register<IUIService>(service);
             Object.DontDestroyOnLoad(instanceRoot);
-            _uiService = AppServices.App.Register<IUIService>(new UIService());
-            _uiService.Initialize(instanceRoot, _isOrthographic);
         }
     }
 }

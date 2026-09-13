@@ -17,9 +17,7 @@ namespace AlicizaX.UI.Editor
         private const float DefaultButtonSize = 20f;
         private const float RuntimeMinHeight = 260f;
         private const float RuntimeMaxHeight = 720f;
-        private const float OperationStuckSeconds = 5f;
         private const double RuntimeDebugRepaintInterval = 0.1d;
-        private const int UpdateWindowWarningCount = 8;
         private const int CacheWindowWarningCount = 16;
 
         private readonly UIServiceDebugInfo _serviceInfo = new UIServiceDebugInfo();
@@ -34,15 +32,15 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty uiRoot;
         private SerializedProperty _isOrthographic;
         private bool _showRuntimeDebug;
-        private bool _showRouterRuntimeDebug;
+        private bool _showNavigationRuntimeDebug;
         private bool _showReferences;
         private bool _showLayers = true;
         private bool _showCache = true;
         private bool _showEmptyLayers;
-        private bool _showRouterHistory = true;
-        private bool _showRouterWarnings = true;
+        private bool _showNavigationHistory = true;
+        private bool _showNavigationWarnings = true;
         private Vector2 _runtimeScroll;
-        private Vector2 _routerRuntimeScroll;
+        private Vector2 _navigationRuntimeScroll;
         private GUIStyle _panelStyle;
         private GUIStyle _entryBodyStyle;
         private GUIStyle _fieldRowStyle;
@@ -66,7 +64,7 @@ namespace AlicizaX.UI.Editor
             serializedObject.ApplyModifiedProperties();
 
             DrawRuntimeDebugInfo();
-            DrawRouterRuntimeDebugInfo();
+            DrawNavigationRuntimeDebugInfo();
         }
 
         private void OnEnable()
@@ -91,7 +89,7 @@ namespace AlicizaX.UI.Editor
 
         private void OnEditorUpdate()
         {
-            if (!EditorApplication.isPlaying || (!_showRuntimeDebug && !_showRouterRuntimeDebug))
+            if (!EditorApplication.isPlaying || (!_showRuntimeDebug && !_showNavigationRuntimeDebug))
             {
                 _nextRuntimeDebugRepaintTime = 0d;
                 return;
@@ -148,8 +146,6 @@ namespace AlicizaX.UI.Editor
                 DrawPropertyRow("Orthographic", _isOrthographic);
             }
             EditorGUI.EndDisabledGroup();
-
-            DrawWarningOptionsRow();
             EditorGUILayout.EndVertical();
         }
 
@@ -234,12 +230,12 @@ namespace AlicizaX.UI.Editor
             EditorGUILayout.EndVertical();
         }
 
-        private void DrawRouterRuntimeDebugInfo()
+        private void DrawNavigationRuntimeDebugInfo()
         {
             EditorGUILayout.Space(4f);
             EditorGUILayout.BeginVertical(_panelStyle);
-            _showRouterRuntimeDebug = DrawFoldoutToolbar("Router RuntimeDebug", _showRouterRuntimeDebug);
-            if (!_showRouterRuntimeDebug)
+            _showNavigationRuntimeDebug = DrawFoldoutToolbar("Navigation RuntimeDebug", _showNavigationRuntimeDebug);
+            if (!_showNavigationRuntimeDebug)
             {
                 EditorGUILayout.EndVertical();
                 return;
@@ -247,25 +243,25 @@ namespace AlicizaX.UI.Editor
 
             if (!EditorApplication.isPlaying)
             {
-                EditorUtils.TrHelpIconText("Enter Play Mode to inspect runtime UI Router state.", MessageType.Info);
+                EditorUtils.TrHelpIconText("Enter Play Mode to inspect runtime UI Navigation state.", MessageType.Info);
                 EditorGUILayout.EndVertical();
                 return;
             }
 
-            if (!AppServices.HasWorld || !AppServices.App.TryGet<IUIService>(out IUIService uiService) || uiService.Router is not IUIRouterDebug debug)
+            if (!AppServices.HasWorld || !AppServices.App.TryGet<IUIService>(out IUIService uiService) || uiService is not IUINavigationDebug debug)
             {
-                EditorUtils.TrHelpIconText("UI Router is not initialized.", MessageType.Warning);
+                EditorUtils.TrHelpIconText("UI Navigation is not initialized.", MessageType.Warning);
                 EditorGUILayout.EndVertical();
                 return;
             }
 
-            DrawRouterSummary(debug);
-            DrawRouterRuntimeOptions(debug);
+            DrawNavigationSummary(debug);
+            DrawNavigationRuntimeOptions(debug);
 
             EditorGUILayout.BeginVertical(_entryBodyStyle);
-            _routerRuntimeScroll = GUILayout.BeginScrollView(_routerRuntimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(220f), GUILayout.MaxHeight(560f));
-            DrawRouterHistory(debug);
-            DrawRouterWarnings(debug);
+            _navigationRuntimeScroll = GUILayout.BeginScrollView(_navigationRuntimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(220f), GUILayout.MaxHeight(560f));
+            DrawNavigationHistory(debug);
+            DrawNavigationWarnings(debug);
             GUILayout.EndScrollView();
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndVertical();
@@ -312,42 +308,27 @@ namespace AlicizaX.UI.Editor
             return GUI.Toggle(rect, value, label, value ? AlicizaEditorGUI.Styles.PillOn : AlicizaEditorGUI.Styles.PillOff);
         }
 
-        private void DrawWarningOptionsRow()
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField("Editor Warnings", _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            UIWarningSettings.Enabled = DrawPillToggle("UI Warn", UIWarningSettings.Enabled, 92f);
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private static bool DrawPillToggle(string label, bool value, float width)
-        {
-            return GUILayout.Toggle(value, label, value ? AlicizaEditorGUI.Styles.PillOn : AlicizaEditorGUI.Styles.PillOff, GUILayout.Width(width), GUILayout.Height(20f));
-        }
-
         private void DrawServiceSummary()
         {
             DrawSectionBegin("Service Summary");
             EditorGUILayout.BeginHorizontal();
             DrawCounter("Initialized", _serviceInfo.Initialized ? "Yes" : "No", _serviceInfo.Initialized ? _rowLabelStyle : _warningLabelStyle);
             DrawCounter("Mode", _serviceInfo.Orthographic ? "Orthographic" : "Perspective", _rowLabelStyle);
-            DrawCounter("Layers", _serviceInfo.LayerCount.ToString(), _rowLabelStyle);
             DrawCounter("Open", _serviceInfo.OpenWindowCount.ToString(), _serviceInfo.OpenWindowCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
+            DrawCounter("Cache", _serviceInfo.CacheWindowCount.ToString(), _serviceInfo.CacheWindowCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.BeginHorizontal();
-            DrawCounter("Cache", _serviceInfo.CacheWindowCount.ToString(), _serviceInfo.CacheWindowCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawCounter("Update", _serviceInfo.UpdateWindowCount.ToString(), _serviceInfo.UpdateWindowCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawCounter("Block", _serviceInfo.BlockActive ? "Active" : "Inactive", _serviceInfo.BlockActive ? _warningLabelStyle : _mutedLabelStyle);
-            DrawCounter("Block Timer", _serviceInfo.BlockTimerHandle.ToString(), _serviceInfo.BlockTimerHandle != 0UL ? _warningLabelStyle : _mutedLabelStyle);
+            DrawCounter("Update", FormatUpdateCount(_serviceInfo), _serviceInfo.UpdateCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
+            DrawCounter("Block", GetBlockLine(_serviceInfo), _serviceInfo.BlockActive ? _warningLabelStyle : _mutedLabelStyle);
+            GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
             DrawSectionEnd();
         }
 
-        private void DrawRouterSummary(IUIRouterDebug debug)
+        private void DrawNavigationSummary(IUINavigationDebug debug)
         {
-            DrawSectionBegin("Router Summary");
+            DrawSectionBegin("Navigation Summary");
             EditorGUILayout.BeginHorizontal();
             DrawCounter("Current", debug.Current?.Name ?? "None", debug.Current == null ? _mutedLabelStyle : _rowLabelStyle);
             DrawCounter("Can Back", debug.CanBack ? "Yes" : "No", debug.CanBack ? _rowLabelStyle : _mutedLabelStyle);
@@ -357,15 +338,15 @@ namespace AlicizaX.UI.Editor
             DrawSectionEnd();
         }
 
-        private void DrawRouterRuntimeOptions(IUIRouterDebug debug)
+        private void DrawNavigationRuntimeOptions(IUINavigationDebug debug)
         {
             Rect toolbarRect = GUILayoutUtility.GetRect(1f, RuntimeToolbarHeight, GUILayout.ExpandWidth(true));
             AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
 
             float x = toolbarRect.x + 6f;
             float y = toolbarRect.y + 3f;
-            _showRouterHistory = DrawToolbarToggle(ref x, y, 64f, "History", _showRouterHistory);
-            _showRouterWarnings = DrawToolbarToggle(ref x, y, 76f, "Warnings", _showRouterWarnings);
+            _showNavigationHistory = DrawToolbarToggle(ref x, y, 64f, "History", _showNavigationHistory);
+            _showNavigationWarnings = DrawToolbarToggle(ref x, y, 76f, "Warnings", _showNavigationWarnings);
 
             Rect clearRect = new Rect(toolbarRect.xMax - 106f, y, 100f, 20f);
             EditorGUI.BeginDisabledGroup(debug.WarningCount == 0);
@@ -376,9 +357,9 @@ namespace AlicizaX.UI.Editor
             EditorGUI.EndDisabledGroup();
         }
 
-        private void DrawRouterHistory(IUIRouterDebug debug)
+        private void DrawNavigationHistory(IUINavigationDebug debug)
         {
-            if (!_showRouterHistory)
+            if (!_showNavigationHistory)
             {
                 return;
             }
@@ -400,9 +381,9 @@ namespace AlicizaX.UI.Editor
             DrawSectionEnd();
         }
 
-        private void DrawRouterWarnings(IUIRouterDebug debug)
+        private void DrawNavigationWarnings(IUINavigationDebug debug)
         {
-            if (!_showRouterWarnings)
+            if (!_showNavigationWarnings)
             {
                 return;
             }
@@ -410,7 +391,7 @@ namespace AlicizaX.UI.Editor
             DrawSectionBegin("Warnings");
             if (debug.WarningCount == 0)
             {
-                DrawEmptyLabel("No router warnings.");
+                DrawEmptyLabel("No navigation warnings.");
             }
 
             for (int i = 0; i < debug.WarningCount; i++)
@@ -482,7 +463,6 @@ namespace AlicizaX.UI.Editor
 
             DrawSectionBegin("References");
             DrawDebugObjectRow("Root", _serviceInfo.Root, typeof(Transform));
-            DrawDebugObjectRow("Canvas Root", _serviceInfo.CanvasRoot, typeof(Transform));
             DrawDebugObjectRow("Canvas", _serviceInfo.Canvas, typeof(Canvas));
             DrawDebugObjectRow("Camera", _serviceInfo.Camera, typeof(Camera));
             DrawSectionEnd();
@@ -491,11 +471,6 @@ namespace AlicizaX.UI.Editor
         private void DrawRuntimeAlerts(IUIDebugService debugService)
         {
             _alerts.Clear();
-
-            if (_serviceInfo.UpdateWindowCount > UpdateWindowWarningCount)
-            {
-                _alerts.Add("Update window count is high: " + _serviceInfo.UpdateWindowCount);
-            }
 
             if (_serviceInfo.CacheWindowCount > CacheWindowWarningCount)
             {
@@ -517,7 +492,7 @@ namespace AlicizaX.UI.Editor
                         continue;
                     }
 
-                    AppendWindowAlerts(_windowInfo, _layerInfo, windowIndex);
+                    AppendWindowAlerts(_windowInfo, windowIndex);
                 }
             }
 
@@ -544,21 +519,17 @@ namespace AlicizaX.UI.Editor
             DrawSectionEnd();
         }
 
-        private void AppendWindowAlerts(UIWindowDebugInfo info, UILayerDebugInfo layerInfo, int windowIndex)
+        private void AppendWindowAlerts(UIWindowDebugInfo info, int windowIndex)
         {
             string windowName = GetWindowName(info);
-
-            if (info.Processing && info.StateDuration >= OperationStuckSeconds)
-            {
-                _alerts.Add(windowName + " has been in " + info.State + " for " + info.StateDuration.ToString("F1") + "s.");
-            }
 
             if (info.State == UIState.Cached && info.Visible)
             {
                 _alerts.Add(windowName + " is marked cached while visible.");
             }
 
-            if (info.HolderTransform == null && info.State != UIState.Uninitialized && info.State != UIState.Destroyed)
+            if (!(info.State == UIState.CreatedUI && info.Processing) && info.HolderTransform == null &&
+                info.State != UIState.Uninitialized && info.State != UIState.Destroyed)
             {
                 _alerts.Add(windowName + " holder transform is missing in state " + info.State + ".");
             }
@@ -676,14 +647,15 @@ namespace AlicizaX.UI.Editor
 
             EditorGUILayout.BeginVertical(_entryBodyStyle);
             DrawDebugObjectRow("Transform", info.HolderTransform, typeof(Transform));
-            DrawDebugRow("State", GetStateLine(info), GetWindowTitleStyle(info, cached));
-            DrawDebugRow("Flags", GetFlagLine(info), _mutedLabelStyle);
-            if (cached || info.CacheTime > 0f || info.CacheTimerHandle != 0UL)
+            if (cached || info.CacheTime != 0 || info.CacheRemaining > 0f)
             {
                 DrawDebugRow("Cache", GetCacheLine(info), cached || info.State == UIState.Cached ? _mutedLabelStyle : _warningLabelStyle);
             }
 
-            DrawDebugRow("Holder", string.IsNullOrEmpty(info.HolderTypeName) ? "None" : info.HolderTypeName, string.IsNullOrEmpty(info.HolderTypeName) ? _mutedLabelStyle : _rowLabelStyle);
+            if (!string.IsNullOrEmpty(info.HolderTypeName))
+            {
+                DrawDebugRow("Holder", info.HolderTypeName, _rowLabelStyle);
+            }
             EditorGUILayout.EndVertical();
         }
 
@@ -699,24 +671,55 @@ namespace AlicizaX.UI.Editor
             return string.IsNullOrEmpty(info.LogicTypeName) ? "Unknown" : info.LogicTypeName;
         }
 
-        private static string GetStateLine(UIWindowDebugInfo info)
-        {
-            return info.State + " | Visible " + info.Visible + " | Depth " + info.Depth + " | " + info.StateDuration.ToString("F1") + "s";
-        }
-
-        private static string GetFlagLine(UIWindowDebugInfo info)
-        {
-            return "Update " + info.NeedUpdate + " | Cached " + (info.State == UIState.Cached) + " | Processing " + info.Processing;
-        }
-
         private static string GetCacheLine(UIWindowDebugInfo info)
         {
-            return "Time " + info.CacheTime.ToString("F2") + " | Timer " + info.CacheTimerHandle;
+            if (info.CacheTime < 0)
+            {
+                return "Permanent";
+            }
+
+            if (info.CacheRemaining > 0f)
+            {
+                return "TTL " + info.CacheTime + "s | Left " + info.CacheRemaining.ToString("F1") + "s";
+            }
+
+            return "TTL " + info.CacheTime + "s";
         }
 
         private static string GetWindowSummary(UIWindowDebugInfo info)
         {
-            return info.State + " | " + (info.Visible ? "Visible" : "Hidden") + " | Depth " + info.Depth + " | " + info.StateDuration.ToString("F1") + "s";
+            string text = info.State + " | " + (info.Visible ? "Visible" : "Hidden") + " | Depth " + info.Depth;
+            if (info.Updating)
+            {
+                text += " | Updating";
+            }
+
+            if (info.Processing)
+            {
+                text += " | Processing";
+            }
+
+            return text;
+        }
+
+        private static string FormatUpdateCount(UIServiceDebugInfo info)
+        {
+            return info.UpdateCount + " (" + info.UpdateWindowCount + " window / " + info.UpdateWidgetCount + " widget)";
+        }
+
+        private static string GetBlockLine(UIServiceDebugInfo info)
+        {
+            if (!info.BlockActive)
+            {
+                return "Inactive";
+            }
+
+            if (info.BlockRemaining > 0f)
+            {
+                return "Active " + info.BlockRemaining.ToString("F1") + "s";
+            }
+
+            return "Active";
         }
 
         private static string GetWindowBadge(UIWindowDebugInfo info, bool cached)

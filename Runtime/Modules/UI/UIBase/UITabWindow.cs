@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using AlicizaX;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -8,168 +7,147 @@ namespace AlicizaX.UI.Runtime
 {
     public abstract class UITabWindow<T> : UIWindow<T> where T : UIHolderObjectBase
     {
-        private UIWidget _activeTab;
-        private readonly List<RuntimeTypeHandle> _typeOrder = new();
-        private readonly Dictionary<RuntimeTypeHandle, Transform> _tabParents = new(RuntimeTypeHandleComparer.Instance);
-        private readonly Dictionary<RuntimeTypeHandle, UIWidget> _loadedTabs = new(RuntimeTypeHandleComparer.Instance);
-        private readonly HashSet<RuntimeTypeHandle> _loadingTabs = new(RuntimeTypeHandleComparer.Instance);
-
-        private int _requestVersion;
-        private RuntimeTypeHandle _requestTypeHandle;
-        private System.Object[] _requestUserDatas;
-
-        protected void InitTabVirtuallyView<TTab>(Transform parent = null) where TTab : UIWidget
+        private sealed class TabEntry
         {
-            CacheTabMetadata(typeof(TTab).TypeHandle, parent);
+            internal readonly UIMetadata Definition;
+            internal readonly Transform Parent;
+            internal UIWidget View;
+            internal bool Loading;
+
+            internal TabEntry(UIMetadata definition, Transform parent)
+            {
+                Definition = definition;
+                Parent = parent;
+            }
         }
+
+        private sealed class TabRequest
+        {
+            internal readonly TabEntry Entry;
+            internal readonly object[] Arguments;
+            internal readonly UniTaskCompletionSource<UIWidget> Completion = new();
+
+            internal TabRequest(TabEntry entry, object[] arguments)
+            {
+                Entry = entry;
+                Arguments = arguments;
+            }
+        }
+
+        private readonly List<TabEntry> _tabs = new();
+        private readonly Dictionary<RuntimeTypeHandle, TabEntry> _tabsByType = new(RuntimeTypeHandleComparer.Instance);
+        private UIWidget _activeTab;
+        private TabRequest _request;
+        private bool _switching;
+
+        protected void InitTabVirtuallyView<TTab>(Transform parent = null) where TTab : UIWidget =>
+            RegisterTab(typeof(TTab), parent);
 
         protected void InitTabVirtuallyView(string typeName, Transform parent = null)
         {
-            if (UIMetaRegistry.TryGet(typeName, out var metaRegistry))
-            {
-                CacheTabMetadata(metaRegistry.RuntimeTypeHandle, parent);
-            }
+            if (UIMetaRegistry.TryGet(typeName, out var info))
+                RegisterTab(Type.GetTypeFromHandle(info.RuntimeTypeHandle), parent);
         }
 
-        private void CacheTabMetadata(RuntimeTypeHandle typeHandle, Transform parent)
+        private void RegisterTab(Type type, Transform parent)
         {
-            if (_tabParents.ContainsKey(typeHandle))
+            if (_tabsByType.ContainsKey(type.TypeHandle)) return;
+            if (!typeof(UIWidget).IsAssignableFrom(type))
             {
+                Log.Error("[UI] Tab type must be a Widget: {0}", type);
                 return;
             }
-
-            _typeOrder.Add(typeHandle);
-            _tabParents[typeHandle] = parent ?? baseui.RectTransform;
+            UIMetadata metadata = UIMetadata.Create(type);
+            if (metadata == null) return;
+            var entry = new TabEntry(metadata, parent != null ? parent : baseui.RectTransform);
+            _tabs.Add(entry);
+            _tabsByType.Add(type.TypeHandle, entry);
         }
 
-        public void SwitchTab(int index)
+        public UniTask<UIWidget> SwitchTab(int index, params object[] userDatas)
         {
-            SwitchTabInternal(index, null);
-        }
-
-        public void SwitchTab(int index, params System.Object[] userDatas)
-        {
-            SwitchTabInternal(index, userDatas);
-        }
-
-        private void SwitchTabInternal(int index, System.Object[] userDatas)
-        {
-            if (index < 0 || index >= _typeOrder.Count)
+            if (DestroyRequested) return UniTask.FromResult<UIWidget>(null);
+            if ((uint)index >= (uint)_tabs.Count)
             {
-                Log.Error("Invalid tab index: {0}", index);
-                return;
+                Log.Error("[UI] Invalid tab index: {0}", index);
+                return UniTask.FromResult<UIWidget>(null);
             }
-
-            RuntimeTypeHandle typeHandle = _typeOrder[index];
-            _requestTypeHandle = typeHandle;
-            _requestUserDatas = userDatas;
-            int version = ++_requestVersion;
-
-            if (_loadingTabs.Contains(typeHandle))
+            TabRequest previous = _request;
+            var request = new TabRequest(_tabs[index], userDatas);
+            _request = request;
+            previous?.Completion.TrySetResult(null);
+            if (_request != request) return request.Completion.Task;
+            TabEntry entry = request.Entry;
+            if (entry.View != null) SwitchLoadedTab().Forget();
+            else if (!entry.Loading)
             {
-                return;
+                entry.Loading = true;
+                LoadTab(entry).Forget();
             }
-
-            if (_loadedTabs.TryGetValue(typeHandle, out var loadedTab))
-            {
-                SwitchToLoadedTab(version, loadedTab).Forget();
-                return;
-            }
-
-            StartAsyncLoading(typeHandle).Forget();
+            return request.Completion.Task;
         }
 
-        private async UniTaskVoid StartAsyncLoading(RuntimeTypeHandle typeHandle)
+        private async UniTask LoadTab(TabEntry entry)
         {
-            _loadingTabs.Add(typeHandle);
+            try { entry.View = await CreateWidgetUIAsync(entry.Definition, entry.Parent, false); }
+            catch (Exception error) { Log.Exception(error); }
+            finally { entry.Loading = false; }
+            if (_request?.Entry != entry) return;
+            if (entry.View == null || DestroyRequested) CompleteTab(_request, null);
+            else SwitchLoadedTab().Forget();
+        }
+
+        private async UniTask SwitchLoadedTab()
+        {
+            if (_switching) return;
+            _switching = true;
             try
             {
-                UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata(typeHandle);
-                UIBase widget = await CreateWidgetUIAsync(metadata, _tabParents[typeHandle], false);
-                if (widget is not UIWidget tabWidget)
+                while (_request != null && !DestroyRequested)
                 {
-                    Log.Error("Tab load failed: {0}", Type.GetTypeFromHandle(typeHandle)?.Name);
-                    return;
+                    TabRequest request = _request;
+                    UIWidget target = request.Entry.View;
+                    if (target == null) return;
+                    if (_activeTab != null && _activeTab != target)
+                    {
+                        UIWidget previous = _activeTab;
+                        _activeTab = null;
+                        previous.Close();
+                        await previous.AwaitTransition();
+                        continue;
+                    }
+                    _activeTab = target;
+                    target.Open(request.Arguments);
+                    CompleteTab(request, target.DestroyRequested ? null : target);
                 }
-
-                _loadedTabs[typeHandle] = tabWidget;
-                if (typeHandle.Value == _requestTypeHandle.Value)
-                {
-                    SwitchToLoadedTab(_requestVersion, tabWidget).Forget();
-                }
             }
-            catch (Exception exception)
+            catch (Exception error)
             {
-                Log.Exception(exception);
+                Log.Exception(error);
+                CompleteTab(_request, null);
             }
-            finally
-            {
-                _loadingTabs.Remove(typeHandle);
-            }
+            finally { _switching = false; }
         }
 
-        private async UniTaskVoid SwitchToLoadedTab(int version, UIWidget targetTab)
+        private void CompleteTab(TabRequest request, UIWidget view)
         {
-            if (!IsCurrentRequest(version))
-            {
-                return;
-            }
-
-            System.Object[] userDatas = _requestUserDatas;
-            if (_activeTab == targetTab)
-            {
-                await targetTab.OpenAsync(userDatas);
-                return;
-            }
-
-            UIWidget previousTab = _activeTab;
-            _activeTab = targetTab;
-            if (previousTab != null)
-            {
-                await previousTab.CloseAsync();
-            }
-
-            if (!IsCurrentRequest(version) || _activeTab != targetTab)
-            {
-                return;
-            }
-
-            await targetTab.OpenAsync(_requestUserDatas);
+            if (request == null || _request != request) return;
+            _request = null;
+            request.Completion.TrySetResult(view);
         }
 
-        private bool IsCurrentRequest(int version)
+        protected override void OnWidgetRemoved(UIWidget widget)
         {
-            return version == _requestVersion;
+            if (_activeTab == widget) _activeTab = null;
+            if (_tabsByType.TryGetValue(widget.GetType().TypeHandle, out var entry) && entry.View == widget)
+                entry.View = null;
+            if (DestroyRequested) CompleteTab(_request, null);
         }
 
-        protected override void OnWidgetRemoved(UIBase widget)
+        internal override void OnFrameworkDestroyed()
         {
-            if (_activeTab == widget)
-            {
-                _activeTab = null;
-            }
-
-            RuntimeTypeHandle removeKey = default;
-            bool found = false;
-            foreach (var pair in _loadedTabs)
-            {
-                if (pair.Value != widget)
-                {
-                    continue;
-                }
-
-                removeKey = pair.Key;
-                found = true;
-                break;
-            }
-
-            if (!found)
-            {
-                return;
-            }
-
-            _loadedTabs.Remove(removeKey);
-            _loadingTabs.Remove(removeKey);
+            CompleteTab(_request, null);
+            base.OnFrameworkDestroyed();
         }
     }
 }

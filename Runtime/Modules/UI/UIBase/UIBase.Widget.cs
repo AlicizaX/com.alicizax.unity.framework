@@ -1,6 +1,6 @@
-﻿using System;
-using System.Threading;
-using AlicizaX;
+using System;
+using System.Buffers;
+using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -8,463 +8,179 @@ namespace AlicizaX.UI.Runtime
 {
     public abstract partial class UIBase
     {
-        private UIMetadata[] _children;
-        private int _childCount;
-        private UIMetadata[] _updateableChildren;
-        private int _updateableChildCount;
+        private List<UIWidget> _children;
 
-        private void UpdateChildren()
+        private UIWidget[] SnapshotChildren(out int count)
         {
-            for (int i = 0; i < _updateableChildCount; i++)
-            {
-                var meta = _updateableChildren[i];
-                UIBase view = meta?.View;
-                if (view != null && view.State == UIState.Opened)
-                {
-                    view.InternalUpdate();
-                }
-            }
+            count = _children?.Count ?? 0;
+            if (count == 0) return null;
+            UIWidget[] snapshot = ArrayPool<UIWidget>.Shared.Rent(count);
+            _children.CopyTo(snapshot);
+            return snapshot;
         }
 
-        private async UniTask DestroyAllChildren()
+        private static void ReturnChildren(UIWidget[] snapshot)
         {
-            while (_childCount > 0)
-            {
-                UIMetadata metadata = _children[--_childCount];
-                _children[_childCount] = null;
-                UIBase view = metadata?.View;
-                if (view != null && UIStateMachine.IsDisplayActive(view.State))
-                {
-                    metadata.CancelResourceLoad();
-                    await view.InternalClose(skipTransition: true);
-                }
-
-                if (metadata != null)
-                {
-                    await metadata.DisposeAsync();
-                    UIMetadataFactory.ReturnToPool(metadata);
-                }
-            }
-
-            _updateableChildCount = 0;
+            if (snapshot != null) ArrayPool<UIWidget>.Shared.Return(snapshot, true);
         }
 
-        private void DestroyAllChildrenImmediate()
+        private UniTask OpenChildren(int generation)
         {
-            while (_childCount > 0)
-            {
-                UIMetadata metadata = _children[--_childCount];
-                _children[_childCount] = null;
-                if (metadata != null)
-                {
-                    metadata.DisposeImmediate();
-                    UIMetadataFactory.ReturnToPool(metadata);
-                }
-            }
-
-            _updateableChildCount = 0;
-        }
-
-        private void ChildVisible(bool value)
-        {
-            for (int i = 0; i < _childCount; i++)
-            {
-                UIBase view = _children[i]?.View;
-                if (view != null && view.State == UIState.Opened)
-                {
-                    view.Visible = value;
-                }
-            }
-        }
-
-        private void SyncChildDepth()
-        {
-            if (_childCount <= 0 || _children == null)
-            {
-                return;
-            }
-
-            int childDepth = Depth + 5;
-            for (int i = 0; i < _childCount; i++)
-            {
-                UIBase view = _children[i]?.View;
-                if (view?._canvas != null)
-                {
-                    view.Depth = childDepth;
-                }
-            }
-        }
-
-        internal async UniTask<UIBase> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible)
-        {
-            if (!TryBeginWidgetCreate(metadata))
-                return null;
-
-            CancellationTokenSource loadCts = metadata.BeginResourceLoad();
-            UIBase widget = null;
+            UIWidget[] snapshot = SnapshotChildren(out int count);
+            List<UniTask> pending = null;
             try
             {
-                await UIHolderFactory.CreateUIResourceAsync(metadata, parent, loadCts.Token, this);
-                widget = await FinishWidgetCreateAsync(metadata, visible);
-                return widget;
+                for (int i = 0; i < count && IsCurrent(generation) && ChildrenCanOpen; i++)
+                {
+                    UIWidget child = snapshot[i];
+                    if (!child.OpenIntent || child.DestroyRequested) continue;
+                    (pending ??= new List<UniTask>()).Add(OpenChild(child));
+                }
             }
-            finally
-            {
-                metadata.EndResourceLoad(loadCts);
-                if (widget == null)
-                    await FailWidgetCreateAsync(metadata);
-            }
+            finally { ReturnChildren(snapshot); }
+            return pending == null ? UniTask.CompletedTask : UniTask.WhenAll(pending);
         }
 
-        internal UIBase CreateWidgetUISync(UIMetadata metadata, Transform parent, bool visible)
+        private UniTask CloseChildren(bool destroy, bool skipTransition)
         {
-            if (!TryBeginWidgetCreate(metadata))
-                return null;
-
-            UIBase widget = null;
+            int generation = _transitionGeneration;
+            UIWidget[] snapshot = SnapshotChildren(out int count);
+            List<UniTask> pending = null;
             try
             {
-                UIHolderFactory.CreateUIResourceSync(metadata, parent, this);
-                widget = FinishWidgetCreateSync(metadata, visible);
-                return widget;
+                for (int i = 0; i < count && IsCurrent(generation); i++)
+                    (pending ??= new List<UniTask>()).Add(CloseChild(snapshot[i], destroy, skipTransition));
             }
-            finally
-            {
-                if (widget == null)
-                    FailWidgetCreateImmediate(metadata);
-            }
+            finally { ReturnChildren(snapshot); }
+            return pending == null ? UniTask.CompletedTask : UniTask.WhenAll(pending);
         }
 
-        #region CreateWidget
-
-        #region Async
-
-        protected async UniTask<UIBase> CreateWidgetAsync(string typeName, Transform parent, bool visible = true)
+        private static async UniTask OpenChild(UIWidget child)
         {
-            if (!UIMetaRegistry.TryGet(typeName, out var metaRegistry))
-            {
-                return null;
-            }
-
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata(metaRegistry.RuntimeTypeHandle);
-            return await CreateWidgetUIAsync(metadata, parent, visible);
-        }
-
-        protected async UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true) where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
-            return (T)await CreateWidgetUIAsync(metadata, parent, visible);
-        }
-
-        protected async UniTask<T> CreateWidgetAsync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = false) where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
-            if (!TryBeginWidgetCreate(metadata))
-                return null;
-
-            UIBase widget = null;
             try
             {
-                metadata.View.BindUIHolder(holder, this);
-                metadata.View.SetDestroyHolderOnDispose(destroyHolderOnDispose);
-                widget = await FinishWidgetCreateAsync(metadata, visible: true);
-                return (T)widget;
+                child.OpenFromParent();
+                await child.AwaitTransition();
             }
-            finally
-            {
-                if (widget == null)
-                    await FailWidgetCreateAsync(metadata);
-            }
+            catch (Exception error) { Log.Exception(error); }
         }
 
-        #endregion
-
-
-        #region Sync
-
-        protected UIBase CreateWidgetSync(string typeName, Transform parent, bool visible = true)
+        private static async UniTask CloseChild(UIWidget child, bool destroy, bool skipTransition)
         {
-            if (!UIMetaRegistry.TryGet(typeName, out var metaRegistry))
-            {
-                return null;
-            }
-
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata(metaRegistry.RuntimeTypeHandle);
-            return CreateWidgetUISync(metadata, parent, visible);
+            try { await child.CloseFromParent(destroy, skipTransition); }
+            catch (Exception error) { Log.Exception(error); }
         }
 
-        protected T CreateWidgetSync<T>(Transform parent, bool visible = true) where T : UIBase
+        private void DestroyChildrenImmediate()
         {
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
-            return (T)CreateWidgetUISync(metadata, parent, visible);
-        }
-
-        protected T CreateWidgetSync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = false) where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWidgetMetadata<T>();
-            if (!TryBeginWidgetCreate(metadata))
-                return null;
-
-            UIBase widget = null;
+            UIWidget[] snapshot = SnapshotChildren(out int count);
             try
             {
-                metadata.View.BindUIHolder(holder, this);
-                metadata.View.SetDestroyHolderOnDispose(destroyHolderOnDispose);
-                widget = FinishWidgetCreateSync(metadata, visible: true);
-                return (T)widget;
+                for (int i = 0; i < count; i++)
+                {
+                    try { snapshot[i].DestroyNow(); }
+                    catch (Exception error) { Log.Exception(error); }
+                }
             }
-            finally
+            finally { ReturnChildren(snapshot); }
+        }
+
+        internal async UniTask<UIWidget> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible)
+        {
+            UIWidget widget = BeginWidgetCreate(metadata, visible);
+            if (widget == null) return null;
+            var cancellation = widget.BeginResourceLoad();
+            bool loaded = await UIHolderFactory.CreateUIResourceAsync(widget, parent, cancellation.Token);
+            widget.EndResourceLoad(cancellation);
+            if (!loaded)
             {
-                if (widget == null)
-                    FailWidgetCreateImmediate(metadata);
-            }
-        }
-
-        #endregion
-
-        #endregion
-
-        private bool TryBeginWidgetCreate(UIMetadata metadata)
-        {
-            if (metadata == null)
-                return false;
-
-            metadata.CreateUI();
-            if (metadata.View != null)
-                return true;
-
-            metadata.DisposeImmediate();
-            UIMetadataFactory.ReturnToPool(metadata);
-            return false;
-        }
-
-        private async UniTask<UIBase> FinishWidgetCreateAsync(UIMetadata metadata, bool visible)
-        {
-            UIBase view = metadata.View;
-            if (!CanContinueWidgetCreate(metadata, view, UIState.Loaded))
+                widget.DestroyNow();
                 return null;
+            }
+            return FinishWidgetCreate(widget);
+        }
 
-            AddWidget(metadata);
-            if (!await view.InternalInitlized() || !CanContinueWidgetCreate(metadata, view, UIState.Initialized))
+        internal UIWidget CreateWidgetUISync(UIMetadata metadata, Transform parent, bool visible)
+        {
+            UIWidget widget = BeginWidgetCreate(metadata, visible);
+            if (widget == null) return null;
+            if (!UIHolderFactory.CreateUIResourceSync(widget, parent))
+            {
+                widget.DestroyNow();
                 return null;
-
-            view.Visible = visible;
-            if (!visible)
-                return view;
-
-            return view.InternalOpen() ? view : null;
+            }
+            return FinishWidgetCreate(widget);
         }
 
-        private UIBase FinishWidgetCreateSync(UIMetadata metadata, bool visible)
+        protected async UniTask<UIWidget> CreateWidgetAsync(string typeName, Transform parent, bool visible = true)
         {
-            UIBase view = metadata.View;
-            if (!CanContinueWidgetCreate(metadata, view, UIState.Loaded))
+            if (!UIMetaRegistry.TryGet(typeName, out var info)) return null;
+            return await CreateWidgetUIAsync(UIMetadata.Create(Type.GetTypeFromHandle(info.RuntimeTypeHandle)), parent, visible);
+        }
+
+        protected async UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true) where T : UIWidget =>
+            (T)await CreateWidgetUIAsync(UIMetadata.Create(typeof(T)), parent, visible);
+
+        protected UIWidget CreateWidgetSync(string typeName, Transform parent, bool visible = true)
+        {
+            if (!UIMetaRegistry.TryGet(typeName, out var info)) return null;
+            return CreateWidgetUISync(UIMetadata.Create(Type.GetTypeFromHandle(info.RuntimeTypeHandle)), parent, visible);
+        }
+
+        protected T CreateWidgetSync<T>(Transform parent, bool visible = true) where T : UIWidget =>
+            (T)CreateWidgetUISync(UIMetadata.Create(typeof(T)), parent, visible);
+
+        protected T CreateWidgetSync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = false) where T : UIWidget
+        {
+            if (holder == null || !holder.IsValid()) return null;
+            UIMetadata metadata = UIMetadata.Create(typeof(T));
+            if (metadata == null) return null;
+            if (!Type.GetTypeFromHandle(metadata.MetaInfo.HolderRuntimeTypeHandle).IsInstanceOfType(holder))
+            {
+                Log.Exception(new ArgumentException("Holder type does not match the widget.", nameof(holder)));
                 return null;
+            }
+            UIWidget widget = BeginWidgetCreate(metadata, true);
+            if (widget == null) return null;
+            widget.SetDestroyHolderOnDispose(destroyHolderOnDispose);
+            widget.BindUIHolder(holder);
+            return (T)FinishWidgetCreate(widget);
+        }
 
-            AddWidget(metadata);
-            if (!view.InternalInitlizedSync() || !CanContinueWidgetCreate(metadata, view, UIState.Initialized))
+        private UIWidget BeginWidgetCreate(UIMetadata metadata, bool visible)
+        {
+            if (DestroyRequested || metadata == null) return null;
+            if (!typeof(UIWidget).IsAssignableFrom(metadata.UILogicType))
+            {
+                Log.Error("[UI] The UI type must be a Widget.");
                 return null;
-
-            view.Visible = visible;
-            if (!visible)
-                return view;
-
-            return view.InternalOpen() ? view : null;
-        }
-
-        private void AddWidget(UIMetadata meta)
-        {
-            EnsureChildCapacity();
-            int index = _childCount++;
-            _children[index] = meta;
-
-            if (meta.MetaInfo.NeedUpdate)
-            {
-                EnsureUpdateableChildCapacity();
-                _updateableChildren[_updateableChildCount++] = meta;
             }
+            UIWidget widget = (UIWidget)metadata.CreateUI(Service);
+            if (widget == null) return null;
+            widget.Parent = this;
+            widget.OpenIntent = visible;
+            (_children ??= new List<UIWidget>(4)).Add(widget);
+            return widget;
         }
 
-        private bool CanContinueWidgetCreate(UIMetadata meta, UIBase widget, UIState expectedState)
+        private UIWidget FinishWidgetCreate(UIWidget widget)
         {
-            return State != UIState.Destroying
-                   && State != UIState.Destroyed
-                   && ReferenceEquals(meta?.View, widget)
-                   && widget != null
-                   && widget.State == expectedState;
+            if (DestroyRequested || widget.DestroyRequested) return null;
+            bool initialized = widget.InternalInitialize();
+            if (initialized && widget.OpenIntent && ChildrenCanOpen) widget.InternalOpen();
+            return widget.DestroyRequested ? null : widget;
         }
 
-        private async UniTask FailWidgetCreateAsync(UIMetadata meta)
+        public UICloseHandle RemoveWidget(UIWidget widget) =>
+            widget != null && widget.Parent == this ? widget.Destroy() : default;
+
+        internal void DetachWidget(UIWidget widget)
         {
-            if (meta == null)
-                return;
-
-            RemoveChildMetadata(meta);
-            await meta.DisposeAsync();
-            UIMetadataFactory.ReturnToPool(meta);
+            _children.Remove(widget);
+            try { OnWidgetRemoved(widget); }
+            catch (Exception error) { Log.Exception(error); }
         }
 
-        private void FailWidgetCreateImmediate(UIMetadata meta)
-        {
-            if (meta == null)
-                return;
-
-            RemoveChildMetadata(meta);
-            meta.DisposeImmediate();
-            UIMetadataFactory.ReturnToPool(meta);
-        }
-
-        public async UniTask RemoveWidget(UIBase widget)
-        {
-            if (!TryRemoveChild(widget, out var meta))
-            {
-                return;
-            }
-
-            OnWidgetRemoved(widget);
-
-            if (meta != null)
-            {
-                meta.CancelResourceLoad();
-                if (UIStateMachine.IsDisplayActive(widget.State))
-                {
-                    await widget.InternalClose(skipTransition: true);
-                }
-
-                if (meta.MetaInfo.NeedUpdate)
-                {
-                    RemoveUpdateableChild(meta);
-                }
-
-                await meta.DisposeAsync();
-                UIMetadataFactory.ReturnToPool(meta);
-            }
-        }
-
-        protected virtual void OnWidgetRemoved(UIBase widget)
-        {
-        }
-
-        private void RemoveUpdateableChild(UIMetadata meta)
-        {
-            for (int i = 0; i < _updateableChildCount; i++)
-            {
-                if (_updateableChildren[i] != meta)
-                {
-                    continue;
-                }
-
-                int lastIndex = _updateableChildCount - 1;
-                _updateableChildren[i] = _updateableChildren[lastIndex];
-                _updateableChildren[lastIndex] = null;
-                _updateableChildCount = lastIndex;
-                return;
-            }
-        }
-
-        private bool TryRemoveChild(UIBase widget, out UIMetadata meta)
-        {
-            meta = null;
-            if (widget == null)
-            {
-                return false;
-            }
-
-            int index = FindChildIndex(widget);
-            if (index < 0)
-            {
-                return false;
-            }
-
-            meta = RemoveChildAt(index);
-            return true;
-        }
-
-        private bool RemoveChildMetadata(UIMetadata meta)
-        {
-            int index = FindChildIndex(meta);
-            if (index < 0)
-            {
-                return false;
-            }
-
-            RemoveChildAt(index);
-
-            if (meta.MetaInfo.NeedUpdate)
-            {
-                RemoveUpdateableChild(meta);
-            }
-
-            return true;
-        }
-
-        private int FindChildIndex(UIBase widget)
-        {
-            for (int i = 0; i < _childCount; i++)
-            {
-                if (_children[i]?.View == widget)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        private int FindChildIndex(UIMetadata metadata)
-        {
-            for (int i = 0; i < _childCount; i++)
-            {
-                if (_children[i] == metadata)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        private UIMetadata RemoveChildAt(int index)
-        {
-            UIMetadata removed = _children[index];
-            int lastIndex = _childCount - 1;
-            _children[index] = _children[lastIndex];
-            _children[lastIndex] = null;
-            _childCount = lastIndex;
-            return removed;
-        }
-
-        private void EnsureChildCapacity()
-        {
-            if (_children == null)
-            {
-                _children = new UIMetadata[8];
-                return;
-            }
-
-            if (_childCount < _children.Length)
-            {
-                return;
-            }
-
-            Array.Resize(ref _children, _children.Length << 1);
-        }
-
-        private void EnsureUpdateableChildCapacity()
-        {
-            if (_updateableChildren == null)
-            {
-                _updateableChildren = new UIMetadata[4];
-                return;
-            }
-
-            if (_updateableChildCount < _updateableChildren.Length)
-            {
-                return;
-            }
-
-            Array.Resize(ref _updateableChildren, _updateableChildren.Length << 1);
-        }
-
+        protected virtual void OnWidgetRemoved(UIWidget widget) { }
     }
 }

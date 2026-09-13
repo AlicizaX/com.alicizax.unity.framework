@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -19,7 +20,6 @@ namespace AlicizaX
             public delegate void GetInfoHandler(ref MemoryPoolInfo info);
 
             public readonly int PoolId;
-            public readonly Type MemoryType;
             public readonly AcquireHandler Acquire;
             public readonly ReleaseHandler Release;
             public readonly ClearHandler Clear;
@@ -33,10 +33,8 @@ namespace AlicizaX
             public readonly ClearHandler TrimNativeMetadata;
             public readonly ClearHandler ResetStats;
             public int ActiveIndex = -1;
-            public bool ActiveQueueDebt;
 
             public MemoryPoolHandle(
-                Type memoryType,
                 AcquireHandler acquire,
                 ReleaseHandler release,
                 ClearHandler clear,
@@ -51,7 +49,6 @@ namespace AlicizaX
                 ClearHandler resetStats)
             {
                 PoolId = ++s_NextPoolId;
-                MemoryType = memoryType;
                 Acquire = acquire;
                 Release = release;
                 Clear = clear;
@@ -77,8 +74,13 @@ namespace AlicizaX
         private static int s_ActiveCount;
         private static int s_NextPoolId;
         private static MemoryPoolPhase s_Phase = MemoryPoolPhase.Gameplay;
-        private static bool s_HasActiveQueueDebt;
         private static int s_MainThreadId;
+        private static int s_CallbackDepth;
+
+        static MemoryPoolRegistry()
+        {
+            AppDomain.CurrentDomain.DomainUnload += ReleaseNativeOnDomainUnload;
+        }
 
         public static int Count => s_HandleCount;
 
@@ -103,8 +105,6 @@ namespace AlicizaX
         private static void InitializeMainThreadOnLoad()
         {
             InitializeMainThread();
-            AppDomain.CurrentDomain.DomainUnload -= ReleaseNativeOnDomainUnload;
-            AppDomain.CurrentDomain.DomainUnload += ReleaseNativeOnDomainUnload;
         }
 
         private static void ReleaseNativeOnDomainUnload(object sender, EventArgs e)
@@ -114,8 +114,6 @@ namespace AlicizaX
 
         internal static void RegisterNativeReleaser(Action releaser)
         {
-            if (releaser == null)
-                return;
             if (s_NativeReleaserCount == s_NativeReleasers.Length)
             {
                 int newLength = s_NativeReleasers.Length == 0 ? 16 : s_NativeReleasers.Length << 1;
@@ -130,7 +128,7 @@ namespace AlicizaX
         private static void ForceReleaseAllNativeMetadata()
         {
             for (int i = 0; i < s_NativeReleaserCount; i++)
-                s_NativeReleasers[i]?.Invoke();
+                s_NativeReleasers[i]();
             ClearActiveScheduleState();
         }
 
@@ -180,48 +178,26 @@ namespace AlicizaX
         internal static void Register(Type type, MemoryPoolHandle handle)
         {
             AddOrUpdateHandle(type.TypeHandle.Value, handle);
+            ReserveActiveCapacity(s_HandleCount);
         }
 
         internal static void ScheduleTick(MemoryPoolHandle handle)
         {
-            if (handle == null)
-                return;
             if (handle.ActiveIndex >= 0)
-            {
-                handle.ActiveQueueDebt = false;
                 return;
-            }
-
-            if (s_ActiveCount == s_ActivePools.Length)
-            {
-                handle.ActiveQueueDebt = true;
-                s_HasActiveQueueDebt = true;
-                return;
-            }
-
             handle.ActiveIndex = s_ActiveCount;
-            handle.ActiveQueueDebt = false;
             s_ActivePools[s_ActiveCount++] = handle;
         }
 
         internal static void UnscheduleTick(MemoryPoolHandle handle)
         {
-            if (handle == null)
-                return;
-
-            handle.ActiveQueueDebt = false;
             int index = handle.ActiveIndex;
-            if (index < 0 || index >= s_ActiveCount)
-            {
-                handle.ActiveIndex = -1;
+            if (index < 0)
                 return;
-            }
-
             int lastIndex = --s_ActiveCount;
             MemoryPoolHandle last = s_ActivePools[lastIndex];
             s_ActivePools[lastIndex] = null;
             handle.ActiveIndex = -1;
-
             if (index != lastIndex)
             {
                 s_ActivePools[index] = last;
@@ -246,15 +222,10 @@ namespace AlicizaX
             AssertMainThread();
             if (memory == null)
                 return;
-
-            MemoryPoolHandle handle = GetOwnerHandle(memory);
-            if (handle.PoolId == memory.PoolId)
-            {
-                handle.Release(memory);
-                return;
-            }
-
-            throw new InvalidOperationException("MemoryPool.Release(MemoryObject) rejected an object without a valid owner pool.");
+            MemoryPoolHandle handle = memory.OwnerHandle.Inner;
+            if (handle == null)
+                throw new InvalidOperationException("Memory object has no owner pool.");
+            handle.Release(memory);
         }
 
         public static int GetAllInfos(MemoryPoolInfo[] infos)
@@ -284,35 +255,40 @@ namespace AlicizaX
         public static void ClearAll()
         {
             AssertMainThread();
-            Exception exception = null;
-            for (int i = 0; i < s_HandleValues.Length; i++)
-                CaptureFirstException(ref exception, s_HandleValues[i]?.Clear);
-
-            ClearActiveScheduleState();
-            Rethrow(exception);
+            ThrowIfInCallback();
+            List<Exception> exceptions = null;
+            MemoryPoolHandle[] handles = s_HandleValues;
+            for (int i = 0; i < handles.Length; i++)
+                CollectException(ref exceptions, handles[i]?.Clear);
+            Rethrow(exceptions);
         }
 
         public static void CompactAll()
         {
             AssertMainThread();
-            Exception exception = null;
-            for (int i = 0; i < s_HandleValues.Length; i++)
-                CaptureFirstException(ref exception, s_HandleValues[i]?.Compact);
-            Rethrow(exception);
+            ThrowIfInCallback();
+            List<Exception> exceptions = null;
+            MemoryPoolHandle[] handles = s_HandleValues;
+            for (int i = 0; i < handles.Length; i++)
+                CollectException(ref exceptions, handles[i]?.Compact);
+            Rethrow(exceptions);
         }
 
         public static void TrimAllNativeMetadata()
         {
             AssertMainThread();
-            Exception exception = null;
-            for (int i = 0; i < s_HandleValues.Length; i++)
-                CaptureFirstException(ref exception, s_HandleValues[i]?.TrimNativeMetadata);
-            Rethrow(exception);
+            ThrowIfInCallback();
+            List<Exception> exceptions = null;
+            MemoryPoolHandle[] handles = s_HandleValues;
+            for (int i = 0; i < handles.Length; i++)
+                CollectException(ref exceptions, handles[i]?.TrimNativeMetadata);
+            Rethrow(exceptions);
         }
 
         public static void ResetAllStats()
         {
             AssertMainThread();
+            ThrowIfInCallback();
             for (int i = 0; i < s_HandleValues.Length; i++)
                 s_HandleValues[i]?.ResetStats();
         }
@@ -320,36 +296,20 @@ namespace AlicizaX
         public static void ClearAllNativeMetadata()
         {
             AssertMainThread();
-            Exception exception = null;
-            for (int i = 0; i < s_HandleValues.Length; i++)
-                CaptureFirstException(ref exception, s_HandleValues[i]?.ClearNativeMetadata);
-
-            ClearActiveScheduleState();
-            Rethrow(exception);
+            ThrowIfInCallback();
+            List<Exception> exceptions = null;
+            MemoryPoolHandle[] handles = s_HandleValues;
+            for (int i = 0; i < handles.Length; i++)
+                CollectException(ref exceptions, handles[i]?.ClearNativeMetadata);
+            Rethrow(exceptions);
         }
 
         private static void ClearActiveScheduleState()
         {
-            for (int i = 0; i < s_HandleValues.Length; i++)
-            {
-                MemoryPoolHandle handle = s_HandleValues[i];
-                if (handle == null)
-                    continue;
-
-                handle.ActiveIndex = -1;
-                handle.ActiveQueueDebt = false;
-            }
-
             for (int i = 0; i < s_ActiveCount; i++)
-            {
-                MemoryPoolHandle handle = s_ActivePools[i];
-                if (handle != null)
-                    handle.ActiveIndex = -1;
-            }
-
+                s_ActivePools[i].ActiveIndex = -1;
             Array.Clear(s_ActivePools, 0, s_ActiveCount);
             s_ActiveCount = 0;
-            s_HasActiveQueueDebt = false;
         }
 
         public static void Add(Type type, int count)
@@ -367,6 +327,7 @@ namespace AlicizaX
         public static void SetCapacityAll(int softCapacity, int hardCapacity)
         {
             AssertMainThread();
+            ThrowIfInCallback();
             for (int i = 0; i < s_HandleValues.Length; i++)
                 s_HandleValues[i]?.SetCapacity(softCapacity, hardCapacity);
         }
@@ -392,6 +353,8 @@ namespace AlicizaX
         public static void RemoveFromType(Type type, int count)
         {
             AssertMainThread();
+            if (count <= 0)
+                return;
             MemoryPoolHandle handle = GetOrCreateHandle(type);
             MemoryPoolInfo info = default;
             handle.GetInfo(ref info);
@@ -401,68 +364,29 @@ namespace AlicizaX
         public static void TickAll(int frameCount)
         {
             AssertMainThread();
+            ThrowIfInCallback();
             CurrentFrame = frameCount;
-            ProcessActiveQueueDebt();
+            List<Exception> exceptions = null;
             int i = 0;
             while (i < s_ActiveCount)
             {
                 MemoryPoolHandle handle = s_ActivePools[i];
-                if (handle.Tick(frameCount))
+                try
                 {
+                    if (!handle.Tick(frameCount))
+                        UnscheduleTick(handle);
+                }
+                catch (Exception exception)
+                {
+                    (exceptions ??= new List<Exception>()).Add(exception);
+                }
+                if (i < s_ActiveCount && ReferenceEquals(s_ActivePools[i], handle))
                     i++;
-                    continue;
-                }
-
-                int lastIndex = --s_ActiveCount;
-                MemoryPoolHandle last = s_ActivePools[lastIndex];
-                s_ActivePools[lastIndex] = null;
-                handle.ActiveIndex = -1;
-
-                if (i != lastIndex)
-                {
-                    s_ActivePools[i] = last;
-                    last.ActiveIndex = i;
-                }
             }
-            ProcessActiveQueueDebt();
+            Rethrow(exceptions);
         }
 
-        private static void ProcessActiveQueueDebt()
-        {
-            if (!s_HasActiveQueueDebt)
-                return;
-
-            EnsureActiveCapacity(s_ActiveCount + CountDebtPools());
-            s_HasActiveQueueDebt = false;
-            for (int i = 0; i < s_HandleValues.Length; i++)
-            {
-                MemoryPoolHandle handle = s_HandleValues[i];
-                if (handle == null)
-                    continue;
-                if (!handle.ActiveQueueDebt || handle.ActiveIndex >= 0)
-                    continue;
-
-                handle.ActiveQueueDebt = false;
-                ScheduleTick(handle);
-                if (handle.ActiveQueueDebt)
-                    s_HasActiveQueueDebt = true;
-            }
-        }
-
-        private static int CountDebtPools()
-        {
-            int count = 0;
-            for (int i = 0; i < s_HandleValues.Length; i++)
-            {
-                MemoryPoolHandle handle = s_HandleValues[i];
-                if (handle != null && handle.ActiveQueueDebt && handle.ActiveIndex < 0)
-                    count++;
-            }
-
-            return count;
-        }
-
-        private static void EnsureActiveCapacity(int required)
+        private static void ReserveActiveCapacity(int required)
         {
             if (s_ActivePools.Length >= required)
                 return;
@@ -571,20 +495,8 @@ namespace AlicizaX
             throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' could not be materialized.");
         }
 
-        private static MemoryPoolHandle GetOwnerHandle(MemoryObject memory)
-        {
-            MemoryPoolHandle handle = memory.OwnerHandle.IsValid ? memory.OwnerHandle.Inner : null;
-            if (handle == null)
-                throw new InvalidOperationException("Memory object has no owner pool.");
-            if (handle.PoolId != memory.PoolId)
-                throw new InvalidOperationException("Memory object owner pool mismatch.");
-            return handle;
-        }
-
         private static void ValidateMemoryObjectType(Type type)
         {
-            if (type == null)
-                throw new ArgumentNullException(nameof(type));
             if (!type.IsClass)
                 throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must be a class.");
             if (type.IsAbstract)
@@ -597,7 +509,23 @@ namespace AlicizaX
                 throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' must have a public parameterless constructor.");
         }
 
-        private static void CaptureFirstException(ref Exception first, MemoryPoolHandle.ClearHandler action)
+        internal static void BeginCallback()
+        {
+            s_CallbackDepth++;
+        }
+
+        internal static void EndCallback()
+        {
+            s_CallbackDepth--;
+        }
+
+        private static void ThrowIfInCallback()
+        {
+            if (s_CallbackDepth != 0)
+                throw new InvalidOperationException("Global memory pool maintenance is not allowed during a pool callback.");
+        }
+
+        private static void CollectException(ref List<Exception> exceptions, MemoryPoolHandle.ClearHandler action)
         {
             if (action == null)
                 return;
@@ -608,15 +536,14 @@ namespace AlicizaX
             }
             catch (Exception exception)
             {
-                if (first == null)
-                    first = exception;
+                (exceptions ??= new List<Exception>()).Add(exception);
             }
         }
 
-        private static void Rethrow(Exception exception)
+        private static void Rethrow(List<Exception> exceptions)
         {
-            if (exception != null)
-                ExceptionDispatchInfo.Capture(exception).Throw();
+            if (exceptions != null)
+                ExceptionDispatchInfo.Capture(exceptions.Count == 1 ? exceptions[0] : new AggregateException(exceptions)).Throw();
         }
     }
 }

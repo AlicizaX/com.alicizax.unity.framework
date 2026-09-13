@@ -53,15 +53,14 @@ namespace AlicizaX.Audio.Runtime
         private AudioService _audioService;
         private Transform _cachedTransform;
         private ulong _handle;
-        private bool _isPlaying;
         private bool _insideTriggerRange;
 
         public ulong Handle => _handle;
-        public bool IsPlaying => _isPlaying;
+        public bool IsPlaying => _audioService != null && _audioService.IsPlaying(_handle);
 
         private void Awake()
         {
-            EnsureCachePolicyMigrated();
+            MigrateCachePolicy();
             _cachedTransform = transform;
         }
 
@@ -82,15 +81,13 @@ namespace AlicizaX.Audio.Runtime
                 return;
             }
 
-            if (_audioService == null)
+            if (_audioService == null && !TryBindService())
             {
-                if (!TryBindService())
-                {
-                    return;
-                }
+                return;
             }
 
-            if (!_isPlaying && !_insideTriggerRange && !HasPlayableAsset())
+            bool playing = IsPlaying;
+            if (!playing && !_insideTriggerRange && !HasPlayableAsset())
             {
                 return;
             }
@@ -104,13 +101,12 @@ namespace AlicizaX.Audio.Runtime
             }
 
             Vector3 offset = listener.position - _cachedTransform.position;
-            float range = _isPlaying ? m_TriggerRange + m_TriggerHysteresis : m_TriggerRange;
+            float range = playing ? m_TriggerRange + m_TriggerHysteresis : m_TriggerRange;
             float sqrRange = range * range;
 
             if (offset.sqrMagnitude <= sqrRange)
             {
-                RefreshPlaybackState();
-                if (!_insideTriggerRange || (m_Loop && !_isPlaying))
+                if (!_insideTriggerRange || (m_Loop && !playing))
                 {
                     _insideTriggerRange = true;
                     StartPlayback();
@@ -147,17 +143,12 @@ namespace AlicizaX.Audio.Runtime
 
         private bool TryBindService()
         {
-            if (AppServices.HasWorld && AppServices.App.TryGet(out _audioService))
-            {
-                return true;
-            }
-
-            return false;
+            return AppServices.HasWorld && AppServices.App.TryGet(out _audioService);
         }
 
         private void StartPlayback()
         {
-            if (_audioService == null || _isPlaying || !HasPlayableAsset())
+            if (_audioService == null || IsPlaying || !HasPlayableAsset())
             {
                 return;
             }
@@ -201,11 +192,7 @@ namespace AlicizaX.Audio.Runtime
             }
             else
             {
-                Vector3 position = transform.position;
-                if (_cachedTransform != null)
-                {
-                    position = _cachedTransform.position;
-                }
+                Vector3 position = _cachedTransform != null ? _cachedTransform.position : transform.position;
 
                 _handle = m_ClipMode == AudioEmitterClipMode.Clip
                     ? _audioService.Play3D(
@@ -225,28 +212,19 @@ namespace AlicizaX.Audio.Runtime
                         spatial,
                         options);
             }
-
-            _isPlaying = _handle != 0UL;
         }
 
         private void StopPlayback()
         {
-            if (!_isPlaying)
-            {
-                _handle = 0UL;
-                return;
-            }
-
-            if (_audioService != null && _handle != 0UL)
+            if (_audioService != null)
             {
                 _audioService.Stop(_handle, m_StopWithFadeout);
             }
 
             _handle = 0UL;
-            _isPlaying = false;
         }
 
-        private void EnsureCachePolicyMigrated()
+        private void MigrateCachePolicy()
         {
             if (m_CachePolicyMigrated)
             {
@@ -264,25 +242,9 @@ namespace AlicizaX.Audio.Runtime
                 : !string.IsNullOrEmpty(m_Address);
         }
 
-        private void RefreshPlaybackState()
-        {
-            if (!_isPlaying || _audioService == null || _handle == 0UL)
-            {
-                return;
-            }
-
-            if (_audioService.IsPlaying(_handle))
-            {
-                return;
-            }
-
-            _handle = 0UL;
-            _isPlaying = false;
-        }
-
         private void OnValidate()
         {
-            EnsureCachePolicyMigrated();
+            MigrateCachePolicy();
             if (m_MaxDistance < m_MinDistance)
             {
                 m_MaxDistance = m_MinDistance;

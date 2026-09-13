@@ -23,12 +23,6 @@ namespace AlicizaX
             get => _handle != null;
         }
 
-        internal int PoolId
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _handle != null ? _handle.PoolId : 0;
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public MemoryObject Acquire()
         {

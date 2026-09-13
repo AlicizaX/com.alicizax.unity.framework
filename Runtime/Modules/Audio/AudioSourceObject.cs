@@ -6,32 +6,17 @@ namespace AlicizaX.Audio.Runtime
 {
     internal sealed class AudioSourceObject : ObjectBase<AudioSource>
     {
-        private AudioSource _source;
         private AudioLowPassFilter _lowPassFilter;
+        private GameObject _gameObject;
 
-        public AudioSource Source => _source;
+        public AudioSource Source => Target;
         public AudioLowPassFilter LowPassFilter => _lowPassFilter;
 
-        internal AudioLowPassFilter EnsureLowPassFilter()
+        internal void AttachLowPassFilter()
         {
-            if (_lowPassFilter != null)
-            {
-                return _lowPassFilter;
-            }
-
-            if (_source == null)
-            {
-                return null;
-            }
-
-            if (!_source.TryGetComponent(out _lowPassFilter))
-            {
-                _lowPassFilter = _source.gameObject.AddComponent<AudioLowPassFilter>();
-            }
-
+            _lowPassFilter = Source.gameObject.AddComponent<AudioLowPassFilter>();
             _lowPassFilter.enabled = false;
             _lowPassFilter.cutoffFrequency = 22000f;
-            return _lowPassFilter;
         }
 
         public static AudioSourceObject Create(string name, AudioSource source, AudioLowPassFilter lowPassFilter)
@@ -43,56 +28,63 @@ namespace AlicizaX.Audio.Runtime
 
             AudioSourceObject audioSourceObject = MemoryPool.Acquire<AudioSourceObject>();
             audioSourceObject.Initialize(name, source);
-            audioSourceObject._source = source;
+            audioSourceObject._gameObject = source.gameObject;
             audioSourceObject._lowPassFilter = lowPassFilter;
             return audioSourceObject;
         }
 
         protected internal override void OnSpawn()
         {
-            if (_source != null)
+            if (_gameObject != null)
             {
-                _source.gameObject.SetActive(true);
+                _gameObject.SetActive(true);
             }
         }
 
         protected internal override void OnUnspawn()
         {
             ResetSource();
-            if (_source != null)
+            if (_gameObject != null)
             {
-                _source.gameObject.SetActive(false);
+                _gameObject.SetActive(false);
             }
         }
 
         protected internal override void Release(bool isShutdown)
         {
-            if (_source != null)
+            if (_gameObject != null)
             {
-                Object.Destroy(_source.gameObject);
+                if (Application.isPlaying)
+                {
+                    Object.Destroy(_gameObject);
+                }
+                else
+                {
+                    Object.DestroyImmediate(_gameObject);
+                }
             }
         }
 
         public override void Clear()
         {
             base.Clear();
-            _source = null;
             _lowPassFilter = null;
+            _gameObject = null;
         }
 
         private void ResetSource()
         {
-            if (_source == null)
+            if (Source == null)
             {
                 return;
             }
 
-            _source.Stop();
-            _source.clip = null;
-            _source.loop = false;
-            _source.volume = 1f;
-            _source.pitch = 1f;
-            _source.spatialBlend = 0f;
+            Source.Stop();
+            Source.clip = null;
+            Source.loop = false;
+            Source.volume = 1f;
+            Source.pitch = 1f;
+            Source.spatialBlend = 0f;
 
             if (_lowPassFilter != null)
             {

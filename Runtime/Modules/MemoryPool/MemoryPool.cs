@@ -99,13 +99,15 @@ namespace AlicizaX
         {
             softCapacity = Math.Max(softCapacity, MinimumFreeReserveLimit);
             hardCapacity = Math.Max(hardCapacity, softCapacity);
+            MemoryPoolRegistry.SetCapacityAll(softCapacity, hardCapacity);
             DefaultSoftFreeReserveLimit = softCapacity;
             DefaultHardFreeReserveLimit = hardCapacity;
-            MemoryPoolRegistry.SetCapacityAll(softCapacity, hardCapacity);
         }
 
         public static void Remove<T>(int count) where T : MemoryObject, new()
         {
+            if (count <= 0)
+                return;
             int target = MemoryPool<T>.UnusedCount - count;
             MemoryPool<T>.Shrink(target);
         }

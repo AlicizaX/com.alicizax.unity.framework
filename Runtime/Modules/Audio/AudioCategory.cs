@@ -8,12 +8,19 @@ namespace AlicizaX.Audio.Runtime
         private readonly AudioService _service;
         private readonly AudioAgent[] _agents;
         private readonly AudioAgent[] _activeAgents;
-        private readonly AudioAgent[] _playHeap;
+        private static readonly byte[] BitIndices =
+        {
+            0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+            31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+        };
+
+        private readonly AudioAgent[] _priorityTails = new AudioAgent[257];
+        private readonly uint[] _priorityMasks = new uint[9];
+        private uint _priorityGroups;
         private readonly int[] _freeStack;
         private readonly int _globalIndexOffset;
         private int _createdCount;
         private int _activeCount;
-        private int _heapCount;
         private int _freeCount;
         private bool _enabled;
 
@@ -22,11 +29,8 @@ namespace AlicizaX.Audio.Runtime
         internal Transform InstanceRoot { get; private set; }
         internal AudioMixerGroup MixerGroup { get; }
         internal AudioGroupConfig Config { get; }
-        internal int Capacity => _agents.Length;
         internal int CreatedCount => _createdCount;
         internal int ActiveCount => _activeCount;
-        internal int FreeCount => _freeCount;
-        internal int HeapCount => _heapCount;
         internal bool Enabled
         {
             get => _enabled;
@@ -61,17 +65,13 @@ namespace AlicizaX.Audio.Runtime
             int capacity = config.MaxSourceCount;
             _agents = new AudioAgent[capacity];
             _activeAgents = new AudioAgent[capacity];
-            _playHeap = new AudioAgent[capacity];
             _freeStack = new int[capacity];
 
             int initialCount = config.InitialSourceCount;
             for (int i = 0; i < initialCount; i++)
             {
                 AudioAgent agent = CreateAgent();
-                if (agent != null)
-                {
-                    _freeStack[_freeCount++] = agent.Index;
-                }
+                _freeStack[_freeCount++] = agent.Index;
             }
         }
 
@@ -83,18 +83,27 @@ namespace AlicizaX.Audio.Runtime
             }
 
             AudioAgent agent = AcquireAgent(request);
-            return agent != null ? agent.Play(request) : 0UL;
+            if (agent == null)
+            {
+                return 0UL;
+            }
+
+            try
+            {
+                return agent.Play(request);
+            }
+            catch
+            {
+                agent.Stop(false);
+                throw;
+            }
         }
 
         internal void Stop(bool fadeout)
         {
             for (int i = _activeCount - 1; i >= 0; i--)
             {
-                AudioAgent agent = _activeAgents[i];
-                if (agent != null)
-                {
-                    agent.Stop(fadeout);
-                }
+                _activeAgents[i].Stop(fadeout);
             }
         }
 
@@ -104,11 +113,6 @@ namespace AlicizaX.Audio.Runtime
             while (_createdCount < targetCount)
             {
                 AudioAgent agent = CreateAgent();
-                if (agent == null)
-                {
-                    return;
-                }
-
                 _freeStack[_freeCount++] = agent.Index;
             }
         }
@@ -153,35 +157,39 @@ namespace AlicizaX.Audio.Runtime
             info.CreatedCount = _createdCount;
             info.ActiveCount = _activeCount;
             info.FreeCount = _freeCount;
-            info.HeapCount = _heapCount;
+            info.HeapCount = _activeCount;
         }
 
         internal void MarkOccupied(AudioAgent agent)
         {
-            if (agent.ActiveIndex < 0)
+            agent.ActiveIndex = _activeCount;
+            _activeAgents[_activeCount++] = agent;
+            int priority = agent.PlaybackPriority;
+            AudioAgent tail = _priorityTails[priority];
+            if (tail == null)
             {
-                agent.ActiveIndex = _activeCount;
-                _activeAgents[_activeCount++] = agent;
+                agent.PriorityPrev = agent;
+                agent.PriorityNext = agent;
+                _priorityMasks[priority >> 5] |= 1U << (priority & 31);
+                _priorityGroups |= 1U << (priority >> 5);
+            }
+            else
+            {
+                AudioAgent head = tail.PriorityNext;
+                agent.PriorityPrev = tail;
+                agent.PriorityNext = head;
+                tail.PriorityNext = agent;
+                head.PriorityPrev = agent;
             }
 
-            if (agent.HeapIndex < 0)
-            {
-                int heapIndex = _heapCount++;
-                _playHeap[heapIndex] = agent;
-                agent.HeapIndex = heapIndex;
-                SiftHeapUp(heapIndex);
-            }
+            _priorityTails[priority] = agent;
         }
 
         internal void MarkFree(AudioAgent agent)
         {
             RemoveActive(agent);
-            RemoveHeap(agent);
-
-            if (_freeCount < _freeStack.Length)
-            {
-                _freeStack[_freeCount++] = agent.Index;
-            }
+            RemovePriority(agent);
+            _freeStack[_freeCount++] = agent.Index;
         }
 
         internal void Shutdown()
@@ -201,13 +209,19 @@ namespace AlicizaX.Audio.Runtime
             }
 
             _activeCount = 0;
-            _heapCount = 0;
             _freeCount = 0;
             _createdCount = 0;
 
             if (InstanceRoot != null)
             {
-                Object.Destroy(InstanceRoot.gameObject);
+                if (Application.isPlaying)
+                {
+                    Object.Destroy(InstanceRoot.gameObject);
+                }
+                else
+                {
+                    Object.DestroyImmediate(InstanceRoot.gameObject);
+                }
                 InstanceRoot = null;
             }
         }
@@ -225,31 +239,22 @@ namespace AlicizaX.Audio.Runtime
                 return CreateAgent();
             }
 
-            if (_heapCount <= 0)
-            {
-                return null;
-            }
-
-            AudioAgent candidate = _playHeap[0];
-            int incomingPriority = ResolvePlaybackPriority(request);
-            if (candidate.PlaybackPriority > incomingPriority)
+            int group = LowestSetBit(_priorityGroups);
+            int priority = (group << 5) + LowestSetBit(_priorityMasks[group]);
+            AudioAgent candidate = _priorityTails[priority].PriorityNext;
+            if (priority > AudioAgent.ResolvePlaybackPriority(request, Config))
             {
                 return null;
             }
 
             RemoveActive(candidate);
-            RemoveHeapAt(0);
+            RemovePriority(candidate);
             return candidate;
         }
 
         private AudioAgent CreateAgent()
         {
             int index = _createdCount;
-            if ((uint)index >= (uint)_agents.Length)
-            {
-                return null;
-            }
-
             AudioSourceObject sourceObject = _service.AcquireSourceObject(this, index);
             AudioAgent agent = MemoryPool.Acquire<AudioAgent>();
             agent.Initialize(_service, this, index, _globalIndexOffset + index, sourceObject);
@@ -278,109 +283,43 @@ namespace AlicizaX.Audio.Runtime
             agent.ActiveIndex = -1;
         }
 
-        private void RemoveHeap(AudioAgent agent)
+        private void RemovePriority(AudioAgent agent)
         {
-            int index = agent.HeapIndex;
-            if (index >= 0)
-            {
-                RemoveHeapAt(index);
-            }
-        }
-
-        private void RemoveHeapAt(int index)
-        {
-            int lastIndex = --_heapCount;
-            AudioAgent removed = _playHeap[index];
-            AudioAgent last = _playHeap[lastIndex];
-            _playHeap[lastIndex] = null;
-            removed.HeapIndex = -1;
-
-            if (index == lastIndex)
+            AudioAgent next = agent.PriorityNext;
+            if (next == null)
             {
                 return;
             }
 
-            _playHeap[index] = last;
-            last.HeapIndex = index;
-            int parent = (index - 1) >> 1;
-            if (index > 0 && IsBetterStealCandidate(last, _playHeap[parent]))
+            int priority = agent.PlaybackPriority;
+            if (ReferenceEquals(next, agent))
             {
-                SiftHeapUp(index);
+                _priorityTails[priority] = null;
+                int group = priority >> 5;
+                _priorityMasks[group] &= ~(1U << (priority & 31));
+                if (_priorityMasks[group] == 0U)
+                {
+                    _priorityGroups &= ~(1U << group);
+                }
             }
             else
             {
-                SiftHeapDown(index);
-            }
-        }
-
-        private void SiftHeapUp(int index)
-        {
-            AudioAgent item = _playHeap[index];
-            while (index > 0)
-            {
-                int parent = (index - 1) >> 1;
-                AudioAgent parentAgent = _playHeap[parent];
-                if (!IsBetterStealCandidate(item, parentAgent))
+                AudioAgent previous = agent.PriorityPrev;
+                previous.PriorityNext = next;
+                next.PriorityPrev = previous;
+                if (ReferenceEquals(_priorityTails[priority], agent))
                 {
-                    break;
+                    _priorityTails[priority] = previous;
                 }
-
-                _playHeap[index] = parentAgent;
-                parentAgent.HeapIndex = index;
-                index = parent;
             }
 
-            _playHeap[index] = item;
-            item.HeapIndex = index;
+            agent.PriorityPrev = null;
+            agent.PriorityNext = null;
         }
 
-        private void SiftHeapDown(int index)
+        private static int LowestSetBit(uint mask)
         {
-            AudioAgent item = _playHeap[index];
-            int half = _heapCount >> 1;
-            while (index < half)
-            {
-                int child = (index << 1) + 1;
-                int right = child + 1;
-                AudioAgent childAgent = _playHeap[child];
-                if (right < _heapCount && IsBetterStealCandidate(_playHeap[right], childAgent))
-                {
-                    child = right;
-                    childAgent = _playHeap[child];
-                }
-
-                if (!IsBetterStealCandidate(childAgent, item))
-                {
-                    break;
-                }
-
-                _playHeap[index] = childAgent;
-                childAgent.HeapIndex = index;
-                index = child;
-            }
-
-            _playHeap[index] = item;
-            item.HeapIndex = index;
-        }
-
-        private static bool IsBetterStealCandidate(AudioAgent left, AudioAgent right)
-        {
-            if (left.PlaybackPriority != right.PlaybackPriority)
-            {
-                return left.PlaybackPriority < right.PlaybackPriority;
-            }
-
-            return left.StartedAt < right.StartedAt;
-        }
-
-        private int ResolvePlaybackPriority(AudioPlayRequest request)
-        {
-            if (request != null && request.Priority > 0)
-            {
-                return Mathf.Clamp(request.Priority, 0, 256);
-            }
-
-            return Mathf.Clamp(256 - Config.SourcePriority, 0, 256);
+            return BitIndices[unchecked(((mask & (0U - mask)) * 0x077CB531U) >> 27)];
         }
     }
 }

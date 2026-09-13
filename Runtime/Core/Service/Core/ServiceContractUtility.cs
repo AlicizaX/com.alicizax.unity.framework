@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 
 namespace AlicizaX
 {
     internal static class ServiceContractUtility
     {
+        public static readonly IEqualityComparer<RuntimeTypeHandle> HandleComparer = new ContractHandleComparer();
+
         public static ServiceContracts Create(Type serviceType)
             => new ServiceContracts(serviceType, null, null, true);
 
@@ -15,6 +18,13 @@ namespace AlicizaX
 
         public static ServiceContracts CreateExplicit(Type contractType, Type extraContractType)
             => new ServiceContracts(null, contractType, extraContractType, false);
+
+        private sealed class ContractHandleComparer : IEqualityComparer<RuntimeTypeHandle>
+        {
+            public bool Equals(RuntimeTypeHandle x, RuntimeTypeHandle y) => x.Value == y.Value;
+
+            public int GetHashCode(RuntimeTypeHandle value) => value.Value.GetHashCode();
+        }
     }
 
     internal readonly struct ServiceContracts

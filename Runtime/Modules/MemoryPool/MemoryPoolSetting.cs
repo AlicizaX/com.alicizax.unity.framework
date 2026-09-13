@@ -76,7 +76,7 @@ namespace AlicizaX
 
         private void OnDestroy()
         {
-            MemoryPoolRegistry.TrimAllNativeMetadata();
+            MemoryPoolRegistry.ClearAllNativeMetadata();
         }
 
         private void NormalizeSettings()

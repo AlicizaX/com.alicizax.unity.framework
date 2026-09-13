@@ -15,6 +15,8 @@ namespace AlicizaX.UI.Runtime
         {
             m_LayerBlock = new GameObject("LayerBlock");
             RectTransform rect = m_LayerBlock.AddComponent<RectTransform>();
+            rect.SetParent(UICanvasRoot);
+            rect.SetAsLastSibling();
             Canvas canvas = m_LayerBlock.AddComponent<Canvas>();
             canvas.renderMode = UICanvas.renderMode;
             canvas.worldCamera = UICamera;
@@ -23,19 +25,13 @@ namespace AlicizaX.UI.Runtime
             canvas.sortingOrder = UI_BLOCK_SORTING_ORDER;
             m_LayerBlock.AddComponent<GraphicRaycaster>();
             m_LayerBlock.AddComponent<UIBlock>();
-            rect.SetParent(UICanvasRoot);
-            rect.SetAsLastSibling();
             rect.ResetToFullScreen();
             SetLayerBlockOption(false);
         }
 
-        /// <summary>
-        /// 设置 UI 阻挡层，并在指定时长后自动解除。
-        /// </summary>
-        /// <param name="timeDuration">阻挡持续时间，单位为秒</param>
         public void SetUIBlock(float timeDuration)
         {
-            ITimerService timerService = GetTimerService();
+            ITimerService timerService = _timerService;
             if (m_LastCountDownHandle != 0UL)
             {
                 timerService.RemoveTimer(m_LastCountDownHandle);
@@ -50,12 +46,9 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        /// <summary>
-        /// 强制退出 UI 阻挡状态。
-        /// </summary>
         public void ForceExitBlock()
         {
-            ITimerService timerService = GetTimerService();
+            ITimerService timerService = _timerService;
             if (m_LastCountDownHandle != 0UL)
             {
                 timerService.RemoveTimer(m_LastCountDownHandle);

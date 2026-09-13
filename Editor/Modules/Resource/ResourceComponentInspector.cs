@@ -36,7 +36,6 @@ namespace AlicizaX.Resource.Editor
         private readonly ResourceBindingInfo[] _bindingInfos = new ResourceBindingInfo[DebugPageSize];
 
         private SerializedProperty _milliseconds = null;
-        private SerializedProperty _minUnloadUnusedAssetsInterval = null;
         private SerializedProperty _maxUnloadUnusedAssetsInterval = null;
         private SerializedProperty _useSystemUnloadUnusedAssets = null;
         private SerializedProperty _assetRecordCapacity = null;
@@ -45,6 +44,7 @@ namespace AlicizaX.Resource.Editor
         private SerializedProperty _bindingSlotCapacity = null;
         private SerializedProperty _registeredTargetCapacity = null;
         private SerializedProperty _idleAssetExpireTime = null;
+        private SerializedProperty _idleAssetCapacity = null;
         private SerializedProperty _expireProcessCountPerFrame = null;
         private SerializedProperty _expireProcessCountWhenUnloading = null;
         private SerializedProperty _downloadingMaxNum = null;
@@ -69,13 +69,12 @@ namespace AlicizaX.Resource.Editor
         private bool _showOwnerDebug = true;
         private bool _showBindingDebug = true;
         private bool _showReleasedAssetSlots;
-        private double _nextDebugRepaintTime;
 
         public override void OnInspectorGUI()
         {
             base.OnInspectorGUI();
             serializedObject.Update();
-            EnsureStyles();
+            LoadStyles();
 
             ResourceComponent component = (ResourceComponent)target;
             DrawComponentPanel(component);
@@ -94,7 +93,6 @@ namespace AlicizaX.Resource.Editor
         private void OnEnable()
         {
             _milliseconds = serializedObject.FindProperty("milliseconds");
-            _minUnloadUnusedAssetsInterval = serializedObject.FindProperty("minUnloadUnusedAssetsInterval");
             _maxUnloadUnusedAssetsInterval = serializedObject.FindProperty("maxUnloadUnusedAssetsInterval");
             _useSystemUnloadUnusedAssets = serializedObject.FindProperty("useSystemUnloadUnusedAssets");
             _assetRecordCapacity = serializedObject.FindProperty("assetRecordCapacity");
@@ -103,6 +101,7 @@ namespace AlicizaX.Resource.Editor
             _bindingSlotCapacity = serializedObject.FindProperty("bindingSlotCapacity");
             _registeredTargetCapacity = serializedObject.FindProperty("registeredTargetCapacity");
             _idleAssetExpireTime = serializedObject.FindProperty("idleAssetExpireTime");
+            _idleAssetCapacity = serializedObject.FindProperty("idleAssetCapacity");
             _expireProcessCountPerFrame = serializedObject.FindProperty("expireProcessCountPerFrame");
             _expireProcessCountWhenUnloading = serializedObject.FindProperty("expireProcessCountWhenUnloading");
             _downloadingMaxNum = serializedObject.FindProperty("downloadingMaxNum");
@@ -119,7 +118,7 @@ namespace AlicizaX.Resource.Editor
             _showReleasedAssetSlots = EditorPrefs.GetBool(ShowReleasedAssetSlotsKey, false);
         }
 
-        private void EnsureStyles()
+        private void LoadStyles()
         {
             if (_panelStyle != null)
             {
@@ -195,19 +194,6 @@ namespace AlicizaX.Resource.Editor
 
             DrawSectionBegin("Unload");
             DrawToggleRow("Use System Unload", _useSystemUnloadUnusedAssets);
-
-            float minUnloadUnusedAssetsInterval = _minUnloadUnusedAssetsInterval.floatValue;
-            if (DrawFloatSliderRow("Min Unload Unused Assets Interval", minUnloadUnusedAssetsInterval, 0f, 3600f, out minUnloadUnusedAssetsInterval))
-            {
-                if (EditorApplication.isPlaying)
-                {
-                    component.MinUnloadUnusedAssetsInterval = minUnloadUnusedAssetsInterval;
-                }
-                else
-                {
-                    _minUnloadUnusedAssetsInterval.floatValue = minUnloadUnusedAssetsInterval;
-                }
-            }
 
             float maxUnloadUnusedAssetsInterval = _maxUnloadUnusedAssetsInterval.floatValue;
             if (DrawFloatSliderRow("Max Unload Unused Assets Interval", maxUnloadUnusedAssetsInterval, 0f, 3600f, out maxUnloadUnusedAssetsInterval))
@@ -316,6 +302,15 @@ namespace AlicizaX.Resource.Editor
                     {
                         _registeredTargetCapacity.intValue = registeredTargetCapacity;
                     }
+                }
+
+                int idleAssetCapacity = _idleAssetCapacity.intValue;
+                if (DrawDelayedIntRow("Idle Asset Capacity", idleAssetCapacity, out idleAssetCapacity))
+                {
+                    if (EditorApplication.isPlaying)
+                        component.IdleAssetCapacity = idleAssetCapacity;
+                    else
+                        _idleAssetCapacity.intValue = Mathf.Max(0, idleAssetCapacity);
                 }
 
                 float idleAssetExpireTime = _idleAssetExpireTime.floatValue;

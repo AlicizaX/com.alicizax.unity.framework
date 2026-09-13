@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.Audio.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.Audio.Tests", "AlicizaX.Framework.Resources.Tests", "UniTask.Runtime", "YooAsset"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

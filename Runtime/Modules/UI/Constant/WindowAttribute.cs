@@ -6,20 +6,10 @@ namespace AlicizaX.UI.Runtime
     [AttributeUsage(AttributeTargets.Class)]
     public class WindowAttribute : Attribute
     {
-        /// <summary>
-        /// 窗口层级
-        /// </summary>
         public readonly UILayer WindowLayer;
 
-        /// <summary>
-        /// 延时关闭
-        /// </summary>
         public readonly int CacheTime;
 
-        /// <summary>
-        /// </summary>
-        /// <param name="windowLayer">显示层级</param>
-        /// <param name="cacheTime">缓存时间/s  -1永久 0不 >=1生效</param>
         public WindowAttribute(UILayer windowLayer, int cacheTime = 0)
         {
             WindowLayer = windowLayer;

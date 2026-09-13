@@ -11,7 +11,6 @@ namespace AlicizaX.Audio.Runtime
 
         private AudioService _service;
         private AudioCategory _category;
-        private AudioSourceObject _sourceObject;
         private AudioSource _source;
         private AudioLowPassFilter _lowPassFilter;
         private AudioClipCacheEntry _clipEntry;
@@ -41,13 +40,11 @@ namespace AlicizaX.Audio.Runtime
 
         internal int Index { get; private set; }
         internal int GlobalIndex { get; private set; }
-        internal int HeapIndex { get; set; }
+        internal AudioAgent PriorityPrev;
+        internal AudioAgent PriorityNext;
         internal int ActiveIndex { get; set; }
         internal ulong Handle => _handle;
-        internal int Generation => _generation;
-        internal bool IsFree => _state == AudioAgentRuntimeState.Free;
         internal bool IsPlayingState => _state == AudioAgentRuntimeState.Playing || _state == AudioAgentRuntimeState.Loading || _state == AudioAgentRuntimeState.FadingIn || _state == AudioAgentRuntimeState.FadingOut;
-        internal float StartedAt => _startedAt;
         internal int PlaybackPriority => _playbackPriority;
 
         public AudioAgent() { }
@@ -58,7 +55,8 @@ namespace AlicizaX.Audio.Runtime
             _category = category;
             Index = index;
             GlobalIndex = globalIndex;
-            HeapIndex = -1;
+            PriorityPrev = null;
+            PriorityNext = null;
             ActiveIndex = -1;
             BindSource(sourceObject);
             ResetState();
@@ -67,6 +65,10 @@ namespace AlicizaX.Audio.Runtime
         internal ulong Play(AudioPlayRequest request)
         {
             StopImmediate(false);
+            if (_source == null)
+            {
+                BindSource(_service.ReplaceSourceObject(_category, Index));
+            }
 
             _generation++;
             if (_generation == int.MaxValue)
@@ -102,22 +104,10 @@ namespace AlicizaX.Audio.Runtime
                 return _handle;
             }
 
-            if (string.IsNullOrEmpty(request.Address))
+            if (!_service.RequestClip(request.Address, request.Async, request.CachePolicy, this, _generation))
             {
                 StopImmediate(true);
                 return 0UL;
-            }
-
-            if (!_service.RequestClip(request.Address, request.Async, request.CachePolicy, this, _generation, out AudioClipCacheEntry entry, out AudioLoadRequest loadRequest))
-            {
-                StopImmediate(true);
-                return 0UL;
-            }
-
-            _loadRequest = loadRequest;
-            if (entry != null)
-            {
-                OnClipReady(entry, _generation);
             }
 
             return _handle;
@@ -125,7 +115,7 @@ namespace AlicizaX.Audio.Runtime
 
         internal bool OnClipReady(AudioClipCacheEntry entry, int generation)
         {
-            if (_state != AudioAgentRuntimeState.Loading || generation != _generation || entry == null || entry.Clip == null)
+            if (_state != AudioAgentRuntimeState.Loading || generation != _generation)
             {
                 return false;
             }
@@ -146,12 +136,9 @@ namespace AlicizaX.Audio.Runtime
             }
         }
 
-        internal void OnClipLoadCancelled(AudioLoadRequest request)
+        internal void SetLoadRequest(AudioLoadRequest request)
         {
-            if (ReferenceEquals(_loadRequest, request))
-            {
-                _loadRequest = null;
-            }
+            _loadRequest = request;
         }
 
         internal void Stop(bool fadeout)
@@ -216,12 +203,30 @@ namespace AlicizaX.Audio.Runtime
 
         internal void Update(float deltaTime)
         {
-            if (_state == AudioAgentRuntimeState.Free)
+            if (_source == null || !_source.isActiveAndEnabled)
             {
+                StopImmediate(true);
                 return;
             }
 
-            UpdateFollowTarget();
+            if (!ReferenceEquals(_followTarget, null))
+            {
+                if (_followTarget == null || !_followTarget.gameObject.activeInHierarchy)
+                {
+                    StopImmediate(true);
+                    return;
+                }
+
+                _transform.position = _followTarget.position + _followOffset;
+                _transform.rotation = _followTarget.rotation;
+            }
+
+            if (_state != AudioAgentRuntimeState.Loading && !_loop && !_source.isPlaying)
+            {
+                StopImmediate(true);
+                return;
+            }
+
             UpdateOcclusion();
             bool volumeChanged = UpdateVolumeFade(deltaTime);
 
@@ -243,12 +248,6 @@ namespace AlicizaX.Audio.Runtime
 
             if (_state == AudioAgentRuntimeState.Playing)
             {
-                if (!_loop && _source != null && !_source.isPlaying)
-                {
-                    StopImmediate(true);
-                    return;
-                }
-
                 if (volumeChanged)
                 {
                     ApplyRuntimeVolume(1f);
@@ -276,7 +275,6 @@ namespace AlicizaX.Audio.Runtime
         internal void Shutdown()
         {
             StopImmediate(true);
-            _sourceObject = null;
             _source = null;
             _lowPassFilter = null;
             _transform = null;
@@ -288,7 +286,6 @@ namespace AlicizaX.Audio.Runtime
         {
             _service = null;
             _category = null;
-            _sourceObject = null;
             _source = null;
             _lowPassFilter = null;
             _clipEntry = null;
@@ -302,7 +299,8 @@ namespace AlicizaX.Audio.Runtime
             _loop = false;
             Index = 0;
             GlobalIndex = 0;
-            HeapIndex = -1;
+            PriorityPrev = null;
+            PriorityNext = null;
             ActiveIndex = -1;
             _generation = 0;
             _handle = 0UL;
@@ -352,7 +350,6 @@ namespace AlicizaX.Audio.Runtime
 
         private void BindSource(AudioSourceObject sourceObject)
         {
-            _sourceObject = sourceObject;
             _source = sourceObject.Source;
             _lowPassFilter = sourceObject.LowPassFilter;
             _transform = _source.transform;
@@ -360,7 +357,7 @@ namespace AlicizaX.Audio.Runtime
 
         private void StartClip(AudioClip clip)
         {
-            if (_source == null || clip == null)
+            if (_source == null)
             {
                 StopImmediate(true);
                 return;
@@ -406,18 +403,14 @@ namespace AlicizaX.Audio.Runtime
             CancelLoadRequest();
             ReleaseClip();
 
-            ulong handle = _handle;
-            if (handle != 0)
-            {
-                _service.ReleaseHandle(handle, this);
-            }
-
-            ResetState();
+            _service.ReleaseHandle(this);
 
             if (notifyCategory)
             {
                 _category.MarkFree(this);
             }
+
+            ResetState();
         }
 
         private void ReleaseClip()
@@ -482,6 +475,8 @@ namespace AlicizaX.Audio.Runtime
         private void ApplySourceSettings(AudioPlayRequest request)
         {
             AudioGroupConfig config = _category.Config;
+            _source.gameObject.SetActive(true);
+            _source.enabled = true;
             _source.playOnAwake = false;
             _source.mute = false;
             _source.bypassEffects = false;
@@ -499,16 +494,14 @@ namespace AlicizaX.Audio.Runtime
             _source.outputAudioMixerGroup = _category.MixerGroup;
             _source.spatialBlend = _spatial ? ResolveSpatialBlend(request, config) : 0f;
 
-            Transform transform = _source.transform;
+            Transform transform = _transform;
             if (_followTarget != null)
             {
-                transform.SetParent(_category.InstanceRoot, false);
                 transform.position = _followTarget.position + _followOffset;
                 transform.rotation = _followTarget.rotation;
             }
             else
             {
-                transform.SetParent(_category.InstanceRoot, false);
                 if (request.UseWorldPosition)
                 {
                     transform.position = request.Position;
@@ -530,7 +523,7 @@ namespace AlicizaX.Audio.Runtime
             return config.SpatialBlend;
         }
 
-        private static int ResolvePlaybackPriority(AudioPlayRequest request, AudioGroupConfig config)
+        internal static int ResolvePlaybackPriority(AudioPlayRequest request, AudioGroupConfig config)
         {
             if (request.Priority > 0)
             {
@@ -545,32 +538,10 @@ namespace AlicizaX.Audio.Runtime
             return Mathf.Clamp(256 - playbackPriority, 0, 256);
         }
 
-        private void UpdateFollowTarget()
-        {
-            if (_followTarget == null)
-            {
-                return;
-            }
-
-            if (_transform == null)
-            {
-                return;
-            }
-
-            if (!_followTarget.gameObject.activeInHierarchy)
-            {
-                StopImmediate(true);
-                return;
-            }
-
-            _transform.position = _followTarget.position + _followOffset;
-            _transform.rotation = _followTarget.rotation;
-        }
-
         private void UpdateOcclusion()
         {
             AudioGroupConfig config = _category.Config;
-            if (!_spatial || !config.OcclusionEnabled || _transform == null)
+            if (!_spatial || !config.OcclusionEnabled)
             {
                 return;
             }

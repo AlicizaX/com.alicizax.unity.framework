@@ -4,7 +4,7 @@ namespace AlicizaX.UI.Runtime
     internal sealed partial class UIService
     {
         int IUIDebugService.LayerCount => _openUI.Length;
-        int IUIDebugService.CacheWindowCount => m_CacheWindowCount;
+        int IUIDebugService.CacheWindowCount => _cached.Count;
 
         void IUIDebugService.FillServiceDebugInfo(UIServiceDebugInfo info)
         {
@@ -23,30 +23,26 @@ namespace AlicizaX.UI.Runtime
                     continue;
                 }
 
-                int count = layer.Count;
-                openWindowCount += count;
-                for (int j = 0; j < count; j++)
-                {
-                    UIMetadata metadata = layer.Items[j];
-                    if (metadata != null && metadata.MetaInfo.NeedUpdate)
-                    {
-                        updateWindowCount++;
-                    }
-                }
+                openWindowCount += layer.Count;
             }
-
-            info.Initialized = UIRoot != null && UICanvas != null;
-            info.Orthographic = _isOrthographic;
-            info.LayerCount = _openUI.Length;
+            int updateWidgetCount = 0;
+            foreach (UIBase view in _updateMembers)
+            {
+                if (view is UIWindow) updateWindowCount++;
+                else updateWidgetCount++;
+            }
+            info.UpdateWidgetCount = updateWidgetCount;
+            info.UpdateCount = _updateMembers.Count;
+            info.Initialized = _initialized;
+            info.Orthographic = UICamera != null && UICamera.orthographic;
             info.OpenWindowCount = openWindowCount;
-            info.CacheWindowCount = m_CacheWindowCount;
+            info.CacheWindowCount = _cached.Count;
             info.UpdateWindowCount = updateWindowCount;
-            info.BlockTimerHandle = m_LastCountDownHandle;
             info.BlockActive = m_LayerBlock != null && m_LayerBlock.activeSelf;
+            info.BlockRemaining = GetTimerRemaining(m_LastCountDownHandle);
             info.Camera = UICamera;
             info.Canvas = UICanvas;
             info.Root = UIRoot;
-            info.CanvasRoot = UICanvasRoot;
         }
 
         bool IUIDebugService.FillLayerDebugInfo(int layerIndex, UILayerDebugInfo info)
@@ -60,15 +56,12 @@ namespace AlicizaX.UI.Runtime
             if (layer == null)
             {
                 info.Clear();
-                info.LayerIndex = layerIndex;
                 info.Layer = (UILayer)layerIndex;
                 return false;
             }
 
-            info.LayerIndex = layerIndex;
             info.Layer = (UILayer)layerIndex;
             info.WindowCount = layer.Count;
-            info.RectTransform = m_AllWindowLayer[layerIndex];
             return true;
         }
 
@@ -82,11 +75,11 @@ namespace AlicizaX.UI.Runtime
             LayerData layer = _openUI[layerIndex];
             if (layer == null || (uint)windowIndex >= (uint)layer.Count)
             {
-                info?.Clear();
+                info.Clear();
                 return false;
             }
 
-            FillWindowDebugInfo(layer.Items[windowIndex], layerIndex, windowIndex, 0UL, info);
+            FillWindowDebugInfo(layer.Items[windowIndex], layerIndex, windowIndex, info);
             return true;
         }
 
@@ -98,7 +91,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             int index = 0;
-            for (int i = 0; i < m_CacheWindowCount; i++)
+            for (int i = 0; i < _cached.Count; i++)
             {
                 if (index >= capacity || index >= infos.Length)
                 {
@@ -108,9 +101,8 @@ namespace AlicizaX.UI.Runtime
                 UIWindowDebugInfo info = infos[index];
                 if (info != null)
                 {
-                    CacheEntry entry = m_CacheWindow[i];
-                    UIMetadata metadata = entry.Metadata;
-                    FillWindowDebugInfo(metadata, metadata != null ? metadata.MetaInfo.UILayer : 0, index, entry.TimerHandle, info);
+                    UIWindowRecord record = _cached[i];
+                    FillWindowDebugInfo(record, record.MetaInfo.UILayer, index, info);
                 }
 
                 index++;
@@ -119,30 +111,38 @@ namespace AlicizaX.UI.Runtime
             return index;
         }
 
-        private static void FillWindowDebugInfo(UIMetadata metadata, int layerIndex, int orderIndex, ulong timerHandle, UIWindowDebugInfo info)
+        private void FillWindowDebugInfo(UIWindowRecord record, int layerIndex, int orderIndex, UIWindowDebugInfo info)
         {
-            if (metadata == null)
+            if (record == null)
             {
                 info.Clear();
                 return;
             }
 
-            UIBase view = metadata.View;
+            UIBase view = record.View;
             UIHolderObjectBase holder = view?.Holder;
             info.LayerIndex = layerIndex;
             info.OrderIndex = orderIndex;
-            info.RuntimeTypeHandle = metadata.MetaInfo.RuntimeTypeHandle;
-            info.LogicTypeName = metadata.UILogicTypeName;
-            info.HolderTypeName = metadata.UIHolderTypeName;
-            info.State = metadata.State;
+            info.LogicTypeName = record.Metadata.UILogicTypeName;
+            info.HolderTypeName = record.Metadata.UIHolderTypeName;
+            info.State = record.State;
             info.Visible = view != null && view.Visible;
-            info.Processing = metadata.IsProcessing;
-            info.NeedUpdate = metadata.MetaInfo.NeedUpdate;
+            info.Processing = record.Flight != null || record.State == UIState.Opening || record.State == UIState.Closing;
+            info.Updating = view != null && (_updateMembers.Contains(view) || _pendingUpdateAdds.Contains(view));
             info.Depth = view != null ? view.Depth : 0;
-            info.CacheTime = metadata.MetaInfo.CacheTime;
-            info.CacheTimerHandle = timerHandle;
+            info.CacheTime = record.MetaInfo.CacheTime;
+            info.CacheRemaining = GetTimerRemaining(record.CacheTimer);
             info.HolderTransform = holder != null ? holder.transform : null;
-            info.StateDuration = view != null ? view.StateDuration : 0f;
+        }
+
+        private float GetTimerRemaining(ulong timerHandle)
+        {
+            if (timerHandle == 0UL || _timerService == null)
+            {
+                return 0f;
+            }
+
+            return _timerService.GetLeftTime(timerHandle);
         }
     }
 }

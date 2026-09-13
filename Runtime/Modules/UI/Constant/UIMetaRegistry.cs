@@ -13,38 +13,36 @@ namespace AlicizaX.UI.Runtime
             public readonly RuntimeTypeHandle HolderRuntimeTypeHandle;
             public readonly int UILayer;
             public readonly int CacheTime;
-            public readonly bool NeedUpdate;
-            public readonly int TypeId;
+            public readonly bool HasUpdate;
 
-            public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle, UILayer windowLayer, int cacheTime, bool needUpdate, int typeId)
+            public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle,
+                UILayer windowLayer, int cacheTime, bool needUpdate)
             {
                 RuntimeTypeHandle = runtimeTypeHandle;
                 HolderRuntimeTypeHandle = holderRuntimeTypeHandle;
                 UILayer = (int)windowLayer;
                 CacheTime = cacheTime;
-                NeedUpdate = needUpdate;
-                TypeId = typeId;
+                HasUpdate = needUpdate;
             }
         }
 
         private static readonly Dictionary<RuntimeTypeHandle, UIMetaInfo> _typeHandleMap = new();
         private static readonly Dictionary<string, RuntimeTypeHandle> _stringHandleMap = new();
-        private static readonly HashSet<string> _ambiguousTypeNames = new();
-        private static int _nextTypeId;
-        public static int TypeCount => _nextTypeId;
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, int cacheTime = 0, bool needUpdate = false)
+        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, int cacheTime = 0,
+            bool needUpdate = false)
         {
             RuntimeTypeHandle holderHandle = holderType.TypeHandle;
             RuntimeTypeHandle uiHandle = uiType.TypeHandle;
-            layer = SanitizeLayer(uiType, layer);
-            int typeId = _typeHandleMap.TryGetValue(uiHandle, out UIMetaInfo oldInfo) ? oldInfo.TypeId : _nextTypeId++;
-            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, cacheTime, needUpdate, typeId);
-            RegisterTypeName(uiType, uiHandle);
+            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, cacheTime, needUpdate);
+
+            string fullName = uiType.FullName;
+            if (!string.IsNullOrEmpty(fullName))
+            {
+                _stringHandleMap[fullName] = uiHandle;
+            }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool TryGet(RuntimeTypeHandle handle, out UIMetaInfo info)
         {
             if (_typeHandleMap.TryGetValue(handle, out info))
@@ -55,22 +53,8 @@ namespace AlicizaX.UI.Runtime
             return TryReflectAndRegister(Type.GetTypeFromHandle(handle), out info);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool TryGetRegisteredOnly(RuntimeTypeHandle handle, out UIMetaInfo info)
-        {
-            return _typeHandleMap.TryGetValue(handle, out info);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool TryGet(string typeName, out UIMetaInfo info)
         {
-            if (_ambiguousTypeNames.Contains(typeName))
-            {
-                Log.Error($"[UI] Ambiguous UI type name '{typeName}'. Use the full type name instead.");
-                info = default;
-                return false;
-            }
-
             if (_stringHandleMap.TryGetValue(typeName, out RuntimeTypeHandle handle))
             {
                 return TryGet(handle, out info);
@@ -89,24 +73,14 @@ namespace AlicizaX.UI.Runtime
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static bool TryReflectAndRegister(Type uiType, out UIMetaInfo info)
         {
-            if (uiType == null)
+            if (uiType == null || uiType.IsAbstract || uiType.ContainsGenericParameters)
             {
                 info = default;
                 return false;
             }
 
-#if UNITY_EDITOR
-            if (UIWarningSettings.Enabled)
-            {
-                Log.Warning($"[UI] UI not pre-registered: {uiType.FullName}, using reflection fallback.");
-            }
-#endif
-            return TryReflectAndRegisterInternal(uiType, out info);
-        }
+            Log.Warning($"[UI] UI not pre-registered: {uiType.FullName}, using reflection fallback.");
 
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private static bool TryReflectAndRegisterInternal(Type uiType, out UIMetaInfo info)
-        {
             Type holderType = ResolveHolderType(uiType);
             if (holderType == null)
             {
@@ -123,21 +97,13 @@ namespace AlicizaX.UI.Runtime
             for (int i = 0; i < attributes.Count; i++)
             {
                 CustomAttributeData attribute = attributes[i];
-                string attributeName = attribute.AttributeType.Name;
-                if (attributeName == nameof(WindowAttribute))
+                if (attribute.AttributeType == typeof(WindowAttribute) && typeof(UIWindow).IsAssignableFrom(uiType))
                 {
                     IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
-                    if (args.Count > 0)
-                    {
-                        layer = ReadLayerArgument(args[0].Value, UILayer.UI);
-                    }
-
-                    if (args.Count > 1)
-                    {
-                        cacheTime = ReadIntArgument(args[1].Value, 0);
-                    }
+                    layer = (UILayer)Convert.ToInt32(args[0].Value);
+                    cacheTime = (int)args[1].Value;
                 }
-                else if (attributeName == nameof(UIUpdateAttribute))
+                else if (attribute.AttributeType == typeof(UIUpdateAttribute))
                 {
                     needUpdate = true;
                 }
@@ -148,54 +114,6 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        private static void RegisterTypeName(Type uiType, RuntimeTypeHandle uiHandle)
-        {
-            string fullName = uiType.FullName;
-            if (!string.IsNullOrEmpty(fullName))
-            {
-                _stringHandleMap[fullName] = uiHandle;
-            }
-
-            string shortName = uiType.Name;
-            if (string.IsNullOrEmpty(shortName) || _ambiguousTypeNames.Contains(shortName))
-            {
-                return;
-            }
-
-            if (_stringHandleMap.TryGetValue(shortName, out RuntimeTypeHandle existingHandle) && !existingHandle.Equals(uiHandle))
-            {
-                _stringHandleMap.Remove(shortName);
-                _ambiguousTypeNames.Add(shortName);
-                Log.Error($"[UI] Ambiguous UI type name '{shortName}' between '{Type.GetTypeFromHandle(existingHandle)?.FullName}' and '{fullName}'. Use the full type name instead.");
-                return;
-            }
-
-            _stringHandleMap[shortName] = uiHandle;
-        }
-
-        private static UILayer SanitizeLayer(Type uiType, UILayer layer)
-        {
-            if ((uint)layer < (uint)UILayer.All)
-            {
-                return layer;
-            }
-
-            throw new ArgumentOutOfRangeException(
-                nameof(layer),
-                layer,
-                $"[UI] Invalid layer '{layer}' for UI type {uiType?.FullName}. UILayer.All is not a window layer.");
-        }
-
-        private static UILayer ReadLayerArgument(object value, UILayer fallback)
-        {
-            return value == null ? fallback : (UILayer)Convert.ToInt32(value);
-        }
-
-        private static int ReadIntArgument(object value, int fallback)
-        {
-            return value == null ? fallback : Convert.ToInt32(value);
-        }
-
         private static Type ResolveHolderType(Type uiType)
         {
             Type current = uiType;
@@ -203,10 +121,10 @@ namespace AlicizaX.UI.Runtime
             {
                 if (current.IsGenericType)
                 {
-                    Type[] genericArgs = current.GetGenericArguments();
-                    if (genericArgs.Length == 1 && typeof(UIHolderObjectBase).IsAssignableFrom(genericArgs[0]))
+                    Type definition = current.GetGenericTypeDefinition();
+                    if (definition == typeof(UIWindow<>) || definition == typeof(UIWidget<>))
                     {
-                        return genericArgs[0];
+                        return current.GetGenericArguments()[0];
                     }
                 }
 

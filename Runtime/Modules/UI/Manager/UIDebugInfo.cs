@@ -1,6 +1,4 @@
 #if UNITY_EDITOR
-using System;
-using UnityEditor;
 using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
@@ -15,71 +13,31 @@ namespace AlicizaX.UI.Runtime
         int FillCacheDebugInfo(UIWindowDebugInfo[] infos, int capacity);
     }
 
-    // Editor 运行时 UI 告警开关（Service/Router/Registry 共用）
-    internal static class UIWarningSettings
-    {
-        private const string WarningsKey = "AlicizaX.UI.Warning.Enabled";
-
-        private static bool? _enabled;
-
-        public static bool Enabled
-        {
-            get => _enabled ??= EditorPrefs.GetBool(WarningsKey, true);
-            set
-            {
-                _enabled = value;
-                EditorPrefs.SetBool(WarningsKey, value);
-            }
-        }
-
-        public static bool AnyWarningsEnabled => Enabled;
-    }
-
     internal sealed class UIServiceDebugInfo
     {
         public bool Initialized;
         public bool Orthographic;
-        public int LayerCount;
         public int OpenWindowCount;
         public int CacheWindowCount;
         public int UpdateWindowCount;
-        public ulong BlockTimerHandle;
+        public int UpdateWidgetCount;
+        public int UpdateCount;
         public bool BlockActive;
+        public float BlockRemaining;
         public Camera Camera;
         public Canvas Canvas;
         public Transform Root;
-        public Transform CanvasRoot;
-
-        public void Clear()
-        {
-            Initialized = false;
-            Orthographic = false;
-            LayerCount = 0;
-            OpenWindowCount = 0;
-            CacheWindowCount = 0;
-            UpdateWindowCount = 0;
-            BlockTimerHandle = 0UL;
-            BlockActive = false;
-            Camera = null;
-            Canvas = null;
-            Root = null;
-            CanvasRoot = null;
-        }
     }
 
     internal sealed class UILayerDebugInfo
     {
-        public int LayerIndex;
         public UILayer Layer;
         public int WindowCount;
-        public RectTransform RectTransform;
 
         public void Clear()
         {
-            LayerIndex = 0;
             Layer = UILayer.Background;
             WindowCount = 0;
-            RectTransform = null;
         }
     }
 
@@ -87,35 +45,31 @@ namespace AlicizaX.UI.Runtime
     {
         public int LayerIndex;
         public int OrderIndex;
-        public RuntimeTypeHandle RuntimeTypeHandle;
         public string LogicTypeName;
         public string HolderTypeName;
         public UIState State;
         public bool Visible;
         public bool Processing;
-        public bool NeedUpdate;
+        public bool Updating;
         public int Depth;
-        public float CacheTime;
-        public ulong CacheTimerHandle;
+        public int CacheTime;
+        public float CacheRemaining;
         public Transform HolderTransform;
-        public float StateDuration;
 
         public void Clear()
         {
             LayerIndex = 0;
             OrderIndex = 0;
-            RuntimeTypeHandle = default;
             LogicTypeName = null;
             HolderTypeName = null;
             State = UIState.Uninitialized;
             Visible = false;
             Processing = false;
-            NeedUpdate = false;
+            Updating = false;
             Depth = 0;
-            CacheTime = 0f;
-            CacheTimerHandle = 0UL;
+            CacheTime = 0;
+            CacheRemaining = 0f;
             HolderTransform = null;
-            StateDuration = 0f;
         }
     }
 }

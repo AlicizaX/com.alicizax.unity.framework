@@ -10,7 +10,7 @@ namespace AlicizaX
 
         private readonly ServiceScope[] _scopesByKind = new ServiceScope[ScopeSlotCount];
         private readonly ServiceScope[] _activeScopes = new ServiceScope[ScopeSlotCount];
-        private readonly Dictionary<RuntimeTypeHandle, ContractBindings> _servicesByContract = new Dictionary<RuntimeTypeHandle, ContractBindings>();
+        private readonly Dictionary<RuntimeTypeHandle, ContractBindings> _servicesByContract = new Dictionary<RuntimeTypeHandle, ContractBindings>(ServiceContractUtility.HandleComparer);
 
         private int _activeScopeCount;
         private int _nextScopeCreationIndex;

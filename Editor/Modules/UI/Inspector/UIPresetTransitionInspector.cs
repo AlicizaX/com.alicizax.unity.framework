@@ -33,7 +33,6 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty _targetRect;
         private SerializedProperty _canvasGroup;
         private SerializedProperty _useUnscaledTime;
-        private SerializedProperty _initializeAsClosed;
         private SerializedProperty _followAnimationInteractable;
         private SerializedProperty _openDuration;
         private SerializedProperty _closeDuration;
@@ -59,7 +58,6 @@ namespace AlicizaX.UI.Editor
             _targetRect = serializedObject.FindProperty("targetRect");
             _canvasGroup = serializedObject.FindProperty("canvasGroup");
             _useUnscaledTime = serializedObject.FindProperty("useUnscaledTime");
-            _initializeAsClosed = serializedObject.FindProperty("initializeAsClosed");
             _followAnimationInteractable = serializedObject.FindProperty("followAnimationInteractable");
             _openDuration = serializedObject.FindProperty("openDuration");
             _closeDuration = serializedObject.FindProperty("closeDuration");
@@ -122,7 +120,6 @@ namespace AlicizaX.UI.Editor
             DrawField(_closedScale);
 
             DrawBoolRow(_useUnscaledTime);
-            DrawBoolRow(_initializeAsClosed);
             DrawBoolRow(_followAnimationInteractable);
 
 

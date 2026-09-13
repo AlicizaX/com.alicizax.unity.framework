@@ -8,52 +8,58 @@ namespace AlicizaX.UI.Runtime
     [DisallowMultipleComponent]
     public abstract class UIHolderObjectBase : MonoBehaviour
     {
-        public Action OnWindowInitEvent;
-        public Action OnWindowBeforeShowEvent;
-        public Action OnWindowAfterShowEvent;
-        public Action OnWindowBeforeClosedEvent;
-        public Action OnWindowAfterClosedEvent;
-        public Action OnWindowDestroyEvent;
+        public event Action OnWindowInitEvent;
+        public event Action OnWindowBeforeShowEvent;
+        public event Action OnWindowAfterShowEvent;
+        public event Action OnWindowBeforeClosedEvent;
+        public event Action OnWindowAfterClosedEvent;
+        public event Action OnWindowDestroyEvent;
+
+        private UIBase _owner;
 
         private GameObject _target;
         [SerializeField, HideInInspector] private Component _transitionPlayerComponent;
         private IUITransitionSource _transitionSource;
+        private bool _hasTransitionOverride;
         private CancellationTokenSource _transitionCts;
         public GameObject Target => _target ??= gameObject;
 
         private RectTransform _rectTransform;
         public RectTransform RectTransform => _rectTransform ??= Target.transform as RectTransform;
 
-        private IUITransitionSource TransitionSource
-        {
-            get
-            {
-                if (_transitionSource != null)
-                {
-                    return _transitionSource;
-                }
-
-                if (_transitionPlayerComponent == null)
-                {
-                    return null;
-                }
-
-                return _transitionSource = _transitionPlayerComponent as IUITransitionSource;
-            }
-        }
-
-        public bool Visible
-        {
-            get => Target.activeSelf;
-            internal set => Target.SetActive(value);
-        }
+        private IUITransitionSource TransitionSource => _hasTransitionOverride
+            ? _transitionSource : _transitionPlayerComponent as IUITransitionSource;
 
         public virtual void Awake()
         {
             _target = gameObject;
-            if (_transitionSource == null)
+        }
+
+        internal void BindOwner(UIBase owner)
+        {
+            _owner = owner;
+        }
+
+        internal void UnbindOwner()
+        {
+            _owner = null;
+            ResetRuntimeTransition();
+        }
+
+        internal void InvokeWindowInit() => InvokeEvent(OnWindowInitEvent);
+        internal void InvokeWindowBeforeShow() => InvokeEvent(OnWindowBeforeShowEvent);
+        internal void InvokeWindowAfterShow() => InvokeEvent(OnWindowAfterShowEvent);
+        internal void InvokeWindowBeforeClosed() => InvokeEvent(OnWindowBeforeClosedEvent);
+        internal void InvokeWindowAfterClosed() => InvokeEvent(OnWindowAfterClosedEvent);
+        internal void InvokeWindowDestroy() => InvokeEvent(OnWindowDestroyEvent);
+
+        private static void InvokeEvent(Action callbacks)
+        {
+            if (callbacks == null) return;
+            foreach (Action callback in callbacks.GetInvocationList())
             {
-                _transitionSource = _transitionPlayerComponent as IUITransitionSource;
+                try { callback(); }
+                catch (Exception error) { Log.Exception(error); }
             }
         }
 
@@ -66,8 +72,9 @@ namespace AlicizaX.UI.Runtime
 
         public void SetTransition(IUITransitionSource source)
         {
-            CancelTransitionPlay();
+            _hasTransitionOverride = true;
             _transitionSource = source;
+            CancelTransitionPlay();
         }
 
         public void SetTransition(Func<bool, CancellationToken, UniTask> play, Action<bool> snap)
@@ -87,9 +94,15 @@ namespace AlicizaX.UI.Runtime
             return PlayTransition(false);
         }
 
-        internal void ApplyClosedTransitionState()
+        internal void ApplyTransitionState(bool open) => SnapTransition(open);
+
+        internal void ResetRuntimeTransition()
         {
-            SnapTransition(false);
+            CancellationTokenSource cancellation = _transitionCts;
+            _transitionCts = null;
+            _hasTransitionOverride = false;
+            _transitionSource = null;
+            if (cancellation != null) UIBase.CancelLoad(cancellation);
         }
 
         internal void StopTransition()
@@ -110,21 +123,33 @@ namespace AlicizaX.UI.Runtime
                 return UniTask.CompletedTask;
             }
 
-            CancellationToken cancellationToken = RestartTransitionPlay();
-            return PlayTransitionGuarded(source, open, cancellationToken);
+            _transitionCts = new CancellationTokenSource();
+            return PlayTransitionAsync(source, open, _transitionCts);
         }
 
-        private async UniTask PlayTransitionGuarded(
+        private async UniTask PlayTransitionAsync(
             IUITransitionSource source,
             bool open,
-            CancellationToken cancellationToken)
+            CancellationTokenSource cancellation)
         {
+            CancellationToken cancellationToken = cancellation.Token;
             try
             {
                 await source.Play(open, cancellationToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException error) when (
+                cancellationToken.IsCancellationRequested && error.CancellationToken == cancellationToken)
             {
+            }
+            catch (Exception error)
+            {
+                Log.Exception(error);
+                if (!cancellationToken.IsCancellationRequested) ApplySnapshot(source, open);
+            }
+            finally
+            {
+                if (_transitionCts == cancellation) _transitionCts = null;
+                cancellation.Dispose();
             }
         }
 
@@ -136,42 +161,27 @@ namespace AlicizaX.UI.Runtime
             }
 
             CancelTransitionPlay();
-            TransitionSource?.Snap(open);
-        }
-
-        private CancellationToken RestartTransitionPlay()
-        {
-            if (_transitionCts != null)
-            {
-                if (!_transitionCts.IsCancellationRequested)
-                    return _transitionCts.Token;
-
-                _transitionCts.Dispose();
-                _transitionCts = null;
-            }
-
-            _transitionCts = new CancellationTokenSource();
-            return _transitionCts.Token;
+            ApplySnapshot(TransitionSource, open);
         }
 
         private void CancelTransitionPlay()
         {
-            if (_transitionCts == null || _transitionCts.IsCancellationRequested)
-                return;
+            CancellationTokenSource cancellation = _transitionCts;
+            _transitionCts = null;
+            if (cancellation != null) UIBase.CancelLoad(cancellation);
+        }
 
-            _transitionCts.Cancel();
+        private static void ApplySnapshot(IUITransitionSource source, bool open)
+        {
+            try { source?.Snap(open); }
+            catch (Exception error) { Log.Exception(error); }
         }
 
         private void OnDestroy()
         {
             _isAlive = false;
-            CancelTransitionPlay();
-            if (_transitionCts != null)
-            {
-                _transitionCts.Dispose();
-                _transitionCts = null;
-            }
-            _transitionSource = null;
+            _owner = null;
+            ResetRuntimeTransition();
         }
 
 #if UNITY_EDITOR
@@ -194,7 +204,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             _transitionPlayerComponent = transitionPlayer;
-            _transitionSource = transitionPlayer as IUITransitionSource;
         }
 
         internal Component FindTransitionPlayerInEditor()

@@ -1,3 +1,4 @@
+using System;
 using Cysharp.Text;
 using AlicizaX.Timer.Runtime;
 using UnityEngine;
@@ -6,55 +7,35 @@ namespace AlicizaX.UI.Runtime
 {
     internal sealed partial class UIService
     {
-        public Camera UICamera { get; set; }
+        public Camera UICamera { get; private set; }
         public Canvas UICanvas;
-        public Transform UICanvasRoot { get; set; }
+        public Transform UICanvasRoot { get; private set; }
         public Transform UIRoot;
 
         private const int UI_ROOT_OFFSET = 1000;
 
-        private const int LAYER_DEEP = 2000;
-        private const int WINDOW_DEEP = 100;
+        private const int WINDOW_DEEP = 20;
+        private const int LAYER_DEEP = 200 * WINDOW_DEEP;
 
         private readonly RectTransform[] m_AllWindowLayer = new RectTransform[(int)UILayer.All];
 
         private RectTransform UICacheLayer;
-        private bool _isOrthographic;
 
-        public IUIRouter Router { get; private set; }
-        private IUIRouterInternal _routerInternal;
+        private bool _initialized;
 
         public void Initialize(Transform root, bool isOrthographic)
         {
-            if (root == null)
-            {
-                Log.Error("[UI] Initialize failed: root is null.");
-                return;
-            }
-
-            UIRoot = root;
-            UIRoot.transform.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
-
-            UICanvas = UIRoot.GetComponentInChildren<Canvas>();
-            if (UICanvas == null)
-            {
-                Log.Error("[UI] Initialize failed: Canvas is missing under UI root.");
-                UIRoot = null;
-                return;
-            }
-
-            UICamera = UICanvas.worldCamera;
-            if (UICamera == null)
-            {
-                Log.Error("[UI] Initialize failed: Canvas worldCamera is missing.");
-                UICanvas = null;
-                UIRoot = null;
-                return;
-            }
-
+            if (_initialized || _shuttingDown) throw new InvalidOperationException("UIService is already initialized or stopped.");
+            if (root == null) throw new ArgumentNullException(nameof(root));
+            Canvas canvas = root.GetComponentInChildren<Canvas>(true);
+            if (canvas == null) throw new ArgumentException("UI root must contain a Canvas.", nameof(root));
+            Camera camera = canvas.worldCamera;
+            if (camera == null) throw new ArgumentException("UI Canvas must have a worldCamera.", nameof(root));
+            _timerService = AppServices.App.Require<ITimerService>();
+            UICanvas = canvas;
+            UICamera = camera;
             UICanvasRoot = UICanvas.transform;
 
-            _isOrthographic = isOrthographic;
             UICamera.orthographic = isOrthographic;
             if (!isOrthographic)
             {
@@ -70,15 +51,14 @@ namespace AlicizaX.UI.Runtime
 
             AddLayer((int)UILayer.All);
             InitUIBlock();
-            _timerService = AppServices.App.Require<ITimerService>();
-            UIRouter router = new UIRouter(this);
-            Router = router;
-            _routerInternal = router;
+            root.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
+            UIRoot = root;
+            _initialized = true;
         }
 
         public RectTransform GetLayer(UILayer layer)
         {
-            if ((uint)layer > (uint)UILayer.All)
+            if ((uint)layer >= (uint)UILayer.All)
             {
                 Log.Error("[UI] Invalid layer: {0}", layer);
                 return null;
@@ -106,19 +86,10 @@ namespace AlicizaX.UI.Runtime
             }
 
             m_AllWindowLayer[layer] = rect;
-            _openUI[layer] = new LayerData(16);
+            _openUI[layer] = new LayerData();
         }
 
 
-        public RectTransform GetLayerRect(int layer)
-        {
-            if ((uint)layer >= (uint)m_AllWindowLayer.Length)
-            {
-                Log.Error("[UI] Invalid layer index: {0}", layer);
-                return null;
-            }
-
-            return m_AllWindowLayer[layer];
-        }
+        private RectTransform GetLayerRect(int layer) => m_AllWindowLayer[layer];
     }
 }

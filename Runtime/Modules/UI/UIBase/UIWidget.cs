@@ -1,89 +1,61 @@
-﻿using System;
+using System;
 using Cysharp.Threading.Tasks;
 
 namespace AlicizaX.UI.Runtime
 {
     public abstract class UIWidget : UIBase
     {
-        internal UIBase _parent;
-        internal UIBase Parent => _parent;
+        internal UIBase Parent;
+        internal bool OpenIntent;
 
-        public void Open(params System.Object[] userDatas)
+        public bool AllowOpenTransitionOnParent;
+        public bool AllowCloseTransitionOnParent;
+
+        public void Open(params object[] userDatas)
         {
-            OpenAsync(userDatas).Forget(LogWidgetException);
+            ValidateOpen();
+            if (DestroyRequested) return;
+            if (State == UIState.Opening) return;
+            OpenIntent = true;
+            RefreshParams(userDatas);
+            if (Parent.ChildrenCanOpen) InternalOpen();
         }
 
-        public async UniTask<bool> OpenAsync(params System.Object[] userDatas)
+        internal void OpenFromParent()
         {
-            RefreshParams(userDatas);
-
-            // 已打开/打开中：只刷 latest，不重复打开
-            if (State == UIState.Opened)
-            {
-                InternalRefreshOpened();
-                return true;
-            }
-
-            if (State == UIState.Opening)
-            {
-                return true;
-            }
-
-            // 关闭中：等关场完成后再用 latest 打开
-            if (State == UIState.Closing)
-            {
-                await AwaitViewTransition();
-                RefreshParams(userDatas);
-                if (State != UIState.Closed && State != UIState.Initialized)
-                {
-                    return false;
-                }
-            }
-
-            return InternalOpen();
+            if (OpenIntent && !DestroyRequested) InternalOpen(skipTransition: !AllowOpenTransitionOnParent);
         }
 
         public void Close()
         {
-            CloseAsync().Forget(LogWidgetException);
+            if (DestroyRequested) return;
+            OpenIntent = false;
+            InternalClose().Forget();
         }
 
-        public UniTask<bool> CloseAsync()
+        public UICloseHandle Destroy()
         {
-            return InternalClose();
+            OpenIntent = false;
+            return new UICloseHandle(InternalDestroy());
         }
 
-        public void Destroy()
+        internal UniTask<bool> CloseFromParent(bool destroy, bool skipTransition)
         {
-            if (Parent != null)
-            {
-                Parent.RemoveWidget(this).Forget(LogWidgetException);
-            }
+            if (destroy) return InternalDestroy(skipTransition || !AllowCloseTransitionOnParent);
+            if (State == UIState.CreatedUI || State == UIState.Loaded) return UniTask.FromResult(true);
+            return InternalClose(skipTransition || !AllowCloseTransitionOnParent);
         }
 
-        private void LogWidgetException(Exception exception)
-        {
-            Log.Error("[UI] Widget async operation failed for {0}.", CachedTypeName);
-            Log.Exception(exception);
-        }
+        internal override void OnFrameworkDestroyed() => Parent.DetachWidget(this);
     }
 
     public abstract class UIWidget<T> : UIWidget where T : UIHolderObjectBase
     {
         protected T baseui => (T)Holder;
-        internal sealed  override Type UIHolderType => typeof(T);
-
-        internal sealed  override void BindUIHolder(UIHolderObjectBase holder, UIBase owner)
+        internal sealed override Type UIHolderType => typeof(T);
+        internal sealed override void BindUIHolder(UIHolderObjectBase holder)
         {
-            if (_state != UIState.CreatedUI)
-            {
-                Log.Error("Cannot bind UI holder because widget has already been created.");
-                return;
-            }
-
-            _parent = owner;
-            BindHolderCommon(holder, true, false);
-            Depth = owner.Depth + 5;
+            BindHolderCommon(holder, false, false);
         }
     }
 }

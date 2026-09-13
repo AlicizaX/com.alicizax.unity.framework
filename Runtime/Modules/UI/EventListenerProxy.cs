@@ -5,9 +5,6 @@ using Unity.IL2CPP.CompilerServices;
 
 namespace AlicizaX
 {
-    /// <summary>
-    /// 游戏事件代理：UI 层订阅 -> Proxy 自动回收。
-    /// </summary>
     public class EventListenerProxy : MemoryObject
     {
         private readonly List<EventRuntimeHandle> _eventHandles = new();

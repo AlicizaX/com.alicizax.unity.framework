@@ -30,7 +30,16 @@ namespace AlicizaX.Audio.Runtime
             }
 
             _audioService.Initialize(m_AudioGroupConfigs, m_AudioListener, transform, m_AudioMixer, m_ServiceConfig);
-            AppServices.App.Register<IAudioService>(_audioService);
+            try
+            {
+                AppServices.App.Register<IAudioService>(_audioService);
+            }
+            catch
+            {
+                _audioService.Shutdown();
+                _audioService = null;
+                throw;
+            }
         }
 
         private void OnDestroy()

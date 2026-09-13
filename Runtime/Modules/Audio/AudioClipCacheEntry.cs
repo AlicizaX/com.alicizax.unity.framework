@@ -1,12 +1,15 @@
+using System.Threading;
 using AlicizaX;
 using AlicizaX.Resource.Runtime;
 using UnityEngine;
 
 namespace AlicizaX.Audio.Runtime
 {
-    internal sealed class AudioClipCacheEntry : MemoryObject
+    internal sealed class AudioClipCacheEntry : MemoryObject, IPoolEvictable
     {
         public AudioService Owner;
+        public ulong Version;
+        public CancellationTokenSource Cancellation;
         public string Address;
         public ResourceAssetLease<AudioClip> Lease;
         public AudioClip Clip;
@@ -22,8 +25,8 @@ namespace AlicizaX.Audio.Runtime
         public int AddressHash;
         public AudioCachePolicy CachePolicy;
         public bool Loading;
-        public bool Pinned;
-        public bool CacheAfterUse;
+        public bool Pinned => CachePolicy == AudioCachePolicy.Pin;
+        public bool CacheAfterUse => CachePolicy is AudioCachePolicy.Ttl or AudioCachePolicy.Pin;
         public bool InLru;
         public float LastUseTime;
 
@@ -31,20 +34,14 @@ namespace AlicizaX.Audio.Runtime
 
         public void Initialize(AudioService owner, string address, int addressHash, AudioCachePolicy cachePolicy, int slotIndex)
         {
+            Version++;
             Owner = owner;
             Address = address;
             AddressHash = addressHash;
             SlotIndex = slotIndex;
             HashNextIndex = -1;
-            ApplyCachePolicy(cachePolicy);
-            LastUseTime = Time.realtimeSinceStartup;
-        }
-
-        public void ApplyCachePolicy(AudioCachePolicy cachePolicy)
-        {
             CachePolicy = cachePolicy;
-            Pinned = cachePolicy == AudioCachePolicy.Pin;
-            CacheAfterUse = cachePolicy != AudioCachePolicy.None;
+            LastUseTime = Time.realtimeSinceStartup;
         }
 
         public void AddPending(AudioLoadRequest request)
@@ -130,8 +127,21 @@ namespace AlicizaX.Audio.Runtime
             info.LastUseTime = LastUseTime;
         }
 
+        public void OnEvict()
+        {
+            Cancellation?.Dispose();
+            Cancellation = null;
+        }
+
         public override void Clear()
         {
+            Owner = null;
+            if (Loading)
+            {
+                Cancellation?.Cancel();
+                OnEvict();
+            }
+
             Lease.Dispose();
 
             AudioLoadRequest request = PendingHead;
@@ -142,7 +152,6 @@ namespace AlicizaX.Audio.Runtime
                 request = next;
             }
 
-            Owner = null;
             Address = null;
             Lease = default;
             Clip = null;
@@ -158,8 +167,6 @@ namespace AlicizaX.Audio.Runtime
             AddressHash = 0;
             CachePolicy = AudioCachePolicy.Default;
             Loading = false;
-            Pinned = false;
-            CacheAfterUse = false;
             InLru = false;
             LastUseTime = 0f;
         }

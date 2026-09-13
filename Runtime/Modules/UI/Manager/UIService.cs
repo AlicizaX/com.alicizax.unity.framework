@@ -1,5 +1,6 @@
-﻿using System;
-using AlicizaX;
+using System;
+using System.Collections.Generic;
+using System.Threading;
 using AlicizaX.Timer.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -13,312 +14,161 @@ namespace AlicizaX.UI.Runtime
         IServiceTickable
     {
         private ITimerService _timerService;
-        private UIMetadata[] _updateableWindows = new UIMetadata[8];
-        private int _updateableWindowCount;
+        internal readonly IUIResourceLoader ResourceLoader;
+        private readonly Dictionary<RuntimeTypeHandle, UIWindowRecord> _windows = new(RuntimeTypeHandleComparer.Instance);
+        private readonly List<UIBase> _updating = new(8);
+        private readonly HashSet<UIBase> _updateMembers = new();
+        private readonly HashSet<UIBase> _pendingUpdateAdds = new();
+        private bool _ticking;
+        private bool _shuttingDown;
 
-        protected override void OnDestroyService()
+        public UIService() : this(new UIResourceLoader()) { }
+        internal UIService(IUIResourceLoader resourceLoader) => ResourceLoader = resourceLoader;
+
+        private UIWindowRecord GetWindowRecord(RuntimeTypeHandle handle)
         {
-            DestroyAllManagedUI();
-
-            if (Router is UIRouter concreteRouter)
+            if (_shuttingDown || !_initialized) return null;
+            if (handle.Value == IntPtr.Zero) return null;
+            if (_windows.TryGetValue(handle, out var record)) return record;
+            Type type = Type.GetTypeFromHandle(handle);
+            if (!typeof(UIWindow).IsAssignableFrom(type) || type.IsAbstract || type.ContainsGenericParameters)
             {
-                concreteRouter.ForceResetHistoryForDestroy();
+                Log.Error("[UI] Not a concrete Window type: {0}", type);
+                return null;
+            }
+            UIMetadata metadata = UIMetadata.Create(type);
+            if (metadata == null) return null;
+            record = new UIWindowRecord(metadata);
+            _windows.Add(handle, record);
+            return record;
+        }
+
+        private UIWindowRecord TryGetWindowRecord(RuntimeTypeHandle handle) =>
+            _windows.TryGetValue(handle, out var record) ? record : null;
+
+        protected override void OnDestroyService() => DestroyAllManagedUI();
+
+        internal void SetUpdating(UIBase view, bool enabled)
+        {
+            if (enabled && !_shuttingDown)
+            {
+                if (_ticking) _pendingUpdateAdds.Add(view);
+                else if (_updateMembers.Add(view)) _updating.Add(view);
             }
             else
             {
-                Router?.ResetHistory();
+                _pendingUpdateAdds.Remove(view);
+                if (_updateMembers.Remove(view) && !_ticking) _updating.Remove(view);
             }
         }
 
         void IServiceTickable.Tick(float deltaTime)
         {
+            _ticking = true;
+            for (int i = 0; i < _updating.Count; i++)
+                if (_updateMembers.Contains(_updating[i])) _updating[i].InternalUpdate();
+            _ticking = false;
+            for (int i = _updating.Count - 1; i >= 0; i--)
+                if (!_updateMembers.Contains(_updating[i])) _updating.RemoveAt(i);
+            foreach (UIBase view in _pendingUpdateAdds)
+                if (!view.DestroyRequested && view.State == UIState.Opened && _updateMembers.Add(view))
+                    _updating.Add(view);
+            _pendingUpdateAdds.Clear();
+        }
 
-            for (int i = 0; i < _updateableWindowCount; i++)
+        public UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIWindow =>
+            ShowUI<T>(CancellationToken.None, userDatas);
+
+        public UniTask<T> ShowUI<T>(CancellationToken cancellationToken, params object[] userDatas) where T : UIWindow =>
+            GetView<T>(RequestShow(GetWindowRecord(typeof(T).TypeHandle), userDatas, cancellationToken));
+
+        public UniTask<UIBase> ShowUI(string type, params object[] userDatas) =>
+            ShowUI(type, CancellationToken.None, userDatas);
+
+        public UniTask<UIBase> ShowUI(string type, CancellationToken cancellationToken, params object[] userDatas)
+        {
+            if (!string.IsNullOrEmpty(type) && UIMetaRegistry.TryGet(type, out var metadata))
+                return ShowUI(metadata.RuntimeTypeHandle, cancellationToken, userDatas);
+            Log.Error("[UI] Unknown UI type: {0}", type);
+            return UniTask.FromResult<UIBase>(null);
+        }
+
+        public UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas) =>
+            ShowUI(handle, CancellationToken.None, userDatas);
+
+        public UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, CancellationToken cancellationToken, params object[] userDatas) =>
+            GetView<UIBase>(RequestShow(GetWindowRecord(handle), userDatas, cancellationToken));
+
+        private static async UniTask<T> GetView<T>(UniTask<UIOpenResult> task) where T : UIBase =>
+            (T)(await task).View;
+
+        public T ShowUISync<T>(params object[] userDatas) where T : UIWindow =>
+            (T)ShowUISyncCore(GetWindowRecord(typeof(T).TypeHandle), userDatas);
+
+        public UICloseHandle CloseUI<T>(bool force = false, bool skipTransition = false) where T : UIWindow =>
+            CloseUI(typeof(T).TypeHandle, force, skipTransition);
+
+        public UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false) =>
+            new(RequestClose(TryGetWindowRecord(handle), force, skipTransition));
+
+        internal UICloseHandle CloseWindow(UIBase view, bool force = false, bool skipTransition = false)
+        {
+            UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
+            return new UICloseHandle(record != null && record.View == view
+                ? RequestClose(record, force, skipTransition) : UniTask.FromResult(false));
+        }
+
+        public T GetUI<T>() where T : UIWindow =>
+            TryGetWindowRecord(typeof(T).TypeHandle)?.State == UIState.Opened
+                ? (T)TryGetWindowRecord(typeof(T).TypeHandle).View : null;
+
+        public bool IsOpen<T>() where T : UIWindow => IsOpen(typeof(T).TypeHandle);
+        public bool IsOpen(RuntimeTypeHandle handle) => TryGetWindowRecord(handle)?.State == UIState.Opened;
+        internal UIBase GetWindow(RuntimeTypeHandle handle) => TryGetWindowRecord(handle)?.View;
+
+        internal void OnWindowDestroyed(UIBase view)
+        {
+            UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
+            if (record != null && record.View == view)
             {
-                _updateableWindows[i]?.View?.InternalUpdate();
+                RemoveFromOpenStack(record);
+                RemoveFromCache(record);
+                record.View = null;
             }
-        }
-
-
-        public async UniTask<UIBase> ShowUI(string type, params object[] userDatas)
-        {
-            UIShowResult result = await ShowUIResult(type, userDatas);
-            return result.View;
-        }
-
-        public UniTask<UIShowResult> ShowUIResult(string type, params object[] userDatas)
-        {
-            if (UIMetaRegistry.TryGet(type, out var metaRegistry))
-            {
-                UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(metaRegistry.RuntimeTypeHandle);
-                if (metadata == null)
-                {
-                    return UniTask.FromResult(UIShowResult.Failed);
-                }
-
-                return EnqueueShowCommandAsync(metadata, userDatas);
-            }
-
-            return UniTask.FromResult(UIShowResult.Failed);
-        }
-
-        public async UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas)
-        {
-            UIShowResult result = await ShowUIResult(handle, userDatas);
-            return result.View;
-        }
-
-        public UniTask<UIShowResult> ShowUIResult(RuntimeTypeHandle handle, params object[] userDatas)
-        {
-            if (handle.Value == IntPtr.Zero)
-            {
-                return UniTask.FromResult(UIShowResult.Failed);
-            }
-
-            Type uiType = Type.GetTypeFromHandle(handle);
-            if (uiType == null || !typeof(UIBase).IsAssignableFrom(uiType))
-            {
-                return UniTask.FromResult(UIShowResult.Failed);
-            }
-
-            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata(handle);
-            if (metadata == null)
-            {
-                return UniTask.FromResult(UIShowResult.Failed);
-            }
-
-            return EnqueueShowCommandAsync(metadata, userDatas);
-        }
-
-        public T ShowUISync<T>() where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null)
-            {
-                return null;
-            }
-
-            return (T)ShowUISyncCore(metadata, null);
-        }
-
-        public T ShowUISync<T>(params object[] userDatas) where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null)
-            {
-                return null;
-            }
-
-            return (T)ShowUISyncCore(metadata, userDatas);
-        }
-
-        public async UniTask<T> ShowUI<T>() where T : UIBase
-        {
-            UIShowResult<T> result = await ShowUIResult<T>();
-            return result.View;
-        }
-
-        public async UniTask<UIShowResult<T>> ShowUIResult<T>() where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null)
-            {
-                return new UIShowResult<T>(null, UIShowResultState.Failed);
-            }
-
-            UIShowResult result = await EnqueueShowCommandAsync(metadata, null);
-            return new UIShowResult<T>((T)result.View, result.State);
-        }
-
-        public async UniTask<T> ShowUI<T>(params System.Object[] userDatas) where T : UIBase
-        {
-            UIShowResult<T> result = await ShowUIResult<T>(userDatas);
-            return result.View;
-        }
-
-        public async UniTask<UIShowResult<T>> ShowUIResult<T>(params System.Object[] userDatas) where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.GetWindowMetadata<T>();
-            if (metadata == null)
-            {
-                return new UIShowResult<T>(null, UIShowResultState.Failed);
-            }
-
-            UIShowResult result = await EnqueueShowCommandAsync(metadata, userDatas);
-            return new UIShowResult<T>((T)result.View, result.State);
-        }
-
-
-        public UICloseHandle CloseUI<T>(bool force = false) where T : UIBase
-        {
-            return CloseUI(typeof(T).TypeHandle, force);
-        }
-
-        public T GetUI<T>() where T : UIBase
-        {
-            UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(typeof(T).TypeHandle);
-            return metadata == null ? null : (T)GetUIImpl(metadata);
-        }
-
-
-        public UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false)
-        {
-            return new UICloseHandle(CloseUIAsync(handle, force));
-        }
-
-        public UniTask<bool> CloseUIAsync<T>(bool force = false) where T : UIBase
-        {
-            return CloseUIAsync(typeof(T).TypeHandle, force);
-        }
-
-        public UniTask<bool> CloseUIAsync(RuntimeTypeHandle handle, bool force = false)
-        {
-            if (_routerInternal != null && _routerInternal.IsCurrent(handle))
-            {
-                return CloseViaRouterAsync(handle, force);
-            }
-
-            return CloseLayerUIAsync(handle, force);
-        }
-
-        internal UniTask<bool> CloseUIFromRouterAsync(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false)
-        {
-            return CloseLayerUIAsync(handle, force, skipTransition);
-        }
-
-        internal bool IsLayerCloseBlocked(RuntimeTypeHandle handle)
-        {
-            UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
-            return metadata != null && metadata.IsProcessing;
-        }
-
-        private async UniTask<bool> CloseViaRouterAsync(RuntimeTypeHandle handle, bool force)
-        {
-            UIRouteResult routeResult = await _routerInternal.CloseCurrent(handle, force);
-            return routeResult.Success;
-        }
-
-        private UniTask<bool> CloseLayerUIAsync(RuntimeTypeHandle handle, bool force, bool skipTransition = false)
-        {
-            UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
-            if (metadata == null)
-            {
-                return UniTask.FromResult(false);
-            }
-
-            int layer = metadata.MetaInfo.UILayer;
-            if ((uint)layer >= (uint)_openUI.Length)
-            {
-                return UniTask.FromResult(false);
-            }
-
-            return EnqueueCloseCommandAsync(metadata, force, skipTransition);
-        }
-
-        public bool IsOpen<T>() where T : UIBase
-        {
-            return IsOpen(typeof(T).TypeHandle);
-        }
-
-        public bool IsOpen(RuntimeTypeHandle handle)
-        {
-            UIMetadata metadata = UIMetadataFactory.TryGetWindowMetadata(handle);
-            return IsOpenImpl(metadata);
+            OnWindowUnavailable(view);
         }
 
         private void DestroyAllManagedUI()
         {
-            for (int layerIndex = 0; layerIndex < _openUI.Length; layerIndex++)
+            _shuttingDown = true;
+            StopNavigation();
+            foreach (UIWindowRecord record in _windows.Values)
             {
-                LayerData layer = _openUI[layerIndex];
-                if (layer == null)
-                {
-                    continue;
-                }
-
-                int count = layer.Count;
-                for (int i = count - 1; i >= 0; i--)
-                {
-                    UIMetadata meta = layer.Items[i];
-                    if (meta == null)
-                    {
-                        continue;
-                    }
-
-                    meta.CancelRequests();
-                    meta.DisposeImmediate();
-                }
-
-                Array.Clear(layer.Items, 0, layer.Count);
-                for (int i = 0; i < layer.TypeIdToIndex.Length; i++)
-                {
-                    layer.TypeIdToIndex[i] = -1;
-                }
-
-                layer.Count = 0;
+                CancelWindowLoad(record);
+                record.View?.DestroyNow();
             }
-
-            Array.Clear(_updateableWindows, 0, _updateableWindowCount);
-            _updateableWindowCount = 0;
-
-            if (m_CacheWindowCount > 0)
-            {
-                for (int i = m_CacheWindowCount - 1; i >= 0; i--)
-                {
-                    CacheEntry entry = m_CacheWindow[i];
-                    UIMetadata meta = entry.Metadata;
-                    if (meta == null)
-                        continue;
-
-                    ulong timerHandle = entry.TimerHandle != 0UL ? entry.TimerHandle : meta.CacheTimerHandle;
-                    if (timerHandle != 0UL && _timerService != null)
-                    {
-                        _timerService.RemoveTimer(timerHandle);
-                        meta.CacheTimerHandle = 0UL;
-                    }
-
-                    meta.CancelRequests();
-                    meta.DisposeImmediate();
-                    m_CacheWindow[i] = default;
-                }
-
-                for (int i = 0; i < m_CacheTypeIdToIndex.Length; i++)
-                {
-                    m_CacheTypeIdToIndex[i] = -1;
-                }
-
-                m_CacheWindowCount = 0;
-            }
-
-            if (m_LastCountDownHandle != 0UL && _timerService != null)
+            _windows.Clear();
+            for (int i = 0; i < _openUI.Length; i++) _openUI[i] = null;
+            _updating.Clear();
+            _updateMembers.Clear();
+            _pendingUpdateAdds.Clear();
+            if (m_LastCountDownHandle != 0)
             {
                 _timerService.RemoveTimer(m_LastCountDownHandle);
-                m_LastCountDownHandle = 0UL;
+                m_LastCountDownHandle = 0;
             }
-
-            if (m_LayerBlock != null)
-            {
-                UnityEngine.Object.Destroy(m_LayerBlock);
-                m_LayerBlock = null;
-            }
-
             if (UIRoot != null)
             {
-                if (Application.isPlaying)
-                {
-                    UnityEngine.Object.Destroy(UIRoot.gameObject);
-                }
-                else
-                {
-                    UnityEngine.Object.DestroyImmediate(UIRoot.gameObject);
-                }
+                if (Application.isPlaying) UnityEngine.Object.Destroy(UIRoot.gameObject);
+                else UnityEngine.Object.DestroyImmediate(UIRoot.gameObject);
             }
-
+            m_LayerBlock = null;
             UICacheLayer = null;
             UICanvasRoot = null;
             UICanvas = null;
             UICamera = null;
             UIRoot = null;
+            _initialized = false;
         }
     }
 }

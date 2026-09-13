@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.Resources.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.Resources.Tests", "UniTask.Runtime", "YooAsset", "YooAsset.Editor", "Unity.ugui"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

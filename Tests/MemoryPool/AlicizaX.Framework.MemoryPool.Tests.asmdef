@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.MemoryPool.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.Resources.Tests", "UniTask.Runtime", "YooAsset", "Unity.ugui"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}
