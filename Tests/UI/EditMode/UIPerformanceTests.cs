@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using Cysharp.Threading.Tasks;
 using NUnit.Framework;
 using UnityEngine.TestTools;
 
@@ -7,6 +8,55 @@ namespace AlicizaX.UI.Tests
 {
     public sealed class UIPerformanceTests
     {
+        private static object allocationSink;
+
+        [UnityTest]
+        public IEnumerator CachedCloseAllocationComesFromCompletionSourceAndReopenDoesNotAllocate()
+        {
+            yield return AllocationCapture.Measure("ui-close-calibration", 1,
+                () => allocationSink = new byte[4096], sample => Assert.That(sample.Bytes, Is.GreaterThanOrEqualTo(4096)));
+            using var fixture = new UIFixture();
+            var window = fixture.Open();
+            for (int i = 0; i < 20; i++) Cycle(fixture);
+            long completionBytes = 0;
+            int completionAllocations = 0;
+            UniTaskCompletionSource completion = null;
+            Action createCompletion = () => completion = new UniTaskCompletionSource();
+            createCompletion();
+            completion.TrySetResult();
+            completion.Task.GetAwaiter().GetResult();
+            yield return AllocationCapture.Measure("ui-close-completion-source-construction", 1,
+                createCompletion, sample =>
+                {
+                    completionBytes = sample.Bytes;
+                    completionAllocations = sample.Allocations;
+                    Assert.That(completionBytes, Is.GreaterThan(0));
+                });
+            yield return AllocationCapture.Measure("ui-close-completion-source-signal", 1,
+                () => completion.TrySetResult(), sample =>
+                {
+                    completionBytes += sample.Bytes;
+                    completionAllocations += sample.Allocations;
+                    Assert.That(sample.Bytes, Is.GreaterThan(0));
+                });
+            completion.Task.GetAwaiter().GetResult();
+            allocationSink = null;
+            int loads = fixture.Loader.Loads;
+            yield return AllocationCapture.Measure("ui-close-cached-window-only", 1,
+                () => fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult(), sample =>
+                {
+                    Assert.That(sample.Bytes, Is.EqualTo(completionBytes));
+                    Assert.That(sample.Allocations, Is.EqualTo(completionAllocations));
+                });
+            Assert.That(window.IsOpen, Is.False);
+            Assert.That(window.Destroys, Is.Zero);
+            UIProbeWindow reopened = null;
+            yield return AllocationCapture.Measure("ui-reopen-cached-window-only", 1,
+                () => reopened = fixture.Open(), sample => Assert.That(sample.Bytes, Is.Zero));
+            Assert.That(reopened, Is.SameAs(window));
+            Assert.That(fixture.Loader.Loads, Is.EqualTo(loads));
+        }
+
         [UnityTest]
         public IEnumerator CachedWindowWithSixteenWidgetsAndSteadyUpdate()
         {
