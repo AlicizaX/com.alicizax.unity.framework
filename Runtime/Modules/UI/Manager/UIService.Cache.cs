@@ -10,8 +10,9 @@ namespace AlicizaX.UI.Runtime
 
         private void CacheWindow(UIWindowRecord record)
         {
-            UIBase view = record.View;
-            if (record.ForceClose || record.MetaInfo.CacheTime == 0)
+            UIWindow view = record.View;
+            if (view == null || view.State == UIState.Destroying || view.State == UIState.Destroyed) return;
+            if (record.ForceClose || view.DestroyRequested || record.MetaInfo.CacheTime == 0)
             {
                 view.DestroyNow();
                 return;
@@ -19,14 +20,15 @@ namespace AlicizaX.UI.Runtime
 
             if (view.Holder == null || !view.Holder.IsValid())
             {
+                Log.Error("[UI] Invalid holder while caching {0}. Destroying.", record.Metadata.UILogicTypeName);
+                view.DestroyNow();
                 return;
             }
 
             view.ClearUserData();
             view.SetCanvasEnabled(false);
-            view.InternalEnterCache();
             view.Holder.transform.SetParent(UICacheLayer, false);
-            if (view.State != UIState.Cached || record.View != view || record.CacheIndex >= 0) return;
+            if (record.View != view || record.CacheIndex >= 0) return;
             record.CacheIndex = _cached.Count;
             _cached.Add(record);
             if (record.MetaInfo.CacheTime < 0) return;
@@ -42,7 +44,7 @@ namespace AlicizaX.UI.Runtime
 
         private void OnTimerDisposeWindow(UIWindowRecord record)
         {
-            if (record.CacheIndex < 0 || record.State != UIState.Cached) return;
+            if (record.CacheIndex < 0 || record.View == null || record.View.State != UIState.Closed) return;
             record.CacheTimer = 0;
             RemoveFromCache(record);
             record.View.DestroyNow();

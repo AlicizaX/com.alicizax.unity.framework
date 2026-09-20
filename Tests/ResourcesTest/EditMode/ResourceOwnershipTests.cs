@@ -176,7 +176,7 @@ namespace AlicizaX.Resource.Tests
             foreach (string key in new[] { "held", "a", "b", "c" }) f.Text(key);
             var held = f.Service.LoadLease<TextAsset>("held");
             foreach (string key in new[] { "a", "b", "c" }) f.Service.LoadLease<TextAsset>(key).Dispose();
-            Assert.That(f.Info("a").HandleValid, Is.False);
+            f.AssertUnloaded("a");
             Assert.That(f.Info("b").HandleValid, Is.True);
             Assert.That(f.Info("c").HandleValid, Is.True);
             Assert.That(held.IsValid, Is.True);
@@ -208,7 +208,7 @@ namespace AlicizaX.Resource.Tests
             f.Service.ProcessResourceMaintenance(Time.unscaledTime, 1);
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(2));
             f.Service.ProcessResourceMaintenance(Time.unscaledTime, 1);
-            Assert.That(f.Info("short").HandleValid, Is.False);
+            f.AssertUnloaded("short");
             Assert.That(f.Info("long").HandleValid, Is.True);
             f.Service.ProcessResourceMaintenance(Time.unscaledTime + 599, 1);
             Assert.That(f.Info("long").HandleValid, Is.True);
@@ -247,7 +247,7 @@ namespace AlicizaX.Resource.Tests
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             f.Loader.Complete("a");
             yield return null;
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
 
@@ -276,7 +276,6 @@ namespace AlicizaX.Resource.Tests
             yield return ResourceFixture.Wait(first, lease => Assert.That(lease.IsValid, Is.False));
             yield return ResourceFixture.Wait(second, lease => Assert.That(lease.IsValid, Is.False));
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            f.Loader.Providers.Remove("a");
             f.Loader.CompleteImmediately = true;
             var retry = f.Service.LoadLease<TextAsset>("a");
             Assert.That(retry.IsValid, Is.True);
@@ -315,7 +314,7 @@ namespace AlicizaX.Resource.Tests
             yield return ResourceFixture.Wait(current, asset => Assert.That(asset, Is.SameAs(f.Loader.Assets["b"])));
             f.Loader.Complete("a");
             yield return ResourceFixture.Wait(old, asset => Assert.That(asset, Is.Null));
-            Assert.That(f.Info("a").DirectRefCount, Is.Zero);
+            f.AssertNoReferences("a");
             Assert.That(f.Info("b").DirectRefCount, Is.EqualTo(1));
         }
 
@@ -347,7 +346,7 @@ namespace AlicizaX.Resource.Tests
             Assert.Throws<InvalidOperationException>(() => task.GetAwaiter().GetResult());
             Assert.That(f.Info("a").LegacyDirectRefCount, Is.EqualTo(1));
             f.Service.UnloadAsset(nested);
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]

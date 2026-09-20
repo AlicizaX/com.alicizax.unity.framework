@@ -57,15 +57,16 @@ namespace AlicizaX.Audio.Tests
             f.Loader.CompleteImmediately = false;
             for (int pass = 0; pass < 4; pass++)
             {
-                int callbacks = 0;
-                Action<bool> completed = success => { Assert.That(success, Is.True); callbacks++; };
+                int callbacks = 0, successes = 0;
+                Action<bool> completed = success => { if (success) successes++; callbacks++; };
                 yield return AllocationCapture.MeasureFrames("complete-64-voices-pass-" + pass, Complete(f, completed),
-                    sample => Assert.That(sample.Bytes - sample.BackendBytes, Is.LessThanOrEqualTo(pass == 0 ? 128 * 1024 : 512)));
+                    sample => Assert.That(sample.Bytes - sample.BackendBytes, Is.LessThanOrEqualTo(pass == 0 ? 128 * 1024 : 64)), pass == 3);
                 Assert.That(callbacks, Is.EqualTo(1));
+                Assert.That(successes, Is.EqualTo(1));
                 Assert.That(f.Loader.LiveHandles, Is.Zero);
                 f.CheckOwnership();
                 yield return AllocationCapture.MeasureFrames("cancel-64-voices-pass-" + pass, Cancel(f),
-                    sample => Assert.That(sample.Bytes - sample.BackendBytes, Is.LessThanOrEqualTo(pass == 0 ? 16 * 1024 : 512)));
+                    sample => Assert.That(sample.Bytes - sample.BackendBytes, Is.LessThanOrEqualTo(pass == 0 ? 16 * 1024 : 0)), pass == 3);
                 Assert.That(f.Loader.LiveHandles, Is.Zero);
                 f.CheckOwnership();
             }

@@ -13,6 +13,7 @@ namespace AlicizaX.Audio.Runtime
         private AudioCategory _category;
         private AudioSource _source;
         private AudioLowPassFilter _lowPassFilter;
+        private AudioClip _playingClip;
         private AudioClipCacheEntry _clipEntry;
         private AudioLoadRequest _loadRequest;
         private Transform _transform;
@@ -25,7 +26,6 @@ namespace AlicizaX.Audio.Runtime
         private int _generation;
         private ulong _handle;
         private float _baseVolume;
-        private float _pitch;
         private float _volumeFadeStart;
         private float _volumeFadeTarget;
         private float _volumeFadeTimer;
@@ -84,12 +84,11 @@ namespace AlicizaX.Audio.Runtime
             _volumeFadeTarget = _baseVolume;
             _volumeFadeTimer = 0f;
             _volumeFadeDuration = 0f;
-            _pitch = request.Pitch <= 0f ? 1f : request.Pitch;
             _fadeInDuration = request.FadeInSeconds > 0f ? request.FadeInSeconds : 0f;
             _fadeInTimer = 0f;
             _fadeDuration = request.FadeOutSeconds > 0f ? request.FadeOutSeconds : DefaultFadeOutSeconds;
             _loop = request.Loop;
-            _spatial = request.Spatial || request.FollowTarget != null || request.UseWorldPosition;
+            _spatial = request.Spatial;
             _followTarget = request.FollowTarget;
             _followOffset = request.Position;
             _nextOcclusionCheckTime = 0f;
@@ -221,7 +220,7 @@ namespace AlicizaX.Audio.Runtime
                 _transform.rotation = _followTarget.rotation;
             }
 
-            if (_state != AudioAgentRuntimeState.Loading && !_loop && !_source.isPlaying)
+            if (_state != AudioAgentRuntimeState.Loading && (_playingClip == null || (!_loop && !_source.isPlaying)))
             {
                 StopImmediate(true);
                 return;
@@ -288,6 +287,7 @@ namespace AlicizaX.Audio.Runtime
             _category = null;
             _source = null;
             _lowPassFilter = null;
+            _playingClip = null;
             _clipEntry = null;
             _loadRequest = null;
             _transform = null;
@@ -305,7 +305,6 @@ namespace AlicizaX.Audio.Runtime
             _generation = 0;
             _handle = 0UL;
             _baseVolume = 1f;
-            _pitch = 1f;
             _volumeFadeStart = 1f;
             _volumeFadeTarget = 1f;
             _volumeFadeTimer = 0f;
@@ -363,6 +362,7 @@ namespace AlicizaX.Audio.Runtime
                 return;
             }
 
+            _playingClip = clip;
             _source.clip = clip;
             _source.loop = _loop;
 
@@ -438,6 +438,7 @@ namespace AlicizaX.Audio.Runtime
         private void ResetState()
         {
             _state = AudioAgentRuntimeState.Free;
+            _playingClip = null;
             _followTarget = null;
             _followOffset = Vector3.zero;
             _spatial = false;
@@ -445,7 +446,6 @@ namespace AlicizaX.Audio.Runtime
             _loop = false;
             _handle = 0;
             _baseVolume = 1f;
-            _pitch = 1f;
             _volumeFadeStart = 1f;
             _volumeFadeTarget = 1f;
             _volumeFadeTimer = 0f;
@@ -484,7 +484,7 @@ namespace AlicizaX.Audio.Runtime
             _source.bypassReverbZones = false;
             _playbackPriority = ResolvePlaybackPriority(request, config);
             _source.priority = ResolveUnitySourcePriority(_playbackPriority);
-            _source.pitch = _pitch;
+            _source.pitch = request.Pitch;
             _source.rolloffMode = request.OverrideSpatialSettings ? request.RolloffMode : config.RolloffMode;
             _source.minDistance = request.OverrideSpatialSettings ? request.MinDistance : config.MinDistance;
             _source.maxDistance = request.OverrideSpatialSettings ? request.MaxDistance : config.MaxDistance;

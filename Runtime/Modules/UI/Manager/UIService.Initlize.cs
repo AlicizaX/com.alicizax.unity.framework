@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Cysharp.Text;
 using AlicizaX.Timer.Runtime;
 using UnityEngine;
@@ -14,8 +15,8 @@ namespace AlicizaX.UI.Runtime
 
         private const int UI_ROOT_OFFSET = 1000;
 
-        private const int WINDOW_DEEP = 20;
-        private const int LAYER_DEEP = 200 * WINDOW_DEEP;
+        internal const int WINDOW_DEEP = 20;
+        internal const int LAYER_DEEP = 200 * WINDOW_DEEP;
 
         private readonly RectTransform[] m_AllWindowLayer = new RectTransform[(int)UILayer.All];
 
@@ -25,13 +26,33 @@ namespace AlicizaX.UI.Runtime
 
         public void Initialize(Transform root, bool isOrthographic)
         {
-            if (_initialized || _shuttingDown) throw new InvalidOperationException("UIService is already initialized or stopped.");
-            if (root == null) throw new ArgumentNullException(nameof(root));
+            if (_initialized || _shuttingDown)
+            {
+                Log.Error("[UI] UIService is already initialized or stopped.");
+                return;
+            }
+            if (root == null)
+            {
+                Log.Error("[UI] UI root is missing.");
+                return;
+            }
             Canvas canvas = root.GetComponentInChildren<Canvas>(true);
-            if (canvas == null) throw new ArgumentException("UI root must contain a Canvas.", nameof(root));
+            if (canvas == null)
+            {
+                Log.Error("[UI] UI root must contain a Canvas.");
+                return;
+            }
             Camera camera = canvas.worldCamera;
-            if (camera == null) throw new ArgumentException("UI Canvas must have a worldCamera.", nameof(root));
-            _timerService = AppServices.App.Require<ITimerService>();
+            if (camera == null)
+            {
+                Log.Error("[UI] UI Canvas must have a worldCamera.");
+                return;
+            }
+            if (!AppServices.TryGet(out _timerService))
+            {
+                Log.Error("[UI] Timer service is unavailable.");
+                return;
+            }
             UICanvas = canvas;
             UICamera = camera;
             UICanvasRoot = UICanvas.transform;
@@ -86,7 +107,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             m_AllWindowLayer[layer] = rect;
-            _openUI[layer] = new LayerData();
+            _openUI[layer] = new List<UIWindowRecord>(16);
         }
 
 

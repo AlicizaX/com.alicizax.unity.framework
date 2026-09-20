@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.Timer.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.Timer.Tests"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

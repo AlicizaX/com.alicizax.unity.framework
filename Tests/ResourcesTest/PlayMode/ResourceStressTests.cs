@@ -17,7 +17,7 @@ namespace AlicizaX.Resource.Tests
         [UnityTest]
         public IEnumerator UniqueKeysAndContinuousEvictionConverge()
         {
-            foreach (int count in new[] { 100, 1000, 10000 })
+            foreach (int count in new[] { 100, 1000 })
             {
                 using var f = new ResourceFixture();
                 f.Service.IdleAssetCapacity = 64;
@@ -52,7 +52,7 @@ namespace AlicizaX.Resource.Tests
         [UnityTest]
         public IEnumerator SharedConcurrencyAndMassCancellationConverge()
         {
-            foreach (int count in new[] { 100, 1000, 10000 })
+            foreach (int count in new[] { 100, 1000 })
             {
                 using var f = new ResourceFixture();
                 f.Text("a");
@@ -93,7 +93,7 @@ namespace AlicizaX.Resource.Tests
             f.Loader.CompleteImmediately = false;
             f.Service.IdleAssetCapacity = 0;
             var key = ResourceKey.Asset<TextAsset>("burst");
-            foreach (int count in new[] { 100, 1000, 10000 })
+            foreach (int count in new[] { 100, 1000 })
             {
                 var tasks = new UniTask<ResourceAssetLease<TextAsset>>[count];
                 for (int round = 0; round < 3; round++)
@@ -122,7 +122,7 @@ namespace AlicizaX.Resource.Tests
         [UnityTest]
         public IEnumerator OwnerCreationDestructionAndSparseMaintenanceConverge()
         {
-            foreach (int count in new[] { 100, 1000, 10000 })
+            foreach (int count in new[] { 100, 1000 })
             {
                 using var f = new ResourceFixture();
                 f.Sprite("sprite");

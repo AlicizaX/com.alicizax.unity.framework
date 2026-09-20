@@ -28,7 +28,7 @@ namespace AlicizaX.Resource.Tests
             f.Loader.Complete("old");
             yield return ResourceFixture.Wait(old, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
             Assert.That(target.sharedMaterial, Is.SameAs(asset));
-            Assert.That(f.Info("old").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("old");
             Assert.That(f.Info("new").BindingRefCount, Is.EqualTo(1));
         }
 
@@ -45,7 +45,7 @@ namespace AlicizaX.Resource.Tests
             f.Loader.Complete("atlas");
             yield return ResourceFixture.Wait(old, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
             Assert.That(image.sprite, Is.SameAs(asset));
-            Assert.That(f.Info("atlas").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("atlas");
         }
 
         [UnityTest]
@@ -65,7 +65,7 @@ namespace AlicizaX.Resource.Tests
             f.Loader.Complete("new");
             yield return ResourceFixture.Wait(current, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.Success)));
             Assert.That(image.material, Is.SameAs(asset));
-            Assert.That(f.Info("old").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("old");
         }
 
         [Test]
@@ -82,7 +82,7 @@ namespace AlicizaX.Resource.Tests
             Assert.That(f.Info("a").BindingRefCount, Is.EqualTo(1));
             f.Bindings.UnregisterTarget(owner, second);
             Assert.That(second.sprite, Is.Null);
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]
@@ -93,7 +93,7 @@ namespace AlicizaX.Resource.Tests
             var image = owner.gameObject.AddComponent<Image>();
             image.RegisterDirtyMaterialCallback(() => throw new InvalidOperationException("dirty callback"));
             Assert.Throws<AggregateException>(() => f.Bindings.BindImageMaterial(owner, image, new ResourceKey("a")));
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]
@@ -110,8 +110,8 @@ namespace AlicizaX.Resource.Tests
             Assert.Throws<InvalidOperationException>(() => owner.ReleaseBindings());
             Assert.That(owner.IsRegistered, Is.False);
             Assert.That(sprite.sprite, Is.Null);
-            Assert.That(f.Info("material").RefCountTotal, Is.Zero);
-            Assert.That(f.Info("sprite").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("material");
+            f.AssertNoReferences("sprite");
         }
 
         [Test]
@@ -123,7 +123,7 @@ namespace AlicizaX.Resource.Tests
             image.RegisterDirtyMaterialCallback(() => owner.ReleaseBindings());
             Assert.That(f.Bindings.BindImageMaterial(owner, image, new ResourceKey("a")), Is.EqualTo(ResourceBindStatus.StaleOwner));
             Assert.That(owner.IsRegistered, Is.False);
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]
@@ -166,7 +166,7 @@ namespace AlicizaX.Resource.Tests
             Assert.That(reentered, Is.True);
             Assert.That(image.sprite, Is.SameAs(expected));
             Assert.That(image.rectTransform.sizeDelta, Is.EqualTo(expectedSize));
-            Assert.That(f.Info("old").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("old");
             Assert.That(f.Info("new").BindingRefCount, Is.EqualTo(1));
         }
 
@@ -190,12 +190,12 @@ namespace AlicizaX.Resource.Tests
             });
             Assert.That(f.Bindings.BindImageMaterial(second, image, new ResourceKey("b")), Is.EqualTo(ResourceBindStatus.StaleOwner));
             Assert.That(image.material, Is.SameAs(latest));
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
-            Assert.That(f.Info("b").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
+            f.AssertNoReferences("b");
             Assert.That(f.Info("c").BindingRefCount, Is.EqualTo(1));
             Assert.That(f.Bindings.UnregisterTarget(third, image), Is.EqualTo(ResourceBindStatus.Success));
             Assert.That(image.material, Is.Not.SameAs(latest));
-            Assert.That(f.Info("c").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("c");
         }
     }
 }

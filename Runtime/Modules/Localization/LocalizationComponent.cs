@@ -17,14 +17,6 @@ namespace AlicizaX.Localization.Runtime
 
         [SerializeField] private string _language;
 
-        internal void SetLanguage(string language)
-        {
-            if (!string.IsNullOrEmpty(language))
-            {
-                _language = language;
-            }
-        }
-
         internal static void SaveLanguagePreference(string language)
         {
             if (string.IsNullOrEmpty(language))

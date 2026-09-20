@@ -24,7 +24,6 @@ namespace AlicizaX.UI.Editor
         private readonly UILayerDebugInfo _layerInfo = new UILayerDebugInfo();
         private readonly UIWindowDebugInfo _windowInfo = new UIWindowDebugInfo();
         private readonly UIRouteDebugInfo _routeInfo = new UIRouteDebugInfo();
-        private readonly UIRouteWarningInfo _routeWarningInfo = new UIRouteWarningInfo();
         private readonly UIWindowDebugInfo[] _cacheInfos = new UIWindowDebugInfo[CacheDebugInfoCapacity];
         private readonly System.Collections.Generic.List<string> _alerts = new System.Collections.Generic.List<string>(16);
         private readonly System.Collections.Generic.Dictionary<int, int> _visibleDepths = new System.Collections.Generic.Dictionary<int, int>(32);
@@ -38,7 +37,6 @@ namespace AlicizaX.UI.Editor
         private bool _showCache = true;
         private bool _showEmptyLayers;
         private bool _showNavigationHistory = true;
-        private bool _showNavigationWarnings = true;
         private Vector2 _runtimeScroll;
         private Vector2 _navigationRuntimeScroll;
         private GUIStyle _panelStyle;
@@ -256,12 +254,11 @@ namespace AlicizaX.UI.Editor
             }
 
             DrawNavigationSummary(debug);
-            DrawNavigationRuntimeOptions(debug);
+            DrawNavigationRuntimeOptions();
 
             EditorGUILayout.BeginVertical(_entryBodyStyle);
             _navigationRuntimeScroll = GUILayout.BeginScrollView(_navigationRuntimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(220f), GUILayout.MaxHeight(560f));
             DrawNavigationHistory(debug);
-            DrawNavigationWarnings(debug);
             GUILayout.EndScrollView();
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndVertical();
@@ -319,7 +316,7 @@ namespace AlicizaX.UI.Editor
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.BeginHorizontal();
-            DrawCounter("Update", FormatUpdateCount(_serviceInfo), _serviceInfo.UpdateCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
+            DrawCounter("Update", _serviceInfo.UpdateCount.ToString(), _serviceInfo.UpdateCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
             DrawCounter("Block", GetBlockLine(_serviceInfo), _serviceInfo.BlockActive ? _warningLabelStyle : _mutedLabelStyle);
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
@@ -333,12 +330,11 @@ namespace AlicizaX.UI.Editor
             DrawCounter("Current", debug.Current?.Name ?? "None", debug.Current == null ? _mutedLabelStyle : _rowLabelStyle);
             DrawCounter("Can Back", debug.CanBack ? "Yes" : "No", debug.CanBack ? _rowLabelStyle : _mutedLabelStyle);
             DrawCounter("History", debug.HistoryCount.ToString(), debug.HistoryCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawCounter("Warnings", debug.WarningCount.ToString(), debug.WarningCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
             EditorGUILayout.EndHorizontal();
             DrawSectionEnd();
         }
 
-        private void DrawNavigationRuntimeOptions(IUINavigationDebug debug)
+        private void DrawNavigationRuntimeOptions()
         {
             Rect toolbarRect = GUILayoutUtility.GetRect(1f, RuntimeToolbarHeight, GUILayout.ExpandWidth(true));
             AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
@@ -346,15 +342,6 @@ namespace AlicizaX.UI.Editor
             float x = toolbarRect.x + 6f;
             float y = toolbarRect.y + 3f;
             _showNavigationHistory = DrawToolbarToggle(ref x, y, 64f, "History", _showNavigationHistory);
-            _showNavigationWarnings = DrawToolbarToggle(ref x, y, 76f, "Warnings", _showNavigationWarnings);
-
-            Rect clearRect = new Rect(toolbarRect.xMax - 106f, y, 100f, 20f);
-            EditorGUI.BeginDisabledGroup(debug.WarningCount == 0);
-            if (GUI.Button(clearRect, "Clear Warnings", AlicizaEditorGUI.Styles.PillOff))
-            {
-                debug.ClearWarnings();
-            }
-            EditorGUI.EndDisabledGroup();
         }
 
         private void DrawNavigationHistory(IUINavigationDebug debug)
@@ -381,30 +368,6 @@ namespace AlicizaX.UI.Editor
             DrawSectionEnd();
         }
 
-        private void DrawNavigationWarnings(IUINavigationDebug debug)
-        {
-            if (!_showNavigationWarnings)
-            {
-                return;
-            }
-
-            DrawSectionBegin("Warnings");
-            if (debug.WarningCount == 0)
-            {
-                DrawEmptyLabel("No navigation warnings.");
-            }
-
-            for (int i = 0; i < debug.WarningCount; i++)
-            {
-                if (debug.FillWarningInfo(i, _routeWarningInfo))
-                {
-                    DrawRouteWarningInfo(_routeWarningInfo);
-                }
-            }
-
-            DrawSectionEnd();
-        }
-
         private void DrawRouteInfo(UIRouteDebugInfo info, string badge)
         {
             Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
@@ -424,24 +387,6 @@ namespace AlicizaX.UI.Editor
                 DrawDebugRow("Args", info.ArgsPreview ?? string.Empty);
                 EditorGUILayout.EndVertical();
             }
-        }
-
-        private void DrawRouteWarningInfo(UIRouteWarningInfo info)
-        {
-            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = rowRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, true, hovered);
-
-            Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 48f, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.36f)), 18f);
-            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
-            GUI.Label(kindRect, "WARN", _kindBadgeStyle);
-            GUI.Label(titleRect, "#" + info.Sequence + " " + (info.UITypeName ?? "Unknown"), _warningLabelStyle);
-            GUI.Label(summaryRect, string.Empty, _mutedMiniLabelStyle);
-
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawDebugRow("Message", info.Message ?? string.Empty, _warningLabelStyle);
-            EditorGUILayout.EndVertical();
         }
 
         private static string GetRouteSummary(UIRouteDebugInfo info)
@@ -500,7 +445,7 @@ namespace AlicizaX.UI.Editor
             for (int i = 0; i < cacheCount; i++)
             {
                 UIWindowDebugInfo info = _cacheInfos[i];
-                if (info.State == UIState.Cached && info.Visible)
+                if (info.Visible)
                 {
                     _alerts.Add(GetWindowName(info) + " is cached but still visible.");
                 }
@@ -522,11 +467,6 @@ namespace AlicizaX.UI.Editor
         private void AppendWindowAlerts(UIWindowDebugInfo info, int windowIndex)
         {
             string windowName = GetWindowName(info);
-
-            if (info.State == UIState.Cached && info.Visible)
-            {
-                _alerts.Add(windowName + " is marked cached while visible.");
-            }
 
             if (!(info.State == UIState.CreatedUI && info.Processing) && info.HolderTransform == null &&
                 info.State != UIState.Uninitialized && info.State != UIState.Destroyed)
@@ -636,7 +576,7 @@ namespace AlicizaX.UI.Editor
         {
             Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
             bool hovered = rowRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, cached || info.State == UIState.Cached, hovered);
+            AlicizaEditorGUI.DrawListItemBackground(rowRect, cached, hovered);
 
             Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 44f, 18f);
             Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.38f)), 18f);
@@ -649,7 +589,7 @@ namespace AlicizaX.UI.Editor
             DrawDebugObjectRow("Transform", info.HolderTransform, typeof(Transform));
             if (cached || info.CacheTime != 0 || info.CacheRemaining > 0f)
             {
-                DrawDebugRow("Cache", GetCacheLine(info), cached || info.State == UIState.Cached ? _mutedLabelStyle : _warningLabelStyle);
+                DrawDebugRow("Cache", GetCacheLine(info), cached ? _mutedLabelStyle : _warningLabelStyle);
             }
 
             if (!string.IsNullOrEmpty(info.HolderTypeName))
@@ -702,11 +642,6 @@ namespace AlicizaX.UI.Editor
             return text;
         }
 
-        private static string FormatUpdateCount(UIServiceDebugInfo info)
-        {
-            return info.UpdateCount + " (" + info.UpdateWindowCount + " window / " + info.UpdateWidgetCount + " widget)";
-        }
-
         private static string GetBlockLine(UIServiceDebugInfo info)
         {
             if (!info.BlockActive)
@@ -729,7 +664,7 @@ namespace AlicizaX.UI.Editor
                 return "OP";
             }
 
-            if (cached || info.State == UIState.Cached)
+            if (cached)
             {
                 return "CCH";
             }
@@ -749,7 +684,7 @@ namespace AlicizaX.UI.Editor
                 return _warningLabelStyle;
             }
 
-            if (cached || info.State == UIState.Cached)
+            if (cached)
             {
                 return _mutedLabelStyle;
             }

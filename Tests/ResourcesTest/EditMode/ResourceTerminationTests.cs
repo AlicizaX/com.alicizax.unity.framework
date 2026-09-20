@@ -79,7 +79,7 @@ namespace AlicizaX.Resource.Tests
             Assert.That(delivered, Is.False);
             f.Service.UnloadUnusedAssets(true);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [UnityTest]
@@ -180,7 +180,7 @@ namespace AlicizaX.Resource.Tests
             f.Loader.Complete("a");
             f.Service.UnloadUnusedAssets(true);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]
@@ -192,7 +192,7 @@ namespace AlicizaX.Resource.Tests
             f.Service.ForceUnloadAllAssets();
             Assert.That(lease.IsValid, Is.False);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
             lease.Dispose();
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
@@ -235,7 +235,7 @@ namespace AlicizaX.Resource.Tests
             yield return task.ToCoroutine();
             Assert.That(delivered, Is.False);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
         }
     }
 }

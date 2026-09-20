@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -9,6 +10,7 @@ namespace AlicizaX.UI.Runtime
     public abstract partial class UIBase
     {
         private List<UIWidget> _children;
+        private Dictionary<UIWidget, CancellationTokenSource> _childCreations;
 
         private UIWidget[] SnapshotChildren(out int count)
         {
@@ -24,51 +26,15 @@ namespace AlicizaX.UI.Runtime
             if (snapshot != null) ArrayPool<UIWidget>.Shared.Return(snapshot, true);
         }
 
-        private UniTask OpenChildren(int generation)
+        private void RefreshChildrenEffective()
         {
             UIWidget[] snapshot = SnapshotChildren(out int count);
-            List<UniTask> pending = null;
             try
             {
-                for (int i = 0; i < count && IsCurrent(generation) && ChildrenCanOpen; i++)
-                {
-                    UIWidget child = snapshot[i];
-                    if (!child.OpenIntent || child.DestroyRequested) continue;
-                    (pending ??= new List<UniTask>()).Add(OpenChild(child));
-                }
+                for (int i = 0; i < count; i++)
+                    if (!snapshot[i].DestroyRequested) snapshot[i].RefreshEffective();
             }
             finally { ReturnChildren(snapshot); }
-            return pending == null ? UniTask.CompletedTask : UniTask.WhenAll(pending);
-        }
-
-        private UniTask CloseChildren(bool destroy, bool skipTransition)
-        {
-            int generation = _transitionGeneration;
-            UIWidget[] snapshot = SnapshotChildren(out int count);
-            List<UniTask> pending = null;
-            try
-            {
-                for (int i = 0; i < count && IsCurrent(generation); i++)
-                    (pending ??= new List<UniTask>()).Add(CloseChild(snapshot[i], destroy, skipTransition));
-            }
-            finally { ReturnChildren(snapshot); }
-            return pending == null ? UniTask.CompletedTask : UniTask.WhenAll(pending);
-        }
-
-        private static async UniTask OpenChild(UIWidget child)
-        {
-            try
-            {
-                child.OpenFromParent();
-                await child.AwaitTransition();
-            }
-            catch (Exception error) { Log.Exception(error); }
-        }
-
-        private static async UniTask CloseChild(UIWidget child, bool destroy, bool skipTransition)
-        {
-            try { await child.CloseFromParent(destroy, skipTransition); }
-            catch (Exception error) { Log.Exception(error); }
         }
 
         private void DestroyChildrenImmediate()
@@ -77,110 +43,177 @@ namespace AlicizaX.UI.Runtime
             try
             {
                 for (int i = 0; i < count; i++)
-                {
-                    try { snapshot[i].DestroyNow(); }
-                    catch (Exception error) { Log.Exception(error); }
-                }
+                    snapshot[i].DestroyNow();
             }
             finally { ReturnChildren(snapshot); }
         }
 
-        internal async UniTask<UIWidget> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible)
+        private void UpdateChildren(UIBase root, int generation)
         {
-            UIWidget widget = BeginWidgetCreate(metadata, visible);
-            if (widget == null) return null;
-            var cancellation = widget.BeginResourceLoad();
-            bool loaded = await UIHolderFactory.CreateUIResourceAsync(widget, parent, cancellation.Token);
-            widget.EndResourceLoad(cancellation);
-            if (!loaded)
+            UIWidget[] snapshot = SnapshotChildren(out int count);
+            try
             {
+                for (int i = 0; i < count && Effective && root.IsCurrent(generation); i++)
+                    snapshot[i].InternalUpdate(root, generation);
+            }
+            finally { ReturnChildren(snapshot); }
+        }
+
+        private CancellationTokenSource BeginChildCreation(UIWidget widget)
+        {
+            var cancellation = new CancellationTokenSource();
+            (_childCreations ??= new Dictionary<UIWidget, CancellationTokenSource>()).Add(widget, cancellation);
+            return cancellation;
+        }
+
+        private void EndChildCreation(UIWidget widget, CancellationTokenSource cancellation)
+        {
+            _childCreations?.Remove(widget);
+            cancellation.Dispose();
+        }
+
+        private void CancelChildCreation(UIWidget widget)
+        {
+            if (_childCreations == null || !_childCreations.TryGetValue(widget, out CancellationTokenSource cancellation))
+                return;
+            UIHolderObjectBase.Cancel(cancellation);
+        }
+
+        private void CancelChildCreations()
+        {
+            Dictionary<UIWidget, CancellationTokenSource> creations = _childCreations;
+            _childCreations = null;
+            if (creations == null) return;
+            foreach (CancellationTokenSource cancellation in creations.Values)
+                UIHolderObjectBase.Cancel(cancellation);
+        }
+
+        internal async UniTask<UIWidget> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible,
+            CancellationToken cancellationToken = default)
+        {
+            if (cancellationToken.IsCancellationRequested) return null;
+            UIWidget widget = BeginWidgetCreate(metadata, parent);
+            if (widget == null) return null;
+            CancellationTokenSource cancellation = BeginChildCreation(widget);
+            CancellationTokenRegistration registration = default;
+            if (cancellationToken.CanBeCanceled)
+                registration = cancellationToken.Register(() => UIHolderObjectBase.Cancel(cancellation));
+            try
+            {
+                bool loaded = await UIHolderFactory.CreateUIResourceAsync(widget, parent, cancellation.Token);
+                if (loaded && !cancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    return FinishWidgetCreate(widget, visible);
                 widget.DestroyNow();
                 return null;
             }
-            return FinishWidgetCreate(widget);
+            finally
+            {
+                registration.Dispose();
+                EndChildCreation(widget, cancellation);
+            }
         }
 
         internal UIWidget CreateWidgetUISync(UIMetadata metadata, Transform parent, bool visible)
         {
-            UIWidget widget = BeginWidgetCreate(metadata, visible);
+            UIWidget widget = BeginWidgetCreate(metadata, parent);
             if (widget == null) return null;
-            if (!UIHolderFactory.CreateUIResourceSync(widget, parent))
+            if (UIHolderFactory.CreateUIResourceSync(widget, parent))
+                return FinishWidgetCreate(widget, visible);
+            widget.DestroyNow();
+            return null;
+        }
+
+        protected async UniTask<UIWidget> CreateWidgetAsync(string typeName, Transform parent, bool visible = true,
+            CancellationToken cancellationToken = default)
+        {
+            if (!UIMetaRegistry.TryGet(typeName, out var info))
             {
-                widget.DestroyNow();
+                Log.Error("[UI] Unknown Widget type: {0}.", typeName);
                 return null;
             }
-            return FinishWidgetCreate(widget);
+            return await CreateWidgetUIAsync(UIMetadata.Create(Type.GetTypeFromHandle(info.RuntimeTypeHandle)), parent, visible, cancellationToken);
         }
 
-        protected async UniTask<UIWidget> CreateWidgetAsync(string typeName, Transform parent, bool visible = true)
-        {
-            if (!UIMetaRegistry.TryGet(typeName, out var info)) return null;
-            return await CreateWidgetUIAsync(UIMetadata.Create(Type.GetTypeFromHandle(info.RuntimeTypeHandle)), parent, visible);
-        }
-
-        protected async UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true) where T : UIWidget =>
-            (T)await CreateWidgetUIAsync(UIMetadata.Create(typeof(T)), parent, visible);
+        protected async UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true,
+            CancellationToken cancellationToken = default) where T : UIWidget =>
+            (T)await CreateWidgetUIAsync(UIMetadata.Create(typeof(T)), parent, visible, cancellationToken);
 
         protected UIWidget CreateWidgetSync(string typeName, Transform parent, bool visible = true)
         {
-            if (!UIMetaRegistry.TryGet(typeName, out var info)) return null;
+            if (!UIMetaRegistry.TryGet(typeName, out var info))
+            {
+                Log.Error("[UI] Unknown Widget type: {0}.", typeName);
+                return null;
+            }
             return CreateWidgetUISync(UIMetadata.Create(Type.GetTypeFromHandle(info.RuntimeTypeHandle)), parent, visible);
         }
 
         protected T CreateWidgetSync<T>(Transform parent, bool visible = true) where T : UIWidget =>
             (T)CreateWidgetUISync(UIMetadata.Create(typeof(T)), parent, visible);
 
-        protected T CreateWidgetSync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = false) where T : UIWidget
+        protected T CreateWidgetSync<T>(UIHolderObjectBase holder, bool destroyHolderOnDispose = true, bool visible = true) where T : UIWidget
         {
-            if (holder == null || !holder.IsValid()) return null;
+            if (holder == null)
+            {
+                Log.Error("[UI] Cannot create a Widget with a missing Holder.");
+                return null;
+            }
             UIMetadata metadata = UIMetadata.Create(typeof(T));
             if (metadata == null) return null;
             if (!Type.GetTypeFromHandle(metadata.MetaInfo.HolderRuntimeTypeHandle).IsInstanceOfType(holder))
             {
-                Log.Exception(new ArgumentException("Holder type does not match the widget.", nameof(holder)));
+                Log.Error("[UI] Holder type does not match Widget {0}.", typeof(T));
                 return null;
             }
-            UIWidget widget = BeginWidgetCreate(metadata, true);
+            UIWidget widget = BeginWidgetCreate(metadata, holder.transform);
             if (widget == null) return null;
             widget.SetDestroyHolderOnDispose(destroyHolderOnDispose);
             widget.BindUIHolder(holder);
-            return (T)FinishWidgetCreate(widget);
+            return (T)FinishWidgetCreate(widget, visible);
         }
 
-        private UIWidget BeginWidgetCreate(UIMetadata metadata, bool visible)
+        private UIWidget BeginWidgetCreate(UIMetadata metadata, Transform parent)
         {
-            if (DestroyRequested || metadata == null) return null;
+            if (DestroyRequested)
+            {
+                Log.Error("[UI] Cannot create a Widget after its parent requested destruction.");
+                return null;
+            }
+            if (parent == null || Holder == null || !parent.IsChildOf(Holder.transform))
+            {
+                Log.Error("[UI] Widget must belong to its parent's Transform subtree.");
+                return null;
+            }
+            if (metadata == null) return null;
             if (!typeof(UIWidget).IsAssignableFrom(metadata.UILogicType))
             {
-                Log.Error("[UI] The UI type must be a Widget.");
+                Log.Error("[UI] The UI type must be a Widget: {0}.", metadata.UILogicType);
                 return null;
             }
             UIWidget widget = (UIWidget)metadata.CreateUI(Service);
             if (widget == null) return null;
             widget.Parent = this;
-            widget.OpenIntent = visible;
             (_children ??= new List<UIWidget>(4)).Add(widget);
             return widget;
         }
 
-        private UIWidget FinishWidgetCreate(UIWidget widget)
+        private UIWidget FinishWidgetCreate(UIWidget widget, bool open)
         {
             if (DestroyRequested || widget.DestroyRequested) return null;
-            bool initialized = widget.InternalInitialize();
-            if (initialized && widget.OpenIntent && ChildrenCanOpen) widget.InternalOpen();
+            widget.InternalInitialize(open);
             return widget.DestroyRequested ? null : widget;
         }
 
-        public UICloseHandle RemoveWidget(UIWidget widget) =>
-            widget != null && widget.Parent == this ? widget.Destroy() : default;
+        public UniTask RemoveWidget(UIWidget widget) =>
+            widget != null && widget.Parent == this ? widget.Destroy() : UniTask.CompletedTask;
 
         internal void DetachWidget(UIWidget widget)
         {
             _children.Remove(widget);
-            try { OnWidgetRemoved(widget); }
-            catch (Exception error) { Log.Exception(error); }
+            CancelChildCreation(widget);
+            OnWidgetRemoved(widget);
         }
 
-        protected virtual void OnWidgetRemoved(UIWidget widget) { }
+        internal virtual void OnWidgetRemoved(UIWidget widget) { }
     }
 }

@@ -15,6 +15,8 @@ namespace AlicizaX
 
         private void Awake()
         {
+            if (AppServices.App.TryGet<IObjectPoolService>(out _))
+                return;
             _mObjectPoolService = AppServices.App.Register<IObjectPoolService>(new ObjectPoolService());
         }
 

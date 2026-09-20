@@ -51,7 +51,7 @@ namespace AlicizaX.MemoryPoolTests
         }
 
         [Test]
-        public void BusinessReleaseFailureOrphansTheUnusedEntryUntilShutdown()
+        public void BusinessReleaseFailureRetainsAccountedOwnershipUntilShutdown()
         {
             Use<ResourceWrapper>();
             using var f = new ResourceFixture();
@@ -67,8 +67,9 @@ namespace AlicizaX.MemoryPoolTests
             try
             {
                 Assert.Throws<InvalidOperationException>(() => pool.ReleaseAllUnused());
-                Assert.That(pool.Count, Is.Zero);
-                pool.ReleaseAllUnused();
+                Assert.That(pool.Count, Is.EqualTo(1));
+                Assert.That(pool.Spawn(), Is.Null);
+                Assert.Throws<InvalidOperationException>(() => pool.ReleaseAllUnused());
                 Assert.That(Info<ResourceWrapper>().UsingCount, Is.EqualTo(1));
                 Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
                 TestContext.WriteLine($"OWNERSHIP-LIMIT,business-release-failed,object-pool-count={pool.Count},memory-leases={Info<ResourceWrapper>().UsingCount}");

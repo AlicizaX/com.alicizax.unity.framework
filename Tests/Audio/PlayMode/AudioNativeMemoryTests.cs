@@ -13,13 +13,15 @@ using AudioType = AlicizaX.Audio.Runtime.AudioType;
 
 namespace AlicizaX.Audio.Tests
 {
+    [PrebuildSetup(typeof(AudioNativeAssetSetup))]
+    [PostBuildCleanup(typeof(AudioNativeAssetSetup))]
     public sealed class AudioNativeMemoryTests : AudioTestBase
     {
         [UnityTest]
         public IEnumerator ImportedClipsAndSourcesReleaseAcrossRepeatedBundleLoads()
         {
-            string path = Path.Combine(Application.streamingAssetsPath, "AudioAudit/audio-acceptance");
-            Assert.That(File.Exists(path), Is.True, "Run EditMode AudioNativeAssetBuildTests before PlayMode/Player tests.");
+            string path = AudioNativeAssetSetup.BundlePath;
+            Assert.That(File.Exists(path), Is.True, "Audio fixture prebuild did not produce the requested bundle.");
             using var f = new AudioFixture(16, voices: 8);
             yield return UnityEngine.Resources.UnloadUnusedAssets();
             var loadTimes = new double[24];
@@ -89,7 +91,7 @@ namespace AlicizaX.Audio.Tests
                 Assert.That(f.Loader.LiveHandles, Is.Zero, "Audio must release before the bundle backend is detached.");
                 f.CheckOwnership();
                 f.Loader.Assets.Clear();
-                f.Loader.Providers.Clear();
+                f.Loader.ClearRequests();
                 bundle.Unload(false);
                 released = true;
             }

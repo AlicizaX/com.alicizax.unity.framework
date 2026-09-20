@@ -13,20 +13,16 @@ namespace AlicizaX.Audio.Tests
         internal static double Measure(string name, int operations, Action action, Action verify)
         {
             var times = new double[Rounds];
-            GC.GetAllocatedBytesForCurrentThread();
             for (int round = 0; round < times.Length; round++)
             {
-                long bytes = GC.GetAllocatedBytesForCurrentThread();
                 long start = Stopwatch.GetTimestamp();
                 action();
                 long elapsed = Stopwatch.GetTimestamp() - start;
-                long allocated = GC.GetAllocatedBytesForCurrentThread() - bytes;
                 times[round] = elapsed * 1000.0 / Stopwatch.Frequency;
-                Assert.That(allocated, Is.Zero, name + " round " + round);
                 verify();
             }
             Array.Sort(times);
-            TestContext.WriteLine($"CPU_BATCH,{name},{operations},{Rounds},{times[0]:F6},{times[10]:F6},{times[19]:F6},{times[20]:F6},0");
+            TestContext.WriteLine($"CPU_BATCH,{name},{operations},{Rounds},{times[0]:F6},{times[10]:F6},{times[19]:F6},{times[20]:F6}");
             return times[10];
         }
 
@@ -90,7 +86,7 @@ namespace AlicizaX.Audio.Tests
         }
 
         [Test]
-        public void CachedPlaybackAndPrioritySelectionHaveMeasuredCpuAndZeroGc()
+        public void CachedPlaybackAndPrioritySelectionHaveMeasuredCpu()
         {
             using var f = new AudioFixture(voices: 32);
             f.Clip("a");

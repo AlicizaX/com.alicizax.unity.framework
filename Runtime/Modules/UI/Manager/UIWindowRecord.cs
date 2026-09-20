@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -7,12 +8,14 @@ namespace AlicizaX.UI.Runtime
     internal sealed class UIWindowRecord
     {
         internal readonly UIMetadata Metadata;
-        internal UIBase View;
+        internal UIWindow View;
         internal UIWindowLoad Flight;
         internal int LayerIndex = -1;
         internal int CacheIndex = -1;
         internal ulong CacheTimer;
         internal bool ForceClose;
+        internal UniTaskCompletionSource Settled;
+        internal bool IsCached => CacheIndex >= 0;
         internal UIState State => View?.State ?? UIState.Uninitialized;
         internal UIMetaRegistry.UIMetaInfo MetaInfo => Metadata.MetaInfo;
 
@@ -21,16 +24,18 @@ namespace AlicizaX.UI.Runtime
 
     internal sealed class UIWindowLoad
     {
-        internal readonly UIBase View;
+        internal readonly UIWindow View;
         internal readonly CancellationTokenSource Cancellation;
         internal readonly List<UIOpenRequest> Requests = new();
         internal int Waiters;
 
-        internal UIWindowLoad(UIBase view)
+        internal UIWindowLoad(UIWindow view)
         {
             View = view;
-            Cancellation = view.BeginResourceLoad();
+            Cancellation = new CancellationTokenSource();
         }
+
+        internal void Cancel() => UIHolderObjectBase.Cancel(Cancellation);
     }
 
     internal sealed class UIOpenRequest
@@ -52,21 +57,20 @@ namespace AlicizaX.UI.Runtime
             Registration.Dispose();
             Completion.TrySetResult(result);
         }
+
     }
 
-    internal enum UIOpenStatus : byte { Failed, Opened, Cancelled }
+    internal enum UIOpenStatus : byte { Failed, Opened, Cancelled, Ignored }
 
     internal readonly struct UIOpenResult
     {
-        internal readonly UIBase View;
+        internal readonly UIWindow View;
         internal readonly UIOpenStatus Status;
-        internal readonly UniTask Transition;
 
-        internal UIOpenResult(UIBase view, UIOpenStatus status)
+        internal UIOpenResult(UIWindow view, UIOpenStatus status)
         {
             View = view;
             Status = status;
-            Transition = view?.AwaitTransition() ?? UniTask.CompletedTask;
         }
 
         internal static UIOpenResult Failed => new(null, UIOpenStatus.Failed);

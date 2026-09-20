@@ -106,7 +106,7 @@ namespace AlicizaX.Resource.Tests
                 Assert.That(pool.Spawn(), Is.SameAs(entry));
                 instance.GetComponent<Image>().SetMaterial("material");
                 pool.Unspawn(entry);
-                Assert.That(f.Info("material").BindingRefCount, Is.Zero);
+                f.AssertNoReferences("material");
                 Assert.That(f.Info("prefab").DirectRefCount, Is.EqualTo(1));
                 Assert.That(owner.IsRegistered, Is.True);
             }

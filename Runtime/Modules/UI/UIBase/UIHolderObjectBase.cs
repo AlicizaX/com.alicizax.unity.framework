@@ -15,8 +15,6 @@ namespace AlicizaX.UI.Runtime
         public event Action OnWindowAfterClosedEvent;
         public event Action OnWindowDestroyEvent;
 
-        private UIBase _owner;
-
         private GameObject _target;
         [SerializeField, HideInInspector] private Component _transitionPlayerComponent;
         private IUITransitionSource _transitionSource;
@@ -33,17 +31,6 @@ namespace AlicizaX.UI.Runtime
         public virtual void Awake()
         {
             _target = gameObject;
-        }
-
-        internal void BindOwner(UIBase owner)
-        {
-            _owner = owner;
-        }
-
-        internal void UnbindOwner()
-        {
-            _owner = null;
-            ResetRuntimeTransition();
         }
 
         internal void InvokeWindowInit() => InvokeEvent(OnWindowInitEvent);
@@ -102,7 +89,7 @@ namespace AlicizaX.UI.Runtime
             _transitionCts = null;
             _hasTransitionOverride = false;
             _transitionSource = null;
-            if (cancellation != null) UIBase.CancelLoad(cancellation);
+            if (cancellation != null) Cancel(cancellation);
         }
 
         internal void StopTransition()
@@ -168,8 +155,10 @@ namespace AlicizaX.UI.Runtime
         {
             CancellationTokenSource cancellation = _transitionCts;
             _transitionCts = null;
-            if (cancellation != null) UIBase.CancelLoad(cancellation);
+            if (cancellation != null) Cancel(cancellation);
         }
+
+        internal static void Cancel(CancellationTokenSource cancellation) => cancellation.Cancel();
 
         private static void ApplySnapshot(IUITransitionSource source, bool open)
         {
@@ -180,7 +169,6 @@ namespace AlicizaX.UI.Runtime
         private void OnDestroy()
         {
             _isAlive = false;
-            _owner = null;
             ResetRuntimeTransition();
         }
 

@@ -111,7 +111,21 @@ namespace AlicizaX.Audio.Tests
             f.Clip("a");
             f.Audio.Preload("a");
             f.Audio.Unload("a");
-            Assert.That(f.Resources.Info("a").DirectRefCount, Is.Zero);
+            f.Resources.AssertNoReferences("a");
+            Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
+            f.Resources.Service.UnloadUnusedAssets(true);
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+        }
+
+        [Test]
+        public void AudioLowMemoryClearsAudioEntriesWhileResourceIdlePolicyRemainsSeparate()
+        {
+            using var f = new AudioFixture();
+            f.Resources.Service.IdleAssetCapacity = 4;
+            f.Clip("low-memory");
+            Assert.That(f.Audio.Preload("low-memory", AudioCachePolicy.Ttl), Is.True);
+            AudioFixture.Call(f.Audio, "OnLowMemory");
+            Assert.That(f.Debug.ClipCacheCount, Is.Zero);
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
             f.Resources.Service.UnloadUnusedAssets(true);
             Assert.That(f.Loader.LiveHandles, Is.Zero);

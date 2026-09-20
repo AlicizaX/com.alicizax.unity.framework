@@ -40,7 +40,7 @@ namespace AlicizaX.Resource.Tests
             var target = owner.gameObject.AddComponent<SpriteRenderer>();
             f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
             owner.ReleaseBindings();
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
             Assert.That(target.sprite, Is.Null);
         }
 
@@ -53,7 +53,7 @@ namespace AlicizaX.Resource.Tests
             f.Bindings.BindImageMaterial(owner, image, new ResourceKey("a"));
             f.Bindings.ReleaseOwner(owner);
             Assert.That(image.material, Is.Not.SameAs(asset));
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]
@@ -65,7 +65,7 @@ namespace AlicizaX.Resource.Tests
             var renderer = owner.gameObject.AddComponent<MeshRenderer>();
             f.Bindings.BindSharedMaterial(owner, renderer, new ResourceKey("a"));
             f.Bindings.BindMaterialInstance(owner, renderer, new ResourceKey("b"));
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
             Assert.That(f.Info("b").BindingRefCount, Is.EqualTo(1));
         }
 
@@ -102,7 +102,7 @@ namespace AlicizaX.Resource.Tests
             f.Text("a");
             var task = f.Service.LoadAsset<TextAsset>("a", _ => throw new InvalidOperationException("callback"));
             Assert.Throws<InvalidOperationException>(() => task.GetAwaiter().GetResult());
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [Test]

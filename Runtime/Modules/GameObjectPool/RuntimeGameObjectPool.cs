@@ -48,7 +48,6 @@ namespace AlicizaX
         private Transform _root;
         private GameObject _prefab;
         private UniTaskCompletionSource<GameObject> _prefabLoadCompletionSource;
-        private bool _prefabLoading;
         private bool _isShuttingDown;
         private int _loadVersion;
         private float _nextMaintenanceAt;
@@ -128,7 +127,7 @@ namespace AlicizaX
 
         public async UniTask<GameObject> SpawnAsync(Transform parent, CancellationToken cancellationToken)
         {
-            if (!await EnsurePrefabLoadedAsync(cancellationToken))
+            if (await LoadPrefabAsync(cancellationToken) == null)
             {
                 return null;
             }
@@ -138,48 +137,90 @@ namespace AlicizaX
 
         public GameObject LoadPrefab()
         {
-            return EnsurePrefabLoaded() ? _prefab : null;
+            if (_prefab == null && _prefabLoadCompletionSource == null)
+            {
+                _prefab = _loader.LoadPrefab(_location);
+            }
+
+            return _prefab;
         }
 
         public async UniTask<GameObject> LoadPrefabAsync(CancellationToken cancellationToken)
         {
-            return await EnsurePrefabLoadedAsync(cancellationToken) ? _prefab : null;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_prefab != null)
+            {
+                return _prefab;
+            }
+
+            int loadVersion = _loadVersion;
+            UniTaskCompletionSource<GameObject> completion = _prefabLoadCompletionSource;
+            if (completion == null)
+            {
+                completion = new UniTaskCompletionSource<GameObject>();
+                _prefabLoadCompletionSource = completion;
+                RunPrefabLoadAsync(loadVersion, _loader, _location, completion).Forget();
+            }
+
+            await completion.Task.AttachExternalCancellation(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_isShuttingDown || loadVersion != _loadVersion)
+            {
+                throw new OperationCanceledException();
+            }
+
+            return _prefab;
         }
 
         public async UniTask WarmupAsync(int count, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            int loadVersion = _loadVersion;
             int target = Mathf.Min(Mathf.Max(0, count), _rule.HardCapacity);
             if (target <= 0 || _inactiveCount >= target)
             {
                 return;
             }
 
-            if (!await EnsurePrefabLoadedAsync(cancellationToken))
+            if (await LoadPrefabAsync(cancellationToken) == null)
             {
                 return;
             }
 
             int createdThisFrame = 0;
             float frameStart = Time.realtimeSinceStartup;
-            while (_inactiveCount < target && _totalCount < _rule.HardCapacity)
+            try
             {
-                int slotIndex = CreateTrackedInstance();
-                if (slotIndex < 0)
+                while (_inactiveCount < target && _totalCount < _rule.HardCapacity)
                 {
-                    break;
-                }
+                    int slotIndex = CreateTrackedInstance();
+                    if (slotIndex < 0)
+                    {
+                        break;
+                    }
 
-                ParkInactive(slotIndex);
-                createdThisFrame++;
-                if (createdThisFrame >= WarmupCreateBatch || Time.realtimeSinceStartup - frameStart >= WarmupFrameBudgetSeconds)
-                {
-                    createdThisFrame = 0;
-                    frameStart = Time.realtimeSinceStartup;
-                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    ParkInactive(slotIndex);
+                    createdThisFrame++;
+                    if (createdThisFrame >= WarmupCreateBatch || Time.realtimeSinceStartup - frameStart >= WarmupFrameBudgetSeconds)
+                    {
+                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                        if (_isShuttingDown || loadVersion != _loadVersion)
+                        {
+                            throw new OperationCanceledException();
+                        }
+
+                        createdThisFrame = 0;
+                        frameStart = Time.realtimeSinceStartup;
+                    }
                 }
             }
-
-            RefreshMaintenance();
+            finally
+            {
+                if (!_isShuttingDown && loadVersion == _loadVersion)
+                {
+                    RefreshMaintenance();
+                }
+            }
         }
 
         public bool ReleaseFromHandle(GameObjectPoolHandle handle)
@@ -242,7 +283,6 @@ namespace AlicizaX
             {
                 _loader.UnloadPrefab(_prefab);
                 _prefab = null;
-                _prefabLoading = false;
             }
 
             RefreshMaintenance();
@@ -257,7 +297,6 @@ namespace AlicizaX
         {
             _isShuttingDown = true;
             _loadVersion++;
-            _prefabLoading = false;
             _prefabLoadCompletionSource?.TrySetCanceled();
             _prefabLoadCompletionSource = null;
             _service.RemoveMaintenance(ref _maintenanceHeapIndex);
@@ -278,15 +317,21 @@ namespace AlicizaX
                         continue;
                     }
 
-                    InvokeOnPooledDestroy(ref slot);
-                    slot.handle?.Detach();
-                    if (slot.instance != null)
+                    try
                     {
-                        UnityEngine.Object.Destroy(slot.instance);
+                        InvokeOnPooledDestroy(ref slot);
                     }
+                    finally
+                    {
+                        slot.handle?.Detach();
+                        if (slot.instance != null)
+                        {
+                            slot.instance.SafeDestroySelf();
+                        }
 
-                    ClearSlot(ref slot);
-                    _destroyCount++;
+                        ClearSlot(ref slot);
+                        _destroyCount++;
+                    }
                 }
             }
 
@@ -352,7 +397,6 @@ namespace AlicizaX
             _location = null;
             _root = null;
             _prefab = null;
-            _prefabLoading = false;
             _isShuttingDown = false;
             _loadVersion++;
             _nextMaintenanceAt = float.MaxValue;
@@ -416,7 +460,22 @@ namespace AlicizaX
             }
 
             var context = new PoolSpawnContext(_location, _rule.Group, parent, (uint)Time.frameCount);
-            InvokeOnSpawn(ref slot, in context);
+            try
+            {
+                InvokeOnSpawn(ref slot, in context);
+            }
+            catch
+            {
+                _activeCount--;
+                if (slot.instance != null && slot.instance.activeSelf)
+                {
+                    slot.instance.SetActive(false);
+                }
+
+                ParkInactive(slotIndex);
+                RefreshMaintenance();
+                throw;
+            }
         }
 
         private void ReleaseTrackedInstance(int slotIndex)
@@ -428,15 +487,21 @@ namespace AlicizaX
             }
 
             _despawnCount++;
-            _activeCount = Mathf.Max(0, _activeCount - 1);
-            InvokeOnDespawn(ref slot);
-            if (slot.instance.activeSelf)
+            _activeCount--;
+            try
             {
-                slot.instance.SetActive(false);
+                InvokeOnDespawn(ref slot);
             }
+            finally
+            {
+                if (slot.instance != null && slot.instance.activeSelf)
+                {
+                    slot.instance.SetActive(false);
+                }
 
-            ParkInactive(slotIndex);
-            RefreshMaintenance();
+                ParkInactive(slotIndex);
+                RefreshMaintenance();
+            }
         }
 
         private void ParkInactive(int slotIndex)
@@ -501,20 +566,26 @@ namespace AlicizaX
             RemoveFromInactive(slotIndex);
             if (slot.state == SlotState.Active)
             {
-                _activeCount = Mathf.Max(0, _activeCount - 1);
+                _activeCount--;
             }
 
-            InvokeOnPooledDestroy(ref slot);
-            slot.handle?.Detach();
-            if (slot.instance != null)
+            try
             {
-                UnityEngine.Object.Destroy(slot.instance);
+                InvokeOnPooledDestroy(ref slot);
             }
+            finally
+            {
+                slot.handle?.Detach();
+                if (slot.instance != null)
+                {
+                    slot.instance.SafeDestroySelf();
+                }
 
-            ClearSlot(ref slot);
-            FreeSlot(slotIndex);
-            _totalCount = Mathf.Max(0, _totalCount - 1);
-            _destroyCount++;
+                ClearSlot(ref slot);
+                FreeSlot(slotIndex);
+                _totalCount--;
+                _destroyCount++;
+            }
         }
 
         private void RemoveDestroyedSlot(int slotIndex)
@@ -523,16 +594,22 @@ namespace AlicizaX
             RemoveFromInactive(slotIndex);
             if (slot.state == SlotState.Active)
             {
-                _activeCount = Mathf.Max(0, _activeCount - 1);
+                _activeCount--;
             }
 
-            InvokeOnPooledDestroy(ref slot);
-            slot.handle?.Detach();
-            ClearSlot(ref slot);
-            FreeSlot(slotIndex);
-            _totalCount = Mathf.Max(0, _totalCount - 1);
-            _destroyCount++;
-            RefreshMaintenance();
+            try
+            {
+                InvokeOnPooledDestroy(ref slot);
+            }
+            finally
+            {
+                slot.handle?.Detach();
+                ClearSlot(ref slot);
+                FreeSlot(slotIndex);
+                _totalCount--;
+                _destroyCount++;
+                RefreshMaintenance();
+            }
         }
 
         private bool ShouldTrimHead(float now, in PoolRecyclePlan plan)
@@ -552,7 +629,8 @@ namespace AlicizaX
                 return false;
             }
 
-            return now - GetSlotRef(_inactiveHead).lastReleaseTime >= _rule.IdleSeconds;
+            float deadline = GetSlotRef(_inactiveHead).lastReleaseTime + _rule.IdleSeconds;
+            return now >= deadline;
         }
 
         private void RefreshMaintenance()
@@ -564,7 +642,7 @@ namespace AlicizaX
                 int retain = Mathf.Max(_rule.MinIdle, _retainTarget);
                 if (_inactiveHead >= 0 && _totalCount > retain)
                 {
-                    due = _rule.Policy == PoolPolicy.Fixed
+                    due = _rule.Policy == PoolPolicy.Fixed || _totalCount > _rule.SoftCapacity
                         ? now
                         : GetSlotRef(_inactiveHead).lastReleaseTime + _rule.IdleSeconds;
                 }
@@ -583,48 +661,13 @@ namespace AlicizaX
             _service.ScheduleMaintenance(_poolIndex, dueTime, ref _maintenanceHeapIndex);
         }
 
-        private bool EnsurePrefabLoaded()
-        {
-            if (_prefab != null)
-            {
-                return true;
-            }
-
-            if (_prefabLoading)
-            {
-                return false;
-            }
-
-            _prefab = _loader.LoadPrefab(_location);
-            return _prefab != null;
-        }
-
-        private async UniTask<bool> EnsurePrefabLoadedAsync(CancellationToken cancellationToken)
-        {
-            if (_prefab != null)
-            {
-                return true;
-            }
-
-            if (_prefabLoading)
-            {
-                await _prefabLoadCompletionSource.Task.AttachExternalCancellation(cancellationToken);
-                return _prefab != null;
-            }
-
-            _prefabLoading = true;
-            _prefabLoadCompletionSource = new UniTaskCompletionSource<GameObject>();
-            RunPrefabLoadAsync(_loadVersion).Forget();
-            await _prefabLoadCompletionSource.Task.AttachExternalCancellation(cancellationToken);
-            return _prefab != null;
-        }
-
-        private async UniTaskVoid RunPrefabLoadAsync(int loadVersion)
+        private async UniTaskVoid RunPrefabLoadAsync(int loadVersion, IPrefabLoader loader, string location,
+            UniTaskCompletionSource<GameObject> completionSource)
         {
             GameObject loaded = null;
             try
             {
-                loaded = await _loader.LoadPrefabAsync(_location);
+                loaded = await loader.LoadPrefabAsync(location);
             }
             catch
             {
@@ -635,20 +678,16 @@ namespace AlicizaX
             {
                 if (loaded != null)
                 {
-                    _loader.UnloadPrefab(loaded);
+                    loader.UnloadPrefab(loaded);
                 }
 
-                _prefabLoading = false;
-                _prefabLoadCompletionSource?.TrySetCanceled();
-                _prefabLoadCompletionSource = null;
+                completionSource.TrySetCanceled();
                 return;
             }
 
             _prefab = loaded;
-            _prefabLoading = false;
-            UniTaskCompletionSource<GameObject> completionSource = _prefabLoadCompletionSource;
             _prefabLoadCompletionSource = null;
-            completionSource?.TrySetResult(_prefab);
+            completionSource.TrySetResult(_prefab);
         }
 
         private void CachePoolables(ref Slot slot)
@@ -689,7 +728,14 @@ namespace AlicizaX
         {
             for (int i = 0; i < slot.poolableCount; i++)
             {
-                slot.poolables[i].OnPooledDestroy();
+                try
+                {
+                    slot.poolables[i].OnPooledDestroy();
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception);
+                }
             }
         }
 
@@ -741,7 +787,7 @@ namespace AlicizaX
 
             slot.prevInactive = -1;
             slot.nextInactive = -1;
-            _inactiveCount = Mathf.Max(0, _inactiveCount - 1);
+            _inactiveCount--;
         }
 
         private void FillInstances(GameObjectPoolSnapshot snapshot, float now)

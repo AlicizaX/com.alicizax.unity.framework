@@ -1,8 +1,10 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using AlicizaX.Audio.Runtime;
 using NUnit.Framework;
+using UnityEngine.TestTools;
 
 namespace AlicizaX.Audio.Tests
 {
@@ -133,12 +135,10 @@ namespace AlicizaX.Audio.Tests
         {
             var milliseconds = new double[7];
             var latency = new double[trace.Count];
-            long coldBytes = 0;
             int loads = 0;
             long peak = 0;
             for (int round = 0; round < milliseconds.Length; round++)
             {
-                long before = GC.GetAllocatedBytesForCurrentThread();
                 var cache = new ReferenceCache(lru, ttl, capacity);
                 long start = Stopwatch.GetTimestamp();
                 for (int i = 0; i < trace.Count; i++)
@@ -148,16 +148,40 @@ namespace AlicizaX.Audio.Tests
                     latency[i] = hit ? 0 : 2 + ClipBytes(trace[i].Id) * 1000.0 / (8 * 1024 * 1024);
                 }
                 long elapsed = Stopwatch.GetTimestamp() - start;
-                long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
                 milliseconds[round] = elapsed * 1000.0 / Stopwatch.Frequency;
-                Assert.That(allocated, Is.LessThanOrEqualTo(4096 + capacity * 192), "Policy allocations must depend on capacity, not access count.");
-                coldBytes = Math.Max(coldBytes, allocated);
                 loads = cache.Loads;
                 peak = cache.PeakBytes;
             }
             Array.Sort(milliseconds);
             Array.Sort(latency);
-            TestContext.WriteLine($"POLICY_COST,{workload},{policy},{capacity},{ttl},{trace.Count},{milliseconds[3]:F6},{milliseconds[6]:F6},{coldBytes},{loads},{peak},{latency[(latency.Length - 1) * 95 / 100]:F6},{latency[(latency.Length - 1) * 99 / 100]:F6}");
+            TestContext.WriteLine($"POLICY_COST,{workload},{policy},{capacity},{ttl},{trace.Count},{milliseconds[3]:F6},{milliseconds[6]:F6},{loads},{peak},{latency[(latency.Length - 1) * 95 / 100]:F6},{latency[(latency.Length - 1) * 99 / 100]:F6}");
+        }
+
+        [UnityTest]
+        public IEnumerator PolicyConstructionGrowthHitsAndEvictionUseCalibratedAllocationMeasurements()
+        {
+            foreach (int capacity in new[] { 16, 256, 4096 })
+            foreach (string policy in new[] { "ttl-lru", "lru", "fifo" })
+            {
+                ReferenceCache cache = null;
+                yield return AllocationCapture.Measure($"policy-cold-{policy}-{capacity}", capacity, () =>
+                {
+                    cache = new ReferenceCache(policy != "fifo", policy == "ttl-lru" ? 30 : float.MaxValue, capacity);
+                    for (int i = 0; i < capacity; i++) cache.Read(new Access(i));
+                }, sample => Assert.That(sample.Bytes, Is.InRange(1, 4096 + capacity * 192)));
+                yield return AllocationCapture.Measure($"policy-hit-{policy}-{capacity}", 10000, () =>
+                {
+                    for (int i = 0; i < 10000; i++) cache.Read(new Access(i % capacity));
+                }, sample => Assert.That(sample.Bytes, Is.Zero));
+                Assert.That(cache.Hits, Is.EqualTo(10000));
+                yield return AllocationCapture.Measure($"policy-evict-{policy}-{capacity}", 10000, () =>
+                {
+                    for (int i = 0; i < 10000; i++) cache.Read(new Access(capacity + i));
+                }, sample => Assert.That(sample.Bytes, Is.Zero));
+                Assert.That(cache.Loads, Is.EqualTo(capacity + 10000));
+                Assert.That(cache.Count, Is.EqualTo(capacity));
+                Assert.That(cache.Evictions, Is.EqualTo(10000));
+            }
         }
 
         private static List<Access> BuildTrace(string workload)

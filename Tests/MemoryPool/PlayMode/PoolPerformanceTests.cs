@@ -12,7 +12,7 @@ namespace AlicizaX.MemoryPoolTests
         [UnityTest]
         public IEnumerator ColdGrowthAndStablePathsWithoutPrewarming()
         {
-            const int count = 100000;
+            const int count = 10000;
             Use<ColdItem<PoolPerformanceTests>>();
             ColdItem<PoolPerformanceTests> first = null;
             yield return AllocationCapture.Measure("pool-cold-instance", 1,

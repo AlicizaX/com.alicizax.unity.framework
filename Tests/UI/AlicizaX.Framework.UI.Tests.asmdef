@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.UI.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "UniTask.Runtime", "Unity.ugui"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

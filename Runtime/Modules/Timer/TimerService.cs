@@ -112,10 +112,11 @@ namespace AlicizaX.Timer.Runtime
         private long _scaledCurrentTick;
         private long _unscaledCurrentTick;
         private int _executingSlotIndex;
+        private bool _executingSlotRescheduled;
+        private bool _isDestroyed;
 
         public TimerService(int initialCapacity)
         {
-            int normalizedCapacity = NormalizeCapacity(initialCapacity);
             _pages = new TimerPage[MAX_PAGE_COUNT];
             _freeSlotPages = new IntPage[MAX_PAGE_COUNT];
             _activeSlotPages = new IntPage[MAX_PAGE_COUNT];
@@ -126,17 +127,13 @@ namespace AlicizaX.Timer.Runtime
             _scaledCurrentTick = TimeToTickFloor(Time.timeAsDouble);
             _unscaledCurrentTick = TimeToTickFloor(Time.unscaledTimeAsDouble);
             _executingSlotIndex = INVALID_INDEX;
-            Prewarm(normalizedCapacity);
+            Prewarm(initialCapacity);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void Prewarm(int capacity)
         {
             int targetCapacity = NormalizeCapacity(capacity);
-            if (targetCapacity > MAX_PAGE_COUNT * PAGE_SIZE)
-            {
-                targetCapacity = MAX_PAGE_COUNT * PAGE_SIZE;
-            }
 
             while (_slotCapacity < targetCapacity)
             {
@@ -156,12 +153,9 @@ namespace AlicizaX.Timer.Runtime
                 return 0UL;
             }
 
-            int slotIndex = AcquireSlot();
+            int slotIndex = AcquireSlot(time);
             if (slotIndex < 0)
             {
-#if UNITY_EDITOR
-                WarnAddTimerFailed("no available timer slot.");
-#endif
                 return 0UL;
             }
 
@@ -188,12 +182,9 @@ namespace AlicizaX.Timer.Runtime
                 return 0UL;
             }
 
-            int slotIndex = AcquireSlot();
+            int slotIndex = AcquireSlot(time);
             if (slotIndex < 0)
             {
-#if UNITY_EDITOR
-                WarnAddTimerFailed("no available timer slot.");
-#endif
                 return 0UL;
             }
 
@@ -316,12 +307,18 @@ namespace AlicizaX.Timer.Runtime
 
         void IServiceTickable.Tick(float deltaTime)
         {
+            if (_isDestroyed || _executingSlotIndex >= 0)
+            {
+                return;
+            }
+
             AdvanceQueue(false, Time.timeAsDouble);
             AdvanceQueue(true, Time.unscaledTimeAsDouble);
         }
 
         protected override void OnDestroyService()
         {
+            _isDestroyed = true;
             ClearAll();
         }
 
@@ -388,13 +385,24 @@ namespace AlicizaX.Timer.Runtime
 #endif
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int AcquireSlot()
+        private int AcquireSlot(float delay)
         {
+            if (_isDestroyed || float.IsNaN(delay) || float.IsInfinity(delay))
+            {
+#if UNITY_EDITOR
+                WarnAddTimerFailed("service is destroyed or delay is not finite.");
+#endif
+                return INVALID_INDEX;
+            }
+
             if (_freeCount <= 0)
             {
                 AddPage();
                 if (_freeCount <= 0)
                 {
+#if UNITY_EDITOR
+                    WarnAddTimerFailed("no available timer slot.");
+#endif
                     return INVALID_INDEX;
                 }
             }
@@ -409,8 +417,8 @@ namespace AlicizaX.Timer.Runtime
                 return;
             }
 
-            EnsureIndexPage(_freeSlotPages, _pageCount);
-            EnsureIndexPage(_activeSlotPages, _pageCount);
+            _freeSlotPages[_pageCount] = new IntPage();
+            _activeSlotPages[_pageCount] = new IntPage();
 
             TimerPage page = new TimerPage();
             _pages[_pageCount] = page;
@@ -423,15 +431,6 @@ namespace AlicizaX.Timer.Runtime
 
             _pageCount++;
             _slotCapacity += PAGE_SIZE;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void EnsureIndexPage(IntPage[] pages, int pageIndex)
-        {
-            if (pages[pageIndex] == null)
-            {
-                pages[pageIndex] = new IntPage();
-            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -482,20 +481,9 @@ namespace AlicizaX.Timer.Runtime
             page.States[offset] = ComposeState(isLoop, isUnscaled);
             page.TriggerTimes[offset] = GetCurrentTime(isUnscaled) + duration;
             page.Durations[offset] = duration;
-            page.RemainingTimes[offset] = 0d;
 #if UNITY_EDITOR
             page.CreationTimes[offset] = Time.realtimeSinceStartupAsDouble;
 #endif
-            page.DueTicks[offset] = 0L;
-            page.QueueIndices[offset] = INVALID_INDEX;
-            page.QueueNextIndices[offset] = INVALID_INDEX;
-            page.QueuePrevIndices[offset] = INVALID_INDEX;
-            page.ActiveIndices[offset] = INVALID_INDEX;
-            page.HandlerTypes[offset] = HANDLER_NONE;
-            page.NoArgsHandlers[offset] = null;
-            page.GenericInvokers[offset] = null;
-            page.GenericHandlers[offset] = null;
-            page.GenericArgs[offset] = null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -549,12 +537,6 @@ namespace AlicizaX.Timer.Runtime
         private void RemoveActive(int slotIndex)
         {
             int activeIndex = GetActiveIndex(slotIndex);
-            if ((uint)activeIndex >= (uint)_activeCount)
-            {
-                SetActiveIndex(slotIndex, INVALID_INDEX);
-                return;
-            }
-
             int lastIndex = --_activeCount;
             int lastSlotIndex = GetActiveSlot(lastIndex);
             SetActiveSlot(activeIndex, lastSlotIndex);
@@ -567,11 +549,6 @@ namespace AlicizaX.Timer.Runtime
         private void ReleaseSlot(int slotIndex)
         {
             byte state = GetState(slotIndex);
-            if ((state & STATE_ACTIVE) == 0)
-            {
-                return;
-            }
-
             if (GetQueueIndex(slotIndex) >= 0)
             {
                 RemoveFromQueue(slotIndex, (state & STATE_UNSCALED) != 0);
@@ -619,29 +596,15 @@ namespace AlicizaX.Timer.Runtime
         {
             while (_activeCount > 0)
             {
-                _executingSlotIndex = INVALID_INDEX;
                 ReleaseSlot(GetActiveSlot(_activeCount - 1));
             }
-
-            ClearWheelHeads(_scaledWheelHeads);
-            ClearWheelHeads(_scaledWheelTails);
-            ClearWheelHeads(_unscaledWheelHeads);
-            ClearWheelHeads(_unscaledWheelTails);
-            _scaledQueueCount = 0;
-            _unscaledQueueCount = 0;
-            _executingSlotIndex = INVALID_INDEX;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ProcessDueTimer(int slotIndex, double currentTime)
         {
-            byte state = GetState(slotIndex);
-            if ((state & (STATE_ACTIVE | STATE_RUNNING)) != (STATE_ACTIVE | STATE_RUNNING))
-            {
-                return;
-            }
-
             _executingSlotIndex = slotIndex;
+            _executingSlotRescheduled = false;
 
             try
             {
@@ -650,7 +613,7 @@ namespace AlicizaX.Timer.Runtime
                 {
                     GetNoArgsHandler(slotIndex).Invoke();
                 }
-                else if (handlerType == HANDLER_GENERIC)
+                else
                 {
                     GetGenericInvoker(slotIndex).Invoke(GetGenericHandler(slotIndex), GetGenericArg(slotIndex));
                 }
@@ -664,14 +627,14 @@ namespace AlicizaX.Timer.Runtime
                 _executingSlotIndex = INVALID_INDEX;
             }
 
-            state = GetState(slotIndex);
+            byte state = GetState(slotIndex);
             if ((state & STATE_RELEASE_PENDING) != 0)
             {
                 FreeReleasedExecutingSlot(slotIndex);
                 return;
             }
 
-            if ((state & STATE_ACTIVE) == 0 || GetQueueIndex(slotIndex) >= 0)
+            if (_executingSlotRescheduled)
             {
                 return;
             }
@@ -739,17 +702,16 @@ namespace AlicizaX.Timer.Runtime
             SetDueTick(slotIndex, dueTick);
             AddToBucket(slotIndex, bucketIndex, isUnscaled);
             SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) + 1);
+            if (slotIndex == _executingSlotIndex)
+            {
+                _executingSlotRescheduled = true;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RemoveFromQueue(int slotIndex, bool isUnscaled)
         {
             int bucketIndex = GetQueueIndex(slotIndex);
-            if (bucketIndex < 0)
-            {
-                return;
-            }
-
             RemoveFromBucket(slotIndex, bucketIndex, isUnscaled);
             SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) - 1);
         }
@@ -761,7 +723,7 @@ namespace AlicizaX.Timer.Runtime
                 CascadeWheelLevel(isUnscaled, tick, level);
             }
 
-            ProcessBucket(isUnscaled, tick & WHEEL_MASK, currentTime, TimeToTickFloor(currentTime));
+            ProcessBucket(isUnscaled, (int)(tick & WHEEL_MASK), currentTime);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -785,27 +747,16 @@ namespace AlicizaX.Timer.Runtime
             }
         }
 
-        private void ProcessBucket(bool isUnscaled, long bucketIndex, double currentTime, long currentTick)
+        private void ProcessBucket(bool isUnscaled, int bucketIndex, double currentTime)
         {
-            int slotIndex = GetWheelHead((int)bucketIndex, isUnscaled);
+            int slotIndex = GetWheelHead(bucketIndex, isUnscaled);
             while (slotIndex >= 0)
             {
                 RemoveFromQueue(slotIndex, isUnscaled);
 
-                byte state = GetState(slotIndex);
-                if ((state & (STATE_ACTIVE | STATE_RUNNING)) == (STATE_ACTIVE | STATE_RUNNING))
-                {
-                    if (GetDueTick(slotIndex) <= currentTick)
-                    {
-                        ProcessDueTimer(slotIndex, currentTime);
-                    }
-                    else
-                    {
-                        AddToQueue(slotIndex, isUnscaled);
-                    }
-                }
+                ProcessDueTimer(slotIndex, currentTime);
 
-                slotIndex = GetWheelHead((int)bucketIndex, isUnscaled);
+                slotIndex = GetWheelHead(bucketIndex, isUnscaled);
             }
         }
 
@@ -1011,7 +962,8 @@ namespace AlicizaX.Timer.Runtime
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static long TimeToTickCeiling(double time)
         {
-            return (long)Math.Ceiling(time * TICKS_PER_SECOND);
+            double tick = Math.Ceiling(time * TICKS_PER_SECOND);
+            return tick >= long.MaxValue ? long.MaxValue : (long)tick;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1023,6 +975,11 @@ namespace AlicizaX.Timer.Runtime
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static int NormalizeCapacity(int capacity)
         {
+            if (capacity >= MAX_PAGE_COUNT * PAGE_SIZE)
+            {
+                return MAX_PAGE_COUNT * PAGE_SIZE;
+            }
+
             int normalizedCapacity = capacity > PAGE_SIZE ? capacity : PAGE_SIZE;
             int remainder = normalizedCapacity & PAGE_MASK;
             if (remainder != 0)

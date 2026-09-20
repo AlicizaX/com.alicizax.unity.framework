@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.Timer.Tests",
+    "references": ["AlicizaX.Framework.Runtime"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

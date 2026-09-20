@@ -7,25 +7,33 @@ namespace AlicizaX.UI.Runtime
 {
     internal sealed partial class UIService
     {
-        private sealed class LayerData
-        {
-            internal readonly List<UIWindowRecord> Items = new(16);
-            internal int Count => Items.Count;
-        }
+        private readonly List<UIWindowRecord>[] _openUI = new List<UIWindowRecord>[(int)UILayer.All];
 
-        private readonly LayerData[] _openUI = new LayerData[(int)UILayer.All];
-
-        private UIBase ShowUISyncCore(UIWindowRecord record, object[] userDatas)
+        private UIWindow ShowUISyncCore(UIWindowRecord record, object[] userDatas)
         {
             if (record == null) return null;
             if (record.Flight != null)
-                throw new InvalidOperationException("An asynchronous UIKit load for this panel type is in progress. Await it instead.");
-
-            UIBase view = record.View;
-            view?.ValidateOpen();
-            if (view == null || view.DestroyRequested)
             {
-                record.View = view = record.Metadata.CreateUI(this);
+                Log.Error("[UI] An asynchronous load for this window is in progress. Await it instead.");
+                return null;
+            }
+
+            UIWindow view = record.View;
+            if (view != null && (view.State == UIState.Destroying || view.State == UIState.Destroyed))
+            {
+                if (record.View == view) record.View = null;
+                view = null;
+            }
+            if (view != null && view.State == UIState.Closing)
+            {
+                Log.Warning("[UI] Ignoring Show for {0} while it is closing.",
+                    record.Metadata.UILogicTypeName);
+                return null;
+            }
+
+            if (view == null)
+            {
+                record.View = view = record.Metadata.CreateWindow(this);
                 if (view == null) return null;
                 if (!UIHolderFactory.CreateUIResourceSync(view, GetLayerRect(record.MetaInfo.UILayer)))
                 {
@@ -33,29 +41,71 @@ namespace AlicizaX.UI.Runtime
                     return null;
                 }
             }
+
             BringToFront(record);
-            return CommitWindow(record, view, userDatas).View;
+            UIOpenResult result = CommitWindow(record, view, userDatas);
+            return result.View;
         }
 
-        private UniTask<UIOpenResult> RequestShow(UIWindowRecord record, object[] userDatas, CancellationToken token)
+        private async UniTask<UIOpenResult> RequestShow(
+            UIWindowRecord record, object[] userDatas, CancellationToken token, bool waitForClose = false)
         {
-            if (token.IsCancellationRequested || _shuttingDown)
-                return UniTask.FromResult(UIOpenResult.Cancelled);
-            if (record == null) return UniTask.FromResult(UIOpenResult.Failed);
-            record.View?.ValidateOpen();
+            if (token.IsCancellationRequested || _shuttingDown) return UIOpenResult.Cancelled;
+            if (record == null) return UIOpenResult.Failed;
+
+            UIWindow view = record.View;
+            if (view != null && (view.State == UIState.Destroying || view.State == UIState.Destroyed))
+            {
+                if (record.View == view) record.View = null;
+                view = null;
+            }
+            if (view != null && view.State == UIState.Closing)
+            {
+                if (!waitForClose)
+                {
+                    Log.Warning("[UI] Ignoring Show for {0} while it is closing.",
+                        record.Metadata.UILogicTypeName);
+                    return new UIOpenResult(null, UIOpenStatus.Ignored);
+                }
+
+                UniTask settled = record.Settled?.Task ?? view.AwaitClosed();
+                if (token.CanBeCanceled)
+                {
+                    try { await settled.AttachExternalCancellation(token); }
+                    catch (OperationCanceledException) { return UIOpenResult.Cancelled; }
+                }
+                else await settled;
+                if (token.IsCancellationRequested || _shuttingDown) return UIOpenResult.Cancelled;
+                view = record.View;
+                if (view != null && (view.State == UIState.Destroying || view.State == UIState.Destroyed))
+                {
+                    if (record.View == view) record.View = null;
+                    view = null;
+                }
+            }
+
             BringToFront(record);
             UIWindowLoad flight = record.Flight;
-            if (flight == null && record.View != null && !record.View.DestroyRequested)
-                return UniTask.FromResult(CommitWindow(record, record.View, userDatas));
+            if (flight == null && record.View != null &&
+                record.View.State != UIState.Destroying && record.View.State != UIState.Destroyed)
+            {
+                UIOpenResult result = CommitWindow(record, record.View, userDatas);
+                if (result.View == null || result.View.IsOpen) return result;
+                UniTask<bool> opened = result.View.AwaitLogicalOpen();
+                bool success;
+                try { success = token.CanBeCanceled ? await opened.AttachExternalCancellation(token) : await opened; }
+                catch (OperationCanceledException) { return UIOpenResult.Cancelled; }
+                return success && result.View.IsOpen && record.View == result.View ? result : UIOpenResult.Cancelled;
+            }
 
             bool start = flight == null;
             if (start)
             {
-                record.View = record.Metadata.CreateUI(this);
+                record.View = record.Metadata.CreateWindow(this);
                 if (record.View == null)
                 {
                     RemoveFromOpenStack(record);
-                    return UniTask.FromResult(UIOpenResult.Failed);
+                    return UIOpenResult.Failed;
                 }
                 flight = record.Flight = new UIWindowLoad(record.View);
             }
@@ -70,7 +120,7 @@ namespace AlicizaX.UI.Runtime
                 if (request.Completed) request.Registration.Dispose();
             }
             if (start) LoadWindow(record, flight).Forget();
-            return request.Completion.Task;
+            return await request.Completion.Task;
         }
 
         private async UniTask CancelRequestOnMainThread(UIWindowRecord record, UIWindowLoad flight, UIOpenRequest request)
@@ -83,6 +133,7 @@ namespace AlicizaX.UI.Runtime
                 record.Flight = null;
                 RemoveFromOpenStack(record);
                 if (record.View == flight.View) record.View = null;
+                flight.Cancel();
                 flight.View.DestroyNow();
             }
             request.Finish(UIOpenResult.Cancelled);
@@ -90,9 +141,13 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTask LoadWindow(UIWindowRecord record, UIWindowLoad flight)
         {
-            bool loaded = !flight.Cancellation.IsCancellationRequested &&
-                await UIHolderFactory.CreateUIResourceAsync(flight.View, GetLayerRect(record.MetaInfo.UILayer), flight.Cancellation.Token);
-            flight.View.EndResourceLoad(flight.Cancellation);
+            bool loaded;
+            try
+            {
+                loaded = !flight.Cancellation.IsCancellationRequested &&
+                    await UIHolderFactory.CreateUIResourceAsync(flight.View, GetLayerRect(record.MetaInfo.UILayer), flight.Cancellation.Token);
+            }
+            finally { flight.Cancellation.Dispose(); }
             if (record.Flight != flight) return;
             record.Flight = null;
 
@@ -112,10 +167,7 @@ namespace AlicizaX.UI.Runtime
                 if (request.Completed || request.Token.IsCancellationRequested) continue;
                 hasWaiter = true;
                 if (request.Arguments != null && request.Arguments.Length > 0)
-                {
                     initializeArgs = request.Arguments;
-                    break;
-                }
             }
             if (!hasWaiter)
             {
@@ -125,21 +177,26 @@ namespace AlicizaX.UI.Runtime
                 FinishLoadRequests(flight, UIOpenResult.Cancelled);
                 return;
             }
-            flight.View.RefreshParams(initializeArgs);
-            bool initialized = flight.View.InternalInitialize();
+
+            UIOpenResult shared = CommitWindow(record, flight.View, initializeArgs);
+            if (flight.Waiters == 0)
+            {
+                flight.View.DestroyNow();
+                shared = UIOpenResult.Cancelled;
+            }
             for (int i = 0; i < flight.Requests.Count; i++)
             {
                 UIOpenRequest request = flight.Requests[i];
                 if (request.Completed) continue;
-                UIOpenResult result = request.Token.IsCancellationRequested
-                    ? UIOpenResult.Cancelled
-                    : initialized ? CommitWindow(record, flight.View, request.Arguments)
-                    : flight.View.State == UIState.Opened ? new UIOpenResult(flight.View, UIOpenStatus.Opened)
-                    : UIOpenResult.Cancelled;
-                if (result.Status == UIOpenStatus.Opened) initialized = true;
+                if (request.Token.IsCancellationRequested)
+                {
+                    request.Finish(UIOpenResult.Cancelled);
+                    continue;
+                }
+                if (record.View != flight.View || !flight.View.IsOpen) shared = UIOpenResult.Cancelled;
                 if (request.Completed) continue;
                 flight.Waiters--;
-                request.Finish(result);
+                request.Finish(shared);
             }
             flight.Requests.Clear();
             if (flight.View.State == UIState.Initialized) flight.View.DestroyNow();
@@ -160,76 +217,114 @@ namespace AlicizaX.UI.Runtime
             record.Flight = null;
             RemoveFromOpenStack(record);
             record.View = null;
+            flight.Cancel();
             flight.View.DestroyNow();
             FinishLoadRequests(flight, UIOpenResult.Cancelled);
         }
 
-        private UIOpenResult CommitWindow(UIWindowRecord record, UIBase view, object[] userDatas)
+        private UIOpenResult CommitWindow(UIWindowRecord record, UIWindow view, object[] userDatas)
         {
-            if (view.DestroyRequested || record.View != view) return UIOpenResult.Cancelled;
-            view.ValidateOpen();
-            if (view.State == UIState.Opening) return new UIOpenResult(view, UIOpenStatus.Opened);
-            if (record.LayerIndex < 0) BringToFront(record);
-            if (view.State == UIState.Loaded)
-            {
-                view.RefreshParams(userDatas);
-                if (!view.InternalInitialize())
-                    return view.State == UIState.Opened
-                        ? new UIOpenResult(view, UIOpenStatus.Opened) : UIOpenResult.Cancelled;
-            }
-
-            record.ForceClose = false;
-            int generation = view.TransitionGeneration;
-            view.SetCanvasEnabled(true);
-            view.Holder.transform.SetParent(GetLayerRect(record.MetaInfo.UILayer), false);
-            if (view.DestroyRequested || record.View != view || generation != view.TransitionGeneration)
+            if (record.View != view || view.State == UIState.Destroying || view.State == UIState.Destroyed)
                 return UIOpenResult.Cancelled;
-            view.Depth = record.MetaInfo.UILayer * LAYER_DEEP + record.LayerIndex * WINDOW_DEEP;
-            view.RefreshParams(userDatas);
-            bool opened = view.InternalOpen();
-            return opened ? new UIOpenResult(view, UIOpenStatus.Opened) : UIOpenResult.Cancelled;
+            if (view.State == UIState.Closing)
+            {
+                Log.Warning("[UI] Ignoring Show for {0} while it is closing.",
+                    record.Metadata.UILogicTypeName);
+                return new UIOpenResult(view.IsOpen ? view : null, UIOpenStatus.Ignored);
+            }
+            if (view.DestroyRequested)
+                return UIOpenResult.Cancelled;
+            if (record.LayerIndex < 0) BringToFront(record);
+            if (view.State is UIState.Loaded or UIState.Initialized or UIState.Closed)
+            {
+                record.ForceClose = false;
+                view.SetCanvasEnabled(true);
+                view.Holder.transform.SetParent(GetLayerRect(record.MetaInfo.UILayer), false);
+                if (view.DestroyRequested || record.View != view)
+                    return UIOpenResult.Cancelled;
+                view.Depth = record.MetaInfo.UILayer * LAYER_DEEP + record.LayerIndex * WINDOW_DEEP;
+            }
+            if (!view.InternalOpen(userDatas))
+                return UIOpenResult.Cancelled;
+            return new UIOpenResult(view, UIOpenStatus.Opened);
         }
 
-        private UniTask<bool> RequestClose(UIWindowRecord record, bool force, bool skipTransition)
+        private async UniTask RequestClose(UIWindowRecord record, bool force, bool skipTransition, bool affectNavigation)
         {
-            if (record == null || record.View == null) return UniTask.FromResult(false);
+            if (record == null)
+            {
+                Log.Warning("[UI] Close ignored because the window is not open and not cached.");
+                return;
+            }
             if (record.Flight != null)
             {
                 CancelWindowLoad(record);
-                return UniTask.FromResult(true);
+                return;
             }
-            UIBase view = record.View;
-            record.ForceClose |= force;
+
+            UIWindow view = record.View;
+            if (view == null)
+            {
+                Log.Warning("[UI] Close ignored because the window is not open and not cached.");
+                return;
+            }
+            if (record.IsCached)
+            {
+                if (force) view.DestroyNow();
+                return;
+            }
             if (view.State == UIState.CreatedUI || view.State == UIState.Loaded)
             {
                 view.DestroyNow();
-                return UniTask.FromResult(true);
+                return;
             }
-            if (view.State == UIState.Cached)
+            if (view.State == UIState.Destroying || view.State == UIState.Destroyed)
             {
-                if (force) view.DestroyNow();
-                return UniTask.FromResult(true);
+                Log.Warning("[UI] Close ignored because the window is not open and not cached.");
+                return;
             }
-            RemoveFromOpenStack(record);
-            OnWindowUnavailable(view);
-            return view.InternalClose(skipTransition);
+
+            record.ForceClose |= force;
+            if (view.State == UIState.Closed)
+            {
+                FinalizeAfterClosed(record, view);
+                return;
+            }
+            if (affectNavigation && _currentView == view) ClearHistory();
+            record.Settled ??= new UniTaskCompletionSource();
+            UniTaskCompletionSource settled = record.Settled;
+            try
+            {
+                await view.InternalClose(skipTransition, destroy: record.ForceClose);
+            }
+            finally
+            {
+                if (record.Settled == settled) record.Settled = null;
+                settled.TrySetResult();
+            }
         }
 
-        internal void OnWindowClosed(UIBase view)
+        private void FinalizeAfterClosed(UIWindowRecord record, UIWindow view)
         {
-            UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
-            if (record != null && record.View == view) CacheWindow(record);
+            if (record.View != view) return;
+            if (view.State == UIState.Destroying || view.State == UIState.Destroyed) return;
+            if (record.IsCached) return;
+            if (view.State != UIState.Closed) return;
+            RemoveFromOpenStack(record);
+            if (record.ForceClose || view.DestroyRequested || record.MetaInfo.CacheTime == 0)
+                view.DestroyNow();
+            else CacheWindow(record);
         }
 
         private void BringToFront(UIWindowRecord record)
         {
-            LayerData layer = _openUI[record.MetaInfo.UILayer];
+            List<UIWindowRecord> windows = _openUI[record.MetaInfo.UILayer];
             RemoveFromCache(record);
-            if (record.LayerIndex == layer.Count - 1 && record.LayerIndex >= 0) return;
-            int start = record.LayerIndex < 0 ? layer.Count : record.LayerIndex;
+            if (record.LayerIndex == windows.Count - 1 && record.LayerIndex >= 0) return;
+            int start = record.LayerIndex < 0 ? windows.Count : record.LayerIndex;
             RemovePosition(record);
-            record.LayerIndex = layer.Count;
-            layer.Items.Add(record);
+            record.LayerIndex = windows.Count;
+            windows.Add(record);
             SortWindowDepth(record.MetaInfo.UILayer, start);
         }
 
@@ -238,13 +333,14 @@ namespace AlicizaX.UI.Runtime
             if (predicate == null) return false;
             for (int layerIndex = _openUI.Length - 1; layerIndex >= 0; layerIndex--)
             {
-                LayerData layer = _openUI[layerIndex];
-                if (layer == null) continue;
-                for (int i = layer.Count - 1; i >= 0; i--)
+                List<UIWindowRecord> windows = _openUI[layerIndex];
+                if (windows == null) continue;
+                for (int i = windows.Count - 1; i >= 0; i--)
                 {
-                    UIWindowRecord record = layer.Items[i];
-                    if (predicate(record.MetaInfo.RuntimeTypeHandle))
-                        return await RequestClose(record, force, false);
+                    UIWindowRecord record = windows[i];
+                    if (!predicate(record.MetaInfo.RuntimeTypeHandle)) continue;
+                    await RequestClose(record, force, false, affectNavigation: true);
+                    return true;
                 }
             }
             return false;
@@ -255,11 +351,11 @@ namespace AlicizaX.UI.Runtime
             holder = null;
             for (int layerIndex = _openUI.Length - 1; layerIndex >= 0; layerIndex--)
             {
-                LayerData layer = _openUI[layerIndex];
-                if (layer == null) continue;
-                for (int i = layer.Count - 1; i >= 0; i--)
+                List<UIWindowRecord> windows = _openUI[layerIndex];
+                if (windows == null) continue;
+                for (int i = windows.Count - 1; i >= 0; i--)
                 {
-                    UIBase view = layer.Items[i].View;
+                    UIWindow view = windows[i].View;
                     if (view == null || !view.Visible) continue;
                     UIHolderObjectBase candidate = view.Holder;
                     if (candidate != null && candidate.IsValid() && (predicate == null || predicate(candidate)))
@@ -276,9 +372,9 @@ namespace AlicizaX.UI.Runtime
         {
             int index = record.LayerIndex;
             if (index < 0) return;
-            LayerData layer = _openUI[record.MetaInfo.UILayer];
-            layer.Items.RemoveAt(index);
-            for (int i = index; i < layer.Count; i++) layer.Items[i].LayerIndex = i;
+            List<UIWindowRecord> windows = _openUI[record.MetaInfo.UILayer];
+            windows.RemoveAt(index);
+            for (int i = index; i < windows.Count; i++) windows[i].LayerIndex = i;
             record.LayerIndex = -1;
         }
 
@@ -292,10 +388,10 @@ namespace AlicizaX.UI.Runtime
 
         private void SortWindowDepth(int layerIndex, int startIndex = 0)
         {
-            LayerData layer = _openUI[layerIndex];
-            for (int i = startIndex; i < layer.Count; i++)
+            List<UIWindowRecord> windows = _openUI[layerIndex];
+            for (int i = startIndex; i < windows.Count; i++)
             {
-                UIBase view = layer.Items[i].View;
+                UIWindow view = windows[i].View;
                 if (view != null) view.Depth = layerIndex * LAYER_DEEP + i * WINDOW_DEEP;
             }
         }

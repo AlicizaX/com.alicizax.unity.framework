@@ -116,7 +116,7 @@ namespace AlicizaX.Resource.Tests
                     }, _ => { });
                 }
                 f.Service.UnloadUnusedAssets(true);
-                Assert.That(f.Info("first").RefCountTotal, Is.Zero);
+                f.AssertNoReferences("first");
             }
             finally { f?.Dispose(); }
         }

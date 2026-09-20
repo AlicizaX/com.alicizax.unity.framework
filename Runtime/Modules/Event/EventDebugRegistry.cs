@@ -10,10 +10,8 @@ namespace AlicizaX
         Subscribe,
         Unsubscribe,
         Publish,
-        SafePublish,
         Resize,
         Clear,
-        MutationRejected,
         HandlerException,
         DeferredMutation,
         Flush
@@ -29,12 +27,10 @@ namespace AlicizaX
         internal readonly int EmptySubscriberCount;
         internal readonly int InSubscriberCount;
         internal readonly long PublishCount;
-        internal readonly long SafePublishCount;
         internal readonly long SubscribeCount;
         internal readonly long UnsubscribeCount;
         internal readonly int ResizeCount;
         internal readonly int ClearCount;
-        internal readonly long MutationRejectedCount;
         internal readonly long HandlerExceptionCount;
         internal readonly long DeferredMutationCount;
         internal readonly int FlushCount;
@@ -51,12 +47,10 @@ namespace AlicizaX
             int emptySubscriberCount,
             int inSubscriberCount,
             long publishCount,
-            long safePublishCount,
             long subscribeCount,
             long unsubscribeCount,
             int resizeCount,
             int clearCount,
-            long mutationRejectedCount,
             long handlerExceptionCount,
             long deferredMutationCount,
             int flushCount,
@@ -72,12 +66,10 @@ namespace AlicizaX
             EmptySubscriberCount = emptySubscriberCount;
             InSubscriberCount = inSubscriberCount;
             PublishCount = publishCount;
-            SafePublishCount = safePublishCount;
             SubscribeCount = subscribeCount;
             UnsubscribeCount = unsubscribeCount;
             ResizeCount = resizeCount;
             ClearCount = clearCount;
-            MutationRejectedCount = mutationRejectedCount;
             HandlerExceptionCount = handlerExceptionCount;
             DeferredMutationCount = deferredMutationCount;
             FlushCount = flushCount;
@@ -161,22 +153,17 @@ namespace AlicizaX
         private sealed class State
         {
             internal readonly Type EventType;
-            internal Func<int> PayloadSubscriberCountProvider;
-            internal Func<int> PayloadCapacityProvider;
-            internal Func<int> InSubscriberCountProvider;
-            internal Func<EventDebugSubscriberInfo[]> PayloadSubscribersProvider;
-            internal Func<int> EmptySubscriberCountProvider;
-            internal Func<int> EmptyCapacityProvider;
-            internal Func<EventDebugSubscriberInfo[]> EmptySubscribersProvider;
+            internal bool Parameterless;
+            internal Func<int> SubscriberCountProvider;
+            internal Func<int> CapacityProvider;
+            internal Func<EventDebugSubscriberInfo[]> SubscribersProvider;
 
             internal int PeakSubscriberCount;
             internal long PublishCount;
-            internal long SafePublishCount;
             internal long SubscribeCount;
             internal long UnsubscribeCount;
             internal int ResizeCount;
             internal int ClearCount;
-            internal long MutationRejectedCount;
             internal long HandlerExceptionCount;
             internal long DeferredMutationCount;
             internal int FlushCount;
@@ -216,32 +203,14 @@ namespace AlicizaX
             }
         }
 
-        internal static void RegisterPayloadContainer<T>(
-            Func<int> subscriberCountProvider,
-            Func<int> capacityProvider,
-            Func<int> inSubscriberCountProvider,
-            Func<EventDebugSubscriberInfo[]> subscribersProvider)
-            where T : struct
+        internal static void RegisterContainer<T>(bool parameterless, Func<int> count, Func<int> capacity,
+            Func<EventDebugSubscriberInfo[]> subscribers) where T : struct
         {
             State state = GetOrCreateState(typeof(T));
-            state.PayloadSubscriberCountProvider = subscriberCountProvider;
-            state.PayloadCapacityProvider = capacityProvider;
-            state.InSubscriberCountProvider = inSubscriberCountProvider;
-            state.PayloadSubscribersProvider = subscribersProvider;
-            state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCountProvider());
-        }
-
-        internal static void RegisterEmptyContainer<T>(
-            Func<int> subscriberCountProvider,
-            Func<int> capacityProvider,
-            Func<EventDebugSubscriberInfo[]> subscribersProvider)
-            where T : struct
-        {
-            State state = GetOrCreateState(typeof(T));
-            state.EmptySubscriberCountProvider = subscriberCountProvider;
-            state.EmptyCapacityProvider = capacityProvider;
-            state.EmptySubscribersProvider = subscribersProvider;
-            state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCountProvider());
+            state.Parameterless = parameterless;
+            state.SubscriberCountProvider = count;
+            state.CapacityProvider = capacity;
+            state.SubscribersProvider = subscribers;
         }
 
         internal static void RecordSubscribe<T>(int subscriberCount, int capacity) where T : struct
@@ -269,16 +238,6 @@ namespace AlicizaX
             }
         }
 
-        internal static void RecordSafePublish<T>(int subscriberCount, int capacity) where T : struct
-        {
-            State state = GetState<T>();
-            state.SafePublishCount++;
-            if (DetailedHistoryEnabled)
-            {
-                MarkOperation(state, EventDebugOperationKind.SafePublish, subscriberCount, capacity, true);
-            }
-        }
-
         internal static void RecordResize<T>(int subscriberCount, int capacity) where T : struct
         {
             State state = GetState<T>();
@@ -291,13 +250,6 @@ namespace AlicizaX
             State state = GetState<T>();
             state.ClearCount++;
             MarkOperation(state, EventDebugOperationKind.Clear, subscriberCount, capacity, true);
-        }
-
-        internal static void RecordMutationRejected<T>(int subscriberCount, int capacity) where T : struct
-        {
-            State state = GetState<T>();
-            state.MutationRejectedCount++;
-            MarkOperation(state, EventDebugOperationKind.MutationRejected, subscriberCount, capacity, true);
         }
 
         internal static void RecordHandlerException<T>(int subscriberCount, int capacity) where T : struct
@@ -368,12 +320,10 @@ namespace AlicizaX
                 State state = _states[eventType];
                 state.PeakSubscriberCount = GetSubscriberCount(state);
                 state.PublishCount = 0;
-                state.SafePublishCount = 0;
                 state.SubscribeCount = 0;
                 state.UnsubscribeCount = 0;
                 state.ResizeCount = 0;
                 state.ClearCount = 0;
-                state.MutationRejectedCount = 0;
                 state.HandlerExceptionCount = 0;
                 state.DeferredMutationCount = 0;
                 state.FlushCount = 0;
@@ -413,24 +363,22 @@ namespace AlicizaX
         {
             int subscriberCount = GetSubscriberCount(state);
             int capacity = GetCapacity(state);
-            int emptySubscriberCount = state.EmptySubscriberCountProvider?.Invoke() ?? 0;
-            int inSubscriberCount = state.InSubscriberCountProvider?.Invoke() ?? 0;
+            int emptySubscriberCount = state.Parameterless ? subscriberCount : 0;
+            int inSubscriberCount = state.Parameterless ? 0 : subscriberCount;
 
             return new EventDebugSummary(
                 state.EventType,
-                state.PayloadSubscriberCountProvider != null || state.EmptySubscriberCountProvider != null,
+                state.SubscriberCountProvider != null,
                 subscriberCount,
                 state.PeakSubscriberCount,
                 capacity,
                 emptySubscriberCount,
                 inSubscriberCount,
                 state.PublishCount,
-                state.SafePublishCount,
                 state.SubscribeCount,
                 state.UnsubscribeCount,
                 state.ResizeCount,
                 state.ClearCount,
-                state.MutationRejectedCount,
                 state.HandlerExceptionCount,
                 state.DeferredMutationCount,
                 state.FlushCount,
@@ -439,38 +387,11 @@ namespace AlicizaX
                 state.LastOperationTicksUtc);
         }
 
-        private static int GetSubscriberCount(State state)
-        {
-            return (state.PayloadSubscriberCountProvider?.Invoke() ?? 0) +
-                   (state.EmptySubscriberCountProvider?.Invoke() ?? 0);
-        }
+        private static int GetSubscriberCount(State state) => state.SubscriberCountProvider();
 
-        private static int GetCapacity(State state)
-        {
-            return (state.PayloadCapacityProvider?.Invoke() ?? 0) +
-                   (state.EmptyCapacityProvider?.Invoke() ?? 0);
-        }
+        private static int GetCapacity(State state) => state.CapacityProvider();
 
-        private static EventDebugSubscriberInfo[] BuildSubscribers(State state)
-        {
-            EventDebugSubscriberInfo[] payloadSubscribers = state.PayloadSubscribersProvider?.Invoke() ?? Array.Empty<EventDebugSubscriberInfo>();
-            EventDebugSubscriberInfo[] emptySubscribers = state.EmptySubscribersProvider?.Invoke() ?? Array.Empty<EventDebugSubscriberInfo>();
-
-            if (payloadSubscribers.Length == 0)
-            {
-                return emptySubscribers;
-            }
-
-            if (emptySubscribers.Length == 0)
-            {
-                return payloadSubscribers;
-            }
-
-            EventDebugSubscriberInfo[] subscribers = new EventDebugSubscriberInfo[payloadSubscribers.Length + emptySubscribers.Length];
-            Array.Copy(payloadSubscribers, 0, subscribers, 0, payloadSubscribers.Length);
-            Array.Copy(emptySubscribers, 0, subscribers, payloadSubscribers.Length, emptySubscribers.Length);
-            return subscribers;
-        }
+        private static EventDebugSubscriberInfo[] BuildSubscribers(State state) => state.SubscribersProvider();
 
         private static void MarkOperation(State state, EventDebugOperationKind kind, int subscriberCount, int capacity, bool recordHistory)
         {

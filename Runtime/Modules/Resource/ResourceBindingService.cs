@@ -27,6 +27,7 @@ namespace AlicizaX.Resource.Runtime
         private int _targetCursor;
         private uint _nextOwnerGeneration;
         private uint _nextRequestVersion;
+        private uint _world;
         private bool _isShutdown;
         private readonly ResourceIndexMap<ulong, int> _ownerByObject = new ResourceIndexMap<ulong, int>();
         private readonly ResourceIndexMap<SlotKey, int> _bindingBySlot = new ResourceIndexMap<SlotKey, int>();
@@ -105,6 +106,7 @@ namespace AlicizaX.Resource.Runtime
         public void Shutdown()
         {
             _isShutdown = true;
+            unchecked { _world++; }
             Exception error = null;
             for (int i = 0; i < _ownerNext; i++)
             {
@@ -112,7 +114,25 @@ namespace AlicizaX.Resource.Runtime
                 try { ReleaseOwner(i + 1, Owner(i).Generation); }
                 catch (Exception exception) { error = Combine(error, exception); }
             }
+            for (int i = 0; i < _ownerNext; i++)
+            {
+                if (Owner(i).State != 2) continue;
+                try { DrainOwnerBindings(i); }
+                catch (Exception exception) { error = Combine(error, exception); }
+            }
             if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
+        }
+
+        public void Reset()
+        {
+            try
+            {
+                Shutdown();
+            }
+            finally
+            {
+                _isShutdown = false;
+            }
         }
 
         public ResourceBindStatus RegisterOwner(ResourceOwner owner)
@@ -154,6 +174,7 @@ namespace AlicizaX.Resource.Runtime
             if (index < 0 || index >= _ownerNext) return ResourceBindStatus.MissingOwner;
             ref OwnerSlot slot = ref Owner(index);
             if (slot.State != 1 || slot.Generation != generation) return ResourceBindStatus.StaleOwner;
+            uint world = _world;
             slot.State = 2;
             _ownerByObject.Remove(slot.ObjectId);
             _resourceService.ReleaseOwnerLeases(ownerId, ref slot.AssetLeaseHead);
@@ -161,14 +182,15 @@ namespace AlicizaX.Resource.Runtime
             while (slot.BindingHead >= 0)
             {
                 int binding = slot.BindingHead;
-                if (keepPrefabSource && !_isShutdown && slot.Owner != null && Binding(binding).Key.Type == ResourceBindingSlotType.PrefabSource)
+                if (keepPrefabSource && world == _world && !_isShutdown && slot.Owner != null &&
+                    Binding(binding).Key.Type == ResourceBindingSlotType.PrefabSource)
                     binding = Binding(binding).Next;
                 if (binding < 0) break;
                 try { ReleaseBinding(binding); }
                 catch (Exception exception) { error = Combine(error, exception); }
             }
             while (slot.TargetHead >= 0) RemoveTarget(slot.TargetHead);
-            if (slot.BindingCount > 0)
+            if (keepPrefabSource && world == _world && !_isShutdown && slot.BindingCount > 0)
             {
                 slot.Generation = AllocateOwnerGeneration();
                 slot.State = 1;
@@ -177,6 +199,12 @@ namespace AlicizaX.Resource.Runtime
                 if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
                 return ResourceBindStatus.Success;
             }
+            while (slot.BindingHead >= 0)
+            {
+                try { ReleaseBinding(slot.BindingHead); }
+                catch (Exception exception) { error = Combine(error, exception); }
+            }
+            while (slot.TargetHead >= 0) RemoveTarget(slot.TargetHead);
             if (!ReferenceEquals(slot.Owner, null))
                 slot.Owner.ClearRegistered();
             slot = default;
@@ -184,6 +212,21 @@ namespace AlicizaX.Resource.Runtime
             _ownerFree = index;
             if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
             return ResourceBindStatus.Success;
+        }
+
+        private void DrainOwnerBindings(int index)
+        {
+            ref OwnerSlot slot = ref Owner(index);
+            Exception error = null;
+            while (slot.BindingHead >= 0)
+            {
+                try { ReleaseBinding(slot.BindingHead); }
+                catch (Exception exception) { error = Combine(error, exception); }
+            }
+            while (slot.TargetHead >= 0) RemoveTarget(slot.TargetHead);
+            if (!ReferenceEquals(slot.Owner, null))
+                slot.Owner.ClearRegistered();
+            if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
         }
 
         public ResourceBindStatus RegisterTarget(ResourceOwner owner, Component target)

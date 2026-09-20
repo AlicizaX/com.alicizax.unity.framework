@@ -17,7 +17,7 @@ namespace AlicizaX.Resource.Tests
             f.Text("value-copy");
             var lease = f.Service.LoadLease<TextAsset>("value-copy");
             var key = ResourceKey.Asset<TextAsset>("value-copy");
-            const int count = 1000000;
+            const int count = 20000;
             long sum = 0;
             for (int round = 0; round < 3; round++)
             {

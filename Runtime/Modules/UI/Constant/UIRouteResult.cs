@@ -9,7 +9,6 @@ namespace AlicizaX.UI.Runtime
         RejectedLimit,
         NotFound,
         OpenFailed,
-        CloseFailed,
         Cancelled,
     }
 
@@ -40,17 +39,11 @@ namespace AlicizaX.UI.Runtime
     {
         int HistoryCount { get; }
 
-        int WarningCount { get; }
-
         Type Current { get; }
 
         bool CanBack { get; }
 
         bool FillHistoryInfo(int index, UIRouteDebugInfo info);
-
-        bool FillWarningInfo(int index, UIRouteWarningInfo info);
-
-        void ClearWarnings();
     }
 
     public sealed class UIRouteDebugInfo
@@ -68,22 +61,6 @@ namespace AlicizaX.UI.Runtime
             IsRoot = false;
             Sequence = 0;
             ArgsPreview = null;
-        }
-    }
-
-    public sealed class UIRouteWarningInfo
-    {
-        public int Index;
-        public int Sequence;
-        public string UITypeName;
-        public string Message;
-
-        public void Clear()
-        {
-            Index = 0;
-            Sequence = 0;
-            UITypeName = null;
-            Message = null;
         }
     }
 #endif

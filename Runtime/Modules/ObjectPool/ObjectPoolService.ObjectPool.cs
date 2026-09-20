@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using UnityEngine;
 
 namespace AlicizaX.ObjectPool
@@ -34,7 +36,6 @@ namespace AlicizaX.ObjectPool
 
             private readonly ObjectPoolService m_Owner;
             private readonly bool m_AllowMultiSpawn;
-            private readonly MemoryPoolHandle m_ObjectMemoryPoolHandle;
 
             private ObjectSlot[] m_Slots;
             private int[] m_FreeStack;
@@ -59,6 +60,9 @@ namespace AlicizaX.ObjectPool
             private float m_AutoReleaseTime;
             private int m_PendingReleaseCount;
             private bool m_IsShuttingDown;
+            private bool m_IsReleasing;
+            private int m_ReleaseCursor = -1;
+            private int m_CallbackCount;
 
             private const int DefaultReleasePerFrame = 8;
             private const int InitSlotCapacity = 16;
@@ -77,7 +81,6 @@ namespace AlicizaX.ObjectPool
                 m_SlotCount = initCap;
                 m_TargetMap = new ReferenceOpenHashMap(initCap);
                 m_AllowMultiSpawn = allowMultiSpawn;
-                m_ObjectMemoryPoolHandle = MemoryPool.GetHandle(typeof(T));
                 m_AutoReleaseInterval = autoReleaseInterval;
                 m_Capacity = capacity;
                 m_ExpireTime = expireTime;
@@ -101,9 +104,10 @@ namespace AlicizaX.ObjectPool
                 get => m_AutoReleaseInterval;
                 set
                 {
+                    ThrowIfShuttingDown();
                     if (value < 0f)
                     {
-                        UnityEngine.Debug.LogError("AutoReleaseInterval is invalid.");
+                        Log.Error("AutoReleaseInterval is invalid.");
                         return;
                     }
 
@@ -117,15 +121,15 @@ namespace AlicizaX.ObjectPool
                 get => m_Capacity;
                 set
                 {
+                    ThrowIfShuttingDown();
                     if (value < 0)
                     {
-                        UnityEngine.Debug.LogError("Capacity is invalid.");
+                        Log.Error("Capacity is invalid.");
                         return;
                     }
 
                     m_Capacity = value;
-                    if (Count > m_Capacity)
-                        MarkRelease(Count - m_Capacity);
+                    m_PendingReleaseCount = Count > m_Capacity ? Count - m_Capacity : 0;
                     UpdateActiveState();
                 }
             }
@@ -135,13 +139,16 @@ namespace AlicizaX.ObjectPool
                 get => m_ExpireTime;
                 set
                 {
+                    ThrowIfShuttingDown();
                     if (value < 0f)
                     {
-                        UnityEngine.Debug.LogError("ExpireTime is invalid.");
+                        Log.Error("ExpireTime is invalid.");
                         return;
                     }
 
                     m_ExpireTime = value;
+                    if (TrackLastUseTime)
+                        StampUntimedUnusedSlots();
                     UpdateActiveState();
                 }
             }
@@ -154,24 +161,59 @@ namespace AlicizaX.ObjectPool
 
             public bool Register(T obj, bool spawned)
             {
-                if (obj == null || obj.Target == null)
+                ThrowIfShuttingDown();
+                if (obj == null)
                 {
-                    UnityEngine.Debug.LogError($"Object or target is invalid in pool '{FullName}'.");
-                    if (obj != null)
-                        RecycleObject(obj);
+                    Log.Error($"Object or target is invalid in pool '{FullName}'.");
+                    return false;
+                }
+
+                if (obj.Pool != null)
+                {
+                    Log.Error($"Object is already registered in pool '{obj.Pool.FullName}'.");
+                    return false;
+                }
+
+                if (obj.Target == null)
+                {
+                    Log.Error($"Object or target is invalid in pool '{FullName}'.");
+                    RecycleObject(obj);
                     return false;
                 }
 
                 if (m_TargetMap.TryGetValue(obj.Target, out int existingIdx) && m_Slots[existingIdx].IsAlive())
                 {
-                    UnityEngine.Debug.LogError($"Target '{obj.Target.GetType().FullName}' is already registered in pool '{FullName}'.");
+                    Log.Error($"Target '{obj.Target.GetType().FullName}' is already registered in pool '{FullName}'.");
                     RecycleObject(obj);
                     return false;
                 }
 
-                if (!EnsureRegisterCapacity())
+                obj.Pool = this;
+                bool hasCapacity;
+                try
                 {
-                    UnityEngine.Debug.LogError($"Object pool '{FullName}' capacity is full.");
+                    hasCapacity = ReserveRegisterSlot();
+                }
+                catch
+                {
+                    obj.Pool = null;
+                    RecycleObject(obj);
+                    throw;
+                }
+
+                if (!hasCapacity || m_IsShuttingDown || m_Slots == null || (m_Capacity != int.MaxValue && Count >= m_Capacity))
+                {
+                    if (!m_IsShuttingDown && m_Slots != null)
+                        Log.Error($"Object pool '{FullName}' capacity is full.");
+                    obj.Pool = null;
+                    RecycleObject(obj);
+                    return false;
+                }
+
+                if (m_TargetMap.TryGetValue(obj.Target, out existingIdx) && m_Slots[existingIdx].IsAlive())
+                {
+                    Log.Error($"Target '{obj.Target.GetType().FullName}' is already registered in pool '{FullName}'.");
+                    obj.Pool = null;
                     RecycleObject(obj);
                     return false;
                 }
@@ -179,7 +221,7 @@ namespace AlicizaX.ObjectPool
                 int idx = AllocSlot();
                 ref var slot = ref m_Slots[idx];
                 slot.Obj = obj;
-                slot.SpawnCount = spawned ? 1 : 0;
+                slot.SpawnCount = 0;
                 slot.LastUseTime = 0f;
                 slot.PrevAvailable = -1;
                 slot.NextAvailable = -1;
@@ -200,10 +242,12 @@ namespace AlicizaX.ObjectPool
                     obj.LastUseTime = now;
                 }
 
+                MarkSlotAvailable(idx);
                 if (spawned)
-                    obj.OnSpawn();
-                else
-                    MarkSlotAvailable(idx);
+                    SpawnSlot(idx);
+
+                if (m_IsShuttingDown || m_Slots == null)
+                    return false;
 
                 UpdateActiveState();
                 ValidateState();
@@ -215,6 +259,7 @@ namespace AlicizaX.ObjectPool
 
             public T Spawn(string name)
             {
+                ThrowIfShuttingDown();
                 if (name == null)
                     name = string.Empty;
 
@@ -225,19 +270,23 @@ namespace AlicizaX.ObjectPool
                 if (head < 0)
                     return null;
 
+                T obj = m_Slots[head].Obj;
                 SpawnSlot(head);
-                return m_Slots[head].Obj;
+                return m_IsShuttingDown ? null : obj;
             }
 
             public void Unspawn(T obj)
             {
+                if (m_IsShuttingDown)
+                    return;
                 if (obj == null || obj.Target == null)
                     return;
-                if (!m_TargetMap.TryGetValue(obj.Target, out int idx))
+                if (obj.Pool != this
+                    || !m_TargetMap.TryGetValue(obj.Target, out int idx)
+                    || !m_Slots[idx].IsAlive()
+                    || !ReferenceEquals(m_Slots[idx].Obj, obj))
                 {
-                    if (m_IsShuttingDown)
-                        return;
-                    UnityEngine.Debug.LogError($"Cannot find target in pool '{Name}', type='{obj.Target.GetType().FullName}'");
+                    Log.Error($"Cannot find target in pool '{Name}', type='{obj.Target.GetType().FullName}', object is not registered.");
                     return;
                 }
 
@@ -246,13 +295,13 @@ namespace AlicizaX.ObjectPool
 
             public void UnspawnTarget(object target)
             {
+                if (m_IsShuttingDown)
+                    return;
                 if (target == null)
                     return;
                 if (!m_TargetMap.TryGetValue(target, out int idx))
                 {
-                    if (m_IsShuttingDown)
-                        return;
-                    UnityEngine.Debug.LogError($"Cannot find target in pool '{Name}', type='{target.GetType().FullName}'");
+                    Log.Error($"Cannot find target in pool '{Name}', type='{target.GetType().FullName}'");
                     return;
                 }
 
@@ -278,20 +327,7 @@ namespace AlicizaX.ObjectPool
 
             public override void ReleaseAllUnused()
             {
-                int released = 0;
-                int current = m_UnusedHead;
-                while (current >= 0)
-                {
-                    int next = m_Slots[current].NextUnused;
-                    if (CanReleaseSlot(ref m_Slots[current]))
-                    {
-                        ReleaseSlot(current);
-                        released++;
-                    }
-
-                    current = next;
-                }
-
+                int released = ReleaseUnused(int.MaxValue, false, float.MinValue);
                 m_PendingReleaseCount = 0;
                 UpdateActiveState();
                 if (released > 0)
@@ -300,6 +336,8 @@ namespace AlicizaX.ObjectPool
 
             internal override void Update(float elapseSeconds, float realElapseSeconds)
             {
+                if (m_IsShuttingDown)
+                    return;
                 bool overCapacity = Count > m_Capacity;
                 if (m_AutoReleaseInterval < float.MaxValue && overCapacity)
                 {
@@ -334,19 +372,29 @@ namespace AlicizaX.ObjectPool
 
             internal override void Shutdown()
             {
+                if (m_Slots == null)
+                    return;
                 m_IsShuttingDown = true;
+                m_Owner.SetPoolActive(this, false);
+                if (m_CallbackCount > 0 || m_IsReleasing)
+                    return;
+                List<Exception> errors = null;
+                m_CallbackCount++;
                 for (int i = 0; i < m_SlotCount; i++)
                 {
                     ref var slot = ref m_Slots[i];
                     if (!slot.IsAlive())
                         continue;
 
-                    slot.Obj.Release(true);
-                    RecycleObject(slot.Obj);
-                    slot.Obj = null;
-                    slot.SetAlive(false);
+                    T obj = slot.Obj;
+                    m_TargetMap.Remove(obj.Target);
+                    m_Slots[i] = default;
+                    try { obj.Release(true); }
+                    catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
+                    try { RecycleObject(obj); }
+                    catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
                 }
-
+                m_CallbackCount--;
                 m_TargetMap.Dispose();
                 if (m_HasNameMap)
                 {
@@ -366,14 +414,15 @@ namespace AlicizaX.ObjectPool
                 m_UnusedHead = -1;
                 m_UnusedTail = -1;
                 m_UnusedCount = 0;
-                m_IsShuttingDown = false;
+                if (errors != null)
+                    throw new AggregateException(errors);
             }
 
             internal override int GetAllObjectInfos(ObjectInfo[] results)
             {
                 if (results == null)
                 {
-                    UnityEngine.Debug.LogError("Results is invalid.");
+                    Log.Error("Results is invalid.");
                     return 0;
                 }
 
@@ -400,10 +449,28 @@ namespace AlicizaX.ObjectPool
 
             private bool TrackLastUseTime => m_ExpireTime < float.MaxValue;
 
+            private void StampUntimedUnusedSlots()
+            {
+                float now = Time.realtimeSinceStartup;
+                int current = m_UnusedHead;
+                while (current >= 0)
+                {
+                    ref var slot = ref m_Slots[current];
+                    if (slot.LastUseTime == 0f)
+                    {
+                        slot.LastUseTime = now;
+                        slot.Obj.LastUseTime = now;
+                    }
+                    current = slot.NextUnused;
+                }
+            }
+
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             private void SpawnSlot(int idx)
             {
                 ref var slot = ref m_Slots[idx];
+                if ((slot.Flags & 2) != 0)
+                    throw new InvalidOperationException("Object is executing a pool callback.");
                 if (slot.SpawnCount == 0)
                     MarkSlotUnavailable(idx);
 
@@ -415,33 +482,70 @@ namespace AlicizaX.ObjectPool
                     slot.Obj.LastUseTime = now;
                 }
 
-                slot.Obj.OnSpawn();
+                T obj = slot.Obj;
+                slot.Flags |= 2;
+                m_CallbackCount++;
+                Exception callbackError = null;
+                try
+                {
+                    obj.OnSpawn();
+                }
+                catch (Exception error)
+                {
+                    m_Slots[idx].SpawnCount--;
+                    if (m_Slots[idx].SpawnCount == 0 && !m_IsShuttingDown)
+                        MarkSlotAvailable(idx);
+                    callbackError = error;
+                }
+                finally
+                {
+                    m_Slots[idx].Flags &= unchecked((byte)~2);
+                    m_CallbackCount--;
+                }
+                CompleteCallback(callbackError);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             private void UnspawnSlot(int idx)
             {
                 ref var slot = ref m_Slots[idx];
-                if (TrackLastUseTime)
-                {
-                    float now = Time.realtimeSinceStartup;
-                    slot.LastUseTime = now;
-                    slot.Obj.LastUseTime = now;
-                }
-
-                slot.Obj.OnUnspawn();
-                slot.SpawnCount--;
-                if (slot.SpawnCount < 0)
-                {
-                    UnityEngine.Debug.LogError($"Object '{slot.Obj.Name}' spawn count < 0.");
-                    slot.SpawnCount = 0;
-                }
-
+                if ((slot.Flags & 2) != 0)
+                    throw new InvalidOperationException("Object is executing a pool callback.");
                 if (slot.SpawnCount == 0)
-                    MarkSlotAvailable(idx);
-                if (Count > m_Capacity && slot.SpawnCount == 0)
-                    MarkRelease(Count - m_Capacity);
-                UpdateActiveState();
+                {
+                    Log.Error($"Object '{slot.Obj.Name}' is not spawned.");
+                    return;
+                }
+                T obj = slot.Obj;
+                slot.Flags |= 2;
+                m_CallbackCount++;
+                Exception callbackError = null;
+                try
+                {
+                    obj.OnUnspawn();
+                }
+                catch (Exception error)
+                {
+                    callbackError = error;
+                }
+                finally
+                {
+                    ref var returned = ref m_Slots[idx];
+                    returned.Flags &= unchecked((byte)~2);
+                    returned.SpawnCount--;
+                    if (TrackLastUseTime)
+                    {
+                        float now = Time.realtimeSinceStartup;
+                        returned.LastUseTime = now;
+                        obj.LastUseTime = now;
+                    }
+                    if (returned.SpawnCount == 0 && !m_IsShuttingDown)
+                        MarkSlotAvailable(idx);
+                    if (Count > m_Capacity && returned.SpawnCount == 0)
+                        MarkRelease(Count - m_Capacity);
+                    m_CallbackCount--;
+                }
+                CompleteCallback(callbackError);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -474,34 +578,49 @@ namespace AlicizaX.ObjectPool
             private void ReleaseSlot(int idx)
             {
                 ref var slot = ref m_Slots[idx];
-                if (!slot.IsAlive() || slot.SpawnCount > 0)
+                T obj = slot.Obj;
+                object target = obj.Target;
+                MarkSlotUnavailable(idx);
+                if (m_AllowMultiSpawn && (slot.Flags & 4) == 0)
+                    RemoveFromAllNameChain(idx);
+                slot.Flags |= 6;
+                m_TargetMap.Remove(target);
+                m_CallbackCount++;
+                try
+                {
+                    obj.Release(false);
+                }
+                catch
+                {
+                    if (m_Slots != null && !m_IsShuttingDown)
+                    {
+                        if (!m_TargetMap.TryGetValue(target, out int mapped) || mapped == idx)
+                            m_TargetMap.AddOrUpdate(target, idx);
+                        AddToUnusedListTail(idx);
+                    }
+                    throw;
+                }
+                finally
+                {
+                    if (m_Slots != null)
+                        m_Slots[idx].Flags &= unchecked((byte)~2);
+                    m_CallbackCount--;
+                }
+
+                if (m_Slots == null)
                     return;
 
-                T obj = slot.Obj;
-                MarkSlotUnavailable(idx);
-                if (m_AllowMultiSpawn)
-                    RemoveFromAllNameChain(idx);
-                m_TargetMap.Remove(obj.Target);
-
-                obj.Release(false);
-                RecycleObject(obj);
-
-                slot.Obj = null;
-                slot.SetAlive(false);
-                slot.SpawnCount = 0;
-                slot.PrevAvailable = -1;
-                slot.NextAvailable = -1;
-                slot.PrevUnused = -1;
-                slot.NextUnused = -1;
-                slot.PrevAll = -1;
-                slot.NextAll = -1;
+                m_Slots[idx] = default;
                 m_FreeStack[m_FreeTop++] = idx;
+                RecycleObject(obj);
             }
 
-            private bool EnsureRegisterCapacity()
+            private bool ReserveRegisterSlot()
             {
                 if (m_Capacity == int.MaxValue || Count < m_Capacity)
                     return true;
+                if (m_IsReleasing)
+                    return false;
 
                 int released = ReleaseUnused(1, false, float.MinValue);
                 if (released > 0)
@@ -513,8 +632,10 @@ namespace AlicizaX.ObjectPool
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             private void RecycleObject(T obj)
             {
-                if (obj != null && m_ObjectMemoryPoolHandle.IsValid)
-                    m_ObjectMemoryPoolHandle.Release(obj);
+                if (obj.OwnerHandle.IsValid)
+                    obj.OwnerHandle.Release(obj);
+                else
+                    obj.Clear();
             }
 
             private int FindAvailableByName(string name)
@@ -535,8 +656,9 @@ namespace AlicizaX.ObjectPool
                 if (head < 0)
                     return null;
 
+                T obj = m_Slots[head].Obj;
                 SpawnSlot(head);
-                return m_Slots[head].Obj;
+                return m_IsShuttingDown ? null : obj;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -553,31 +675,45 @@ namespace AlicizaX.ObjectPool
 
             private int ReleaseUnused(int maxReleaseCount, bool requireExpired, float expireThreshold)
             {
+                if (m_IsShuttingDown)
+                    return 0;
+                if (m_IsReleasing)
+                    throw new InvalidOperationException("Object pool is already releasing objects.");
                 int released = 0;
                 int visited = 0;
                 int limit = m_UnusedCount;
-                int current = m_UnusedHead;
-
-                while (current >= 0 && released < maxReleaseCount && visited < limit)
+                m_ReleaseCursor = m_UnusedHead;
+                m_IsReleasing = true;
+                Exception callbackError = null;
+                try
                 {
-                    visited++;
-                    ref var slot = ref m_Slots[current];
-                    int next = slot.NextUnused;
-
-                    if (requireExpired && slot.LastUseTime > expireThreshold)
+                    while (m_ReleaseCursor >= 0 && released < maxReleaseCount && visited < limit && !m_IsShuttingDown)
                     {
-                        current = next;
-                        continue;
-                    }
+                        int current = m_ReleaseCursor;
+                        visited++;
+                        ref var slot = ref m_Slots[current];
+                        m_ReleaseCursor = slot.NextUnused;
 
-                    if (CanReleaseSlot(ref slot))
-                    {
-                        ReleaseSlot(current);
-                        released++;
-                    }
+                        if (requireExpired && (slot.LastUseTime == 0f || slot.LastUseTime > expireThreshold))
+                            continue;
 
-                    current = next;
+                        if (CanReleaseSlot(ref slot))
+                        {
+                            ReleaseSlot(current);
+                            released++;
+                        }
+                    }
                 }
+                catch (Exception error)
+                {
+                    callbackError = error;
+                }
+                finally
+                {
+                    m_IsReleasing = false;
+                    m_ReleaseCursor = -1;
+                }
+                CompleteCallback(callbackError);
 
                 return released;
             }
@@ -587,6 +723,7 @@ namespace AlicizaX.ObjectPool
             {
                 return slot.IsAlive()
                        && slot.SpawnCount == 0
+                       && (slot.Flags & 2) == 0
                        && !slot.Obj.Locked
                        && slot.Obj.CustomCanReleaseFlag;
             }
@@ -763,6 +900,8 @@ namespace AlicizaX.ObjectPool
 
                 int prev = slot.PrevUnused;
                 int next = slot.NextUnused;
+                if (m_ReleaseCursor == idx)
+                    m_ReleaseCursor = next;
                 if (prev >= 0)
                     m_Slots[prev].NextUnused = next;
                 else
@@ -793,10 +932,33 @@ namespace AlicizaX.ObjectPool
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             private void UpdateActiveState()
             {
-                bool active = m_PendingReleaseCount > 0
+                bool active = !m_IsShuttingDown && (m_PendingReleaseCount > 0
                               || (m_ExpireTime < float.MaxValue && m_UnusedCount > 0)
-                              || (m_AutoReleaseInterval < float.MaxValue && Count > m_Capacity);
+                              || (m_AutoReleaseInterval < float.MaxValue && Count > m_Capacity));
                 m_Owner.SetPoolActive(this, active);
+            }
+
+            private void ThrowIfShuttingDown()
+            {
+                if (m_IsShuttingDown)
+                    throw new ObjectDisposedException(FullName);
+            }
+
+            private void CompleteCallback(Exception error)
+            {
+                UpdateActiveState();
+                if (m_IsShuttingDown && m_CallbackCount == 0 && !m_IsReleasing)
+                {
+                    try { Shutdown(); }
+                    catch (Exception shutdownError)
+                    {
+                        if (error != null)
+                            throw new AggregateException(error, shutdownError);
+                        throw;
+                    }
+                }
+                if (error != null)
+                    ExceptionDispatchInfo.Capture(error).Throw();
             }
 
             [Conditional("UNITY_EDITOR")]
@@ -815,7 +977,7 @@ namespace AlicizaX.ObjectPool
                     object target = slot.Obj.Target;
                     if (!m_TargetMap.TryGetValue(target, out int mappedIdx) || mappedIdx != idx)
                     {
-                        UnityEngine.Debug.LogError($"Object pool '{FullName}' target index map is inconsistent.");
+                        Log.Error($"Object pool '{FullName}' target index map is inconsistent.");
                         continue;
                     }
 
@@ -824,7 +986,7 @@ namespace AlicizaX.ObjectPool
                 }
 
                 if (aliveCount != m_TargetMap.Count)
-                    UnityEngine.Debug.LogError($"Object pool '{FullName}' alive count is inconsistent.");
+                    Log.Error($"Object pool '{FullName}' alive count is inconsistent.");
 
                 int walkUnusedCount = 0;
                 int current = m_UnusedHead;
@@ -833,16 +995,16 @@ namespace AlicizaX.ObjectPool
                 {
                     ref var slot = ref m_Slots[current];
                     if (!slot.IsAlive() || slot.SpawnCount != 0)
-                        UnityEngine.Debug.LogError($"Object pool '{FullName}' unused chain contains invalid slot.");
+                        Log.Error($"Object pool '{FullName}' unused chain contains invalid slot.");
                     if (slot.PrevUnused != prevUnused)
-                        UnityEngine.Debug.LogError($"Object pool '{FullName}' unused chain linkage is inconsistent.");
+                        Log.Error($"Object pool '{FullName}' unused chain linkage is inconsistent.");
                     walkUnusedCount++;
                     prevUnused = current;
                     current = slot.NextUnused;
                 }
 
                 if (walkUnusedCount != unusedCount || walkUnusedCount != m_UnusedCount)
-                    UnityEngine.Debug.LogError($"Object pool '{FullName}' unused chain count is inconsistent.");
+                    Log.Error($"Object pool '{FullName}' unused chain count is inconsistent.");
 #endif
             }
         }

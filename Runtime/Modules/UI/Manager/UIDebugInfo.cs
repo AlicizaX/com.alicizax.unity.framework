@@ -19,8 +19,6 @@ namespace AlicizaX.UI.Runtime
         public bool Orthographic;
         public int OpenWindowCount;
         public int CacheWindowCount;
-        public int UpdateWindowCount;
-        public int UpdateWidgetCount;
         public int UpdateCount;
         public bool BlockActive;
         public float BlockRemaining;

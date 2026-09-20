@@ -85,19 +85,28 @@ namespace AlicizaX.Resource.Tests
         [UnityTearDown]
         public IEnumerator TearDown()
         {
-            if (root != null) Object.Destroy(root);
-            AppServices.Shutdown();
-            if (package != null)
+            try
             {
-                var destroy = package.DestroyPackageAsync();
-                yield return destroy;
-                Assert.That(destroy.Status, Is.EqualTo(EOperationStatus.Succeeded), destroy.Error);
-                YooAssets.RemovePackage(packageName);
+                if (root != null) Object.Destroy(root);
+                AppServices.Shutdown();
+                if (package != null)
+                {
+                    var destroy = package.DestroyPackageAsync();
+                    yield return destroy;
+                    Assert.That(destroy.Status, Is.EqualTo(EOperationStatus.Succeeded), destroy.Error);
+                    YooAssets.RemovePackage(packageName);
+                }
             }
-            if (initializedGlobal && YooAssets.IsInitialized) YooAssets.Destroy();
-            if (settingsField != null) settingsField.SetValue(null, previousSettings);
-            if (settings != null) Object.DestroyImmediate(settings);
-            if (folder != null) Assert.That(AssetDatabase.DeleteAsset(folder), Is.True);
+            finally
+            {
+                try { if (initializedGlobal && YooAssets.IsInitialized) YooAssets.Destroy(); }
+                finally
+                {
+                    if (settingsField != null) settingsField.SetValue(null, previousSettings);
+                    if (settings != null) Object.DestroyImmediate(settings);
+                    if (folder != null) Assert.That(AssetDatabase.DeleteAsset(folder), Is.True);
+                }
+            }
         }
 
         [UnityTest]

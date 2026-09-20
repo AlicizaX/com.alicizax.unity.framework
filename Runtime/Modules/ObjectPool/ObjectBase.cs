@@ -2,6 +2,7 @@ namespace AlicizaX.ObjectPool
 {
     public abstract class ObjectBase : MemoryObject
     {
+        internal ObjectPoolBase Pool;
         private string m_Name;
         private object m_Target;
         private bool m_Locked;
@@ -43,6 +44,7 @@ namespace AlicizaX.ObjectPool
 
         public override void Clear()
         {
+            Pool = null;
             m_Name = null;
             m_Target = null;
             m_Locked = false;

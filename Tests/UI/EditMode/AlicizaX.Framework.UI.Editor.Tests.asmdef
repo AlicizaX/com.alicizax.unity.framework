@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.UI.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.UI.Tests", "UniTask.Runtime", "Unity.ugui"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

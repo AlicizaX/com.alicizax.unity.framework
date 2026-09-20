@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.GameObjectPool.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "UniTask.Runtime", "AlicizaX.Framework.Resources.Tests"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

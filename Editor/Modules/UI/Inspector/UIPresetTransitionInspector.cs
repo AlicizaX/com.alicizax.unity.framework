@@ -33,7 +33,6 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty _targetRect;
         private SerializedProperty _canvasGroup;
         private SerializedProperty _useUnscaledTime;
-        private SerializedProperty _followAnimationInteractable;
         private SerializedProperty _openDuration;
         private SerializedProperty _closeDuration;
         private SerializedProperty _slideDistance;
@@ -58,7 +57,6 @@ namespace AlicizaX.UI.Editor
             _targetRect = serializedObject.FindProperty("targetRect");
             _canvasGroup = serializedObject.FindProperty("canvasGroup");
             _useUnscaledTime = serializedObject.FindProperty("useUnscaledTime");
-            _followAnimationInteractable = serializedObject.FindProperty("followAnimationInteractable");
             _openDuration = serializedObject.FindProperty("openDuration");
             _closeDuration = serializedObject.FindProperty("closeDuration");
             _slideDistance = serializedObject.FindProperty("slideDistance");
@@ -102,10 +100,9 @@ namespace AlicizaX.UI.Editor
             DrawField(_targetRect);
             DrawField(_canvasGroup);
 
-            bool alphaRequired = RequiresCanvasGroup();
-            if (alphaRequired && !_canvasGroup.hasMultipleDifferentValues && _canvasGroup.objectReferenceValue == null)
+            if (RequiresCanvasGroup() && !_canvasGroup.hasMultipleDifferentValues && _canvasGroup.objectReferenceValue == null)
             {
-                EditorUtils.TrHelpIconText("CanvasGroup is required by alpha or interaction control and will be created automatically.", MessageType.Info);
+                EditorUtils.TrHelpIconText("Fade presets need a CanvasGroup on Widget holders. Windows should not use alpha presets.", MessageType.Info);
             }
 
             DrawEnumField(_openPreset);
@@ -120,13 +117,8 @@ namespace AlicizaX.UI.Editor
             DrawField(_closedScale);
 
             DrawBoolRow(_useUnscaledTime);
-            DrawBoolRow(_followAnimationInteractable);
-
-
             EditorGUILayout.EndVertical();
         }
-
-
 
         private void DrawPreviewPanel()
         {
@@ -197,15 +189,6 @@ namespace AlicizaX.UI.Editor
 
             EditorGUILayout.EndVertical();
             EditorGUILayout.EndVertical();
-        }
-
-        private void DrawToolbar(string title)
-        {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-
-            Rect labelRect = new Rect(toolbarRect.x + 8f, toolbarRect.y + 5f, toolbarRect.width - 16f, 20f);
-            GUI.Label(labelRect, title, _rowLabelStyle);
         }
 
         private void DrawPreviewToolbar()
@@ -332,17 +315,7 @@ namespace AlicizaX.UI.Editor
             EditorGUILayout.EndVertical();
         }
 
-        private bool RequiresCanvasGroup()
-        {
-            if (_followAnimationInteractable != null
-                && !_followAnimationInteractable.hasMultipleDifferentValues
-                && _followAnimationInteractable.boolValue)
-            {
-                return true;
-            }
-
-            return UsesAlpha(_openPreset) || UsesAlpha(_closePreset);
-        }
+        private bool RequiresCanvasGroup() => UsesAlpha(_openPreset) || UsesAlpha(_closePreset);
 
         private static bool UsesAlpha(SerializedProperty property)
         {

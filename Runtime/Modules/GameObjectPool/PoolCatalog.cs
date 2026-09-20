@@ -163,15 +163,25 @@ namespace AlicizaX
                 normalized[write++] = entry;
             }
 
-            Array.Sort(normalized, PoolEntry.CompareByPriority);
+            var order = new int[normalized.Length];
+            for (int i = 0; i < order.Length; i++)
+            {
+                order[i] = i;
+            }
+
+            Array.Sort(order, (left, right) =>
+            {
+                int compare = PoolEntry.CompareByPriority(normalized[left], normalized[right]);
+                return compare != 0 ? compare : left.CompareTo(right);
+            });
 
             var rules = new PoolCompiledRule[normalized.Length];
             var globIndices = new int[normalized.Length];
             var exactMap = new StringOpenHashMap(normalized.Length);
             int globCount = 0;
-            for (int i = 0; i < normalized.Length; i++)
+            for (int i = 0; i < order.Length; i++)
             {
-                PoolCompiledRule rule = PoolCompiledRule.FromEntry(normalized[i], i);
+                PoolCompiledRule rule = PoolCompiledRule.FromEntry(normalized[order[i]], i);
                 rules[i] = rule;
                 if (rule.IsLiteralPattern && !exactMap.ContainsKey(rule.Pattern))
                 {

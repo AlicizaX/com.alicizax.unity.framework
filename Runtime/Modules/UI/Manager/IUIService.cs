@@ -12,14 +12,13 @@ namespace AlicizaX.UI.Runtime
     /// </summary>
     public interface IUIService : IService
     {
-        // Navigation commands, including history changes, execute in FIFO order.
         UniTask<UIRouteResult> NavigateTo<T>(params object[] args) where T : UIWindow;
 
         UniTask<UIRouteResult> Replace<T>(params object[] args) where T : UIWindow;
 
         UniTask<UIRouteResult> Back();
 
-        /// <summary>排队关闭当前页面并结束历史。force 绕过窗口缓存。</summary>
+        /// <summary>关闭当前页面并结束历史。force 关完必拆，不进缓存。</summary>
         UniTask<UIRouteResult> CloseCurrent(bool force = false);
 
         UniTask<UIRouteResult> BackToRoot();
@@ -81,8 +80,10 @@ namespace AlicizaX.UI.Runtime
 
         /// <summary>
         /// 异步显示 UI（异步加载资源）。
-        /// await 到逻辑打开完成；转场继续推进，可用 .AwaitTransition() 等待。
+        /// await 到 OnOpen 之后返回，不等开动画；用实例 AwaitTransition() 等到 Opened。
+        /// Opening 期间再次 Show 沿用最新参数，开动画结束后只 Refresh 一次。
         /// 已打开时调用 OnRefresh；只有非空参数数组才覆盖原参数。
+        /// 资源失败或未知类型记录错误并返回 null。Closing 期间 Show 自己忽略并 Warning。
         /// </summary>
         UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIWindow;
 
@@ -92,29 +93,29 @@ namespace AlicizaX.UI.Runtime
         UniTask<T> ShowUI<T>(CancellationToken cancellationToken, params object[] userDatas) where T : UIWindow;
 
         /// <summary>
-        /// 异步显示 UI（使用字符串类型名）。资源失败或取消时返回 null。
+        /// 异步显示 UI（使用字符串类型名）。未知类型或资源失败时记录错误并返回 null。
         /// </summary>
-        UniTask<UIBase> ShowUI(string type, params object[] userDatas);
+        UniTask<UIWindow> ShowUI(string type, params object[] userDatas);
 
         /// <summary>
         /// 使用字符串类型名，独立取消本次打开请求。
         /// </summary>
-        UniTask<UIBase> ShowUI(string type, CancellationToken cancellationToken, params object[] userDatas);
+        UniTask<UIWindow> ShowUI(string type, CancellationToken cancellationToken, params object[] userDatas);
 
         /// <summary>
-        /// 异步显示 UI（使用运行时类型句柄）。资源失败或取消时返回 null。
+        /// 异步显示 UI（使用运行时类型句柄）。未知类型或资源失败时记录错误并返回 null。
         /// </summary>
-        UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, params object[] userDatas);
+        UniTask<UIWindow> ShowUI(RuntimeTypeHandle handle, params object[] userDatas);
 
         /// <summary>
         /// 使用运行时类型句柄，独立取消本次打开请求。
         /// </summary>
-        UniTask<UIBase> ShowUI(RuntimeTypeHandle handle, CancellationToken cancellationToken, params object[] userDatas);
+        UniTask<UIWindow> ShowUI(RuntimeTypeHandle handle, CancellationToken cancellationToken, params object[] userDatas);
 
         /// <summary>
         /// 同步显示 UI。
-        /// 同步完成资源加载与初始化；Open 视觉过渡默认在后台推进。
-        /// 异步资源仍在加载时抛出 InvalidOperationException；关场动画中可反转重开。
+        /// 同步完成资源加载与 OnOpen；开动画后台推进。
+        /// 异步资源仍在加载时记录错误并返回 null。
         /// </summary>
         T ShowUISync<T>(params object[] userDatas) where T : UIWindow;
 
@@ -124,23 +125,23 @@ namespace AlicizaX.UI.Runtime
 
         /// <summary>
         /// 关闭指定类型的窗口实例。页面返回请显式调用 Back。
-        /// 同步执行关闭钩子，停止事件和更新；AwaitTransition 等待动画及缓存/销毁收尾。
-        /// force 绕过缓存；skipTransition 跳过整棵关闭子树的动画。
+        /// await 等到 Closed（不可见且关动画结束），然后才缓存或 DestroyNow。
+        /// force 关完必拆；skipTransition 仅对尚未开始的关动画生效。
         /// </summary>
-        UICloseHandle CloseUI<T>(bool force = false, bool skipTransition = false) where T : UIWindow;
+        UniTask CloseUI<T>(bool force = false, bool skipTransition = false) where T : UIWindow;
 
         /// <summary>
         /// 关闭指定类型的窗口实例，不执行导航返回。
         /// </summary>
-        UICloseHandle CloseUI(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false);
+        UniTask CloseUI(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false);
 
         /// <summary>
-        /// 是否逻辑打开。打开动画可通过 AwaitTransition 单独等待。
+        /// 是否逻辑打开（OnOpen 返回后至 Closing 开始前）。
         /// </summary>
         bool IsOpen<T>() where T : UIWindow;
 
         /// <summary>
-        /// 是否逻辑打开。打开动画可通过 AwaitTransition 单独等待。
+        /// 是否逻辑打开（OnOpen 返回后至 Closing 开始前）。
         /// </summary>
         bool IsOpen(RuntimeTypeHandle handle);
 
@@ -155,7 +156,7 @@ namespace AlicizaX.UI.Runtime
         bool TryGetTopVisibleHolder(Predicate<UIHolderObjectBase> predicate, out UIHolderObjectBase holder);
 
         /// <summary>
-        /// 获取当前已打开的指定类型 UI。
+        /// 获取 Opening / Opened / 缓存中的指定类型 UI；Closing 或已销毁时返回 null。
         /// </summary>
         T GetUI<T>() where T : UIWindow;
     }

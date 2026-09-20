@@ -25,8 +25,16 @@ namespace AlicizaX.UI.Runtime
         internal static UIMetadata Create(Type type)
         {
             if (Definitions.TryGetValue(type.TypeHandle, out var definition)) return definition;
-            if (!UIMetaRegistry.TryGet(type.TypeHandle, out var meta)) return null;
-            if (!UIResRegistry.TryGet(meta.HolderRuntimeTypeHandle, out var resource)) return null;
+            if (!UIMetaRegistry.TryGet(type.TypeHandle, out var meta))
+            {
+                Log.Error("[UI] Unknown UI type: {0}.", type);
+                return null;
+            }
+            if (!UIResRegistry.TryGet(meta.HolderRuntimeTypeHandle, out var resource))
+            {
+                Log.Error("[UI] UI resource is not registered: {0}.", type);
+                return null;
+            }
             definition = new UIMetadata(type, meta, resource);
             Definitions.Add(type.TypeHandle, definition);
             return definition;
@@ -43,9 +51,14 @@ namespace AlicizaX.UI.Runtime
             }
             catch (Exception error)
             {
-                Log.Exception(error);
+                Log.Error("[UI] Failed to create {0}: {1}", UILogicType, error);
                 return null;
             }
+        }
+
+        internal UIWindow CreateWindow(UIService service)
+        {
+            return (UIWindow)CreateUI(service);
         }
     }
 }

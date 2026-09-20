@@ -16,7 +16,7 @@ namespace AlicizaX
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AddUIEvent<T>(Action handler) where T : struct, IEmptyEventArgs
         {
-            EventRuntimeHandle handle = EmptyEventContainer<T>.Subscribe(handler);
+            EventRuntimeHandle handle = EventBus.Subscribe<T>(handler);
             _eventHandles.Add(handle);
         }
 
@@ -26,7 +26,7 @@ namespace AlicizaX
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void AddUIEvent<T>(InEventHandler<T> handler) where T : struct, IPayloadEventArgs
         {
-            EventRuntimeHandle handle = EventContainer<T>.Subscribe(handler);
+            EventRuntimeHandle handle = EventBus.Subscribe<T>(handler);
             _eventHandles.Add(handle);
         }
 

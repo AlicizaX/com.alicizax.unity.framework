@@ -28,6 +28,7 @@ namespace AlicizaX.Audio.Tests
 
     internal static class AllocationCapture
     {
+        private const int MaxProfilerBytes = 256 * 1024 * 1024;
         private static int sequence;
 
         private sealed class ProfilerSession : IDisposable
@@ -37,14 +38,17 @@ namespace AlicizaX.Audio.Tests
             private readonly bool editor = ProfilerDriver.profileEditor;
             private readonly bool cpu = ProfilerDriver.IsAreaEnabled(ProfilerArea.CPU);
             private readonly bool memory = ProfilerDriver.IsAreaEnabled(ProfilerArea.Memory);
+            private readonly int budget = Profiler.maxUsedMemory;
             private bool disposed;
 
             internal ProfilerSession(bool trace)
             {
+                Profiler.maxUsedMemory = MaxProfilerBytes;
                 Profiler.enableAllocationCallstacks = trace;
                 ProfilerDriver.profileEditor = !UnityEngine.Application.isPlaying;
                 ProfilerDriver.SetAreaEnabled(ProfilerArea.CPU, true);
                 ProfilerDriver.SetAreaEnabled(ProfilerArea.Memory, true);
+                ProfilerDriver.ClearAllFrames();
                 ProfilerDriver.enabled = true;
             }
 
@@ -52,15 +56,18 @@ namespace AlicizaX.Audio.Tests
             {
                 if (disposed) return;
                 disposed = true;
+                ProfilerDriver.enabled = false;
+                ProfilerDriver.ClearAllFrames();
                 ProfilerDriver.enabled = enabled;
                 Profiler.enableAllocationCallstacks = callstacks;
                 ProfilerDriver.profileEditor = editor;
                 ProfilerDriver.SetAreaEnabled(ProfilerArea.CPU, cpu);
                 ProfilerDriver.SetAreaEnabled(ProfilerArea.Memory, memory);
+                Profiler.maxUsedMemory = budget;
             }
         }
 
-        internal static IEnumerator MeasureFrames(string name, IEnumerator operation, Action<AllocationSample> verify)
+        internal static IEnumerator MeasureFrames(string name, IEnumerator operation, Action<AllocationSample> verify, bool traceAllocations = false)
         {
             using var session = new ProfilerSession(true);
             yield return Measure("async-recorder-ready", 1, () => { }, sample => Assert.That(sample.Bytes, Is.Zero));
@@ -124,6 +131,16 @@ namespace AlicizaX.Audio.Tests
                             backend |= method.StartsWith("YooAsset.dll!", StringComparison.Ordinal) || method.Contains("ControlledLoader.");
                         }
                         if (!owned && !backend) { unclassified += size; continue; }
+                        if (traceAllocations && owned && !backend)
+                        {
+                            TestContext.WriteLine($"ASYNC_ALLOC,{name},{frame - from},{size}");
+                            foreach (ulong address in stack)
+                            {
+                                var method = data.ResolveMethodInfo(address);
+                                if (!string.IsNullOrEmpty(method.methodName))
+                                    TestContext.WriteLine($"ASYNC_STACK,{method.methodName},{method.sourceFileName},{method.sourceFileLine}");
+                            }
+                        }
                         bytes += size;
                         allocations++;
                         if (backend) backendBytes += size;

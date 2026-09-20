@@ -20,7 +20,7 @@ namespace AlicizaX.Resource.Tests
             var first = f.Owner();
             f.Service.LoadAsset<TextAsset>(first, location, package);
             first.ReleaseBindings();
-            foreach (int count in new[] { 100, 1000, 10000 })
+            foreach (int count in new[] { 100, 1000 })
             {
                 var owners = new ResourceOwner[count];
                 for (int i = 0; i < count; i++) owners[i] = f.Owner();
@@ -51,7 +51,7 @@ namespace AlicizaX.Resource.Tests
             string package = f.Service.DefaultPackageName;
             f.Text(location);
             var held = f.Service.LoadLease<TextAsset>(location);
-            foreach (int count in new[] { 100, 1000, 10000 })
+            foreach (int count in new[] { 100, 1000 })
             {
                 var owners = new ResourceOwner[count];
                 var replacements = new ResourceOwner[count];

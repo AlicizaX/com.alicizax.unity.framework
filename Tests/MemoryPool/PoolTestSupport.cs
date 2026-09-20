@@ -69,6 +69,7 @@ namespace AlicizaX.MemoryPoolTests
         protected void Use<T>() where T : MemoryObject, new()
         {
             types.Add(typeof(T));
+            Assert.That(Info<T>().UsingCount, Is.Zero, typeof(T).Name + " has leases from an earlier test.");
             MemoryPool<T>.ClearAll();
             MemoryPool<T>.SetCapacity(128, 512);
             MemoryPool<T>.ResetStats();
@@ -91,18 +92,31 @@ namespace AlicizaX.MemoryPoolTests
         {
             ConstructorItem.Construct = null;
             List<Exception> errors = null;
-            foreach (Type type in types)
+            try
             {
-                try { MemoryPool.RemoveAll(type); }
-                catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
+                foreach (Type type in types)
+                {
+                    try
+                    {
+                        MemoryPoolInfo info = default;
+                        MemoryPool.GetHandle(type).Inner.GetInfo(ref info);
+                        Assert.That(info.UsingCount, Is.Zero, type.Name + " has unreturned leases.");
+                    }
+                    catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
+                    try { MemoryPool.RemoveAll(type); }
+                    catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
+                }
             }
-            types.Clear();
-            MemoryPool.ShortDecayStartFrames = shortDecay;
-            MemoryPool.LongDecayStartFrames = longDecay;
-            MemoryPool.ZeroFreeReserveStartFrames = zeroReserve;
-            MemoryPool.UnscheduleIdleFrames = unschedule;
-            MemoryPool.AutoTrimNativeMetadataFrames = autoTrim;
-            MemoryPoolRegistry.Phase = phase;
+            finally
+            {
+                types.Clear();
+                MemoryPool.ShortDecayStartFrames = shortDecay;
+                MemoryPool.LongDecayStartFrames = longDecay;
+                MemoryPool.ZeroFreeReserveStartFrames = zeroReserve;
+                MemoryPool.UnscheduleIdleFrames = unschedule;
+                MemoryPool.AutoTrimNativeMetadataFrames = autoTrim;
+                MemoryPoolRegistry.Phase = phase;
+            }
             if (errors != null) throw new AggregateException(errors);
         }
     }

@@ -99,20 +99,30 @@ namespace AlicizaX.Audio.Tests
         }
 
         [UnityTest]
-        public IEnumerator ReinitializeCancelsOldSameAddressWithoutAffectingNewLoad()
+        public IEnumerator ReinitializeCancelsOldWaiterWhileSharedLoadServesNewRequest()
         {
             using var f = new AudioFixture(1);
             f.Clip("a"); f.Loader.CompleteImmediately = false;
             int oldCalls = 0;
-            f.Audio.PreloadAsync("a", AudioCachePolicy.Pin, success => { Assert.That(success, Is.False); oldCalls++; });
+            bool? oldResult = null;
+            f.Audio.PreloadAsync("a", AudioCachePolicy.Pin, success => { oldResult = success; oldCalls++; });
+            var oldRequest = f.Loader.RequestFor("a");
             f.Reinitialize();
+            Assert.That(oldCalls, Is.EqualTo(1));
+            Assert.That(oldResult, Is.False);
             int newCalls = 0;
-            f.Audio.PreloadAsync("a", AudioCachePolicy.Pin, success => { Assert.That(success, Is.True); newCalls++; });
-            f.Loader.Complete("a");
+            bool? newResult = null;
+            f.Audio.PreloadAsync("a", AudioCachePolicy.Pin, success => { newResult = success; newCalls++; });
+            var newRequest = f.Loader.RequestFor("a");
+            Assert.That(newRequest, Is.SameAs(oldRequest));
+            f.Loader.Complete(newRequest);
             yield return AudioFixture.Frames();
+            Assert.That(newCalls, Is.EqualTo(1));
+            Assert.That(newResult, Is.True);
             Assert.That(oldCalls, Is.EqualTo(1));
             Assert.That(newCalls, Is.EqualTo(1));
             Assert.That(f.Entry("a").IsLoaded, Is.True);
+            Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
         }
 
         [UnityTest]

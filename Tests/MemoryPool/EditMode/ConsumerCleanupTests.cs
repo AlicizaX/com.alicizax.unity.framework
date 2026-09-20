@@ -52,21 +52,25 @@ namespace AlicizaX.MemoryPoolTests
             int calls = 0;
             try
             {
-                for (int i = 0; i < 65; i++) proxy.AddUIEvent<PoolEvent>(() => calls++);
-                EmptyEventContainer<PoolEvent>.Publish();
+                for (int i = 0; i < 65; i++)
+                {
+                    int listener = i;
+                    proxy.AddUIEvent<PoolEvent>(() => { Assert.That(listener, Is.LessThan(65)); calls++; });
+                }
+                EventBus.Publish<PoolEvent>();
                 Assert.That(calls, Is.EqualTo(65));
                 MemoryPool.Release(proxy);
-                Assert.That(EmptyEventContainer<PoolEvent>.SubscriberCount, Is.Zero);
-                EmptyEventContainer<PoolEvent>.Publish();
+                Assert.That(EventBus.GetEmptySubscriberCount<PoolEvent>(), Is.Zero);
+                EventBus.Publish<PoolEvent>();
                 Assert.That(calls, Is.EqualTo(65));
                 proxy = MemoryPool<EventListenerProxy>.Acquire();
                 proxy.AddUIEvent<PoolEvent>(() => calls++);
-                EmptyEventContainer<PoolEvent>.Publish();
+                EventBus.Publish<PoolEvent>();
                 Assert.That(calls, Is.EqualTo(66));
                 MemoryPool.Release(proxy);
                 Assert.That(Info<EventListenerProxy>().UsingCount, Is.Zero);
             }
-            finally { EmptyEventContainer<PoolEvent>.Clear(); }
+            finally { EventBus.ClearEmpty<PoolEvent>(); }
         }
     }
 }

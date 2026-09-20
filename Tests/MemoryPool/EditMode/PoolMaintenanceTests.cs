@@ -10,8 +10,10 @@ namespace AlicizaX.MemoryPoolTests
         [Test]
         public void RepeatedConstructorFailuresDoNotConsumeSlots()
         {
-            ConstructorItem.Construct = () => throw new InvalidOperationException("constructor");
-            for (int i = 0; i < 100; i++) Assert.Catch(() => MemoryPool<ConstructorItem>.Acquire());
+            var cause = new InvalidOperationException("constructor");
+            ConstructorItem.Construct = () => throw cause;
+            for (int i = 0; i < 100; i++)
+                Assert.That(Assert.Throws<TargetInvocationException>(() => MemoryPool<ConstructorItem>.Acquire()).InnerException, Is.SameAs(cause));
             Assert.That(Info<ConstructorItem>().UsingCount, Is.Zero);
             Assert.That(Info<ConstructorItem>().CreateCount, Is.Zero);
             Assert.That(Info<ConstructorItem>().PageCapacity, Is.Zero);
@@ -62,12 +64,20 @@ namespace AlicizaX.MemoryPoolTests
         {
             var items = new PoolItem[12];
             for (int i = 0; i < items.Length; i++) items[i] = MemoryPool<PoolItem>.Acquire();
+            var cause = new InvalidOperationException("evict");
             foreach (var item in items)
             {
-                item.OnEviction = () => throw new InvalidOperationException("evict");
+                item.OnEviction = () => throw cause;
                 MemoryPool.Release(item);
             }
-            Assert.Catch(() => MemoryPool<PoolItem>.Shrink(0));
+            var error = Assert.Throws<AggregateException>(() => MemoryPool<PoolItem>.Shrink(0));
+            Assert.That(error.Flatten().InnerExceptions.Count, Is.EqualTo(items.Length));
+            foreach (var failure in error.Flatten().InnerExceptions)
+            {
+                Assert.That(failure, Is.TypeOf<InvalidOperationException>());
+                Assert.That(failure.Message, Does.Contain("OnEvict() failed"));
+                Assert.That(failure.InnerException, Is.SameAs(cause));
+            }
             Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
         }
@@ -288,12 +298,11 @@ namespace AlicizaX.MemoryPoolTests
             MemoryPool.Release(second);
             MemoryPool.Release(MemoryPool<ColdItem<PoolMaintenanceTests>>.Acquire());
             MemoryPoolRegistry.Phase = MemoryPoolPhase.LowMemory;
-            var error = Assert.Catch(() => Tick());
+            var error = Assert.Throws<AggregateException>(() => Tick());
             Assert.That(Info<ColdItem<PoolMaintenanceTests>>().UnusedCount, Is.Zero);
             Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             Assert.That(Info<OtherItem>().UnusedCount, Is.Zero);
-            Assert.That(error, Is.TypeOf<AggregateException>());
-            Assert.That(((AggregateException)error).Flatten().InnerExceptions.Count, Is.EqualTo(2));
+            Assert.That(error.Flatten().InnerExceptions.Count, Is.EqualTo(2));
         }
     }
 }

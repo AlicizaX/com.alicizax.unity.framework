@@ -42,7 +42,7 @@ namespace AlicizaX.Resource.Tests
             foreach (var info in infos) if (info.Active) active++;
             Assert.That(active, Is.EqualTo(1), "Reentrant registration must not duplicate the replacement owner.");
             replacement.ReleaseBindings();
-            Assert.That(f.Info("new").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("new");
             f.Service.UnloadUnusedAssets(true);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
@@ -57,7 +57,7 @@ namespace AlicizaX.Resource.Tests
             Object.Destroy(owner.gameObject);
             yield return null;
             f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
             f.Service.UnloadUnusedAssets(true);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
@@ -72,7 +72,7 @@ namespace AlicizaX.Resource.Tests
             Object.Destroy(target);
             yield return null;
             f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
         }
 
         [UnityTest]
@@ -92,7 +92,7 @@ namespace AlicizaX.Resource.Tests
             Assert.That(f.Info("a").BindingRefCount, Is.EqualTo(1));
             Assert.That(target.sprite, Is.SameAs(sprite));
             ResourceOwner.ReleaseBindingsInHierarchy(parent);
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
             parent.SetActive(true);
             f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
             Assert.That(f.Info("a").BindingRefCount, Is.EqualTo(1));
@@ -109,7 +109,7 @@ namespace AlicizaX.Resource.Tests
             f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
             yield return SceneManager.UnloadSceneAsync(scene);
             f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-            Assert.That(f.Info("a").BindingRefCount, Is.Zero);
+            f.AssertNoReferences("a");
         }
     }
 }

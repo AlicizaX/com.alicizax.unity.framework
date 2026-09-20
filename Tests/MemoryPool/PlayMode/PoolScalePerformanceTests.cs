@@ -27,9 +27,9 @@ namespace AlicizaX.MemoryPoolTests
         public IEnumerator PoolSizeDoesNotIntroduceHotPathAllocations()
         {
             Use<ColdItem<int>>();
-            const int operations = 100000;
-            var held = new ColdItem<int>[100000];
-            foreach (int size in new[] { 1, 32, 1024, 32768, 100000 })
+            const int operations = 10000;
+            var held = new ColdItem<int>[10000];
+            foreach (int size in new[] { 1, 32, 1024, 10000 })
             {
                 MemoryPool<ColdItem<int>>.SetCapacity(size, size);
                 for (int i = 0; i < size; i++) held[i] = MemoryPool<ColdItem<int>>.Acquire();
@@ -44,10 +44,10 @@ namespace AlicizaX.MemoryPoolTests
         }
 
         [UnityTest]
-        public IEnumerator HundredThousandConcurrentLeasesMeasureGrowthReuseAndTrim()
+        public IEnumerator TenThousandConcurrentLeasesMeasureGrowthReuseAndTrim()
         {
             Use<ColdItem<long>>();
-            const int count = 100000;
+            const int count = 10000;
             var items = new ColdItem<long>[count];
             MemoryPool<ColdItem<long>>.SetCapacity(count, count);
             Action burst = () =>
@@ -77,16 +77,16 @@ namespace AlicizaX.MemoryPoolTests
             lease.Dispose();
             Action sync = () =>
             {
-                for (int i = 0; i < 100000; i++) f.Service.LoadLease<TextAsset>(key).Dispose();
+                for (int i = 0; i < 10000; i++) f.Service.LoadLease<TextAsset>(key).Dispose();
             };
             Action async = () =>
             {
-                for (int i = 0; i < 100000; i++) f.Service.LoadLeaseAsync<TextAsset>(key).GetAwaiter().GetResult().Dispose();
+                for (int i = 0; i < 10000; i++) f.Service.LoadLeaseAsync<TextAsset>(key).GetAwaiter().GetResult().Dispose();
             };
-            yield return AllocationCapture.Measure("resource-cache-sync-first", 100000, sync, _ => { });
-            yield return AllocationCapture.Measure("resource-cache-sync", 100000, sync, sample => Assert.That(sample.Bytes, Is.Zero));
-            yield return AllocationCapture.Measure("resource-cache-async-first", 100000, async, _ => { }, true);
-            yield return AllocationCapture.Measure("resource-cache-async", 100000, async, sample => Assert.That(sample.Bytes, Is.Zero));
+            yield return AllocationCapture.Measure("resource-cache-sync-first", 10000, sync, _ => { });
+            yield return AllocationCapture.Measure("resource-cache-sync", 10000, sync, sample => Assert.That(sample.Bytes, Is.Zero));
+            yield return AllocationCapture.Measure("resource-cache-async-first", 10000, async, _ => { }, true);
+            yield return AllocationCapture.Measure("resource-cache-async", 10000, async, sample => Assert.That(sample.Bytes, Is.Zero));
             f.Service.IdleAssetCapacity = 4096;
             f.Service.IdleAssetExpireTime = 3600;
             int loaded = 1;

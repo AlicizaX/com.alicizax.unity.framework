@@ -22,10 +22,10 @@ namespace AlicizaX
         private readonly IPrefabLoader _loader;
         private readonly Transform _containerRoot;
         private readonly List<GameObjectPoolSnapshot> _debugSnapshots = new List<GameObjectPoolSnapshot>(16);
-        private readonly StringOpenHashMap _unregisteredWarned = new StringOpenHashMap(8);
-        private readonly StringOpenHashMap _unhandledDespawnWarned = new StringOpenHashMap(8);
-        private readonly StringOpenHashMap _groupRootMap = new StringOpenHashMap(8);
-        private readonly StringOpenHashMap _poolByLocation = new StringOpenHashMap(32);
+        private StringOpenHashMap _unregisteredWarned = new StringOpenHashMap(8);
+        private StringOpenHashMap _unhandledDespawnWarned = new StringOpenHashMap(8);
+        private StringOpenHashMap _groupRootMap = new StringOpenHashMap(8);
+        private StringOpenHashMap _poolByLocation = new StringOpenHashMap(32);
 
         private RuntimeGameObjectPool[] _pools = new RuntimeGameObjectPool[8];
         private int _poolCount;
@@ -33,13 +33,19 @@ namespace AlicizaX
         private Transform[] _groupRoots = new Transform[4];
         private int _groupRootCount;
         private MaintenanceNode[] _maintenanceHeap = new MaintenanceNode[8];
+        private int[] _duePools = new int[8];
         private int _maintenanceCount;
         private bool _enabled;
 
         public GameObjectPoolService(Transform transform)
+            : this(transform, new YooAssetPrefabLoader())
+        {
+        }
+
+        internal GameObjectPoolService(Transform transform, IPrefabLoader loader)
         {
             _containerRoot = transform;
-            _loader = new YooAssetPrefabLoader();
+            _loader = loader;
         }
 
         protected override void OnInitialize()
@@ -85,7 +91,19 @@ namespace AlicizaX
         public T Spawn<T>(string location, Transform parent = null) where T : Component
         {
             GameObject instance = Spawn(location, parent);
-            return instance == null ? null : instance.GetComponent<T>();
+            if (instance == null)
+            {
+                return null;
+            }
+
+            T component = instance.GetComponent<T>();
+            if (component == null)
+            {
+                Despawn(instance);
+                return null;
+            }
+
+            return component;
         }
 
         public async UniTask<GameObject> SpawnAsync(string location, Transform parent = null, CancellationToken cancellationToken = default)
@@ -97,7 +115,19 @@ namespace AlicizaX
         public async UniTask<T> SpawnAsync<T>(string location, Transform parent = null, CancellationToken cancellationToken = default) where T : Component
         {
             GameObject instance = await SpawnAsync(location, parent, cancellationToken);
-            return instance == null ? null : instance.GetComponent<T>();
+            if (instance == null)
+            {
+                return null;
+            }
+
+            T component = instance.GetComponent<T>();
+            if (component == null)
+            {
+                Despawn(instance);
+                return null;
+            }
+
+            return component;
         }
 
         public GameObject LoadPrefab(string location)
@@ -136,7 +166,7 @@ namespace AlicizaX
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             WarnUnhandledDespawn(instance);
 #endif
-            UnityEngine.Object.Destroy(instance);
+            instance.SafeDestroySelf();
         }
 
         public void Despawn(GameObjectPoolHandle handle)
@@ -151,7 +181,7 @@ namespace AlicizaX
 #endif
             if (handle != null)
             {
-                UnityEngine.Object.Destroy(handle.gameObject);
+                handle.gameObject.SafeDestroySelf();
             }
         }
 
@@ -414,7 +444,7 @@ namespace AlicizaX
                 Transform root = _groupRoots[i];
                 if (root != null)
                 {
-                    UnityEngine.Object.Destroy(root.gameObject);
+                    root.gameObject.SafeDestroySelf();
                     _groupRoots[i] = null;
                 }
             }
@@ -459,16 +489,27 @@ namespace AlicizaX
 
         private void ProcessDueMaintenance(float now)
         {
+            int dueCount = 0;
             while (_maintenanceCount > 0)
             {
                 MaintenanceNode node = _maintenanceHeap[0];
                 if (node.dueTime > now)
                 {
-                    return;
+                    break;
                 }
 
+                if (dueCount == _duePools.Length)
+                {
+                    Array.Resize(ref _duePools, _duePools.Length << 1);
+                }
+
+                _duePools[dueCount++] = node.poolIndex;
                 RemoveMaintenanceAt(0);
-                _pools[node.poolIndex]?.ExecuteMaintenance(now, false);
+            }
+
+            for (int i = 0; i < dueCount; i++)
+            {
+                _pools[_duePools[i]]?.ExecuteMaintenance(now, false);
             }
         }
 

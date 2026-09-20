@@ -1,4 +1,6 @@
 #if UNITY_EDITOR
+using System.Collections.Generic;
+
 namespace AlicizaX.UI.Runtime
 {
     internal sealed partial class UIService
@@ -14,30 +16,21 @@ namespace AlicizaX.UI.Runtime
             }
 
             int openWindowCount = 0;
-            int updateWindowCount = 0;
             for (int i = 0; i < _openUI.Length; i++)
             {
-                LayerData layer = _openUI[i];
-                if (layer == null)
+                List<UIWindowRecord> windows = _openUI[i];
+                if (windows == null)
                 {
                     continue;
                 }
 
-                openWindowCount += layer.Count;
+                openWindowCount += windows.Count;
             }
-            int updateWidgetCount = 0;
-            foreach (UIBase view in _updateMembers)
-            {
-                if (view is UIWindow) updateWindowCount++;
-                else updateWidgetCount++;
-            }
-            info.UpdateWidgetCount = updateWidgetCount;
             info.UpdateCount = _updateMembers.Count;
             info.Initialized = _initialized;
             info.Orthographic = UICamera != null && UICamera.orthographic;
             info.OpenWindowCount = openWindowCount;
             info.CacheWindowCount = _cached.Count;
-            info.UpdateWindowCount = updateWindowCount;
             info.BlockActive = m_LayerBlock != null && m_LayerBlock.activeSelf;
             info.BlockRemaining = GetTimerRemaining(m_LastCountDownHandle);
             info.Camera = UICamera;
@@ -52,8 +45,8 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            LayerData layer = _openUI[layerIndex];
-            if (layer == null)
+            List<UIWindowRecord> windows = _openUI[layerIndex];
+            if (windows == null)
             {
                 info.Clear();
                 info.Layer = (UILayer)layerIndex;
@@ -61,7 +54,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             info.Layer = (UILayer)layerIndex;
-            info.WindowCount = layer.Count;
+            info.WindowCount = windows.Count;
             return true;
         }
 
@@ -72,14 +65,14 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            LayerData layer = _openUI[layerIndex];
-            if (layer == null || (uint)windowIndex >= (uint)layer.Count)
+            List<UIWindowRecord> windows = _openUI[layerIndex];
+            if (windows == null || (uint)windowIndex >= (uint)windows.Count)
             {
                 info.Clear();
                 return false;
             }
 
-            FillWindowDebugInfo(layer.Items[windowIndex], layerIndex, windowIndex, info);
+            FillWindowDebugInfo(windows[windowIndex], layerIndex, windowIndex, info);
             return true;
         }
 
@@ -119,7 +112,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            UIBase view = record.View;
+            UIWindow view = record.View;
             UIHolderObjectBase holder = view?.Holder;
             info.LayerIndex = layerIndex;
             info.OrderIndex = orderIndex;

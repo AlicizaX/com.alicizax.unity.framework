@@ -55,6 +55,11 @@ namespace AlicizaX.UI.Runtime
 
         public static bool TryGet(string typeName, out UIMetaInfo info)
         {
+            if (string.IsNullOrEmpty(typeName))
+            {
+                info = default;
+                return false;
+            }
             if (_stringHandleMap.TryGetValue(typeName, out RuntimeTypeHandle handle))
             {
                 return TryGet(handle, out info);

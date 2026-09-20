@@ -65,7 +65,7 @@ namespace AlicizaX.MemoryPoolTests
                 if (lease.IsValid) { valid++; lease.Dispose(); }
             }
             Assert.That(valid, Is.EqualTo(32));
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             AssertNoLeasedLoadContexts();

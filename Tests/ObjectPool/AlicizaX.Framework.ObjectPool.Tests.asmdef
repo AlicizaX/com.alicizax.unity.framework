@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.ObjectPool.Tests",
+    "references": ["AlicizaX.Framework.Runtime"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

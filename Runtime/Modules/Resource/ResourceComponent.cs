@@ -174,16 +174,6 @@ namespace AlicizaX.Resource.Runtime
         }
         #endregion
 
-        internal void SetPlayMode(int playMode)
-        {
-            _playMode = (EPlayMode)playMode;
-        }
-
-        internal void SetDecryptionServices(string decryption)
-        {
-            decryptionServices = decryption;
-        }
-
         private void OnValidate()
         {
             expireProcessCountPerFrame = Mathf.Max(0, expireProcessCountPerFrame);

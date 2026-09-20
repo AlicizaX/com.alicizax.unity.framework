@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using AlicizaX.Resource.Runtime;
-using AlicizaX;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -14,62 +13,56 @@ namespace AlicizaX.UI.Runtime
 
         public static async UniTask<T> CreateUIHolderAsync<T>(Transform parent) where T : UIHolderObjectBase
         {
+            if (!UIResRegistry.TryGet(typeof(T).TypeHandle, out var resource)) return null;
             try
             {
-                if (UIResRegistry.TryGet(typeof(T).TypeHandle, out UIResRegistry.UIResInfo resInfo))
-                {
-                    GameObject obj = await LoadUIResourcesAsync(resInfo, parent, CancellationToken.None);
-                    return GetHolderOrDestroy<T>(obj, resInfo.Location);
-                }
+                return GetHolderOrDestroy<T>(await LoadUIResourcesAsync(resource, parent, CancellationToken.None), resource.Location);
             }
-            catch (Exception error) { Log.Exception(error); }
-            return null;
+            catch (Exception error)
+            {
+                Log.Error("[UI] Failed to load {0}: {1}", resource.Location, error);
+                return null;
+            }
         }
 
         public static T CreateUIHolderSync<T>(Transform parent) where T : UIHolderObjectBase
         {
-            try
+            if (!UIResRegistry.TryGet(typeof(T).TypeHandle, out var resource)) return null;
+            try { return GetHolderOrDestroy<T>(LoadUIResourcesSync(resource, parent), resource.Location); }
+            catch (Exception error)
             {
-                if (UIResRegistry.TryGet(typeof(T).TypeHandle, out UIResRegistry.UIResInfo resInfo))
-                {
-                    GameObject obj = LoadUIResourcesSync(resInfo, parent);
-                    return GetHolderOrDestroy<T>(obj, resInfo.Location);
-                }
+                Log.Error("[UI] Failed to load {0}: {1}", resource.Location, error);
+                return null;
             }
-            catch (Exception error) { Log.Exception(error); }
-            return null;
         }
 
+        internal static async UniTask<GameObject> LoadUIResourcesAsync(UIResRegistry.UIResInfo resource,
+            Transform parent, CancellationToken cancellationToken) =>
+            resource.LoadType == EUIResLoadType.AssetBundle
+                ? await ResourceService.LoadGameObjectAsync(resource.Location, parent, cancellationToken)
+                : await InstantiateResourceAsync(resource.Location, parent, cancellationToken);
 
-        internal static async UniTask<GameObject> LoadUIResourcesAsync(UIResRegistry.UIResInfo resInfo,
-            Transform parent, CancellationToken cancellationToken)
-        {
-            return resInfo.LoadType == EUIResLoadType.AssetBundle
-                ? await ResourceService.LoadGameObjectAsync(resInfo.Location, parent, cancellationToken)
-                : await InstantiateResourceAsync(resInfo.Location, parent, cancellationToken);
-        }
+        internal static GameObject LoadUIResourcesSync(UIResRegistry.UIResInfo resource, Transform parent) =>
+            resource.LoadType == EUIResLoadType.AssetBundle
+                ? ResourceService.LoadGameObject(resource.Location, parent)
+                : InstantiateResourceSync(resource.Location, parent);
 
-        internal static GameObject LoadUIResourcesSync(UIResRegistry.UIResInfo resInfo, Transform parent)
-        {
-            return resInfo.LoadType == EUIResLoadType.AssetBundle
-                ? ResourceService.LoadGameObject(resInfo.Location, parent)
-                : InstantiateResourceSync(resInfo.Location, parent);
-        }
-
-
-        internal static async UniTask<bool> CreateUIResourceAsync(UIBase view, Transform parent,
-            CancellationToken cancellationToken)
+        internal static async UniTask<bool> CreateUIResourceAsync(UIBase view, Transform parent, CancellationToken token)
         {
             GameObject obj = null;
             bool bound = false;
             try
             {
-                obj = await view.Service.ResourceLoader.LoadAsync(view.Metadata.ResInfo, parent, cancellationToken);
-                if (cancellationToken.IsCancellationRequested || view.DestroyRequested) return false;
+                obj = await view.Service.ResourceLoader.LoadAsync(view.Metadata.ResInfo, parent, token);
+                if (token.IsCancellationRequested || view.DestroyRequested) return false;
                 return bound = ValidateAndBind(view, obj);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return false; }
-            catch (Exception error) { Log.Exception(error); return false; }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
+            catch (Exception error)
+            {
+                Log.Error("[UI] Failed to load {0}: {1}", view.GetType().Name, error);
+                return false;
+            }
             finally { if (!bound) DestroyLoadedObject(obj); }
         }
 
@@ -83,103 +76,64 @@ namespace AlicizaX.UI.Runtime
                 if (view.DestroyRequested) return false;
                 return bound = ValidateAndBind(view, obj);
             }
-            catch (Exception error) { Log.Exception(error); return false; }
+            catch (Exception error)
+            {
+                Log.Error("[UI] Failed to load {0}: {1}", view.GetType().Name, error);
+                return false;
+            }
             finally { if (!bound) DestroyLoadedObject(obj); }
         }
 
-        private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent,
-            CancellationToken cancellationToken)
+        private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent, CancellationToken token)
         {
-            GameObject prefab;
-
-            prefab = (GameObject)await Resources.LoadAsync<GameObject>(location)
-                .ToUniTask(cancellationToken: cancellationToken);
-
-            if (!prefab || cancellationToken.IsCancellationRequested)
-            {
-                return null;
-            }
-
-            GameObject instance = Object.Instantiate(prefab, parent);
-            if (cancellationToken.IsCancellationRequested)
-            {
-                DestroyLoadedObject(instance);
-                return null;
-            }
-
-            return instance;
+            var prefab = (GameObject)await Resources.LoadAsync<GameObject>(location).ToUniTask(cancellationToken: token);
+            if (prefab == null || token.IsCancellationRequested) return null;
+            return Object.Instantiate(prefab, parent);
         }
 
         private static GameObject InstantiateResourceSync(string location, Transform parent)
         {
             GameObject prefab = Resources.Load<GameObject>(location);
-            if (!prefab)
-            {
-                return null;
-            }
-
-            return Object.Instantiate(prefab, parent);
+            return prefab != null ? Object.Instantiate(prefab, parent) : null;
         }
 
-        private static bool ValidateAndBind(UIBase view, GameObject holderObject)
+        private static bool ValidateAndBind(UIBase view, GameObject obj)
         {
-            if (!holderObject)
+            if (obj == null)
             {
-                Log.Exception(new InvalidOperationException($"UI resource could not be loaded: {view.Metadata.ResInfo.Location}."));
+                Log.Error("[UI] UI resource could not be loaded: {0}.", view.Metadata.ResInfo.Location);
                 return false;
             }
-            var holder = (UIHolderObjectBase)holderObject.GetComponent(view.UIHolderType);
+            var holder = (UIHolderObjectBase)obj.GetComponent(view.UIHolderType);
             if (holder == null)
             {
-                string message = $"UI resource {holderObject.name} is missing holder {view.UIHolderType.FullName}.";
-                Log.Exception(new InvalidOperationException(message));
+                Log.Error("[UI] UI resource {0} is missing holder {1}.", obj.name, view.UIHolderType.FullName);
                 return false;
             }
-
             view.BindUIHolder(holder);
             view.SetDestroyHolderOnDispose(true);
             return true;
         }
 
-        private static T GetHolderOrDestroy<T>(GameObject holderObject, string location) where T : UIHolderObjectBase
+        private static T GetHolderOrDestroy<T>(GameObject obj, string location) where T : UIHolderObjectBase
         {
-            if (!holderObject)
+            if (obj == null)
             {
-                Log.Exception(new InvalidOperationException($"UI resource could not be loaded: {location}."));
+                Log.Error("[UI] UI resource could not be loaded: {0}.", location);
                 return null;
             }
-
-            T holder = holderObject.GetComponent<T>();
-            if (holder != null)
-            {
-                return holder;
-            }
-
-            DestroyLoadedObject(holderObject);
-            Log.Exception(new InvalidOperationException($"UI resource {location} is missing holder {typeof(T).FullName}."));
+            T holder = obj.GetComponent<T>();
+            if (holder != null) return holder;
+            DestroyLoadedObject(obj);
+            Log.Error("[UI] UI resource {0} is missing holder {1}.", location, typeof(T).FullName);
             return null;
         }
 
         private static void DestroyLoadedObject(GameObject obj)
         {
-            if (obj == null)
-            {
-                return;
-            }
-
-            DestroyObject(obj);
-        }
-
-        private static void DestroyObject(GameObject obj)
-        {
-            if (Application.isPlaying)
-            {
-                Object.Destroy(obj);
-            }
-            else
-            {
-                Object.DestroyImmediate(obj);
-            }
+            if (obj == null) return;
+            if (Application.isPlaying) Object.Destroy(obj);
+            else Object.DestroyImmediate(obj);
         }
     }
 }

@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.GameObjectPool.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.GameObjectPool.Tests", "AlicizaX.Framework.Resources.Tests", "UniTask.Runtime"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

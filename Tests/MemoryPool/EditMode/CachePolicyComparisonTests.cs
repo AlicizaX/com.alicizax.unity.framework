@@ -67,7 +67,7 @@ namespace AlicizaX.MemoryPoolTests
             Assert.That(f.Loader.LiveHandles, Is.LessThanOrEqualTo(capacity));
             long coveredAssetBytes = 0;
             for (int i = 0; i < names.Length; i++)
-                if (f.Info(names[i]).HandleValid) coveredAssetBytes += UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(f.Loader.Assets[names[i]]);
+                if (f.TryFindInfo(names[i], out var info) && info.HandleValid) coveredAssetBytes += UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(f.Loader.Assets[names[i]]);
             TestContext.WriteLine($"CACHE,{workload},{capacity},{trace.Length},{lruHits},{fifoHits},{slruHits},{f.Loader.LiveHandles},{coveredAssetBytes},{largestReloadBatch},{timer.Elapsed.TotalMilliseconds:F3}");
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);

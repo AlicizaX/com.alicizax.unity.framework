@@ -128,7 +128,7 @@ namespace AlicizaX.Resource.Tests
             yield return ResourceFixture.Wait(previous, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
             Assert.That(image.sprite, Is.SameAs(expected));
             Assert.That(image.rectTransform.sizeDelta, Is.EqualTo(expectedSize));
-            Assert.That(f.Info("atlas").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("atlas");
             Assert.That(f.Info("new").RefCountTotal, Is.EqualTo(1));
             UnityEngine.Object.Destroy(owner.gameObject);
             yield return null;

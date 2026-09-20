@@ -23,8 +23,10 @@ namespace AlicizaX.MemoryPoolTests
         [Test]
         public void ConstructorFailureDoesNotAcquireOwnership()
         {
-            ConstructorItem.Construct = () => throw new InvalidOperationException("constructor");
-            Assert.Catch(() => MemoryPool<ConstructorItem>.Acquire());
+            var cause = new InvalidOperationException("constructor");
+            ConstructorItem.Construct = () => throw cause;
+            var error = Assert.Throws<System.Reflection.TargetInvocationException>(() => MemoryPool<ConstructorItem>.Acquire());
+            Assert.That(error.InnerException, Is.SameAs(cause));
             Assert.That(Info<ConstructorItem>().UsingCount, Is.Zero);
             Assert.That(Info<ConstructorItem>().AcquireCount, Is.Zero);
             ConstructorItem.Construct = null;
@@ -36,8 +38,11 @@ namespace AlicizaX.MemoryPoolTests
         public void ClearFailureKeepsLeaseForRetry()
         {
             var item = MemoryPool<PoolItem>.Acquire();
-            item.OnClear = () => throw new InvalidOperationException("clear");
-            Assert.Catch(() => MemoryPool.Release(item));
+            var cause = new InvalidOperationException("clear");
+            item.OnClear = () => throw cause;
+            var error = Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(item));
+            Assert.That(error.Message, Does.Contain("Clear() failed"));
+            Assert.That(error.InnerException, Is.SameAs(cause));
             Assert.That(Info<PoolItem>().UsingCount, Is.EqualTo(1));
             Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             item.OnClear = null;
@@ -50,10 +55,13 @@ namespace AlicizaX.MemoryPoolTests
         {
             var a = MemoryPool<PoolItem>.Acquire();
             var b = MemoryPool<PoolItem>.Acquire();
-            a.OnEviction = () => throw new InvalidOperationException("evict");
+            var cause = new InvalidOperationException("evict");
+            a.OnEviction = () => throw cause;
             MemoryPool.Release(a);
             MemoryPool.Release(b);
-            Assert.Catch(() => MemoryPool<PoolItem>.ClearAll());
+            var error = Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.ClearAll());
+            Assert.That(error.Message, Does.Contain("OnEvict() failed"));
+            Assert.That(error.InnerException, Is.SameAs(cause));
             Assert.That(b.Evictions, Is.EqualTo(1));
             Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
@@ -120,10 +128,10 @@ namespace AlicizaX.MemoryPoolTests
         public void DoubleForeignAndUnownedReturnsAreRejected()
         {
             var item = MemoryPool<OtherItem>.Acquire();
-            Assert.Catch(() => MemoryPool<PoolItem>.Release(item));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.Release(item)).Message, Does.Contain("belongs to another pool"));
             MemoryPool.Release((MemoryObject)item);
-            Assert.Catch(() => MemoryPool.Release((MemoryObject)item));
-            Assert.Catch(() => MemoryPool.Release(new PoolItem()));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.Release((MemoryObject)item)).Message, Does.Contain("not leased"));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(new PoolItem())).Message, Does.Contain("no owner pool"));
             Assert.That(Info<OtherItem>().UsingCount, Is.Zero);
         }
 
@@ -137,9 +145,9 @@ namespace AlicizaX.MemoryPoolTests
             handle.Release(item);
             Assert.That(MemoryPool.Acquire(typeof(PoolItem)), Is.SameAs(item));
             handle.Release(item);
-            Assert.Catch(() => default(MemoryPoolHandle).Acquire());
-            Assert.Catch(() => MemoryPool.GetHandle(typeof(string)));
-            Assert.Catch(() => MemoryPool.GetHandle(typeof(MemoryObject)));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => default(MemoryPoolHandle).Acquire()).Message, Does.Contain("invalid"));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.GetHandle(typeof(string))).Message, Does.Contain("must inherit MemoryObject"));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.GetHandle(typeof(MemoryObject))).Message, Does.Contain("must not be abstract"));
             Assert.Throws<ArgumentNullException>(() => MemoryPool.GetHandle(null));
         }
 

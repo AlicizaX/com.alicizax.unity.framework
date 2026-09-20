@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace AlicizaX.ObjectPool
@@ -16,12 +18,16 @@ namespace AlicizaX.ObjectPool
         private int m_PoolCount;
         private ObjectPoolBase[] m_ActivePools;
         private int m_ActiveCount;
+        private ObjectPoolBase[] m_TickPools;
+        private bool m_IsTicking;
+        private bool m_IsShuttingDown;
 
         public ObjectPoolService()
         {
             m_PoolMap = new OpenHashMap<ObjectPoolKey>(InitPoolArrayCapacity);
             m_Pools = new ObjectPoolBase[InitPoolArrayCapacity];
             m_ActivePools = new ObjectPoolBase[InitPoolArrayCapacity];
+            m_TickPools = new ObjectPoolBase[InitPoolArrayCapacity];
             m_PoolCount = 0;
             m_ActiveCount = 0;
         }
@@ -31,20 +37,27 @@ namespace AlicizaX.ObjectPool
 
         void IServiceTickable.Tick(float deltaTime)
         {
+            if (m_IsTicking)
+                throw new InvalidOperationException("Object pool service is already ticking.");
             float unscaled = Time.unscaledDeltaTime;
-            int i = m_ActiveCount - 1;
-            while (i >= 0)
+            int count = m_ActiveCount;
+            if (m_TickPools.Length < count)
+                Array.Resize(ref m_TickPools, m_ActivePools.Length);
+            Array.Copy(m_ActivePools, m_TickPools, count);
+            m_IsTicking = true;
+            try
             {
-                var pool = m_ActivePools[i];
-                pool.Update(deltaTime, unscaled);
-                if (pool.ActiveIndex < 0)
+                for (int i = count - 1; i >= 0; i--)
                 {
-                    if (i >= m_ActiveCount)
-                        i = m_ActiveCount - 1;
-                    continue;
+                    var pool = m_TickPools[i];
+                    if (pool.IsActive)
+                        pool.Update(deltaTime, unscaled);
                 }
-
-                i--;
+            }
+            finally
+            {
+                Array.Clear(m_TickPools, 0, count);
+                m_IsTicking = false;
             }
         }
 
@@ -52,23 +65,35 @@ namespace AlicizaX.ObjectPool
 
         protected override void OnDestroyService()
         {
-            for (int i = m_PoolCount - 1; i >= 0; i--)
-                m_Pools[i].Shutdown();
+            if (m_IsShuttingDown)
+                return;
+            m_IsShuttingDown = true;
+            List<Exception> errors = null;
+            while (m_PoolCount > 0)
+            {
+                var pool = m_Pools[m_PoolCount - 1];
+                try { RemovePool(new ObjectPoolKey(pool.ObjectType, pool.Name)); }
+                catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
+            }
             m_PoolMap.Dispose();
             Array.Clear(m_Pools, 0, m_PoolCount);
             Array.Clear(m_ActivePools, 0, m_ActiveCount);
             m_PoolCount = 0;
             m_ActiveCount = 0;
+            if (errors != null)
+                throw new AggregateException(errors);
         }
 
         public bool HasObjectPool<T>(string name = "") where T : ObjectBase
             => m_PoolMap.ContainsKey(new ObjectPoolKey(typeof(T), name));
 
         public IObjectPool<T> GetObjectPool<T>(string name = "") where T : ObjectBase
-            => (IObjectPool<T>)InternalGet(new ObjectPoolKey(typeof(T), name));
+            => (IObjectPool<T>)FindPool(new ObjectPoolKey(typeof(T), name));
 
         public IObjectPool<T> GetOrCreatePool<T>(ObjectPoolCreateOptions options = default) where T : ObjectBase
         {
+            if (m_IsShuttingDown)
+                throw new ObjectDisposedException(nameof(ObjectPoolService));
             var key = new ObjectPoolKey(typeof(T), options.Name);
             if (m_PoolMap.TryGetValue(key, out int idx))
                 return (IObjectPool<T>)m_Pools[idx];
@@ -97,13 +122,13 @@ namespace AlicizaX.ObjectPool
         }
 
         public bool DestroyObjectPool<T>(string name = "") where T : ObjectBase
-            => InternalDestroy(new ObjectPoolKey(typeof(T), name));
+            => RemovePool(new ObjectPoolKey(typeof(T), name));
 
         internal int GetAllObjectPools(bool sort, ObjectPoolBase[] results)
         {
             if (results == null)
             {
-                UnityEngine.Debug.LogError("Results is invalid.");
+                Log.Error("Results is invalid.");
                 return 0;
             }
 
@@ -136,31 +161,41 @@ namespace AlicizaX.ObjectPool
 
         public void Release()
         {
-            for (int i = 0; i < m_PoolCount; i++)
-                m_Pools[i].Release();
+            ReleaseAllUnused();
         }
 
         public void ReleaseAllUnused()
         {
-            for (int i = 0; i < m_PoolCount; i++)
-                m_Pools[i].ReleaseAllUnused();
+            int count = m_PoolCount;
+            if (count == 0)
+                return;
+            var pools = ArrayPool<ObjectPoolBase>.Shared.Rent(count);
+            Array.Copy(m_Pools, pools, count);
+            try
+            {
+                for (int i = 0; i < count; i++)
+                    pools[i].ReleaseAllUnused();
+            }
+            finally
+            {
+                ArrayPool<ObjectPoolBase>.Shared.Return(pools, true);
+            }
         }
 
-        private ObjectPoolBase InternalGet(ObjectPoolKey key)
+        private ObjectPoolBase FindPool(ObjectPoolKey key)
         {
             if (m_PoolMap.TryGetValue(key, out int idx))
                 return m_Pools[idx];
             return null;
         }
 
-        private bool InternalDestroy(ObjectPoolKey key)
+        private bool RemovePool(ObjectPoolKey key)
         {
             if (!m_PoolMap.TryGetValue(key, out int idx))
                 return false;
 
             var pool = m_Pools[idx];
             SetPoolActive(pool, false);
-            pool.Shutdown();
 
             int lastIndex = m_PoolCount - 1;
             if (idx < lastIndex)
@@ -173,6 +208,7 @@ namespace AlicizaX.ObjectPool
             m_Pools[lastIndex] = null;
             m_PoolCount--;
             m_PoolMap.Remove(key);
+            pool.Shutdown();
             return true;
         }
 

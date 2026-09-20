@@ -22,7 +22,8 @@ namespace AlicizaX.UI.Runtime
         {
             if (uiRoot == null)
             {
-                throw new InvalidOperationException("UIRoot Prefab is invalid.");
+                Log.Error("[UI] UIRoot Prefab is invalid.");
+                return;
             }
 
             GameObject obj = Instantiate(uiRoot, Vector3.zero, Quaternion.identity);
@@ -30,6 +31,11 @@ namespace AlicizaX.UI.Runtime
             Transform instanceRoot = obj.transform;
             var service = new UIService();
             service.Initialize(instanceRoot, _isOrthographic);
+            if (service.UIRoot == null)
+            {
+                Destroy(obj);
+                return;
+            }
             AppServices.App.Register<IUIService>(service);
             Object.DontDestroyOnLoad(instanceRoot);
         }

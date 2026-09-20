@@ -47,6 +47,7 @@ namespace AlicizaX.UI.Runtime
         {
             if (UIMetaRegistry.TryGet(typeName, out var info))
                 RegisterTab(Type.GetTypeFromHandle(info.RuntimeTypeHandle), parent);
+            else Log.Error("[UI] Unknown Tab type: {0}.", typeName);
         }
 
         private void RegisterTab(Type type, Transform parent)
@@ -90,7 +91,6 @@ namespace AlicizaX.UI.Runtime
         private async UniTask LoadTab(TabEntry entry)
         {
             try { entry.View = await CreateWidgetUIAsync(entry.Definition, entry.Parent, false); }
-            catch (Exception error) { Log.Exception(error); }
             finally { entry.Loading = false; }
             if (_request?.Entry != entry) return;
             if (entry.View == null || DestroyRequested) CompleteTab(_request, null);
@@ -113,18 +113,13 @@ namespace AlicizaX.UI.Runtime
                         UIWidget previous = _activeTab;
                         _activeTab = null;
                         previous.Close();
-                        await previous.AwaitTransition();
+                        await previous.AwaitClosed();
                         continue;
                     }
                     _activeTab = target;
                     target.Open(request.Arguments);
-                    CompleteTab(request, target.DestroyRequested ? null : target);
+                    CompleteTab(request, target.IsOpen ? target : null);
                 }
-            }
-            catch (Exception error)
-            {
-                Log.Exception(error);
-                CompleteTab(_request, null);
             }
             finally { _switching = false; }
         }
@@ -136,7 +131,7 @@ namespace AlicizaX.UI.Runtime
             request.Completion.TrySetResult(view);
         }
 
-        protected override void OnWidgetRemoved(UIWidget widget)
+        internal override void OnWidgetRemoved(UIWidget widget)
         {
             if (_activeTab == widget) _activeTab = null;
             if (_tabsByType.TryGetValue(widget.GetType().TypeHandle, out var entry) && entry.View == widget)
@@ -144,10 +139,10 @@ namespace AlicizaX.UI.Runtime
             if (DestroyRequested) CompleteTab(_request, null);
         }
 
-        internal override void OnFrameworkDestroyed()
+        internal override void OnDestroyStarted()
         {
             CompleteTab(_request, null);
-            base.OnFrameworkDestroyed();
+            base.OnDestroyStarted();
         }
     }
 }

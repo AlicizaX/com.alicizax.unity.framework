@@ -707,12 +707,12 @@ namespace AlicizaX.Audio.Runtime
 
         internal void ReleaseClip(AudioClipCacheEntry entry)
         {
-            if (--entry.RefCount != 0)
+            if (--entry.RefCount != 0 || entry.Loading)
             {
                 return;
             }
 
-            if (!entry.CacheAfterUse)
+            if (!entry.CacheAfterUse || !entry.Lease.IsValid)
             {
                 RemoveClipEntry(entry);
                 return;
@@ -734,21 +734,21 @@ namespace AlicizaX.Audio.Runtime
             }
 
             entry.Loading = false;
-            if (!lease.IsValid || lease.Asset == null)
+            AudioClip clip = lease.Asset;
+            bool success = clip != null;
+            if (!success)
             {
                 lease.Dispose();
-                RemoveClipEntry(entry);
-                return false;
             }
 
             entry.Lease.Dispose();
             entry.Lease = lease;
-            entry.Clip = lease.Asset;
+            entry.Clip = clip;
             RetainClip(entry);
-            AudioLoadRequest callbacks = CompleteLoadRequests(entry, true);
+            AudioLoadRequest callbacks = CompleteLoadRequests(entry, success);
             ReleaseClip(entry);
-            CompletePreloads(callbacks, true);
-            return true;
+            CompletePreloads(callbacks, success);
+            return success;
         }
 
         private static AudioLoadRequest CompleteLoadRequests(AudioClipCacheEntry entry, bool success)

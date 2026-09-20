@@ -1,61 +1,57 @@
 using System;
 using Cysharp.Threading.Tasks;
+using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
     public abstract class UIWidget : UIBase
     {
         internal UIBase Parent;
-        internal bool OpenIntent;
+        private CanvasGroup _canvasGroup;
+        private float _shownAlpha = 1f;
+        internal override bool ParentEffective => Parent.Effective;
+        public override bool IsVisible => Visible && Parent.IsVisible;
 
-        public bool AllowOpenTransitionOnParent;
-        public bool AllowCloseTransitionOnParent;
-
-        public void Open(params object[] userDatas)
-        {
-            ValidateOpen();
-            if (DestroyRequested) return;
-            if (State == UIState.Opening) return;
-            OpenIntent = true;
-            RefreshParams(userDatas);
-            if (Parent.ChildrenCanOpen) InternalOpen();
-        }
-
-        internal void OpenFromParent()
-        {
-            if (OpenIntent && !DestroyRequested) InternalOpen(skipTransition: !AllowOpenTransitionOnParent);
-        }
+        public void Open(params object[] userDatas) => InternalOpen(userDatas);
 
         public void Close()
         {
-            if (DestroyRequested) return;
-            OpenIntent = false;
+            if (DestroyRequested || State == UIState.Initialized) return;
             InternalClose().Forget();
         }
 
-        public UICloseHandle Destroy()
+        public UniTask Destroy() => InternalDestroy();
+        internal override void OnDestroyed() => Parent.DetachWidget(this);
+
+        private protected sealed override void ApplyVisible(bool value)
         {
-            OpenIntent = false;
-            return new UICloseHandle(InternalDestroy());
+            if (_canvasGroup == null) return;
+            _canvasGroup.alpha = value ? _shownAlpha : 0f;
         }
 
-        internal UniTask<bool> CloseFromParent(bool destroy, bool skipTransition)
+        private protected override void SetInteractable(bool value)
         {
-            if (destroy) return InternalDestroy(skipTransition || !AllowCloseTransitionOnParent);
-            if (State == UIState.CreatedUI || State == UIState.Loaded) return UniTask.FromResult(true);
-            return InternalClose(skipTransition || !AllowCloseTransitionOnParent);
+            if (_canvasGroup == null) return;
+            _canvasGroup.blocksRaycasts = value;
+            _canvasGroup.interactable = value;
         }
 
-        internal override void OnFrameworkDestroyed() => Parent.DetachWidget(this);
+        private protected sealed override void ReleaseVisuals() => _canvasGroup = null;
+
+        internal void BindWidgetHolder(UIHolderObjectBase holder)
+        {
+            BindHolderCommon(holder);
+            _canvasGroup = holder.GetComponent<CanvasGroup>();
+            if (_canvasGroup == null) _canvasGroup = holder.gameObject.AddComponent<CanvasGroup>();
+            if (_canvasGroup.alpha > 0f) _shownAlpha = _canvasGroup.alpha;
+            if (Holder.HasTransition) Holder.ApplyTransitionState(false);
+        }
     }
 
     public abstract class UIWidget<T> : UIWidget where T : UIHolderObjectBase
     {
         protected T baseui => (T)Holder;
         internal sealed override Type UIHolderType => typeof(T);
-        internal sealed override void BindUIHolder(UIHolderObjectBase holder)
-        {
-            BindHolderCommon(holder, false, false);
-        }
+        internal sealed override void BindUIHolder(UIHolderObjectBase holder) => BindWidgetHolder(holder);
     }
 }

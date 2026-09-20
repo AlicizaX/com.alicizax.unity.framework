@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.Event.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "AlicizaX.Framework.Event.Tests"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

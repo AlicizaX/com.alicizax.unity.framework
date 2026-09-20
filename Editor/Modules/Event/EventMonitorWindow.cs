@@ -123,7 +123,7 @@ namespace AlicizaX.Editor
 
             Dictionary<Type, EventDebugSummary> summaries = BuildSummaryMap();
             List<EventRow> rows = BuildRows(summaries);
-            EnsureSelection(rows);
+            SelectAvailableEvent(rows);
 
             DrawSplitLayout(rows, summaries);
         }
@@ -172,7 +172,7 @@ namespace AlicizaX.Editor
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.HelpBox(
-                "这是仅编辑器可用的事件监视器。普通 Publish 保持极限热路径；SafePublisher 会隔离回调异常，并把派发期间的订阅、取消订阅、清空或扩容延迟到最外层派发结束后立即处理。",
+                "这是仅编辑器可用的事件监视器。Publish 隔离每条订阅的回调异常。退订立即停止后续调用，结构变更在该事件最外层派发结束后按序提交。",
                 MessageType.Info);
 
             if (_snapshotEntries.Count > 0)
@@ -271,7 +271,7 @@ namespace AlicizaX.Editor
             string capacityText = row.Initialized ? row.Summary.Capacity.ToString() : row.InitialCapacity.ToString();
             string status = row.Initialized ? "已初始化" : "未初始化";
             EditorGUILayout.LabelField(
-                $"订阅 {row.Summary.SubscriberCount} | 无参 {row.Summary.EmptySubscriberCount} / in {row.Summary.InSubscriberCount} | 容量 {capacityText} | 发布 {row.Summary.PublishCount} | Safe {row.Summary.SafePublishCount}",
+                $"订阅 {row.Summary.SubscriberCount} | 无参 {row.Summary.EmptySubscriberCount} / in {row.Summary.InSubscriberCount} | 容量 {capacityText} | 发布 {row.Summary.PublishCount}",
                 EditorStyles.miniLabel);
             EditorGUILayout.LabelField($"{status} | 初始容量 {row.InitialCapacity}", EditorStyles.miniLabel);
 
@@ -323,16 +323,14 @@ namespace AlicizaX.Editor
             EditorGUILayout.LabelField("当前容量", summary.Capacity.ToString());
             EditorGUILayout.LabelField("容量利用率", FormatRatio(summary.SubscriberCount, summary.Capacity));
             EditorGUILayout.LabelField("发布次数", summary.PublishCount.ToString());
-            EditorGUILayout.LabelField("Safe 发布次数", summary.SafePublishCount.ToString());
             EditorGUILayout.LabelField("订阅次数", summary.SubscribeCount.ToString());
             EditorGUILayout.LabelField("取消订阅次数", summary.UnsubscribeCount.ToString());
             EditorGUILayout.LabelField("扩容次数", summary.ResizeCount.ToString());
             EditorGUILayout.LabelField("清空次数", summary.ClearCount.ToString());
-            EditorGUILayout.LabelField("发布期非法变更", summary.MutationRejectedCount.ToString());
-            EditorGUILayout.LabelField("Safe 回调异常", summary.HandlerExceptionCount.ToString());
-            EditorGUILayout.LabelField("Safe 延迟变更", summary.DeferredMutationCount.ToString());
-            EditorGUILayout.LabelField("Safe Flush 次数", summary.FlushCount.ToString());
-            EditorGUILayout.LabelField("Safe 峰值 Pending", summary.PeakPendingCount.ToString());
+            EditorGUILayout.LabelField("回调异常", summary.HandlerExceptionCount.ToString());
+            EditorGUILayout.LabelField("延迟变更", summary.DeferredMutationCount.ToString());
+            EditorGUILayout.LabelField("Flush 次数", summary.FlushCount.ToString());
+            EditorGUILayout.LabelField("峰值 Pending", summary.PeakPendingCount.ToString());
             EditorGUILayout.LabelField("最后操作帧", summary.LastOperationFrame.ToString());
             EditorGUILayout.LabelField("最后操作时间", FormatTicks(summary.LastOperationTicksUtc));
             EditorGUILayout.EndVertical();
@@ -372,14 +370,12 @@ namespace AlicizaX.Editor
 
             int subscriberDelta = currentSummary.SubscriberCount - snapshot.Summary.SubscriberCount;
             long publishDelta = currentSummary.PublishCount - snapshot.Summary.PublishCount;
-            long safePublishDelta = currentSummary.SafePublishCount - snapshot.Summary.SafePublishCount;
             long subscribeDelta = currentSummary.SubscribeCount - snapshot.Summary.SubscribeCount;
             long unsubscribeDelta = currentSummary.UnsubscribeCount - snapshot.Summary.UnsubscribeCount;
             int resizeDelta = currentSummary.ResizeCount - snapshot.Summary.ResizeCount;
             int capacityDelta = currentSummary.Capacity - snapshot.Summary.Capacity;
             int emptySubscriberDelta = currentSummary.EmptySubscriberCount - snapshot.Summary.EmptySubscriberCount;
             int inSubscriberDelta = currentSummary.InSubscriberCount - snapshot.Summary.InSubscriberCount;
-            long mutationRejectedDelta = currentSummary.MutationRejectedCount - snapshot.Summary.MutationRejectedCount;
             long handlerExceptionDelta = currentSummary.HandlerExceptionCount - snapshot.Summary.HandlerExceptionCount;
             long deferredMutationDelta = currentSummary.DeferredMutationCount - snapshot.Summary.DeferredMutationCount;
             int flushDelta = currentSummary.FlushCount - snapshot.Summary.FlushCount;
@@ -389,15 +385,13 @@ namespace AlicizaX.Editor
             EditorGUILayout.LabelField("无参订阅变化", FormatSigned(emptySubscriberDelta));
             EditorGUILayout.LabelField("in 订阅变化", FormatSigned(inSubscriberDelta));
             EditorGUILayout.LabelField("发布次数变化", FormatSigned(publishDelta));
-            EditorGUILayout.LabelField("Safe 发布变化", FormatSigned(safePublishDelta));
             EditorGUILayout.LabelField("订阅次数变化", FormatSigned(subscribeDelta));
             EditorGUILayout.LabelField("取消订阅次数变化", FormatSigned(unsubscribeDelta));
             EditorGUILayout.LabelField("扩容次数变化", FormatSigned(resizeDelta));
             EditorGUILayout.LabelField("容量变化", FormatSigned(capacityDelta));
-            EditorGUILayout.LabelField("非法变更变化", FormatSigned(mutationRejectedDelta));
-            EditorGUILayout.LabelField("Safe 异常变化", FormatSigned(handlerExceptionDelta));
-            EditorGUILayout.LabelField("Safe 延迟变更变化", FormatSigned(deferredMutationDelta));
-            EditorGUILayout.LabelField("Safe Flush 变化", FormatSigned(flushDelta));
+            EditorGUILayout.LabelField("异常变化", FormatSigned(handlerExceptionDelta));
+            EditorGUILayout.LabelField("延迟变更变化", FormatSigned(deferredMutationDelta));
+            EditorGUILayout.LabelField("Flush 变化", FormatSigned(flushDelta));
 
             List<string> addedSubscribers = GetSubscriberDiff(currentSubscribers, snapshot.Subscribers);
             List<string> removedSubscribers = GetSubscriberDiff(snapshot.Subscribers, currentSubscribers);
@@ -472,11 +466,9 @@ namespace AlicizaX.Editor
                     summary.EmptySubscriberCount != snapshot.Summary.EmptySubscriberCount ||
                     summary.InSubscriberCount != snapshot.Summary.InSubscriberCount ||
                     summary.PublishCount != snapshot.Summary.PublishCount ||
-                    summary.SafePublishCount != snapshot.Summary.SafePublishCount ||
                     summary.SubscribeCount != snapshot.Summary.SubscribeCount ||
                     summary.UnsubscribeCount != snapshot.Summary.UnsubscribeCount ||
                     summary.ResizeCount != snapshot.Summary.ResizeCount ||
-                    summary.MutationRejectedCount != snapshot.Summary.MutationRejectedCount ||
                     summary.HandlerExceptionCount != snapshot.Summary.HandlerExceptionCount ||
                     summary.DeferredMutationCount != snapshot.Summary.DeferredMutationCount ||
                     summary.FlushCount != snapshot.Summary.FlushCount ||
@@ -569,7 +561,7 @@ namespace AlicizaX.Editor
                 bool initialized = summaries.TryGetValue(eventType, out EventDebugSummary summary);
                 EventDebugSummary rowSummary = initialized
                     ? summary
-                    : new EventDebugSummary(eventType, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                    : new EventDebugSummary(eventType, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
                 EventRow row = new EventRow(eventType, initialized, rowSummary, GetInitialCapacity(eventType));
                 if (MatchesFilter(row))
@@ -598,7 +590,7 @@ namespace AlicizaX.Editor
             return fullName.IndexOf(_searchText, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private void EnsureSelection(List<EventRow> rows)
+        private void SelectAvailableEvent(List<EventRow> rows)
         {
             if (_selectedEventType != null)
             {
@@ -635,7 +627,7 @@ namespace AlicizaX.Editor
                 return activeCompare;
             }
 
-            int publishCompare = GetTotalPublishCount(y.Summary).CompareTo(GetTotalPublishCount(x.Summary));
+            int publishCompare = y.Summary.PublishCount.CompareTo(x.Summary.PublishCount);
             if (publishCompare != 0)
             {
                 return publishCompare;
@@ -759,19 +751,15 @@ namespace AlicizaX.Editor
                 alerts.Add(new EventAlert(MessageType.Warning, $"发现 {destroyedTargetCount} 个订阅者的 Unity 目标对象已经被销毁。"));
             }
 
-            if (summary.MutationRejectedCount > 0)
-            {
-                alerts.Add(new EventAlert(MessageType.Warning, $"普通 Publish 派发期间发生了 {summary.MutationRejectedCount} 次非法变更尝试；需要派发期变更时请使用 SafePublisher。"));
-            }
 
             if (summary.HandlerExceptionCount > 0)
             {
-                alerts.Add(new EventAlert(MessageType.Warning, $"SafePublisher 捕获了 {summary.HandlerExceptionCount} 次回调异常，请检查对应订阅者。"));
+                alerts.Add(new EventAlert(MessageType.Warning, $"Publish 捕获了 {summary.HandlerExceptionCount} 次回调异常，请检查对应订阅者。"));
             }
 
             if (summary.DeferredMutationCount > 0)
             {
-                alerts.Add(new EventAlert(MessageType.Info, $"SafePublisher 延迟处理了 {summary.DeferredMutationCount} 次派发期变更，峰值 Pending 为 {summary.PeakPendingCount}。"));
+                alerts.Add(new EventAlert(MessageType.Info, $"Publish 延迟处理了 {summary.DeferredMutationCount} 次派发期变更，峰值 Pending 为 {summary.PeakPendingCount}。"));
             }
 
             if (summary.ResizeCount > 0)
@@ -790,7 +778,7 @@ namespace AlicizaX.Editor
             }
 
             long churn = summary.SubscribeCount + summary.UnsubscribeCount;
-            long totalPublishCount = GetTotalPublishCount(summary);
+            long totalPublishCount = summary.PublishCount;
             if (churn > 0 && totalPublishCount == 0)
             {
                 alerts.Add(new EventAlert(MessageType.Info, $"这个事件在当前域中发生了 {churn} 次订阅/取消订阅操作，但从未被发布。"));
@@ -806,11 +794,6 @@ namespace AlicizaX.Editor
             }
 
             return alerts;
-        }
-
-        private static long GetTotalPublishCount(EventDebugSummary summary)
-        {
-            return summary.PublishCount + summary.SafePublishCount;
         }
 
         private static List<string> GetSubscriberDiff(EventDebugSubscriberInfo[] source, EventDebugSubscriberInfo[] baseline)
@@ -888,10 +871,8 @@ namespace AlicizaX.Editor
                 EventDebugOperationKind.Subscribe => "订阅",
                 EventDebugOperationKind.Unsubscribe => "取消订阅",
                 EventDebugOperationKind.Publish => "发布",
-                EventDebugOperationKind.SafePublish => "Safe发布",
                 EventDebugOperationKind.Resize => "扩容",
                 EventDebugOperationKind.Clear => "清空",
-                EventDebugOperationKind.MutationRejected => "非法变更",
                 EventDebugOperationKind.HandlerException => "回调异常",
                 EventDebugOperationKind.DeferredMutation => "延迟变更",
                 EventDebugOperationKind.Flush => "Flush",

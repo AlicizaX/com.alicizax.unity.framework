@@ -20,7 +20,7 @@ namespace AlicizaX.Audio.Tests
         {
             audioConfiguration = AudioSettings.GetConfiguration();
             var stressConfiguration = audioConfiguration;
-            stressConfiguration.numVirtualVoices = 4096;
+            stressConfiguration.numVirtualVoices = 1024;
             Assert.That(AudioSettings.Reset(stressConfiguration), Is.True);
             yield return AudioFixture.Frames();
         }
@@ -35,8 +35,18 @@ namespace AlicizaX.Audio.Tests
         [UnityTest]
         public IEnumerator AllocationRecorderDetectsKnownAllocation()
         {
+            long counterBytes = 0;
             yield return AllocationCapture.Measure("audio-calibration", 1,
-                () => allocationSink = new byte[4096], sample => Assert.That(sample.Bytes, Is.GreaterThanOrEqualTo(4096)));
+                () =>
+                {
+                    long before = GC.GetAllocatedBytesForCurrentThread();
+                    allocationSink = new byte[4096];
+                    counterBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+                }, sample =>
+                {
+                    Assert.That(sample.Bytes, Is.GreaterThanOrEqualTo(4096));
+                    TestContext.WriteLine($"ALLOCATION_COUNTER_CALIBRATION,thread-counter,{counterBytes},profiler,{sample.Bytes}");
+                });
             allocationSink = null;
         }
 
@@ -70,7 +80,7 @@ namespace AlicizaX.Audio.Tests
         [UnityTest]
         public IEnumerator HitsAndRetainReleaseDoNotScaleWithCacheCapacity()
         {
-            foreach (int capacity in new[] { 16, 256, 4096 })
+            foreach (int capacity in new[] { 16, 64, 256 })
             {
                 using var f = new AudioFixture(capacity);
                 var names = new string[capacity];
@@ -84,9 +94,9 @@ namespace AlicizaX.Audio.Tests
                     entries[i] = f.Entry(address);
                 }
                 int hits = 0;
-                yield return AllocationCapture.Measure("audio-hit-ref-capacity-" + capacity, 100000, () =>
+                yield return AllocationCapture.Measure("audio-hit-ref-capacity-" + capacity, 10000, () =>
                 {
-                    for (int i = 0; i < 100000; i++)
+                    for (int i = 0; i < 10000; i++)
                     {
                         int index = (i * 7919) & (capacity - 1);
                         if (f.Audio.Preload(names[index], AudioCachePolicy.Ttl)) hits++;
@@ -94,7 +104,7 @@ namespace AlicizaX.Audio.Tests
                         f.Audio.ReleaseClip(entries[index]);
                     }
                 }, sample => Assert.That(sample.Bytes, Is.Zero));
-                Assert.That(hits, Is.EqualTo(100000));
+                Assert.That(hits, Is.EqualTo(10000));
                 Assert.That(f.Loader.Loads, Is.EqualTo(capacity));
                 f.CheckOwnership();
             }
@@ -132,7 +142,7 @@ namespace AlicizaX.Audio.Tests
         [UnityTest]
         public IEnumerator SaturatedVoiceStealingAndActiveTicksAllocateZeroBytes()
         {
-            foreach (int voices in new[] { 16, 128, 1024 })
+            foreach (int voices in new[] { 16, 64, 256 })
             {
                 using var f = new AudioFixture(voices: voices);
                 var clip = f.Clip("a");

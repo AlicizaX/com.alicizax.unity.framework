@@ -38,7 +38,7 @@ namespace AlicizaX.Audio.Tests
                         break;
                     case 3: f.Audio.Stop(handles[slot]); break;
                     case 4:
-                        if (f.Loader.Providers.ContainsKey(name)) f.Loader.Complete(name, step % 24 != 4);
+                        if (f.Loader.HasRequest(name)) f.Loader.Complete(name, step % 24 != 4);
                         break;
                     case 5: f.Audio.ClearCache(step % 16 == 5); break;
                     case 6: f.Audio.Unload(name); break;

@@ -489,7 +489,7 @@ namespace AlicizaX.Resource.Runtime
 
             foreach (var package in PackageMap.Values)
             {
-                if (package is { InitializeStatus: EOperationStatus.Succeeded })
+                if (package is { InitializeStatus: EOperationStatus.Succeeded, PackageValid: true })
                 {
                     _unloadUnusedAssetsOperations.Add(package.UnloadUnusedAssetsAsync());
                 }
@@ -519,16 +519,17 @@ namespace AlicizaX.Resource.Runtime
                 ShutdownLoadingOperations();
                 try
                 {
-                    _bindingService?.Shutdown();
+                    _bindingService?.Reset();
                 }
                 finally
                 {
-                    _bindingService = _isDestroying ? null : new ResourceBindingService(this);
+                    if (_isDestroying)
+                        _bindingService = null;
                     ForceReleaseAllAssetRecords();
                     WarmupBindingRecords();
                     foreach (var package in PackageMap.Values)
                     {
-                        if (package is { InitializeStatus: EOperationStatus.Succeeded })
+                        if (package is { InitializeStatus: EOperationStatus.Succeeded, PackageValid: true })
                             _unloadAllAssetsOperations.Add(package.UnloadAllAssetsAsync());
                     }
                 }
@@ -1196,13 +1197,14 @@ namespace AlicizaX.Resource.Runtime
             GameObject instance = null;
             bool transferred = false;
             ResourceBindingService bindings = _bindingService;
+            int unloadGeneration = _assetUnloadGeneration;
             try
             {
                 if (cancellationToken.IsCancellationRequested || (!ReferenceEquals(parent, null) && parent == null) ||
                     !TryGetLeaseAsset(handle, out UnityEngine.Object source) || source is not GameObject prefab)
                     return null;
                 instance = UnityEngine.Object.Instantiate(prefab, parent);
-                if (instance == null || cancellationToken.IsCancellationRequested || _isDestroying || !ReferenceEquals(bindings, _bindingService))
+                if (instance == null || cancellationToken.IsCancellationRequested || _isDestroying || unloadGeneration != _assetUnloadGeneration)
                     return null;
                 ResourceOwner owner = instance.GetComponent<ResourceOwner>();
                 if (owner == null)

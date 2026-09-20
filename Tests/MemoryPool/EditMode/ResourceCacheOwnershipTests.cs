@@ -21,7 +21,7 @@ namespace AlicizaX.MemoryPoolTests
             Assert.That(replacement.IsValid, Is.True);
             Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(1));
             replacement.Dispose();
-            Assert.That(f.Info("a").RefCountTotal, Is.Zero);
+            f.AssertNoReferences("a");
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
@@ -94,7 +94,7 @@ namespace AlicizaX.MemoryPoolTests
             f.Service.LoadLease<TextAsset>("b").Dispose();
             f.Service.LoadLease<TextAsset>("a").Dispose();
             f.Service.LoadLease<TextAsset>("c").Dispose();
-            Assert.That(f.Info("b").HandleValid, Is.False);
+            f.AssertUnloaded("b");
             Assert.That(f.Info("a").HandleValid, Is.True);
             Assert.That(f.Info("c").HandleValid, Is.True);
             Assert.That(f.Loader.Loads, Is.EqualTo(3));
@@ -131,7 +131,7 @@ namespace AlicizaX.MemoryPoolTests
             var held = f.Service.LoadLease<TextAsset>("reactivated");
             for (int i = 0; i < 3; i++) f.Service.ProcessResourceMaintenance(Time.unscaledTime + 1, 1);
             Assert.That(f.Info("long").HandleValid, Is.True);
-            Assert.That(f.Info("short").HandleValid, Is.False);
+            f.AssertUnloaded("short");
             Assert.That(held.IsValid, Is.True);
             held.Dispose();
             f.Service.ProcessResourceMaintenance(Time.unscaledTime + 200, 16);
@@ -144,12 +144,14 @@ namespace AlicizaX.MemoryPoolTests
             using var f = new ResourceFixture();
             f.Text("a");
             f.Loader.ThrowOnLoad = true;
-            for (int i = 0; i < 20; i++) Assert.Catch(() => f.Service.LoadLease<TextAsset>("a"));
+            for (int i = 0; i < 20; i++)
+                Assert.That(Assert.Throws<InvalidOperationException>(() => f.Service.LoadLease<TextAsset>("a")).Message, Is.EqualTo("controlled load failure"));
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             f.Loader.ThrowOnLoad = false;
             var lease = f.Service.LoadLease<TextAsset>("a");
             Assert.That(lease.IsValid, Is.True);
             Assert.That(f.Info("a").PendingRefCount, Is.Zero);
+            Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(1));
             lease.Dispose();
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);

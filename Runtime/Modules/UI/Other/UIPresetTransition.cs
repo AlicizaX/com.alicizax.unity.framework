@@ -45,7 +45,6 @@ namespace AlicizaX.UI.Runtime
         [SerializeField] private RectTransform targetRect;
         [SerializeField] private CanvasGroup canvasGroup;
         [SerializeField] private bool useUnscaledTime = true;
-        [SerializeField] private bool followAnimationInteractable = false;
         [SerializeField] [Min(0f)] private float openDuration = 0.22f;
         [SerializeField] [Min(0f)] private float closeDuration = 0.18f;
         [SerializeField] [Min(0f)] private float slideDistance = 120f;
@@ -59,8 +58,6 @@ namespace AlicizaX.UI.Runtime
 #if UNITY_EDITOR
         private bool _editorPreviewActive;
         private VisualState _editorPreviewRestoreState;
-        private bool _editorPreviewRestoreInteractable;
-        private bool _editorPreviewRestoreBlocksRaycasts;
 #endif
 
 #if UNITY_EDITOR
@@ -88,12 +85,10 @@ namespace AlicizaX.UI.Runtime
             if (open)
             {
                 ApplyVisualState(_openState);
-                RestoreInteractionState(true);
                 return;
             }
 
             ApplyVisualState(BuildClosedState(closePreset, _openState));
-            RestoreInteractionState(false);
         }
 
         private async UniTask PlayAsync(
@@ -103,13 +98,10 @@ namespace AlicizaX.UI.Runtime
             bool isOpening,
             CancellationToken cancellationToken)
         {
-            RestoreInteractionState(false);
-
             VisualState currentState = CaptureCurrentState();
             if (duration <= 0f)
             {
                 ApplyVisualState(targetState);
-                RestoreInteractionState(isOpening);
                 _closed = !isOpening;
                 return;
             }
@@ -126,7 +118,6 @@ namespace AlicizaX.UI.Runtime
 
             cancellationToken.ThrowIfCancellationRequested();
             ApplyVisualState(targetState);
-            RestoreInteractionState(isOpening);
             _closed = !isOpening;
         }
 
@@ -150,20 +141,10 @@ namespace AlicizaX.UI.Runtime
             }
 
             if (RequiresCanvasGroup() && canvasGroup == null)
-            {
                 canvasGroup = GetComponent<CanvasGroup>();
-                if (canvasGroup == null)
-                {
-                    canvasGroup = gameObject.AddComponent<CanvasGroup>();
-                }
-            }
-
         }
 
-        private bool RequiresCanvasGroup()
-        {
-            return followAnimationInteractable || UsesAlpha(openPreset) || UsesAlpha(closePreset);
-        }
+        private bool RequiresCanvasGroup() => UsesAlpha(openPreset) || UsesAlpha(closePreset);
 
         private bool UsesAlpha(UITransitionPreset preset)
         {
@@ -254,17 +235,6 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private void RestoreInteractionState(bool enabled)
-        {
-            if (!followAnimationInteractable || canvasGroup == null)
-            {
-                return;
-            }
-
-            canvasGroup.interactable = enabled;
-            canvasGroup.blocksRaycasts = enabled;
-        }
-
         private float GetDeltaTime()
         {
             return useUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
@@ -331,12 +301,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             ApplyVisualState(_editorPreviewRestoreState);
-            if (canvasGroup != null)
-            {
-                canvasGroup.interactable = _editorPreviewRestoreInteractable;
-                canvasGroup.blocksRaycasts = _editorPreviewRestoreBlocksRaycasts;
-            }
-
             _editorPreviewActive = false;
         }
 
@@ -359,13 +323,6 @@ namespace AlicizaX.UI.Runtime
             ApplyVisualState(isOpening
                 ? Lerp(closedState, _editorPreviewRestoreState, easedProgress)
                 : Lerp(_editorPreviewRestoreState, closedState, easedProgress));
-
-            if (canvasGroup != null && followAnimationInteractable)
-            {
-                bool enabled = isOpening ? progress >= 0.999f : progress <= 0.001f;
-                canvasGroup.interactable = enabled;
-                canvasGroup.blocksRaycasts = enabled;
-            }
         }
 
         private void BeginEditorPreview()
@@ -376,13 +333,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             _editorPreviewRestoreState = CaptureCurrentState();
-
-            if (canvasGroup != null)
-            {
-                _editorPreviewRestoreInteractable = canvasGroup.interactable;
-                _editorPreviewRestoreBlocksRaycasts = canvasGroup.blocksRaycasts;
-            }
-
             _editorPreviewActive = true;
         }
 

@@ -35,6 +35,8 @@ namespace AlicizaX.Audio.Tests
         internal readonly AudioListener Listener;
         internal readonly AudioServiceConfig Config;
         private readonly float listenerVolume = AudioListener.volume;
+        private readonly string[] mixerParameters = new string[(int)AudioType.Max];
+        private readonly float[] mixerVolumes = new float[(int)AudioType.Max];
         private bool disposed;
         internal IAudioDebugService Debug => Audio;
         internal ControlledLoader Loader => Resources.Loader;
@@ -51,6 +53,8 @@ namespace AlicizaX.Audio.Tests
             Assert.That(Mixer, Is.Not.Null);
             for (int i = 0; i < Groups.Length; i++)
             {
+                mixerParameters[i] = ((AudioType)i) + "Volume";
+                Assert.That(Mixer.GetFloat(mixerParameters[i], out mixerVolumes[i]), Is.True);
                 var group = new AudioGroupConfig { AudioType = (AudioType)i };
                 Set(group, "m_MixerGroup", Mixer.FindMatchingGroups(((AudioType)i).ToString())[0]);
                 Set(group, "m_MaxSourceCount", voices);
@@ -186,6 +190,7 @@ namespace AlicizaX.Audio.Tests
                     Assert.That(unused.Add(free[i]), Is.True);
                     Assert.That(agents[free[i]].ActiveIndex, Is.EqualTo(-1));
                     Assert.That(agents[free[i]].Handle, Is.Zero);
+                    Assert.That(Read<AudioClip>(agents[free[i]], "_playingClip"), Is.Null);
                 }
                 for (int i = 0; i < category.ActiveCount; i++)
                 {
@@ -275,9 +280,18 @@ namespace AlicizaX.Audio.Tests
             }
             finally
             {
-                AppServices.Shutdown();
-                AudioListener.volume = listenerVolume;
-                Resources.Dispose();
+                try { AppServices.Shutdown(); }
+                finally
+                {
+                    AudioListener.volume = listenerVolume;
+                    try
+                    {
+                        if (Mixer != null)
+                            for (int i = 0; i < mixerParameters.Length; i++)
+                                if (mixerParameters[i] != null) Mixer.SetFloat(mixerParameters[i], mixerVolumes[i]);
+                    }
+                    finally { Resources.Dispose(); }
+                }
             }
         }
     }

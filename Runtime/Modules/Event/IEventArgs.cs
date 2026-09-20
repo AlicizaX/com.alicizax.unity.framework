@@ -1,51 +1,36 @@
 ﻿using System;
-using System.Runtime.CompilerServices;
-using Unity.IL2CPP.CompilerServices;
+using System.Reflection;
 
 namespace AlicizaX
 {
     public delegate void InEventHandler<T>(in T evt) where T : struct, IPayloadEventArgs;
 
-    public interface IPayloadEventArgs { }
+    public interface IPayloadEventArgs
+    {
+    }
 
-    public interface IEmptyEventArgs { }
+    public interface IEmptyEventArgs
+    {
+    }
 
-#if UNITY_EDITOR
     internal static class EventArgsGuard
     {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void ThrowIfDualEventKind<T>() where T : struct
+        internal static void Validate<T>() where T : struct
         {
             Type type = typeof(T);
-            if (typeof(IPayloadEventArgs).IsAssignableFrom(type) &&
-                typeof(IEmptyEventArgs).IsAssignableFrom(type))
-            {
+            bool empty = typeof(IEmptyEventArgs).IsAssignableFrom(type);
+            bool payload = typeof(IPayloadEventArgs).IsAssignableFrom(type);
+            if (empty == payload)
+                throw new InvalidOperationException($"{type.FullName} must implement exactly one event contract.");
+            if (empty && type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Length !=
+                0)
                 throw new InvalidOperationException(
-                    $"{type.FullName} cannot implement both {nameof(IPayloadEventArgs)} and {nameof(IEmptyEventArgs)}.");
-            }
-        }
-
-        internal static void ThrowIfEmptyEventHasInstanceFields<T>() where T : struct, IEmptyEventArgs
-        {
-            Type type = typeof(T);
-            if (type.GetFields(System.Reflection.BindingFlags.Instance |
-                               System.Reflection.BindingFlags.Public |
-                               System.Reflection.BindingFlags.NonPublic).Length == 0)
-            {
-                return;
-            }
-
-            throw new InvalidOperationException(
-                $"{type.FullName} implements {nameof(IEmptyEventArgs)} but declares instance fields. " +
-                $"Use {nameof(IPayloadEventArgs)} with InEventHandler<T> for payload events.");
+                    $"{type.FullName} implements IEmptyEventArgs but declares instance fields.");
         }
     }
-#endif
-    
+
     public static class EventInitialSize<T> where T : struct
     {
-        public static int Size = 4; // default
+        public static int Size = 4;
     }
-
-
 }
