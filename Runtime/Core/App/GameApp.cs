@@ -1,6 +1,5 @@
 using AlicizaX;
 using AlicizaX.Audio.Runtime;
-using AlicizaX.Localization.Runtime;
 using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using AlicizaX.Scene.Runtime;
@@ -33,24 +32,6 @@ public static partial class GameApp
 
     private static IAudioService _audio;
 
-
-    /// <summary>
-    /// 获取本地化组件。
-    /// </summary>
-    public static ILocalizationService Localization
-    {
-        get
-        {
-            if (_localization == null)
-            {
-                _localization = AppServices.App.Require<ILocalizationService>();
-            }
-
-            return _localization;
-        }
-    }
-
-    private static ILocalizationService _localization;
 
     /// <summary>
     /// 获取对象池组件。

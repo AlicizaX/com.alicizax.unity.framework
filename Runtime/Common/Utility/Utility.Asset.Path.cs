@@ -28,11 +28,6 @@
                 public const string BundlesDirectorySceneName = "Scene";
 
                 /// <summary>
-                /// 打包资源文件夹Localization名称
-                /// </summary>
-                public const string BundlesDirectoryLocalizationName = "Localization";
-
-                /// <summary>
                 /// 打包资源文件夹Config名称
                 /// </summary>
                 public const string BundlesDirectoryConfigName = "Config";
@@ -228,21 +223,6 @@
                     return GetCategoryFilePath(BundlesDirectorySceneName, $"{pathName}{extension}");
                 }
 
-                /// <summary>
-                /// 获取本地化文件路径
-                /// </summary>
-                /// <param name="pathName">路径包含名称</param>
-                /// <param name="extension">文件扩展名</param>
-                /// <returns>返回拼接好的路径</returns>
-                public static string GetLocalizationPath(string pathName, string extension = ".xml")
-                {
-                    if (pathName.IndexOf('.') >= 0)
-                    {
-                        return GetCategoryFilePath(BundlesDirectoryLocalizationName, pathName);
-                    }
-
-                    return GetCategoryFilePath(BundlesDirectoryLocalizationName, $"{pathName}{extension}");
-                }
             }
         }
     }
