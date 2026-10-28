@@ -35,7 +35,7 @@ namespace AlicizaX.UI.Tests
         protected override void OnClose() { Closes++; Closing?.Invoke(); }
         protected override void OnDestroy() { Destroys++; Destroying?.Invoke(); }
         protected override void OnRefresh() { Refreshes++; Refreshing?.Invoke(); }
-        protected override void OnUpdate() { Updates++; Updating?.Invoke(); }
+        protected override void OnUpdate(float deltaTime) { Updates++; Updating?.Invoke(); }
     }
 
     internal sealed class UISecondWindow : UIWindow<UIWindowHolder> { }
@@ -77,7 +77,7 @@ namespace AlicizaX.UI.Tests
         protected override void OnClose() { Closes++; Closing?.Invoke(); }
         protected override void OnDestroy() { Destroys++; Destroying?.Invoke(); }
         protected override void OnRefresh() { Refreshes++; Refreshing?.Invoke(); }
-        protected override void OnUpdate() { Updates++; Updating?.Invoke(); }
+        protected override void OnUpdate(float deltaTime) { Updates++; Updating?.Invoke(); }
         protected override void OnRegisterEvent(EventListenerProxy proxy)
         {
             Registrations++;
@@ -170,6 +170,37 @@ namespace AlicizaX.UI.Tests
         internal void Finish() => Pending.TrySetResult();
     }
 
+    internal sealed class UITickGateTransition : ITickTransitionSource
+    {
+        internal int Begins, Advances, Snaps;
+        internal bool Finished;
+        internal bool LastSnap;
+        internal bool BeginResult = true;
+
+        public bool Begin(bool open)
+        {
+            Begins++;
+            Finished = false;
+            LastSnap = open;
+            return BeginResult;
+        }
+
+        public bool Advance(float deltaTime)
+        {
+            Advances++;
+            return Finished;
+        }
+
+        public void Snap(bool open)
+        {
+            Snaps++;
+            LastSnap = open;
+        }
+
+        public UniTask Play(bool open, CancellationToken token) =>
+            throw new InvalidOperationException("Tick transition must be driven by UIService.Tick.");
+    }
+
     internal sealed class UIFixture : IDisposable
     {
         internal readonly UIControlledLoader Loader = new();
@@ -227,10 +258,15 @@ namespace AlicizaX.UI.Tests
             EventBus.ClearEmpty<UIProbeEvent>();
         }
 
-        internal static IEnumerator Wait(UniTask task)
+        internal IEnumerator Wait(UniTask task)
         {
             var awaiter = task.GetAwaiter();
-            for (int i = 0; !awaiter.IsCompleted && i < 180; i++) yield return null;
+            for (int i = 0; !awaiter.IsCompleted && i < 180; i++)
+            {
+                // 转场由 UIService.Tick 驱动；测试环境没有 AppServiceRoot，这里显式推进。
+                Tick();
+                yield return null;
+            }
             Assert.That(awaiter.IsCompleted, Is.True, "UI operation did not settle.");
             awaiter.GetResult();
         }

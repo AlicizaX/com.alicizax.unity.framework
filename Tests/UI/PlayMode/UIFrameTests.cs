@@ -13,7 +13,7 @@ namespace AlicizaX.UI.Tests
     {
         private UIFixture _fixture;
         [SetUp] public void SetUp() => _fixture = new UIFixture();
-        [TearDown] public void TearDown() => _fixture.Dispose();
+        [TearDown] public void TearDown() => _fixture?.Dispose();
 
         [UnityTest]
         public IEnumerator PresetAnimationAndParentCacheKeepIndependentChildState()
@@ -25,12 +25,12 @@ namespace AlicizaX.UI.Tests
             };
             UIProbeWidget child = window.Create(false);
             child.Open();
-            yield return UIFixture.Wait(child.AwaitTransition());
+            yield return _fixture.Wait(child.AwaitTransition());
             Assert.That(child.Holder.GetComponent<CanvasGroup>().alpha, Is.EqualTo(1f).Within(0.001f));
             child.Close();
             var closing = child.AwaitTransition();
             _fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult();
-            yield return UIFixture.Wait(closing);
+            yield return _fixture.Wait(closing);
             Assert.That(child.IsOpen, Is.False);
             Assert.That(child.Holder.GetComponent<CanvasGroup>().alpha, Is.Zero);
             _fixture.Open();
@@ -38,7 +38,7 @@ namespace AlicizaX.UI.Tests
             child.Open();
             var opening = child.AwaitTransition();
             _fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult();
-            yield return UIFixture.Wait(opening);
+            yield return _fixture.Wait(opening);
             Assert.That(child.IsOpen, Is.True);
             Assert.That(child.IsVisible, Is.False);
             Assert.That(child.Holder.GetComponent<CanvasGroup>().blocksRaycasts, Is.False);
@@ -111,7 +111,7 @@ namespace AlicizaX.UI.Tests
             var window = _fixture.Service.ShowUISync<UIZeroCacheWindow>();
             UIProbeWidget child = window.Create();
             UIHolderObjectBase holder = child.Holder;
-            yield return UIFixture.Wait(_fixture.Service.CloseUI<UIZeroCacheWindow>());
+            yield return _fixture.Wait(_fixture.Service.CloseUI<UIZeroCacheWindow>());
             yield return null;
             Assert.That(child.Destroys, Is.EqualTo(1));
             Assert.That(child.Closes, Is.EqualTo(1));

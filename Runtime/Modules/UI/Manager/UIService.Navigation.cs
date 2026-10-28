@@ -28,22 +28,26 @@ namespace AlicizaX.UI.Runtime
         {
             internal readonly Navigation Operation;
             internal readonly UIRouteEntry Target;
-            internal readonly bool Option;
-            internal readonly CancellationTokenSource Cts = new();
+            internal readonly bool Force;
+            internal readonly bool OpenIfMissing;
             internal readonly UniTaskCompletionSource<UIRouteResult> Completion = new();
+            internal CancellationTokenSource Cts;
             internal bool Committed;
 
-            internal NavigationCommand(Navigation operation, UIRouteEntry target, bool option)
+            internal NavigationCommand(Navigation operation, UIRouteEntry target, bool force, bool openIfMissing)
             {
                 Operation = operation;
                 Target = target;
-                Option = option;
+                Force = force;
+                OpenIfMissing = openIfMissing;
             }
         }
 
         public bool CanBack => _history.Count > 1;
         public Type Current => _currentView?.GetType();
-        public UIRouteEntry CurrentEntry => _history.Count == 0 ? null : _history[_history.Count - 1].Clone();
+
+        /// <summary>当前路由条目（内部实例，只读视图，不做拷贝）。</summary>
+        public UIRouteEntry CurrentEntry => _history.Count == 0 ? null : _history[_history.Count - 1];
 
         public UniTask<UIRouteResult> NavigateTo<T>(params object[] args) where T : UIWindow =>
             EnqueueNavigation(Navigation.Push, CreateEntry(typeof(T), args));
@@ -53,41 +57,50 @@ namespace AlicizaX.UI.Runtime
             EnqueueNavigation(Navigation.Reset, CreateEntry(typeof(T), args));
         public UniTask<UIRouteResult> Back() => EnqueueNavigation(Navigation.Back);
         public UniTask<UIRouteResult> BackToRoot() => EnqueueNavigation(Navigation.BackToRoot);
-        public UniTask<UIRouteResult> CloseCurrent(bool force = false) => EnqueueNavigation(Navigation.Close, option: force);
+        public UniTask<UIRouteResult> CloseCurrent(bool force = false) => EnqueueNavigation(Navigation.Close, force: force);
         public UniTask<UIRouteResult> BackTo<T>(bool openIfMissing = true, params object[] args) where T : UIWindow =>
-            EnqueueNavigation(Navigation.BackTo, CreateEntry(typeof(T), args), openIfMissing);
+            EnqueueNavigation(Navigation.BackTo, CreateEntry(typeof(T), args), openIfMissing: openIfMissing);
         public UniTask<UIRouteResult> ResetHistory() => EnqueueNavigation(Navigation.Clear);
         public UniTask<UIRouteResult> SyncFromCurrentUI(Type currentPageType, params object[] args) =>
             EnqueueNavigation(Navigation.Sync, currentPageType == null ? null : CreateEntry(currentPageType, args));
         public UniTask<UIRouteResult> SyncFromCurrentUI(RuntimeTypeHandle handle, params object[] args) =>
             SyncFromCurrentUI(handle.Value == IntPtr.Zero ? null : Type.GetTypeFromHandle(handle), args);
 
-        private UniTask<UIRouteResult> EnqueueNavigation(Navigation operation, UIRouteEntry target = null, bool option = false)
+        private UniTask<UIRouteResult> EnqueueNavigation(Navigation operation, UIRouteEntry target = null,
+            bool force = false, bool openIfMissing = false)
         {
             if (_shuttingDown || !_initialized) return UniTask.FromResult(UIRouteResult.From(UIRouteStatus.Cancelled));
-            var command = new NavigationCommand(operation, target, option);
+
             NavigationCommand running = _running;
             NavigationCommand pending = _pending;
-            bool cancelOpening = running != null && !running.Committed &&
-                operation == Navigation.Back && IsOpenNavigation(running.Operation);
-            _pending = cancelOpening ? null : command;
-            if (running != null && !running.Committed) UIHolderObjectBase.Cancel(running.Cts);
-            if (pending != null)
+            _pending = null;
+
+            if (operation == Navigation.Back && running != null && !running.Committed && IsOpenNavigation(running.Operation))
             {
-                pending.Cts.Dispose();
-                pending.Completion.TrySetResult(UIRouteResult.From(UIRouteStatus.Cancelled));
+                // Back 打断尚未提交的打开：终止加载并立即返回 Ok。
+                CancelNavigation(pending);
+                CancelNavigation(running);
+                return UniTask.FromResult(UIRouteResult.Ok);
             }
-            if (cancelOpening)
-            {
-                command.Cts.Dispose();
-                command.Completion.TrySetResult(UIRouteResult.Ok);
-            }
+
+            CancelNavigation(pending);
+            var command = new NavigationCommand(operation, target, force, openIfMissing);
+            _pending = command;
+            if (running != null && !running.Committed) CancelNavigation(running);
             if (!_navigating && _pending != null)
             {
                 _navigating = true;
                 DrainNavigation().Forget();
             }
             return command.Completion.Task;
+        }
+
+        /// <summary>取消排队中或执行中的命令：取消其加载，并让调用方立即得到 Cancelled 结果。</summary>
+        private static void CancelNavigation(NavigationCommand command)
+        {
+            if (command == null) return;
+            command.Cts?.Cancel();
+            command.Completion.TrySetResult(UIRouteResult.From(UIRouteStatus.Cancelled));
         }
 
         private async UniTaskVoid DrainNavigation()
@@ -97,17 +110,26 @@ namespace AlicizaX.UI.Runtime
                 NavigationCommand command = _pending;
                 _pending = null;
                 if (command.Completion.Task.Status.IsCompleted()) continue;
+
+                command.Cts = new CancellationTokenSource();
                 _running = command;
                 UIRouteResult result;
-                try { result = await ExecuteNavigation(command); }
+                try
+                {
+                    result = await ExecuteNavigation(command);
+                }
                 catch (Exception error)
                 {
                     Log.Exception(error);
                     result = UIRouteResult.From(UIRouteStatus.OpenFailed);
                 }
-                _running = null;
+                finally
+                {
+                    command.Cts.Dispose();
+                    command.Cts = null;
+                    if (_running == command) _running = null;
+                }
                 _navigationCleanup.Clear();
-                command.Cts.Dispose();
                 command.Completion.TrySetResult(result);
             }
             _navigating = false;
@@ -133,8 +155,9 @@ namespace AlicizaX.UI.Runtime
                 case Navigation.Close:
                     if (_currentView == null) return UIRouteResult.From(UIRouteStatus.NotFound);
                     command.Committed = true;
-                    await CloseWindow(_currentView, command.Option);
-                    return UIRouteResult.Ok;
+                    await CloseWindow(_currentView, command.Force, token: command.Cts.Token);
+                    return command.Cts.IsCancellationRequested
+                        ? UIRouteResult.From(UIRouteStatus.Cancelled) : UIRouteResult.Ok;
                 case Navigation.Back:
                     return _history.Count < 2 ? UIRouteResult.From(UIRouteStatus.NotFound)
                         : await CommitTarget(command, _history[_history.Count - 2], Navigation.Back);
@@ -146,7 +169,8 @@ namespace AlicizaX.UI.Runtime
                 case Navigation.BackTo:
                     int index = FindHistoryIndex(command.Target.TypeHandle);
                     if (index >= 0) return await CommitTarget(command, _history[index], Navigation.Back);
-                    return command.Option ? await CommitTarget(command, command.Target, Navigation.Reset)
+                    return command.OpenIfMissing
+                        ? await CommitTarget(command, command.Target, Navigation.Reset)
                         : UIRouteResult.From(UIRouteStatus.NotFound);
                 default:
                     return await CommitTarget(command, command.Target, command.Operation);
@@ -170,18 +194,9 @@ namespace AlicizaX.UI.Runtime
                 if (old != null && old != previous) _navigationCleanup.Add(old);
             }
 
-            UIOpenResult result;
             bool targetWasOpen = IsOpen(target.TypeHandle);
-            try
-            {
-                result = await RequestShow(GetWindowRecord(target.TypeHandle),
-                    UIRouteEntry.CopyArgs(target.Args), command.Cts.Token, waitForClose: true);
-            }
-            catch (Exception error)
-            {
-                Log.Exception(error);
-                return UIRouteResult.From(UIRouteStatus.OpenFailed);
-            }
+            UIOpenResult result = await RequestShow(GetWindowRecord(target.TypeHandle), target.Args,
+                command.Cts.Token, waitForClose: true);
 
             UIWindow opened = result.View;
             if (command.Cts.IsCancellationRequested)
@@ -190,7 +205,7 @@ namespace AlicizaX.UI.Runtime
                     CloseWindow(opened, skipTransition: true, affectNavigation: false).Forget();
                 return UIRouteResult.From(UIRouteStatus.Cancelled);
             }
-            if (result.Status == UIOpenStatus.Cancelled || result.Status == UIOpenStatus.Ignored)
+            if (result.Status is UIOpenStatus.Cancelled or UIOpenStatus.Ignored)
                 return UIRouteResult.From(UIRouteStatus.Cancelled);
             if (result.Status == UIOpenStatus.Failed || opened == null)
                 return UIRouteResult.From(UIRouteStatus.OpenFailed);
@@ -207,23 +222,19 @@ namespace AlicizaX.UI.Runtime
             for (int i = 0; i < _navigationCleanup.Count; i++)
             {
                 UIWindow old = _navigationCleanup[i];
-                if (old == opened || old.State == UIState.Destroyed || old.State == UIState.Destroying) continue;
+                if (old == opened || old.State is UIState.Destroyed or UIState.Destroying) continue;
                 CloseWindow(old, skipTransition: old != previous, affectNavigation: false).Forget();
             }
             return new UIRouteResult(UIRouteStatus.Success, opened.AwaitTransition());
         }
 
-        private UIRouteEntry CreateEntry(Type type, object[] args) => new()
-        {
-            UIType = type,
-            TypeHandle = type.TypeHandle,
-            Args = UIRouteEntry.CopyArgs(args),
-            Sequence = ++_sequence,
-        };
+        private UIRouteEntry CreateEntry(Type type, object[] args) =>
+            new(type, UIRouteEntry.CopyArgs(args), ++_sequence);
 
         private static bool IsOpenNavigation(Navigation operation) =>
             operation is Navigation.Push or Navigation.Replace or Navigation.Reset;
 
+        /// <summary>history 中同类型最多一条：导航到已存在类型时按该条截断。</summary>
         private int FindHistoryIndex(RuntimeTypeHandle handle)
         {
             for (int i = 0; i < _history.Count; i++)
@@ -243,18 +254,14 @@ namespace AlicizaX.UI.Runtime
             var cancelled = UIRouteResult.From(UIRouteStatus.Cancelled);
             NavigationCommand running = _running;
             NavigationCommand pending = _pending;
-            _running = null;
             _pending = null;
+            _running = null;
             if (running != null)
             {
-                UIHolderObjectBase.Cancel(running.Cts);
+                running.Cts?.Cancel();
                 running.Completion.TrySetResult(cancelled);
             }
-            if (pending != null)
-            {
-                pending.Cts.Dispose();
-                pending.Completion.TrySetResult(cancelled);
-            }
+            if (pending != null) pending.Completion.TrySetResult(cancelled);
             _navigating = false;
         }
 

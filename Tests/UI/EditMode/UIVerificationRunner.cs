@@ -42,8 +42,21 @@ namespace AlicizaX.UI.Tests
 
         private static void Poll()
         {
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.isPlayingOrWillChangePlaymode ||
-                !File.Exists(RequestPath) || SessionState.GetString(OutputKey, "") != "" || (bool)IsRunActive.Invoke(null, null)) return;
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.isPlayingOrWillChangePlaymode)
+                return;
+
+            bool runActive = IsRunActive != null && (bool)IsRunActive.Invoke(null, null);
+            string output = SessionState.GetString(OutputKey, "");
+            // 上一次运行被重新编译/退出 PlayMode 打断后，SessionState 会残留 OutputKey。
+            // 只有“存在新请求 + 没有活动运行”时才判定为残留；PlayMode 进入时的域重载期间
+            // 请求文件已被消费，因此不会误清正在运行的 OutputKey。
+            if (output != "" && !runActive && File.Exists(RequestPath))
+            {
+                SessionState.EraseString(OutputKey);
+                SessionState.EraseString(RefreshKey);
+                output = "";
+            }
+            if (!File.Exists(RequestPath) || output != "" || runActive) return;
             var request = JsonUtility.FromJson<Request>(File.ReadAllText(RequestPath));
             string stamp = request.output + "|" + File.GetLastWriteTimeUtc(RequestPath).Ticks;
             if (SessionState.GetString(RefreshKey, "") != stamp)

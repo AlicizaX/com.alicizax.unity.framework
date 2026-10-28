@@ -13,7 +13,7 @@ namespace AlicizaX.UI.Tests
     {
         private UIFixture _fixture;
         [SetUp] public void SetUp() => _fixture = new UIFixture();
-        [TearDown] public void TearDown() => _fixture.Dispose();
+        [TearDown] public void TearDown() => _fixture?.Dispose();
 
         [UnityTest]
         public IEnumerator IndependentWidgetLoadsCanFinishOutOfOrderAndCancelSeparately()
@@ -48,7 +48,7 @@ namespace AlicizaX.UI.Tests
             _fixture.Loader.Deferred = true;
             var first = window.CreateAsync();
             var second = window.CreateAsync();
-            yield return UIFixture.Wait(_fixture.Service.CloseUI<UIProbeWindow>());
+            yield return _fixture.Wait(_fixture.Service.CloseUI<UIProbeWindow>());
             _fixture.Loader.Deliver(1);
             _fixture.Loader.Deliver();
             var a = first.GetAwaiter().GetResult();
@@ -105,7 +105,7 @@ namespace AlicizaX.UI.Tests
             var window = _fixture.Service.ShowUISync<UITimedCacheWindow>();
             var child = window.Create();
             var holder = child.Holder;
-            yield return UIFixture.Wait(_fixture.Service.CloseUI<UITimedCacheWindow>());
+            yield return _fixture.Wait(_fixture.Service.CloseUI<UITimedCacheWindow>());
             float deadline = Time.realtimeSinceStartup + 3f;
             while (child.Destroys == 0 && Time.realtimeSinceStartup < deadline)
             {
@@ -123,7 +123,7 @@ namespace AlicizaX.UI.Tests
         {
             var window = _fixture.Service.ShowUISync<UITimedCacheWindow>();
             var child = window.Create();
-            yield return UIFixture.Wait(_fixture.Service.CloseUI<UITimedCacheWindow>());
+            yield return _fixture.Wait(_fixture.Service.CloseUI<UITimedCacheWindow>());
             Assert.That(_fixture.Service.ShowUISync<UITimedCacheWindow>(), Is.SameAs(window));
             float deadline = Time.realtimeSinceStartup + 1.2f;
             while (Time.realtimeSinceStartup < deadline)
@@ -146,7 +146,7 @@ namespace AlicizaX.UI.Tests
             var opening = child.AwaitTransition();
             yield return null;
             window.DestroyNow();
-            yield return UIFixture.Wait(opening);
+            yield return _fixture.Wait(opening);
             yield return null;
             Assert.That(holder == null, Is.True);
             Assert.That(child.Closes, Is.EqualTo(1));
@@ -184,7 +184,7 @@ namespace AlicizaX.UI.Tests
             _fixture.Loader.Deferred = true;
             var tab = window.SwitchTab(0);
             yield return null;
-            yield return UIFixture.Wait(_fixture.Service.CloseUI<UIProbeTabWindow>(true));
+            yield return _fixture.Wait(_fixture.Service.CloseUI<UIProbeTabWindow>(true));
             Assert.That(tab.GetAwaiter().GetResult(), Is.Null);
             var late = _fixture.Loader.Deliver();
             yield return null;
@@ -247,7 +247,7 @@ namespace AlicizaX.UI.Tests
             Assert.That(transition.Status.IsCompleted(), Is.False);
             yield return null;
             gate.Finish();
-            yield return UIFixture.Wait(transition);
+            yield return _fixture.Wait(transition);
             Assert.That(window.State, Is.EqualTo(UIState.Opened));
         }
 
@@ -269,7 +269,7 @@ namespace AlicizaX.UI.Tests
                     children.Add(leaf);
                     holders.Add(leaf.Holder);
                 }
-                yield return UIFixture.Wait(_fixture.Service.CloseUI<UIProbeWindow>(true));
+                yield return _fixture.Wait(_fixture.Service.CloseUI<UIProbeWindow>(true));
                 yield return null;
             }
             UIFixture.Publish();

@@ -12,7 +12,7 @@ namespace AlicizaX.UI.Tests
     {
         private UIFixture _fixture;
         [SetUp] public void SetUp() => _fixture = new UIFixture();
-        [TearDown] public void TearDown() => _fixture.Dispose();
+        [TearDown] public void TearDown() => _fixture?.Dispose();
 
         [TestCase(0, false)] [TestCase(0, true)]
         [TestCase(1, false)] [TestCase(1, true)]

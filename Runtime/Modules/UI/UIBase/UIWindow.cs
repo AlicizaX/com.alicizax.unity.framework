@@ -9,6 +9,7 @@ namespace AlicizaX.UI.Runtime
     {
         private Canvas _canvas;
         private GraphicRaycaster _raycaster;
+        private int _depth;
 
         protected UniTask CloseSelf(bool force = false, bool skipTransition = false) =>
             Service.CloseWindow(this, force, skipTransition);
@@ -18,10 +19,16 @@ namespace AlicizaX.UI.Runtime
         internal override void OnActivityChanged() => Service.SetUpdating(this, Effective && State == UIState.Opened);
 
         internal Canvas Canvas => _canvas;
+
+        /// <summary>层级深度。资源尚未绑定 Holder 时只记录，待 Canvas 创建后一次应用。</summary>
         internal int Depth
         {
-            get => _canvas != null ? _canvas.sortingOrder : 0;
-            set { if (_canvas != null) _canvas.sortingOrder = value; }
+            get => _depth;
+            set
+            {
+                _depth = value;
+                if (_canvas != null) _canvas.sortingOrder = value;
+            }
         }
 
         internal void SetCanvasEnabled(bool value) => _canvas.enabled = value;
@@ -29,7 +36,7 @@ namespace AlicizaX.UI.Runtime
             Holder.gameObject.layer = value ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
         private protected override void SetInteractable(bool value)
         {
-            if (_raycaster != null) _raycaster.enabled = value;
+            _raycaster.enabled = value;
         }
 
         private protected override void ReleaseVisuals()
@@ -52,6 +59,7 @@ namespace AlicizaX.UI.Runtime
             _canvas = holder.GetComponent<Canvas>();
             if (_canvas == null) _canvas = holder.gameObject.AddComponent<Canvas>();
             _canvas.overrideSorting = true;
+            _canvas.sortingOrder = _depth;
             _raycaster = holder.GetComponent<GraphicRaycaster>();
             if (_raycaster == null) _raycaster = holder.gameObject.AddComponent<GraphicRaycaster>();
             _raycaster.enabled = false;

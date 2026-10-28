@@ -4,6 +4,7 @@ using System.Threading;
 using AlicizaX.Timer.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -13,44 +14,33 @@ namespace AlicizaX.UI.Runtime
 #endif
         IServiceTickable
     {
-        private ITimerService _timerService;
         internal readonly IUIResourceLoader ResourceLoader;
         private readonly Dictionary<RuntimeTypeHandle, UIWindowRecord> _windows = new(RuntimeTypeHandleComparer.Instance);
         private readonly List<UIWindow> _updating = new(8);
-        private readonly HashSet<UIWindow> _updateMembers = new();
-        private readonly HashSet<UIWindow> _pendingUpdateAdds = new();
-        private bool _ticking;
+        private readonly List<UIWindow> _tickBuffer = new(8);
+        private readonly List<UIHolderObjectBase> _transitions = new(8);
+        private readonly List<UIHolderObjectBase> _transitionBuffer = new(8);
+        private UIWindowCache _cache;
+        private UIBlocker _blocker;
+        private ITimerService _timerService;
+        private bool _initialized;
         private bool _shuttingDown;
 
         public UIService() : this(new UIResourceLoader()) { }
         internal UIService(IUIResourceLoader resourceLoader) => ResourceLoader = resourceLoader;
 
+        protected override void OnDestroyService() => DestroyAllManagedUI();
+
         private UIWindowRecord GetWindowRecord(RuntimeTypeHandle handle)
         {
+            if (_windows.TryGetValue(handle, out UIWindowRecord record)) return record;
             if (_shuttingDown || !_initialized)
             {
                 Log.Error("[UI] UIService is not running.");
                 return null;
             }
-            if (handle.Value == IntPtr.Zero)
-            {
-                Log.Error("[UI] Window type handle is empty.");
-                return null;
-            }
-            if (_windows.TryGetValue(handle, out var record)) return record;
-            Type type = Type.GetTypeFromHandle(handle);
-            if (type == null || !typeof(UIWindow).IsAssignableFrom(type) || type.IsAbstract || type.ContainsGenericParameters)
-            {
-                Log.Error("[UI] Unknown or invalid window type: {0}.", type);
-                return null;
-            }
-            UIMetadata metadata = UIMetadata.Create(type);
+            UIMetadata metadata = UIMetadata.Create(Type.GetTypeFromHandle(handle));
             if (metadata == null) return null;
-            if ((uint)metadata.MetaInfo.UILayer >= (uint)UILayer.All)
-            {
-                Log.Error("[UI] Invalid window layer: {0}.", metadata.MetaInfo.UILayer);
-                return null;
-            }
             record = new UIWindowRecord(metadata);
             _windows.Add(handle, record);
             return record;
@@ -59,34 +49,49 @@ namespace AlicizaX.UI.Runtime
         private UIWindowRecord TryGetWindowRecord(RuntimeTypeHandle handle) =>
             _windows.TryGetValue(handle, out var record) ? record : null;
 
-        protected override void OnDestroyService() => DestroyAllManagedUI();
+        private static bool IsValidWindowHandle(RuntimeTypeHandle handle)
+        {
+            if (handle.Value == IntPtr.Zero)
+            {
+                Log.Error("[UI] Window type handle is empty.");
+                return false;
+            }
+            Type type = Type.GetTypeFromHandle(handle);
+            if (type == null || !typeof(UIWindow).IsAssignableFrom(type) || type.IsAbstract || type.ContainsGenericParameters)
+            {
+                Log.Error("[UI] Unknown or invalid window type: {0}.", type);
+                return false;
+            }
+            return true;
+        }
 
         internal void SetUpdating(UIWindow view, bool enabled)
         {
-            if (enabled && !_shuttingDown)
+            if (enabled)
             {
-                if (_ticking) _pendingUpdateAdds.Add(view);
-                else if (_updateMembers.Add(view)) _updating.Add(view);
+                if (!_updating.Contains(view)) _updating.Add(view);
             }
-            else
-            {
-                _pendingUpdateAdds.Remove(view);
-                if (_updateMembers.Remove(view) && !_ticking) _updating.Remove(view);
-            }
+            else _updating.Remove(view);
         }
+
+        internal void RegisterTransition(UIHolderObjectBase holder)
+        {
+            if (!_transitions.Contains(holder)) _transitions.Add(holder);
+        }
+
+        internal void UnregisterTransition(UIHolderObjectBase holder) => _transitions.Remove(holder);
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            _ticking = true;
-            for (int i = 0; i < _updating.Count; i++)
-                if (_updateMembers.Contains(_updating[i])) _updating[i].InternalUpdate();
-            _ticking = false;
-            for (int i = _updating.Count - 1; i >= 0; i--)
-                if (!_updateMembers.Contains(_updating[i])) _updating.RemoveAt(i);
-            foreach (UIWindow view in _pendingUpdateAdds)
-                if (view.Effective && view.State == UIState.Opened && _updateMembers.Add(view))
-                    _updating.Add(view);
-            _pendingUpdateAdds.Clear();
+            // 帧初冻结两份快照：本帧 update 中新建的窗口/转场从下一帧开始推进，
+            // 避免“刚打开就在同一帧被推进一帧”的时间差。
+            _tickBuffer.Clear();
+            _tickBuffer.AddRange(_updating);
+            _transitionBuffer.Clear();
+            _transitionBuffer.AddRange(_transitions);
+
+            for (int i = 0; i < _tickBuffer.Count; i++) _tickBuffer[i].InternalUpdate(deltaTime);
+            for (int i = 0; i < _transitionBuffer.Count; i++) _transitionBuffer[i].AdvanceTransition(deltaTime);
         }
 
         public UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIWindow =>
@@ -100,7 +105,7 @@ namespace AlicizaX.UI.Runtime
 
         public UniTask<UIWindow> ShowUI(string type, CancellationToken cancellationToken, params object[] userDatas)
         {
-            if (!string.IsNullOrEmpty(type) && UIMetaRegistry.TryGet(type, out var metadata))
+            if (UIMetaRegistry.TryGet(type, out var metadata))
                 return ShowUI(metadata.RuntimeTypeHandle, cancellationToken, userDatas);
             Log.Error("[UI] Unknown UI type: {0}.", type);
             return UniTask.FromResult<UIWindow>(null);
@@ -109,8 +114,11 @@ namespace AlicizaX.UI.Runtime
         public UniTask<UIWindow> ShowUI(RuntimeTypeHandle handle, params object[] userDatas) =>
             ShowUI(handle, CancellationToken.None, userDatas);
 
-        public UniTask<UIWindow> ShowUI(RuntimeTypeHandle handle, CancellationToken cancellationToken, params object[] userDatas) =>
-            GetView<UIWindow>(RequestShow(GetWindowRecord(handle), userDatas, cancellationToken));
+        public UniTask<UIWindow> ShowUI(RuntimeTypeHandle handle, CancellationToken cancellationToken, params object[] userDatas)
+        {
+            if (!IsValidWindowHandle(handle)) return UniTask.FromResult<UIWindow>(null);
+            return GetView<UIWindow>(RequestShow(GetWindowRecord(handle), userDatas, cancellationToken));
+        }
 
         private static async UniTask<T> GetView<T>(UniTask<UIOpenResult> task) where T : UIWindow
         {
@@ -127,7 +135,8 @@ namespace AlicizaX.UI.Runtime
         public UniTask CloseUI(RuntimeTypeHandle handle, bool force = false, bool skipTransition = false) =>
             RequestClose(TryGetWindowRecord(handle), force, skipTransition, affectNavigation: true);
 
-        internal UniTask CloseWindow(UIWindow view, bool force = false, bool skipTransition = false, bool affectNavigation = true)
+        internal UniTask CloseWindow(UIWindow view, bool force = false, bool skipTransition = false,
+            bool affectNavigation = true, CancellationToken token = default)
         {
             UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
             if (record == null || record.View != view)
@@ -135,7 +144,7 @@ namespace AlicizaX.UI.Runtime
                 Log.Warning("[UI] Close ignored because the window is not open and not cached.");
                 return UniTask.CompletedTask;
             }
-            return RequestClose(record, force, skipTransition, affectNavigation);
+            return RequestClose(record, force, skipTransition, affectNavigation, token);
         }
 
         public T GetUI<T>() where T : UIWindow
@@ -163,7 +172,7 @@ namespace AlicizaX.UI.Runtime
             if (record != null && record.View == view)
             {
                 RemoveFromOpenStack(record);
-                RemoveFromCache(record);
+                _cache.Remove(record);
                 record.View = null;
             }
             if (_currentView == view) ClearHistory();
@@ -179,27 +188,31 @@ namespace AlicizaX.UI.Runtime
                 record.View?.DestroyNow();
             }
             _windows.Clear();
-            for (int i = 0; i < _openUI.Length; i++) _openUI[i] = null;
+            _cache.Clear();
+            _blocker?.Dispose();
+            _blocker = null;
             _updating.Clear();
-            _updateMembers.Clear();
-            _pendingUpdateAdds.Clear();
-            if (m_LastCountDownHandle != 0)
-            {
-                _timerService.RemoveTimer(m_LastCountDownHandle);
-                m_LastCountDownHandle = 0;
-            }
+            _tickBuffer.Clear();
+            _transitions.Clear();
+            _transitionBuffer.Clear();
+            for (int i = 0; i < _openUI.Length; i++) _openUI[i] = null;
+            DestroyUIRoot();
+            _initialized = false;
+        }
+
+        private void DestroyUIRoot()
+        {
             if (UIRoot != null)
             {
-                if (Application.isPlaying) UnityEngine.Object.Destroy(UIRoot.gameObject);
-                else UnityEngine.Object.DestroyImmediate(UIRoot.gameObject);
+                if (Application.isPlaying) Object.Destroy(UIRoot.gameObject);
+                else Object.DestroyImmediate(UIRoot.gameObject);
             }
-            m_LayerBlock = null;
-            UICacheLayer = null;
-            UICanvasRoot = null;
-            UICanvas = null;
-            UICamera = null;
             UIRoot = null;
-            _initialized = false;
+            UICanvas = null;
+            UICanvasRoot = null;
+            UICamera = null;
+            _cacheLayer = null;
+            for (int i = 0; i < _layers.Length; i++) _layers[i] = null;
         }
     }
 }

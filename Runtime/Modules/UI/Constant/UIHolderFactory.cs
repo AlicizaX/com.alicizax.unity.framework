@@ -16,7 +16,10 @@ namespace AlicizaX.UI.Runtime
             if (!UIResRegistry.TryGet(typeof(T).TypeHandle, out var resource)) return null;
             try
             {
-                return GetHolderOrDestroy<T>(await LoadUIResourcesAsync(resource, parent, CancellationToken.None), resource.Location);
+                GameObject obj = await LoadUIResourcesAsync(resource, parent, CancellationToken.None);
+                if (TryBindHolder(obj, typeof(T), resource.Location, out UIHolderObjectBase holder)) return (T)holder;
+                DestroyLoadedObject(obj);
+                return null;
             }
             catch (Exception error)
             {
@@ -28,7 +31,13 @@ namespace AlicizaX.UI.Runtime
         public static T CreateUIHolderSync<T>(Transform parent) where T : UIHolderObjectBase
         {
             if (!UIResRegistry.TryGet(typeof(T).TypeHandle, out var resource)) return null;
-            try { return GetHolderOrDestroy<T>(LoadUIResourcesSync(resource, parent), resource.Location); }
+            try
+            {
+                GameObject obj = LoadUIResourcesSync(resource, parent);
+                if (TryBindHolder(obj, typeof(T), resource.Location, out UIHolderObjectBase holder)) return (T)holder;
+                DestroyLoadedObject(obj);
+                return null;
+            }
             catch (Exception error)
             {
                 Log.Error("[UI] Failed to load {0}: {1}", resource.Location, error);
@@ -55,7 +64,12 @@ namespace AlicizaX.UI.Runtime
             {
                 obj = await view.Service.ResourceLoader.LoadAsync(view.Metadata.ResInfo, parent, token);
                 if (token.IsCancellationRequested || view.DestroyRequested) return false;
-                return bound = ValidateAndBind(view, obj);
+                if (!TryBindHolder(obj, view.UIHolderType, view.Metadata.ResInfo.Location, out UIHolderObjectBase holder))
+                    return false;
+                view.BindUIHolder(holder);
+                view.SetDestroyHolderOnDispose(true);
+                bound = true;
+                return true;
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
             catch (Exception error)
@@ -74,7 +88,12 @@ namespace AlicizaX.UI.Runtime
             {
                 obj = view.Service.ResourceLoader.Load(view.Metadata.ResInfo, parent);
                 if (view.DestroyRequested) return false;
-                return bound = ValidateAndBind(view, obj);
+                if (!TryBindHolder(obj, view.UIHolderType, view.Metadata.ResInfo.Location, out UIHolderObjectBase holder))
+                    return false;
+                view.BindUIHolder(holder);
+                view.SetDestroyHolderOnDispose(true);
+                bound = true;
+                return true;
             }
             catch (Exception error)
             {
@@ -82,6 +101,20 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
             finally { if (!bound) DestroyLoadedObject(obj); }
+        }
+
+        private static bool TryBindHolder(GameObject obj, Type holderType, string location, out UIHolderObjectBase holder)
+        {
+            holder = null;
+            if (obj == null)
+            {
+                Log.Error("[UI] UI resource could not be loaded: {0}.", location);
+                return false;
+            }
+            holder = (UIHolderObjectBase)obj.GetComponent(holderType);
+            if (holder != null) return true;
+            Log.Error("[UI] UI resource {0} is missing holder {1}.", location, holderType.FullName);
+            return false;
         }
 
         private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent, CancellationToken token)
@@ -95,38 +128,6 @@ namespace AlicizaX.UI.Runtime
         {
             GameObject prefab = Resources.Load<GameObject>(location);
             return prefab != null ? Object.Instantiate(prefab, parent) : null;
-        }
-
-        private static bool ValidateAndBind(UIBase view, GameObject obj)
-        {
-            if (obj == null)
-            {
-                Log.Error("[UI] UI resource could not be loaded: {0}.", view.Metadata.ResInfo.Location);
-                return false;
-            }
-            var holder = (UIHolderObjectBase)obj.GetComponent(view.UIHolderType);
-            if (holder == null)
-            {
-                Log.Error("[UI] UI resource {0} is missing holder {1}.", obj.name, view.UIHolderType.FullName);
-                return false;
-            }
-            view.BindUIHolder(holder);
-            view.SetDestroyHolderOnDispose(true);
-            return true;
-        }
-
-        private static T GetHolderOrDestroy<T>(GameObject obj, string location) where T : UIHolderObjectBase
-        {
-            if (obj == null)
-            {
-                Log.Error("[UI] UI resource could not be loaded: {0}.", location);
-                return null;
-            }
-            T holder = obj.GetComponent<T>();
-            if (holder != null) return holder;
-            DestroyLoadedObject(obj);
-            Log.Error("[UI] UI resource {0} is missing holder {1}.", location, typeof(T).FullName);
-            return null;
         }
 
         private static void DestroyLoadedObject(GameObject obj)

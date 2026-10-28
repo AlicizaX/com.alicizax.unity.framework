@@ -12,7 +12,7 @@ namespace AlicizaX.UI.Tests
     {
         private UIFixture _fixture;
         [SetUp] public void SetUp() => _fixture = new UIFixture();
-        [TearDown] public void TearDown() => _fixture.Dispose();
+        [TearDown] public void TearDown() => _fixture?.Dispose();
         private void Success(UniTask<UIRouteResult> task) => Assert.That(task.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Success));
 
         [TestCase("back")] [TestCase("root")] [TestCase("existing")]
@@ -95,7 +95,7 @@ namespace AlicizaX.UI.Tests
             Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.True);
             Success(_fixture.Service.SyncFromCurrentUI(typeof(UIProbeWindow), "adopt"));
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
-            Assert.That(_fixture.Service.CurrentEntry.Args[0], Is.EqualTo("adopt"));
+            Assert.That(_fixture.Service.CurrentEntry.Arguments[0], Is.EqualTo("adopt"));
             Assert.That(_fixture.Service.SyncFromCurrentUI(typeof(UISecondWindow)).GetAwaiter().GetResult().Status,
                 Is.EqualTo(UIRouteStatus.NotFound));
         }
@@ -113,14 +113,15 @@ namespace AlicizaX.UI.Tests
         }
 
         [Test]
-        public void RouteArgumentsAreCopiedOnInputAndQuery()
+        public void RouteArgumentsAreCopiedOnInputAndReadOnlyOnQuery()
         {
             object[] args = { "original" };
             Success(_fixture.Service.NavigateTo<UIProbeWindow>(args));
             args[0] = "changed";
             var entry = _fixture.Service.CurrentEntry;
-            entry.Args[0] = "changed again";
-            Assert.That(_fixture.Service.CurrentEntry.Args[0], Is.EqualTo("original"));
+            Assert.That(entry.Arguments[0], Is.EqualTo("original"));
+            Assert.That(_fixture.Service.CurrentEntry, Is.SameAs(entry));
+            Assert.That(entry.Arguments, Is.Not.InstanceOf<object[]>());
         }
 
         [TestCase("push")] [TestCase("replace")] [TestCase("reset")]

@@ -6,7 +6,7 @@ namespace AlicizaX.UI.Runtime
     internal sealed partial class UIService
     {
         int IUIDebugService.LayerCount => _openUI.Length;
-        int IUIDebugService.CacheWindowCount => _cached.Count;
+        int IUIDebugService.CacheWindowCount => _cache.Count;
 
         void IUIDebugService.FillServiceDebugInfo(UIServiceDebugInfo info)
         {
@@ -26,13 +26,13 @@ namespace AlicizaX.UI.Runtime
 
                 openWindowCount += windows.Count;
             }
-            info.UpdateCount = _updateMembers.Count;
+            info.UpdateCount = _updating.Count;
             info.Initialized = _initialized;
             info.Orthographic = UICamera != null && UICamera.orthographic;
             info.OpenWindowCount = openWindowCount;
-            info.CacheWindowCount = _cached.Count;
-            info.BlockActive = m_LayerBlock != null && m_LayerBlock.activeSelf;
-            info.BlockRemaining = GetTimerRemaining(m_LastCountDownHandle);
+            info.CacheWindowCount = _cache.Count;
+            info.BlockActive = _blocker != null && _blocker.IsActive;
+            info.BlockRemaining = _blocker != null ? _blocker.Remaining : 0f;
             info.Camera = UICamera;
             info.Canvas = UICanvas;
             info.Root = UIRoot;
@@ -84,7 +84,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             int index = 0;
-            for (int i = 0; i < _cached.Count; i++)
+            for (int i = 0; i < _cache.Count; i++)
             {
                 if (index >= capacity || index >= infos.Length)
                 {
@@ -94,7 +94,7 @@ namespace AlicizaX.UI.Runtime
                 UIWindowDebugInfo info = infos[index];
                 if (info != null)
                 {
-                    UIWindowRecord record = _cached[i];
+                    UIWindowRecord record = _cache.Get(i);
                     FillWindowDebugInfo(record, record.MetaInfo.UILayer, index, info);
                 }
 
@@ -121,7 +121,7 @@ namespace AlicizaX.UI.Runtime
             info.State = record.State;
             info.Visible = view != null && view.Visible;
             info.Processing = record.Flight != null || record.State == UIState.Opening || record.State == UIState.Closing;
-            info.Updating = view != null && (_updateMembers.Contains(view) || _pendingUpdateAdds.Contains(view));
+            info.Updating = view != null && _updating.Contains(view);
             info.Depth = view != null ? view.Depth : 0;
             info.CacheTime = record.MetaInfo.CacheTime;
             info.CacheRemaining = GetTimerRemaining(record.CacheTimer);

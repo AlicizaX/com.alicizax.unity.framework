@@ -14,7 +14,6 @@ namespace AlicizaX.UI.Runtime
         internal int CacheIndex = -1;
         internal ulong CacheTimer;
         internal bool ForceClose;
-        internal UniTaskCompletionSource Settled;
         internal bool IsCached => CacheIndex >= 0;
         internal UIState State => View?.State ?? UIState.Uninitialized;
         internal UIMetaRegistry.UIMetaInfo MetaInfo => Metadata.MetaInfo;
@@ -57,7 +56,6 @@ namespace AlicizaX.UI.Runtime
             Registration.Dispose();
             Completion.TrySetResult(result);
         }
-
     }
 
     internal enum UIOpenStatus : byte { Failed, Opened, Cancelled, Ignored }

@@ -26,61 +26,59 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private static readonly Dictionary<RuntimeTypeHandle, UIMetaInfo> _typeHandleMap = new();
-        private static readonly Dictionary<string, RuntimeTypeHandle> _stringHandleMap = new();
+        private static readonly Dictionary<RuntimeTypeHandle, UIMetaInfo> _byHandle = new(RuntimeTypeHandleComparer.Instance);
+        private static readonly Dictionary<string, UIMetaInfo> _byName = new();
 
+        /// <summary>
+        /// 注册 UI 类型。注册期校验类型与层级，非法注册直接抛异常（冷路径 fail fast）。
+        /// </summary>
         public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, int cacheTime = 0,
             bool needUpdate = false)
         {
-            RuntimeTypeHandle holderHandle = holderType.TypeHandle;
-            RuntimeTypeHandle uiHandle = uiType.TypeHandle;
-            _typeHandleMap[uiHandle] = new UIMetaInfo(uiHandle, holderHandle, layer, cacheTime, needUpdate);
-
+            Validate(uiType, holderType, layer);
+            var info = new UIMetaInfo(uiType.TypeHandle, holderType.TypeHandle, layer, cacheTime, needUpdate);
+            _byHandle[uiType.TypeHandle] = info;
             string fullName = uiType.FullName;
-            if (!string.IsNullOrEmpty(fullName))
-            {
-                _stringHandleMap[fullName] = uiHandle;
-            }
+            if (!string.IsNullOrEmpty(fullName)) _byName[fullName] = info;
         }
 
         public static bool TryGet(RuntimeTypeHandle handle, out UIMetaInfo info)
         {
-            if (_typeHandleMap.TryGetValue(handle, out info))
-            {
-                return true;
-            }
-
+            if (_byHandle.TryGetValue(handle, out info)) return true;
+            if (handle.Value == IntPtr.Zero) return false;
             return TryReflectAndRegister(Type.GetTypeFromHandle(handle), out info);
         }
 
         public static bool TryGet(string typeName, out UIMetaInfo info)
         {
-            if (string.IsNullOrEmpty(typeName))
-            {
-                info = default;
-                return false;
-            }
-            if (_stringHandleMap.TryGetValue(typeName, out RuntimeTypeHandle handle))
-            {
-                return TryGet(handle, out info);
-            }
-
-            Type type = AlicizaX.Utility.Assembly.GetType(typeName);
-            if (type != null && TryReflectAndRegister(type, out info))
-            {
-                return true;
-            }
-
             info = default;
-            return false;
+            if (string.IsNullOrEmpty(typeName)) return false;
+            if (_byName.TryGetValue(typeName, out info)) return true;
+            Type type = AlicizaX.Utility.Assembly.GetType(typeName);
+            return type != null && TryReflectAndRegister(type, out info);
+        }
+
+        private static void Validate(Type uiType, Type holderType, UILayer layer)
+        {
+            if (uiType == null) throw new ArgumentNullException(nameof(uiType));
+            if (holderType == null) throw new ArgumentNullException(nameof(holderType));
+            if (!typeof(UIBase).IsAssignableFrom(uiType))
+                throw new ArgumentException($"[UI] {uiType.FullName} must inherit UIBase.", nameof(uiType));
+            if (uiType.IsAbstract || uiType.ContainsGenericParameters)
+                throw new ArgumentException($"[UI] {uiType.FullName} must be a concrete type.", nameof(uiType));
+            if (!typeof(UIHolderObjectBase).IsAssignableFrom(holderType))
+                throw new ArgumentException($"[UI] {holderType.FullName} must inherit UIHolderObjectBase.", nameof(holderType));
+            if ((uint)layer >= (uint)UILayer.All)
+                throw new ArgumentOutOfRangeException(nameof(layer), layer, "[UI] UILayer.All is not a display layer.");
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static bool TryReflectAndRegister(Type uiType, out UIMetaInfo info)
         {
-            if (uiType == null || uiType.IsAbstract || uiType.ContainsGenericParameters)
+            info = default;
+            if (uiType == null || !typeof(UIBase).IsAssignableFrom(uiType) ||
+                uiType.IsAbstract || uiType.ContainsGenericParameters)
             {
-                info = default;
                 return false;
             }
 
@@ -90,7 +88,11 @@ namespace AlicizaX.UI.Runtime
             if (holderType == null)
             {
                 Log.Error($"[UI] Failed to register UI type {uiType.FullName}: holder type not found.");
-                info = default;
+                return false;
+            }
+            if (!typeof(UIHolderObjectBase).IsAssignableFrom(holderType))
+            {
+                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: holder type is not a UIHolderObjectBase.");
                 return false;
             }
 
@@ -114,8 +116,14 @@ namespace AlicizaX.UI.Runtime
                 }
             }
 
+            if ((uint)layer >= (uint)UILayer.All)
+            {
+                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: invalid layer {layer}.");
+                return false;
+            }
+
             Register(uiType, holderType, layer, cacheTime, needUpdate);
-            info = _typeHandleMap[uiType.TypeHandle];
+            info = _byHandle[uiType.TypeHandle];
             return true;
         }
 

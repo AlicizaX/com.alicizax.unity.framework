@@ -29,7 +29,7 @@ namespace AlicizaX.UI.Runtime
     }
 
     [DisallowMultipleComponent]
-    public sealed class UIPresetTransition : MonoBehaviour, IUITransitionSource
+    public sealed class UIPresetTransition : MonoBehaviour, ITickTransitionSource
     {
         private struct VisualState
         {
@@ -55,33 +55,78 @@ namespace AlicizaX.UI.Runtime
         private bool _closed = true;
         private VisualState _openState;
 
+        private VisualState _fromState;
+        private VisualState _toState;
+        private UITransitionEase _ease;
+        private float _duration;
+        private float _elapsed;
+        private bool _opening;
+        private bool _active;
+
 #if UNITY_EDITOR
         private bool _editorPreviewActive;
         private VisualState _editorPreviewRestoreState;
-#endif
 
-#if UNITY_EDITOR
         private void OnDisable() => EditorStopPreview();
 #endif
 
-        public UniTask Play(bool open, CancellationToken cancellationToken)
+        /// <summary>
+        /// 异步播放路径：仅用于外部直接驱动（Holder 在服务存在时走 Tick 驱动）。
+        /// </summary>
+        public async UniTask Play(bool open, CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            CaptureBaseline();
-            if (open)
+            if (!Begin(open)) return;
+            while (true)
             {
-                if (_closed) ApplyVisualState(BuildClosedState(openPreset, _openState));
-                _closed = false;
-                return PlayAsync(_openState, openPreset == UITransitionPreset.None ? 0f : openDuration, openEase, true, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (Advance(Time.deltaTime)) return;
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+            }
+        }
+
+        public bool Begin(bool open)
+        {
+            CaptureBaseline();
+            _opening = open;
+            if (open && _closed) ApplyVisualState(BuildClosedState(openPreset, _openState));
+            _fromState = CaptureCurrentState();
+            _toState = open ? _openState : BuildClosedState(closePreset, _openState);
+            _ease = open ? openEase : closeEase;
+            _duration = open
+                ? (openPreset == UITransitionPreset.None ? 0f : openDuration)
+                : (closePreset == UITransitionPreset.None ? 0f : closeDuration);
+            _elapsed = 0f;
+            if (_duration > 0f)
+            {
+                _active = true;
+                return true;
             }
 
-            return PlayAsync(BuildClosedState(closePreset, _openState), closePreset == UITransitionPreset.None ? 0f : closeDuration, closeEase, false, cancellationToken);
+            _active = false;
+            ApplyVisualState(_toState);
+            _closed = !open;
+            return false;
+        }
+
+        public bool Advance(float deltaTime)
+        {
+            if (!_active) return true;
+            _elapsed += GetDeltaTime(deltaTime);
+            float progress = Mathf.Clamp01(_elapsed / _duration);
+            ApplyVisualState(Lerp(_fromState, _toState, Evaluate(_ease, progress)));
+            if (progress < 1f) return false;
+
+            ApplyVisualState(_toState);
+            _closed = !_opening;
+            _active = false;
+            return true;
         }
 
         public void Snap(bool open)
         {
             CaptureBaseline();
             _closed = !open;
+            _active = false;
             if (open)
             {
                 ApplyVisualState(_openState);
@@ -89,36 +134,6 @@ namespace AlicizaX.UI.Runtime
             }
 
             ApplyVisualState(BuildClosedState(closePreset, _openState));
-        }
-
-        private async UniTask PlayAsync(
-            VisualState targetState,
-            float duration,
-            UITransitionEase ease,
-            bool isOpening,
-            CancellationToken cancellationToken)
-        {
-            VisualState currentState = CaptureCurrentState();
-            if (duration <= 0f)
-            {
-                ApplyVisualState(targetState);
-                _closed = !isOpening;
-                return;
-            }
-
-            float elapsed = 0f;
-            while (elapsed < duration)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                elapsed = Mathf.Min(elapsed + GetDeltaTime(), duration);
-                float t = Evaluate(ease, elapsed / duration);
-                ApplyVisualState(Lerp(currentState, targetState, t));
-                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            ApplyVisualState(targetState);
-            _closed = !isOpening;
         }
 
         private void CaptureBaseline()
@@ -235,10 +250,8 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private float GetDeltaTime()
-        {
-            return useUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
-        }
+        private float GetDeltaTime(float driverDeltaTime) =>
+            useUnscaledTime ? Time.unscaledDeltaTime : driverDeltaTime;
 
         private VisualState Lerp(VisualState from, VisualState to, float t)
         {

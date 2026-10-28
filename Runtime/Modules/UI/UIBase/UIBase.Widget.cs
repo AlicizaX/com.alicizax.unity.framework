@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -10,82 +9,56 @@ namespace AlicizaX.UI.Runtime
     public abstract partial class UIBase
     {
         private List<UIWidget> _children;
-        private Dictionary<UIWidget, CancellationTokenSource> _childCreations;
+        private UIWidget[] _childBuffer;
+        private int _childCount;
 
-        private UIWidget[] SnapshotChildren(out int count)
+        private int SnapshotChildren()
         {
-            count = _children?.Count ?? 0;
-            if (count == 0) return null;
-            UIWidget[] snapshot = ArrayPool<UIWidget>.Shared.Rent(count);
-            _children.CopyTo(snapshot);
-            return snapshot;
-        }
-
-        private static void ReturnChildren(UIWidget[] snapshot)
-        {
-            if (snapshot != null) ArrayPool<UIWidget>.Shared.Return(snapshot, true);
+            int count = _children?.Count ?? 0;
+            if (count == 0)
+            {
+                // 子节点被移除后清掉快照尾部引用，避免缓存窗口长期持有已销毁的 Widget。
+                if (_childBuffer != null && _childCount > 0) Array.Clear(_childBuffer, 0, _childCount);
+                _childCount = 0;
+                return 0;
+            }
+            if (_childBuffer == null || _childBuffer.Length < count)
+                _childBuffer = new UIWidget[Mathf.NextPowerOfTwo(count)];
+            _children.CopyTo(_childBuffer);
+            if (_childCount > count) Array.Clear(_childBuffer, count, _childCount - count);
+            _childCount = count;
+            return count;
         }
 
         private void RefreshChildrenEffective()
         {
-            UIWidget[] snapshot = SnapshotChildren(out int count);
-            try
+            int count = SnapshotChildren();
+            for (int i = 0; i < count; i++)
             {
-                for (int i = 0; i < count; i++)
-                    if (!snapshot[i].DestroyRequested) snapshot[i].RefreshEffective();
+                UIWidget child = _childBuffer[i];
+                if (!child.DestroyRequested) child.RefreshEffective();
             }
-            finally { ReturnChildren(snapshot); }
         }
 
         private void DestroyChildrenImmediate()
         {
-            UIWidget[] snapshot = SnapshotChildren(out int count);
-            try
-            {
-                for (int i = 0; i < count; i++)
-                    snapshot[i].DestroyNow();
-            }
-            finally { ReturnChildren(snapshot); }
+            int count = SnapshotChildren();
+            for (int i = 0; i < count; i++) _childBuffer[i].DestroyNow();
+            if (_childBuffer != null) Array.Clear(_childBuffer, 0, _childCount);
+            _childCount = 0;
         }
 
-        private void UpdateChildren(UIBase root, int generation)
+        private void UpdateChildren(UIBase root, int generation, float deltaTime)
         {
-            UIWidget[] snapshot = SnapshotChildren(out int count);
-            try
-            {
-                for (int i = 0; i < count && Effective && root.IsCurrent(generation); i++)
-                    snapshot[i].InternalUpdate(root, generation);
-            }
-            finally { ReturnChildren(snapshot); }
-        }
-
-        private CancellationTokenSource BeginChildCreation(UIWidget widget)
-        {
-            var cancellation = new CancellationTokenSource();
-            (_childCreations ??= new Dictionary<UIWidget, CancellationTokenSource>()).Add(widget, cancellation);
-            return cancellation;
-        }
-
-        private void EndChildCreation(UIWidget widget, CancellationTokenSource cancellation)
-        {
-            _childCreations?.Remove(widget);
-            cancellation.Dispose();
-        }
-
-        private void CancelChildCreation(UIWidget widget)
-        {
-            if (_childCreations == null || !_childCreations.TryGetValue(widget, out CancellationTokenSource cancellation))
-                return;
-            UIHolderObjectBase.Cancel(cancellation);
+            int count = SnapshotChildren();
+            for (int i = 0; i < count && Effective && root.IsCurrent(generation); i++)
+                _childBuffer[i].InternalUpdate(root, generation, deltaTime);
         }
 
         private void CancelChildCreations()
         {
-            Dictionary<UIWidget, CancellationTokenSource> creations = _childCreations;
-            _childCreations = null;
-            if (creations == null) return;
-            foreach (CancellationTokenSource cancellation in creations.Values)
-                UIHolderObjectBase.Cancel(cancellation);
+            int count = SnapshotChildren();
+            for (int i = 0; i < count; i++) _childBuffer[i].CancelLoad();
         }
 
         internal async UniTask<UIWidget> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible,
@@ -94,22 +67,24 @@ namespace AlicizaX.UI.Runtime
             if (cancellationToken.IsCancellationRequested) return null;
             UIWidget widget = BeginWidgetCreate(metadata, parent);
             if (widget == null) return null;
-            CancellationTokenSource cancellation = BeginChildCreation(widget);
+            CancellationToken loadToken = widget.LoadToken;
             CancellationTokenRegistration registration = default;
             if (cancellationToken.CanBeCanceled)
-                registration = cancellationToken.Register(() => UIHolderObjectBase.Cancel(cancellation));
+                registration = cancellationToken.Register(UIWidget.CancelLoadCallback, widget);
             try
             {
-                bool loaded = await UIHolderFactory.CreateUIResourceAsync(widget, parent, cancellation.Token);
-                if (loaded && !cancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    return FinishWidgetCreate(widget, visible);
-                widget.DestroyNow();
-                return null;
+                bool loaded = await UIHolderFactory.CreateUIResourceAsync(widget, parent, loadToken);
+                if (!loaded || widget.DestroyRequested)
+                {
+                    widget.DestroyNow();
+                    return null;
+                }
+                return FinishWidgetCreate(widget, visible);
             }
             finally
             {
                 registration.Dispose();
-                EndChildCreation(widget, cancellation);
+                widget.EndLoad();
             }
         }
 
@@ -210,7 +185,6 @@ namespace AlicizaX.UI.Runtime
         internal void DetachWidget(UIWidget widget)
         {
             _children.Remove(widget);
-            CancelChildCreation(widget);
             OnWidgetRemoved(widget);
         }
 

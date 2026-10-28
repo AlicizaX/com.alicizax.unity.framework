@@ -19,6 +19,7 @@ namespace AlicizaX.UI.Runtime
         private UniTaskCompletionSource _transition;
         private UniTaskCompletionSource<bool> _logicalOpen;
         private EventListenerProxy _eventListenerProxy;
+        private bool _proxyReleasePending;
         private object[] _userDatas;
         private bool _visible;
         private bool _initializeInvoked;
@@ -44,13 +45,13 @@ namespace AlicizaX.UI.Runtime
         internal abstract void BindUIHolder(UIHolderObjectBase holder);
 
         protected object UserData => _userDatas != null && _userDatas.Length > 0 ? _userDatas[0] : null;
-        protected object[] UserDatas => _userDatas;
+        protected ReadOnlyMemory<object> UserDatas => _userDatas;
         protected virtual void OnInitialize() { }
         protected virtual void OnOpen() { }
         protected virtual void OnRefresh() { }
         protected virtual void OnClose() { }
         protected virtual void OnDestroy() { }
-        protected virtual void OnUpdate() { }
+        protected virtual void OnUpdate(float deltaTime) { }
         protected virtual void OnRegisterEvent(EventListenerProxy proxy) { }
         internal virtual void OnDestroyStarted() { }
         internal virtual void OnDestroyed() { }
@@ -100,6 +101,7 @@ namespace AlicizaX.UI.Runtime
         protected void BindHolderCommon(UIHolderObjectBase holder)
         {
             Holder = holder;
+            holder.SetOwner(this);
             _state = UIState.Loaded;
         }
 
@@ -151,7 +153,7 @@ namespace AlicizaX.UI.Runtime
                 return IsOpen && !DestroyRequested;
             }
             if (State == UIState.Loaded) return InternalInitialize(true) && IsOpen;
-            if (State != UIState.Initialized && State != UIState.Closed) return false;
+            if (State is not (UIState.Initialized or UIState.Closed)) return false;
             if (_activeHook != Hook.None)
             {
                 _pendingOpen = true;
@@ -181,9 +183,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrent(generation)) return false;
             PlayOpenVisual(generation, !ParentEffective).Forget();
             if (!IsCurrent(generation)) return false;
-            UniTaskCompletionSource<bool> opened = _logicalOpen;
-            _logicalOpen = null;
-            opened?.TrySetResult(IsOpen);
+            CompleteLogicalOpen(IsOpen);
             return IsOpen;
         }
 
@@ -220,7 +220,7 @@ namespace AlicizaX.UI.Runtime
 
         internal UniTask InternalClose(bool skipTransition = false, bool destroy = false)
         {
-            if (State == UIState.Destroyed || State == UIState.Destroying) return UniTask.CompletedTask;
+            if (State is UIState.Destroyed or UIState.Destroying) return UniTask.CompletedTask;
             DestroyRequested |= destroy;
             _pendingOpen = false;
             _pendingRefresh = false;
@@ -228,24 +228,17 @@ namespace AlicizaX.UI.Runtime
             if (State == UIState.Initializing)
             {
                 if (destroy) DestroyNow();
-                else
-                {
-                    UniTaskCompletionSource<bool> pending = _logicalOpen;
-                    _logicalOpen = null;
-                    pending?.TrySetResult(false);
-                }
+                else CompleteLogicalOpen(false);
                 return UniTask.CompletedTask;
             }
             if (State == UIState.Closing) return AwaitClosed();
             if (State == UIState.Closed)
             {
-                UniTaskCompletionSource<bool> pending = _logicalOpen;
-                _logicalOpen = null;
                 if (destroy) DestroyNow();
-                pending?.TrySetResult(false);
+                CompleteLogicalOpen(false);
                 return UniTask.CompletedTask;
             }
-            if (State == UIState.CreatedUI || State == UIState.Loaded)
+            if (State is UIState.CreatedUI or UIState.Loaded)
             {
                 DestroyNow();
                 return UniTask.CompletedTask;
@@ -262,16 +255,14 @@ namespace AlicizaX.UI.Runtime
             }
 
             int generation = ++_transitionGeneration;
-            UniTaskCompletionSource opening = _transition;
-            _transition = null;
-            UniTaskCompletionSource<bool> logicalOpen = _logicalOpen;
-            _logicalOpen = null;
+            UniTaskCompletionSource opening = TakeTransition();
+            UniTaskCompletionSource<bool> logicalOpen = TakeLogicalOpen();
             _state = UIState.Closing;
             IsOpen = false;
             RefreshEffective();
             CloseView(generation, skipTransition || !ParentEffective).Forget();
             UniTask closing = IsCurrent(generation) ? AwaitClosed() : UniTask.CompletedTask;
-            Complete(opening);
+            opening?.TrySetResult();
             logicalOpen?.TrySetResult(false);
             return closing;
         }
@@ -293,8 +284,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrent(generation) || State != UIState.Closing) return;
             Visible = false;
             _state = UIState.Closed;
-            UniTaskCompletionSource closing = _transition;
-            _transition = null;
+            UniTaskCompletionSource closing = TakeTransition();
             try
             {
                 InvokeHook(Hook.AfterClose);
@@ -302,7 +292,7 @@ namespace AlicizaX.UI.Runtime
                 OnClosed();
                 if (DestroyRequested && State == UIState.Closed) DestroyNow();
             }
-            finally { Complete(closing); }
+            finally { closing?.TrySetResult(); }
         }
 
         public UniTask AwaitTransition() => State is UIState.Opening or UIState.Closing
@@ -310,33 +300,49 @@ namespace AlicizaX.UI.Runtime
 
         private void CompleteTransition()
         {
-            UniTaskCompletionSource completion = _transition;
+            UniTaskCompletionSource completion = TakeTransition();
+            completion?.TrySetResult();
+        }
+
+        private UniTaskCompletionSource TakeTransition()
+        {
+            UniTaskCompletionSource source = _transition;
             _transition = null;
-            Complete(completion);
+            return source;
+        }
+
+        private UniTaskCompletionSource<bool> TakeLogicalOpen()
+        {
+            UniTaskCompletionSource<bool> source = _logicalOpen;
+            _logicalOpen = null;
+            return source;
+        }
+
+        private void CompleteLogicalOpen(bool result)
+        {
+            UniTaskCompletionSource<bool> source = TakeLogicalOpen();
+            source?.TrySetResult(result);
         }
 
         internal void RefreshEffective()
         {
             bool effective = IsOpen && !DestroyRequested && ParentEffective;
-            bool changed = Effective != effective;
+            if (Effective == effective) return;
             Effective = effective;
-            if (changed)
-            {
-                SetInteractable(effective);
-                if (effective) RegisterEventListeners();
-                else ReleaseEventListeners();
-                OnActivityChanged();
-            }
+            SetInteractable(effective);
+            if (effective) RegisterEventListeners();
+            else ReleaseEventListeners();
+            OnActivityChanged();
             RefreshChildrenEffective();
         }
 
-        internal void InternalUpdate() => InternalUpdate(this, _transitionGeneration);
+        internal void InternalUpdate(float deltaTime) => InternalUpdate(this, _transitionGeneration, deltaTime);
 
-        private void InternalUpdate(UIBase root, int generation)
+        private void InternalUpdate(UIBase root, int generation, float deltaTime)
         {
             if (!Effective) return;
-            if (State == UIState.Opened && Metadata.MetaInfo.HasUpdate) InvokeHook(Hook.Update);
-            if (Effective && root.IsCurrent(generation)) UpdateChildren(root, generation);
+            if (State == UIState.Opened && Metadata.MetaInfo.HasUpdate) InvokeHook(Hook.Update, deltaTime);
+            if (Effective && root.IsCurrent(generation)) UpdateChildren(root, generation, deltaTime);
         }
 
         internal UniTask InternalDestroy(bool skipTransition = false) =>
@@ -344,7 +350,7 @@ namespace AlicizaX.UI.Runtime
 
         internal void DestroyNow()
         {
-            if (State == UIState.Destroyed || State == UIState.Destroying) return;
+            if (State is UIState.Destroyed or UIState.Destroying) return;
             ++_transitionGeneration;
             DestroyRequested = true;
             _pendingOpen = false;
@@ -353,10 +359,8 @@ namespace AlicizaX.UI.Runtime
             IsOpen = false;
             CancelChildCreations();
             RefreshEffective();
-            UniTaskCompletionSource transition = _transition;
-            _transition = null;
-            UniTaskCompletionSource<bool> logicalOpen = _logicalOpen;
-            _logicalOpen = null;
+            UniTaskCompletionSource transition = TakeTransition();
+            UniTaskCompletionSource<bool> logicalOpen = TakeLogicalOpen();
             try
             {
                 OnDestroyStarted();
@@ -365,7 +369,7 @@ namespace AlicizaX.UI.Runtime
             finally
             {
                 _state = UIState.Destroyed;
-                Complete(transition);
+                transition?.TrySetResult();
                 logicalOpen?.TrySetResult(false);
             }
         }
@@ -383,13 +387,14 @@ namespace AlicizaX.UI.Runtime
             OnDestroyed();
             DestroyChildrenImmediate();
             DetachHolder();
-            if (_activeHook != Hook.RegisterEvent) DisposeEventListeners();
+            ReleaseEventListenerProxy();
             Metadata = null;
             _visible = false;
             _state = UIState.Destroyed;
+            _childBuffer = null;
         }
 
-        private void InvokeHook(Hook hook)
+        private void InvokeHook(Hook hook, float updateDeltaTime = 0f)
         {
             Hook previous = _activeHook;
             _activeHook = hook;
@@ -402,7 +407,7 @@ namespace AlicizaX.UI.Runtime
                     case Hook.Refresh: OnRefresh(); break;
                     case Hook.Close: OnClose(); break;
                     case Hook.Destroy: OnDestroy(); break;
-                    case Hook.Update: OnUpdate(); break;
+                    case Hook.Update: OnUpdate(updateDeltaTime); break;
                     case Hook.RegisterEvent: OnRegisterEvent(_eventListenerProxy); break;
                     case Hook.HolderInit: Holder.InvokeWindowInit(); break;
                     case Hook.BeforeShow: Holder.InvokeWindowBeforeShow(); break;
@@ -413,29 +418,39 @@ namespace AlicizaX.UI.Runtime
                 }
             }
             catch (Exception error) { Log.Exception(error); }
-            finally { _activeHook = previous; }
+            finally
+            {
+                _activeHook = previous;
+                if (_proxyReleasePending) ReleaseEventListenerProxy();
+            }
             FlushPendingOpen();
         }
 
         private bool IsCurrent(int generation) => generation == _transitionGeneration;
 
-        private static void Complete(UniTaskCompletionSource source) => source?.TrySetResult();
-
         private void RegisterEventListeners()
         {
             _eventListenerProxy ??= MemoryPool.Acquire<EventListenerProxy>();
             InvokeHook(Hook.RegisterEvent);
-            if (State is UIState.Destroying or UIState.Destroyed) DisposeEventListeners();
         }
 
         private void ReleaseEventListeners() => _eventListenerProxy?.Clear();
 
-        private void DisposeEventListeners()
+        /// <summary>
+        /// 释放事件代理。若正处于用户钩子内（例如 OnRegisterEvent 中销毁自身），延迟到钩子返回后释放，
+        /// 避免用户代码继续向已归还池的代理写入句柄。
+        /// </summary>
+        private void ReleaseEventListenerProxy()
         {
+            if (_activeHook != Hook.None)
+            {
+                _proxyReleasePending = true;
+                return;
+            }
+            _proxyReleasePending = false;
             EventListenerProxy proxy = _eventListenerProxy;
-            if (proxy == null) return;
             _eventListenerProxy = null;
-            MemoryPool.Release(proxy);
+            if (proxy != null) MemoryPool.Release(proxy);
         }
 
         private void DetachHolder()
@@ -447,6 +462,7 @@ namespace AlicizaX.UI.Runtime
             _userDatas = null;
             if (holder == null) return;
             holder.ResetRuntimeTransition();
+            holder.SetOwner(null);
             if (!_destroyHolderOnDispose || !holder.IsValid()) return;
             if (Application.isPlaying) Object.Destroy(holder.gameObject);
             else Object.DestroyImmediate(holder.gameObject);

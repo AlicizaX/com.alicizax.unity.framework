@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using Cysharp.Text;
 using AlicizaX.Timer.Runtime;
+using Cysharp.Text;
 using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
@@ -18,11 +18,8 @@ namespace AlicizaX.UI.Runtime
         internal const int WINDOW_DEEP = 20;
         internal const int LAYER_DEEP = 200 * WINDOW_DEEP;
 
-        private readonly RectTransform[] m_AllWindowLayer = new RectTransform[(int)UILayer.All];
-
-        private RectTransform UICacheLayer;
-
-        private bool _initialized;
+        private readonly RectTransform[] _layers = new RectTransform[(int)UILayer.All];
+        private RectTransform _cacheLayer;
 
         public void Initialize(Transform root, bool isOrthographic)
         {
@@ -65,13 +62,11 @@ namespace AlicizaX.UI.Runtime
             }
 
             const int len = (int)UILayer.All;
-            for (var i = len - 1; i >= 0; i--)
-            {
-                AddLayer(i);
-            }
-
+            for (var i = len - 1; i >= 0; i--) AddLayer(i);
             AddLayer((int)UILayer.All);
-            InitUIBlock();
+
+            _cache = new UIWindowCache(_timerService, _cacheLayer);
+            _blocker = new UIBlocker(_timerService, canvas, camera, UICanvasRoot);
             root.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
             UIRoot = root;
             _initialized = true;
@@ -85,8 +80,20 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
 
-            return m_AllWindowLayer[(int)layer];
+            return _layers[(int)layer];
         }
+
+        public void SetUIBlock(float timeDuration)
+        {
+            if (_blocker == null)
+            {
+                Log.Error("[UI] UIService is not running.");
+                return;
+            }
+            _blocker.Show(timeDuration);
+        }
+
+        public void ForceExitBlock() => _blocker?.Hide();
 
         private void AddLayer(int layer)
         {
@@ -102,15 +109,14 @@ namespace AlicizaX.UI.Runtime
             rect.localPosition = Vector3.zero;
             if (layer == (int)UILayer.All)
             {
-                UICacheLayer = rect;
+                _cacheLayer = rect;
                 return;
             }
 
-            m_AllWindowLayer[layer] = rect;
+            _layers[layer] = rect;
             _openUI[layer] = new List<UIWindowRecord>(16);
         }
 
-
-        private RectTransform GetLayerRect(int layer) => m_AllWindowLayer[layer];
+        private RectTransform GetLayerRect(int layer) => _layers[layer];
     }
 }

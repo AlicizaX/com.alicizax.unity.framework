@@ -77,6 +77,7 @@ namespace AlicizaX.UI.Runtime
             var request = new TabRequest(_tabs[index], userDatas);
             _request = request;
             previous?.Completion.TrySetResult(null);
+            // UniTask 续体内联执行：上面的完成回调可能重入 SwitchTab 并替换 _request，此时返回新请求的任务。
             if (_request != request) return request.Completion.Task;
             TabEntry entry = request.Entry;
             if (entry.View != null) SwitchLoadedTab().Forget();
