@@ -28,7 +28,7 @@ namespace AlicizaX.Resource.Runtime
         public string DecryptionServices { get; set; }
 
         /// <summary>
-        /// 自动释放资源引用计数。。的资源包
+        /// 自动释放引用计数归零的资源包。
         /// </summary>
         public bool AutoUnloadBundleWhenUnused { get; set; } = false;
 
@@ -74,14 +74,18 @@ namespace AlicizaX.Resource.Runtime
         /// </summary>
         private Dictionary<string, ResourcePackage> PackageMap { get; } = new Dictionary<string, ResourcePackage>();
 
-        /// <summary>
-        /// 资源信息列表。
-        /// </summary>
+        private const int AssetInfoCacheCapacity = 256;
+
         private readonly ResourceUlongIntMap _assetInfoByKey = new ResourceUlongIntMap();
+        private AssetInfoSlot[] _assetInfoSlots = Array.Empty<AssetInfoSlot>();
+        private int _assetInfoCount;
+        private int _assetInfoNextEvict;
 
-        private AssetInfoSlot[][] _assetInfoSlotPages;
-
-        private int _assetInfoSlotNextIndex;
+        private struct AssetInfoSlot
+        {
+            public ulong Key;
+            public AssetInfo Info;
+        }
 
         /// <summary>
         /// 正在加载的资源任务。
@@ -90,53 +94,11 @@ namespace AlicizaX.Resource.Runtime
 
         private readonly Dictionary<string, TaskCompletionSource<bool>> _packageInitTasks = new Dictionary<string, TaskCompletionSource<bool>>(StringComparer.Ordinal);
 
-        private readonly Dictionary<string, int> _resourcePackageIds = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly ResourceKeyRegistry _keyRegistry = new ResourceKeyRegistry();
 
-        private readonly Dictionary<string, int> _resourceLocationIds = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        private readonly Dictionary<Type, int> _resourceTypeIds = new Dictionary<Type, int>();
-
-        private string[] _resourcePackagesById;
-
-        private string[] _resourceLocationsById;
-
-        private Type[] _resourceTypesById;
-
-        private int[] _resourcePackageRefCounts;
-
-        private int[] _resourceLocationRefCounts;
-
-        private int[] _resourceTypeRefCounts;
-
-        private int _nextResourcePackageId = 1;
-
-        private int _nextResourceLocationId = 1;
-
-        private int _nextResourceTypeId = 1;
-
-        private int _freeResourcePackageId;
-
-        private int _freeResourceLocationId;
-
-        private int _freeResourceTypeId;
+        internal ResourceKeyRegistry KeyRegistry => _keyRegistry;
 
         private const float ProgressCallbackThreshold = 0.01f;
-
-        private const int ResourceKeyHandleBits = 4;
-        private const int ResourceKeyAssetKindBits = 4;
-        private const int ResourceKeyTypeBits = 12;
-        private const int ResourceKeyLocationBits = 32;
-        private const int ResourceKeyPackageBits = 12;
-        private const int ResourceKeyHandleShift = 0;
-        private const int ResourceKeyAssetKindShift = ResourceKeyHandleShift + ResourceKeyHandleBits;
-        private const int ResourceKeyTypeShift = ResourceKeyAssetKindShift + ResourceKeyAssetKindBits;
-        private const int ResourceKeyLocationShift = ResourceKeyTypeShift + ResourceKeyTypeBits;
-        private const int ResourceKeyPackageShift = ResourceKeyLocationShift + ResourceKeyLocationBits;
-        private const int ResourceKeyPackageMax = (1 << ResourceKeyPackageBits) - 1;
-        private const int ResourceKeyLocationMax = int.MaxValue;
-        private const int ResourceKeyTypeMax = (1 << ResourceKeyTypeBits) - 1;
-        private const int ResourceKeyAssetKindMax = (1 << ResourceKeyAssetKindBits) - 1;
-        private const int ResourceKeyHandleMax = (1 << ResourceKeyHandleBits) - 1;
 
         private readonly List<UnloadUnusedAssetsOperation> _unloadUnusedAssetsOperations = new List<UnloadUnusedAssetsOperation>();
 
@@ -165,7 +127,7 @@ namespace AlicizaX.Resource.Runtime
             _isResetting = false;
             InitializeAssetRecords();
             _bindingService = new ResourceBindingService(this);
-            // 初始化资源系。。
+            // 初始化资源系统。
             if (!YooAssets.IsInitialized)
                 YooAssets.Initialize(new ResourceLogger());
 
@@ -212,11 +174,32 @@ namespace AlicizaX.Resource.Runtime
                 ClearAssetInfoCache();
                 ClearResourceKeyRegistry();
                 _forceUnloadUnusedAssetsAction = null;
-                UnloadUnusedAssets();
+                // 请求 YooAsset 驱动释放已无引用的 bundle provider。这里刻意不跟踪该操作：
+                // 当前服务正在销毁，而全局后端仍要留给替代服务使用。
+                foreach (var pair in PackageMap)
+                {
+                    if (pair.Value is { InitializeStatus: EOperationStatus.Succeeded, PackageValid: true })
+                        pair.Value.UnloadUnusedAssetsAsync();
+                }
+
+                // 后端是应用级作用域：在这里销毁会破坏替代服务（以及仍持有包的测试清理逻辑）。
+                // 应用退出时由 ShutdownBackend 显式销毁。
                 PackageMap.Clear();
                 DefaultPackage = null;
                 _unloadUnusedAssetsOperations.Clear();
             }
+        }
+
+        /// <summary>
+        /// 销毁当前 YooAsset 后端。仅供应用退出时调用；调用方需确认没有其他资源服务
+        /// 仍在共享该后端。
+        /// </summary>
+        public void ShutdownBackend()
+        {
+            PackageMap.Clear();
+            DefaultPackage = null;
+            if (YooAssets.IsInitialized)
+                YooAssets.Destroy();
         }
 
         public UniTask<bool> InitPackageAsync(string packageName = "", string hostServerURL = "", string fallbackHostServerURL = "")
@@ -399,9 +382,9 @@ namespace AlicizaX.Resource.Runtime
         }
 
         /// <summary>
-        /// 向网络端请求并更新清。。
+        /// 向网络端请求并更新清单。
         /// </summary>
-        /// <param name="packageVersion">更新的包裹版。。</param>
+        /// <param name="packageVersion">更新的包裹版本。</param>
         /// <param name="timeout">超时时间（默认值：60秒）</param>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
         public LoadPackageManifestOperation LoadPackageManifestAsync(string packageVersion, int timeout = 60, string customPackageName = "")
@@ -441,10 +424,10 @@ namespace AlicizaX.Resource.Runtime
         /// 清理沙盒路径。
         /// </summary>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
-        public void ClearAllBundleFiles(string customPackageName = "")
+        public ClearCacheOperation ClearAllBundleFiles(string customPackageName = "")
         {
             var package = GetPackageOrThrow(customPackageName);
-            package.ClearCacheAsync(new ClearCacheOptions(ClearCacheMethods.ClearAllBundleFiles));
+            return package.ClearCacheAsync(new ClearCacheOptions(ClearCacheMethods.ClearAllBundleFiles));
         }
 
         #region 资源回收
@@ -496,12 +479,6 @@ namespace AlicizaX.Resource.Runtime
             }
         }
 
-        private struct AssetInfoSlot
-        {
-            public ulong Key;
-            public AssetInfo AssetInfo;
-        }
-
         /// <summary>
         /// 强制回收所有资源。
         /// </summary>
@@ -526,7 +503,6 @@ namespace AlicizaX.Resource.Runtime
                     if (_isDestroying)
                         _bindingService = null;
                     ForceReleaseAllAssetRecords();
-                    WarmupBindingRecords();
                     foreach (var package in PackageMap.Values)
                     {
                         if (package is { InitializeStatus: EOperationStatus.Succeeded, PackageValid: true })
@@ -592,24 +568,6 @@ namespace AlicizaX.Resource.Runtime
             }
 
             _manifestUpdateOperations.Add(operation);
-        }
-
-        private bool IsManifestUpdateInProgress()
-        {
-            bool inProgress = false;
-            for (int i = _manifestUpdateOperations.Count - 1; i >= 0; i--)
-            {
-                LoadPackageManifestOperation operation = _manifestUpdateOperations[i];
-                if (operation == null || operation.IsDone)
-                {
-                    _manifestUpdateOperations.RemoveAt(i);
-                    continue;
-                }
-
-                inProgress = true;
-            }
-
-            return inProgress;
         }
 
         private async UniTaskVoid WatchManifestUpdateOperation(LoadPackageManifestOperation operation)
@@ -692,28 +650,21 @@ namespace AlicizaX.Resource.Runtime
                 throw new GameFrameworkException("Asset name is invalid.");
             }
 
-            bool cacheEnabled = !IsManifestUpdateInProgress();
             string normalizedPackageName = NormalizePackageName(packageName);
-            if (cacheEnabled &&
-                TryGetAssetInfoKey(normalizedPackageName, location, out ulong assetInfoKey) &&
+            if (TryGetAssetInfoKey(normalizedPackageName, location, out ulong assetInfoKey) &&
                 TryGetCachedAssetInfo(assetInfoKey, out AssetInfo cachedAssetInfo))
             {
                 return cachedAssetInfo;
             }
 
             AssetInfo assetInfo = GetPackageOrThrow(packageName).GetAssetInfo(location);
-            if (cacheEnabled && CanCacheAssetInfo(assetInfo))
+            if (assetInfo != null && string.IsNullOrEmpty(assetInfo.Error))
             {
                 assetInfoKey = GetAssetInfoKey(normalizedPackageName, location);
                 SetCachedAssetInfo(assetInfoKey, assetInfo);
             }
 
             return assetInfo;
-        }
-
-        private static bool CanCacheAssetInfo(AssetInfo assetInfo)
-        {
-            return assetInfo != null && string.IsNullOrEmpty(assetInfo.Error);
         }
 
         /// <summary>
@@ -770,12 +721,7 @@ namespace AlicizaX.Resource.Runtime
         {
             assetKind = NormalizeAssetKind(assetType, assetKind);
             assetType = NormalizeAssetType(assetType, assetKind);
-            return PackResourceKey(
-                GetOrAddPackageId(NormalizePackageName(packageName)),
-                GetOrAddLocationId(location),
-                GetOrAddTypeId(assetType),
-                assetKind,
-                handleKind);
+            return _keyRegistry.GetOrAdd(NormalizePackageName(packageName), location ?? string.Empty, assetType, assetKind, handleKind);
         }
 
         private ulong GetAssetInfoKey(string packageName, string location)
@@ -790,289 +736,80 @@ namespace AlicizaX.Resource.Runtime
 
         private bool TryGetResourceKey(string packageName, string location, Type assetType, ResourceAssetKind assetKind, ResourceHandleKind handleKind, out ulong key)
         {
-            key = 0;
             assetKind = NormalizeAssetKind(assetType, assetKind);
             assetType = NormalizeAssetType(assetType, assetKind);
-            if (!_resourcePackageIds.TryGetValue(NormalizePackageName(packageName), out int packageId) ||
-                !_resourceLocationIds.TryGetValue(location ?? string.Empty, out int locationId) ||
-                !_resourceTypeIds.TryGetValue(assetType, out int typeId))
-            {
-                return false;
-            }
-
-            key = PackResourceKey(packageId, locationId, typeId, assetKind, handleKind);
-            return true;
+            return _keyRegistry.TryGet(NormalizePackageName(packageName), location ?? string.Empty, assetType, assetKind, handleKind, out key);
         }
 
-        private int GetOrAddPackageId(string packageName)
-        {
-            packageName = NormalizePackageName(packageName);
-            if (_resourcePackageIds.TryGetValue(packageName, out int id))
-            {
-                return id;
-            }
+        private void ClearResourceKeyRegistry() => _keyRegistry.Clear();
 
-            id = AllocateResourceId(ref _nextResourcePackageId, ResourceKeyPackageMax, ref _freeResourcePackageId, _resourcePackageRefCounts);
-            _resourcePackageIds.Add(packageName, id);
-            ReserveResourceName(ref _resourcePackagesById, ref _resourcePackageRefCounts, id);
-            _resourcePackagesById[id] = packageName;
-            return id;
-        }
+        private void RetainResourceKey(ulong key) => _keyRegistry.Retain(key);
 
-        private int GetOrAddLocationId(string location)
-        {
-            location ??= string.Empty;
-            if (_resourceLocationIds.TryGetValue(location, out int id))
-            {
-                return id;
-            }
+        private void ReleaseResourceKey(ulong key) => _keyRegistry.Release(key);
 
-            id = AllocateResourceId(ref _nextResourceLocationId, ResourceKeyLocationMax, ref _freeResourceLocationId, _resourceLocationRefCounts);
-            _resourceLocationIds.Add(location, id);
-            ReserveResourceName(ref _resourceLocationsById, ref _resourceLocationRefCounts, id);
-            _resourceLocationsById[id] = location;
-            return id;
-        }
+        private static int UnpackPackageId(ulong key) => ResourceKeyRegistry.UnpackPackageId(key);
 
-        private int GetOrAddTypeId(Type assetType)
-        {
-            assetType ??= typeof(UnityEngine.Object);
-            if (_resourceTypeIds.TryGetValue(assetType, out int id))
-            {
-                return id;
-            }
+        private static int UnpackLocationId(ulong key) => ResourceKeyRegistry.UnpackLocationId(key);
 
-            id = AllocateResourceId(ref _nextResourceTypeId, ResourceKeyTypeMax, ref _freeResourceTypeId, _resourceTypeRefCounts);
-            _resourceTypeIds.Add(assetType, id);
-            ReserveResourceType(id);
-            _resourceTypesById[id] = assetType;
-            return id;
-        }
+        private static int UnpackTypeId(ulong key) => ResourceKeyRegistry.UnpackTypeId(key);
 
-        private void ClearResourceKeyRegistry()
-        {
-            _resourcePackageIds.Clear();
-            _resourceLocationIds.Clear();
-            _resourceTypeIds.Clear();
-            _resourcePackagesById = null;
-            _resourceLocationsById = null;
-            _resourceTypesById = null;
-            _resourcePackageRefCounts = null;
-            _resourceLocationRefCounts = null;
-            _resourceTypeRefCounts = null;
-            _freeResourcePackageId = 0;
-            _freeResourceLocationId = 0;
-            _freeResourceTypeId = 0;
-            _nextResourcePackageId = 1;
-            _nextResourceLocationId = 1;
-            _nextResourceTypeId = 1;
-        }
+        private string GetPackageNameById(int id) => _keyRegistry.GetPackageName(id);
 
-        private void RetainResourceKey(ulong key)
-        {
-            _resourcePackageRefCounts[UnpackPackageId(key)]++;
-            _resourceLocationRefCounts[UnpackLocationId(key)]++;
-            _resourceTypeRefCounts[UnpackTypeId(key)]++;
-        }
+        private string GetLocationNameById(int id) => _keyRegistry.GetLocationName(id);
 
-        private void ReleaseResourceKey(ulong key)
-        {
-            ReleasePackageId(UnpackPackageId(key));
-            ReleaseLocationId(UnpackLocationId(key));
-            ReleaseTypeId(UnpackTypeId(key));
-        }
-
-        private void ReleasePackageId(int id)
-        {
-            if (--_resourcePackageRefCounts[id] != 0)
-            {
-                return;
-            }
-
-            _resourcePackageIds.Remove(_resourcePackagesById[id]);
-            _resourcePackagesById[id] = null;
-            FreeResourceId(id, _resourcePackageRefCounts, ref _freeResourcePackageId);
-        }
-
-        private void ReleaseLocationId(int id)
-        {
-            if (--_resourceLocationRefCounts[id] != 0)
-            {
-                return;
-            }
-
-            _resourceLocationIds.Remove(_resourceLocationsById[id]);
-            _resourceLocationsById[id] = null;
-            FreeResourceId(id, _resourceLocationRefCounts, ref _freeResourceLocationId);
-        }
-
-        private void ReleaseTypeId(int id)
-        {
-            if (--_resourceTypeRefCounts[id] != 0)
-            {
-                return;
-            }
-
-            _resourceTypeIds.Remove(_resourceTypesById[id]);
-            _resourceTypesById[id] = null;
-            FreeResourceId(id, _resourceTypeRefCounts, ref _freeResourceTypeId);
-        }
-
-        private static int UnpackPackageId(ulong key)
-        {
-            return (int)((key >> ResourceKeyPackageShift) & ResourceKeyPackageMax);
-        }
-
-        private static int UnpackLocationId(ulong key)
-        {
-            return (int)((key >> ResourceKeyLocationShift) & ResourceKeyLocationMax);
-        }
-
-        private static int UnpackTypeId(ulong key)
-        {
-            return (int)((key >> ResourceKeyTypeShift) & ResourceKeyTypeMax);
-        }
-
-        private string GetPackageNameById(int id)
-        {
-            return _resourcePackagesById != null && id > 0 && id < _resourcePackagesById.Length ? _resourcePackagesById[id] : string.Empty;
-        }
-
-        private string GetLocationNameById(int id)
-        {
-            return _resourceLocationsById != null && id > 0 && id < _resourceLocationsById.Length ? _resourceLocationsById[id] : string.Empty;
-        }
-
-        private Type GetAssetTypeById(int id)
-        {
-            return _resourceTypesById != null && id > 0 && id < _resourceTypesById.Length ? _resourceTypesById[id] : null;
-        }
-
-        private static void ReserveResourceName(ref string[] values, ref int[] refCounts, int id)
-        {
-            GrowResourceArray(ref values, id);
-            GrowResourceArray(ref refCounts, id);
-        }
-
-        private void ReserveResourceType(int id)
-        {
-            GrowResourceArray(ref _resourceTypesById, id);
-            GrowResourceArray(ref _resourceTypeRefCounts, id);
-        }
-
-        private static void GrowResourceArray<T>(ref T[] array, int index)
-        {
-            if (array == null)
-            {
-                array = new T[Math.Max(16, index + 1)];
-                return;
-            }
-
-            if (index < array.Length)
-            {
-                return;
-            }
-
-            Array.Resize(ref array, Math.Max(index + 1, array.Length << 1));
-        }
-
-        private static int AllocateResourceId(ref int nextId, int maxId, ref int freeId, int[] refCounts)
-        {
-            if (freeId > 0)
-            {
-                int id = freeId;
-                freeId = -refCounts[id];
-                refCounts[id] = 0;
-                return id;
-            }
-
-            if (nextId <= 0 || nextId > maxId)
-            {
-                throw new GameFrameworkException("Resource key id range exceeded.");
-            }
-
-            return nextId++;
-        }
-
-        private static void FreeResourceId(int id, int[] refCounts, ref int freeId)
-        {
-            refCounts[id] = -freeId;
-            freeId = id;
-        }
-
-        private static ulong PackResourceKey(int packageId, int locationId, int typeId, ResourceAssetKind assetKind, ResourceHandleKind handleKind)
-        {
-            if (packageId <= 0 ||
-                locationId <= 0 ||
-                typeId <= 0 ||
-                packageId > ResourceKeyPackageMax ||
-                locationId > ResourceKeyLocationMax ||
-                typeId > ResourceKeyTypeMax ||
-                (uint)assetKind > ResourceKeyAssetKindMax ||
-                (uint)handleKind > ResourceKeyHandleMax)
-            {
-                throw new GameFrameworkException("Resource key id range exceeded.");
-            }
-
-            return ((ulong)(uint)packageId << ResourceKeyPackageShift) |
-                   ((ulong)(uint)locationId << ResourceKeyLocationShift) |
-                   ((ulong)(uint)typeId << ResourceKeyTypeShift) |
-                   ((ulong)(byte)assetKind << ResourceKeyAssetKindShift) |
-                   ((ulong)(byte)handleKind << ResourceKeyHandleShift);
-        }
+        private Type GetAssetTypeById(int id) => _keyRegistry.GetAssetType(id);
 
         private bool TryGetCachedAssetInfo(ulong key, out AssetInfo assetInfo)
         {
             assetInfo = default;
-            if (!_assetInfoByKey.TryGetValue(key, out int slotIndex))
-            {
+            if (!_assetInfoByKey.TryGetValue(key, out int slotIndex) || slotIndex >= _assetInfoCount)
                 return false;
-            }
-            assetInfo = GetAssetInfoSlotRef(slotIndex).AssetInfo;
-            return true;
+
+            assetInfo = _assetInfoSlots[slotIndex].Info;
+            return assetInfo != null;
         }
 
         private void SetCachedAssetInfo(ulong key, AssetInfo assetInfo)
         {
-            int slotIndex = _assetInfoSlotNextIndex++;
-            ReserveAssetInfoPage(slotIndex);
-            ref AssetInfoSlot slot = ref GetAssetInfoSlotRef(slotIndex);
+            if (_assetInfoSlots.Length == 0)
+                _assetInfoSlots = new AssetInfoSlot[AssetInfoCacheCapacity];
+
+            int slotIndex;
+            if (_assetInfoCount < _assetInfoSlots.Length)
+            {
+                slotIndex = _assetInfoCount++;
+            }
+            else
+            {
+                // 有界环形缓存：淘汰最旧的元数据条目，而不是无限增长。
+                slotIndex = _assetInfoNextEvict++ % _assetInfoSlots.Length;
+                ulong oldKey = _assetInfoSlots[slotIndex].Key;
+                if (oldKey != 0)
+                {
+                    _assetInfoByKey.Remove(oldKey);
+                    ReleaseResourceKey(oldKey);
+                }
+            }
+
+            ref AssetInfoSlot slot = ref _assetInfoSlots[slotIndex];
             slot.Key = key;
-            slot.AssetInfo = assetInfo;
+            slot.Info = assetInfo;
             _assetInfoByKey.Set(key, slotIndex);
             RetainResourceKey(key);
         }
 
         private void ClearAssetInfoCache()
         {
-            for (int i = 0; i < _assetInfoSlotNextIndex; i++)
-                ReleaseResourceKey(GetAssetInfoSlotRef(i).Key);
+            for (int i = 0; i < _assetInfoCount; i++)
+            {
+                if (_assetInfoSlots[i].Key != 0)
+                    ReleaseResourceKey(_assetInfoSlots[i].Key);
+                _assetInfoSlots[i] = default;
+            }
+
             _assetInfoByKey.Clear();
-            _assetInfoSlotPages = null;
-            _assetInfoSlotNextIndex = 0;
-        }
-
-        private ref AssetInfoSlot GetAssetInfoSlotRef(int index)
-        {
-            return ref _assetInfoSlotPages[index >> RecordPageBits][index & RecordPageMask];
-        }
-
-        private void ReserveAssetInfoPage(int index)
-        {
-            int pageIndex = index >> RecordPageBits;
-            if (_assetInfoSlotPages == null)
-            {
-                _assetInfoSlotPages = new AssetInfoSlot[Math.Max(4, pageIndex + 1)][];
-            }
-            else if (pageIndex >= _assetInfoSlotPages.Length)
-            {
-                Array.Resize(ref _assetInfoSlotPages, Math.Max(pageIndex + 1, _assetInfoSlotPages.Length << 1));
-            }
-
-            if (_assetInfoSlotPages[pageIndex] == null)
-            {
-                _assetInfoSlotPages[pageIndex] = new AssetInfoSlot[RecordPageSize];
-            }
+            _assetInfoCount = 0;
+            _assetInfoNextEvict = 0;
         }
 
         public T LoadAsset<T>(string location, string packageName = "") where T : UnityEngine.Object
@@ -1235,3 +972,4 @@ namespace AlicizaX.Resource.Runtime
         #endregion
     }
 }
+

@@ -11,6 +11,7 @@ namespace AlicizaX.Audio.Runtime
 
         private AudioService _service;
         private AudioCategory _category;
+        private AudioSourceObject _sourceObject;
         private AudioSource _source;
         private AudioLowPassFilter _lowPassFilter;
         private AudioClip _playingClip;
@@ -46,6 +47,8 @@ namespace AlicizaX.Audio.Runtime
         internal ulong Handle => _handle;
         internal bool IsPlayingState => _state == AudioAgentRuntimeState.Playing || _state == AudioAgentRuntimeState.Loading || _state == AudioAgentRuntimeState.FadingIn || _state == AudioAgentRuntimeState.FadingOut;
         internal int PlaybackPriority => _playbackPriority;
+        internal AudioSourceObject SourceObject => _sourceObject;
+        internal bool IsFreeListed;
 
         public AudioAgent() { }
 
@@ -65,11 +68,6 @@ namespace AlicizaX.Audio.Runtime
         internal ulong Play(AudioPlayRequest request)
         {
             StopImmediate(false);
-            if (_source == null)
-            {
-                BindSource(_service.ReplaceSourceObject(_category, Index));
-            }
-
             _generation++;
             if (_generation == int.MaxValue)
             {
@@ -78,6 +76,14 @@ namespace AlicizaX.Audio.Runtime
 
             _handle = _service.AllocateHandle(this);
             _state = AudioAgentRuntimeState.Loading;
+
+            // 先进入 Loading 再绑定：此后任何失败都由 AudioCategory.Play 的 catch
+            // 走正常 Stop/MarkFree 路径清理。
+            if (_source == null)
+            {
+                BindSource(_service.ReplaceSourceObject(_category, _sourceObject));
+            }
+
             _startedAt = Time.realtimeSinceStartup;
             _baseVolume = Mathf.Clamp01(request.Volume);
             _volumeFadeStart = _baseVolume;
@@ -274,17 +280,20 @@ namespace AlicizaX.Audio.Runtime
         internal void Shutdown()
         {
             StopImmediate(true);
+            _sourceObject = null;
             _source = null;
             _lowPassFilter = null;
             _transform = null;
             _service = null;
             _category = null;
+            IsFreeListed = false;
         }
 
         public override void Clear()
         {
             _service = null;
             _category = null;
+            _sourceObject = null;
             _source = null;
             _lowPassFilter = null;
             _playingClip = null;
@@ -302,6 +311,7 @@ namespace AlicizaX.Audio.Runtime
             PriorityPrev = null;
             PriorityNext = null;
             ActiveIndex = -1;
+            IsFreeListed = false;
             _generation = 0;
             _handle = 0UL;
             _baseVolume = 1f;
@@ -349,6 +359,10 @@ namespace AlicizaX.Audio.Runtime
 
         private void BindSource(AudioSourceObject sourceObject)
         {
+            if (sourceObject == null || sourceObject.Source == null)
+                throw new GameFrameworkException("Audio source object is invalid; its AudioSource was destroyed.");
+
+            _sourceObject = sourceObject;
             _source = sourceObject.Source;
             _lowPassFilter = sourceObject.LowPassFilter;
             _transform = _source.transform;

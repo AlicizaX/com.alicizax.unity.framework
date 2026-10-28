@@ -11,7 +11,6 @@ namespace AlicizaX.Audio.Runtime
         [SerializeField] private AudioMixerGroup m_MixerGroup = null;
         [SerializeField] private bool m_Mute = false;
         [SerializeField, Range(0f, 1f)] private float m_Volume = 1f;
-        [SerializeField, HideInInspector] private int m_AgentHelperCount = 8;
         [SerializeField, Min(0)] private int m_InitialSourceCount = 2;
         [SerializeField, Min(1)] private int m_MaxSourceCount = 8;
         [SerializeField] private string m_ExposedVolumeParameter = null;
@@ -35,9 +34,8 @@ namespace AlicizaX.Audio.Runtime
         public AudioMixerGroup MixerGroup => m_MixerGroup;
         public bool Mute => m_Mute;
         public float Volume => m_Volume;
-        public int AgentHelperCount => MaxSourceCount;
         public int InitialSourceCount => Mathf.Clamp(m_InitialSourceCount, 0, MaxSourceCount);
-        public int MaxSourceCount => m_MaxSourceCount > 0 ? m_MaxSourceCount : (m_AgentHelperCount > 0 ? m_AgentHelperCount : 1);
+        public int MaxSourceCount => m_MaxSourceCount > 0 ? m_MaxSourceCount : 1;
         public string ExposedVolumeParameter => m_ExposedVolumeParameter;
         public float SpatialBlend => m_SpatialBlend;
         public float DopplerLevel => m_DopplerLevel;
@@ -59,7 +57,6 @@ namespace AlicizaX.Audio.Runtime
             m_Name = name;
             m_Mute = false;
             m_Volume = 1f;
-            m_AgentHelperCount = agentHelperCount;
             m_MaxSourceCount = agentHelperCount;
             m_InitialSourceCount = GetDefaultInitialSourceCount(type, agentHelperCount);
             m_ExposedVolumeParameter = exposedVolumeParameter;
@@ -82,7 +79,7 @@ namespace AlicizaX.Audio.Runtime
         {
             if (m_MaxSourceCount <= 0)
             {
-                m_MaxSourceCount = m_AgentHelperCount > 0 ? m_AgentHelperCount : 1;
+                m_MaxSourceCount = 1;
             }
 
             m_InitialSourceCount = Mathf.Clamp(m_InitialSourceCount, 0, m_MaxSourceCount);

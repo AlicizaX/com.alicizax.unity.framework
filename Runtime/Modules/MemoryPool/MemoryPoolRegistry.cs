@@ -32,7 +32,10 @@ namespace AlicizaX
             public readonly ClearHandler Compact;
             public readonly ClearHandler TrimNativeMetadata;
             public readonly ClearHandler ResetStats;
+            public readonly ClearHandler ForceReleaseNativeMetadata;
             public int ActiveIndex = -1;
+            public Type Type;
+            public bool Registered;
 
             public MemoryPoolHandle(
                 AcquireHandler acquire,
@@ -46,7 +49,8 @@ namespace AlicizaX
                 IntHandler shrink,
                 ClearHandler compact,
                 ClearHandler trimNativeMetadata,
-                ClearHandler resetStats)
+                ClearHandler resetStats,
+                ClearHandler forceReleaseNativeMetadata)
             {
                 PoolId = ++s_NextPoolId;
                 Acquire = acquire;
@@ -61,19 +65,18 @@ namespace AlicizaX
                 Compact = compact;
                 TrimNativeMetadata = trimNativeMetadata;
                 ResetStats = resetStats;
+                ForceReleaseNativeMetadata = forceReleaseNativeMetadata;
             }
         }
 
-        private static IntPtr[] s_HandleKeys = new IntPtr[64];
-        private static MemoryPoolHandle[] s_HandleValues = new MemoryPoolHandle[64];
-        private static int s_HandleCount;
+        // 以 Type 为键，而不是 RuntimeTypeHandle.Value：句柄是真实引用，因此热重载/卸载后，
+        // 某个类型句柄地址不可能被另一个类型复用。
+        private static readonly Dictionary<Type, MemoryPoolHandle> s_Handles = new Dictionary<Type, MemoryPoolHandle>(64);
+        private static readonly List<MemoryPoolHandle> s_Registered = new List<MemoryPoolHandle>(64);
 
         private static MemoryPoolHandle[] s_ActivePools = new MemoryPoolHandle[16];
-        private static Action[] s_NativeReleasers = Array.Empty<Action>();
-        private static int s_NativeReleaserCount;
         private static int s_ActiveCount;
         private static int s_NextPoolId;
-        private static MemoryPoolPhase s_Phase = MemoryPoolPhase.Gameplay;
         private static int s_MainThreadId;
         private static int s_CallbackDepth;
 
@@ -82,19 +85,9 @@ namespace AlicizaX
             AppDomain.CurrentDomain.DomainUnload += ReleaseNativeOnDomainUnload;
         }
 
-        public static int Count => s_HandleCount;
+        public static int Count => s_Registered.Count;
 
         internal static int CurrentFrame { get; private set; }
-
-        public static MemoryPoolPhase Phase
-        {
-            get => s_Phase;
-            set
-            {
-                AssertMainThread();
-                s_Phase = value;
-            }
-        }
 
         internal static void InitializeMainThread()
         {
@@ -112,23 +105,10 @@ namespace AlicizaX
             ForceReleaseAllNativeMetadata();
         }
 
-        internal static void RegisterNativeReleaser(Action releaser)
-        {
-            if (s_NativeReleaserCount == s_NativeReleasers.Length)
-            {
-                int newLength = s_NativeReleasers.Length == 0 ? 16 : s_NativeReleasers.Length << 1;
-                var releasers = new Action[newLength];
-                Array.Copy(s_NativeReleasers, 0, releasers, 0, s_NativeReleaserCount);
-                s_NativeReleasers = releasers;
-            }
-
-            s_NativeReleasers[s_NativeReleaserCount++] = releaser;
-        }
-
         private static void ForceReleaseAllNativeMetadata()
         {
-            for (int i = 0; i < s_NativeReleaserCount; i++)
-                s_NativeReleasers[i]();
+            for (int i = 0; i < s_Registered.Count; i++)
+                s_Registered[i].ForceReleaseNativeMetadata();
             ClearActiveScheduleState();
         }
 
@@ -143,48 +123,63 @@ namespace AlicizaX
                 throw new InvalidOperationException("MemoryPool must be used from the Unity main thread.");
         }
 
-        internal static int GetGrowthBudget()
-        {
-            switch (s_Phase)
-            {
-                case MemoryPoolPhase.Boot:
-                case MemoryPoolPhase.Loading:
-                    return 32;
-                case MemoryPoolPhase.Background:
-                    return 8;
-                case MemoryPoolPhase.LowMemory:
-                    return 0;
-                default:
-                    return 2;
-            }
-        }
-
-        internal static int GetEvictBudget()
-        {
-            switch (s_Phase)
-            {
-                case MemoryPoolPhase.LowMemory:
-                    return 32;
-                case MemoryPoolPhase.Background:
-                    return 16;
-                case MemoryPoolPhase.Boot:
-                case MemoryPoolPhase.Loading:
-                    return 4;
-                default:
-                    return 2;
-            }
-        }
-
         internal static void Register(Type type, MemoryPoolHandle handle)
         {
-            AddOrUpdateHandle(type.TypeHandle.Value, handle);
-            ReserveActiveCapacity(s_HandleCount);
+            handle.Type = type;
+            handle.Registered = true;
+            s_Handles[type] = handle;
+            if (!s_Registered.Contains(handle))
+                s_Registered.Add(handle);
+        }
+
+        /// <summary>
+        /// 释放对象已全部归还的池的存储。类型仍保留其句柄（之后 Acquire 可重新激活），
+        /// 但在注销期间不计入维护和统计。热更新程序集/运行时类型卸载前应调用此方法。
+        /// </summary>
+        public static bool Unregister(Type type)
+        {
+            AssertMainThread();
+            ThrowIfInCallback();
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+
+            if (!s_Handles.TryGetValue(type, out MemoryPoolHandle handle) || !handle.Registered)
+                return false;
+
+            MemoryPoolInfo info = default;
+            handle.GetInfo(ref info);
+            if (info.UsingCount != 0)
+                throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' still has {info.UsingCount} leased objects.");
+
+            try
+            {
+                handle.Clear();
+            }
+            finally
+            {
+                handle.TrimNativeMetadata();
+                handle.Registered = false;
+                UnscheduleTick(handle);
+                s_Registered.Remove(handle);
+            }
+
+            return true;
         }
 
         internal static void ScheduleTick(MemoryPoolHandle handle)
         {
+            if (!handle.Registered)
+                Register(handle.Type, handle);
             if (handle.ActiveIndex >= 0)
                 return;
+
+            if (s_ActiveCount >= s_ActivePools.Length)
+            {
+                var pools = new MemoryPoolHandle[s_ActivePools.Length == 0 ? 16 : s_ActivePools.Length << 1];
+                Array.Copy(s_ActivePools, 0, pools, 0, s_ActiveCount);
+                s_ActivePools = pools;
+            }
+
             handle.ActiveIndex = s_ActiveCount;
             s_ActivePools[s_ActiveCount++] = handle;
         }
@@ -234,20 +229,12 @@ namespace AlicizaX
             if (infos == null)
                 throw new ArgumentNullException(nameof(infos));
 
-            int count = s_HandleCount;
+            int count = s_Registered.Count;
             if (infos.Length < count)
                 throw new ArgumentException("Target buffer is too small.", nameof(infos));
 
-            int i = 0;
-            for (int slot = 0; slot < s_HandleValues.Length; slot++)
-            {
-                MemoryPoolHandle handle = s_HandleValues[slot];
-                if (handle == null)
-                    continue;
-
-                handle.GetInfo(ref infos[i]);
-                i++;
-            }
+            for (int i = 0; i < count; i++)
+                s_Registered[i].GetInfo(ref infos[i]);
 
             return count;
         }
@@ -257,9 +244,8 @@ namespace AlicizaX
             AssertMainThread();
             ThrowIfInCallback();
             List<Exception> exceptions = null;
-            MemoryPoolHandle[] handles = s_HandleValues;
-            for (int i = 0; i < handles.Length; i++)
-                CollectException(ref exceptions, handles[i]?.Clear);
+            for (int i = 0; i < s_Registered.Count; i++)
+                CollectException(ref exceptions, s_Registered[i].Clear);
             Rethrow(exceptions);
         }
 
@@ -268,9 +254,8 @@ namespace AlicizaX
             AssertMainThread();
             ThrowIfInCallback();
             List<Exception> exceptions = null;
-            MemoryPoolHandle[] handles = s_HandleValues;
-            for (int i = 0; i < handles.Length; i++)
-                CollectException(ref exceptions, handles[i]?.Compact);
+            for (int i = 0; i < s_Registered.Count; i++)
+                CollectException(ref exceptions, s_Registered[i].Compact);
             Rethrow(exceptions);
         }
 
@@ -279,9 +264,8 @@ namespace AlicizaX
             AssertMainThread();
             ThrowIfInCallback();
             List<Exception> exceptions = null;
-            MemoryPoolHandle[] handles = s_HandleValues;
-            for (int i = 0; i < handles.Length; i++)
-                CollectException(ref exceptions, handles[i]?.TrimNativeMetadata);
+            for (int i = 0; i < s_Registered.Count; i++)
+                CollectException(ref exceptions, s_Registered[i].TrimNativeMetadata);
             Rethrow(exceptions);
         }
 
@@ -289,8 +273,8 @@ namespace AlicizaX
         {
             AssertMainThread();
             ThrowIfInCallback();
-            for (int i = 0; i < s_HandleValues.Length; i++)
-                s_HandleValues[i]?.ResetStats();
+            for (int i = 0; i < s_Registered.Count; i++)
+                s_Registered[i].ResetStats();
         }
 
         public static void ClearAllNativeMetadata()
@@ -298,9 +282,8 @@ namespace AlicizaX
             AssertMainThread();
             ThrowIfInCallback();
             List<Exception> exceptions = null;
-            MemoryPoolHandle[] handles = s_HandleValues;
-            for (int i = 0; i < handles.Length; i++)
-                CollectException(ref exceptions, handles[i]?.ClearNativeMetadata);
+            for (int i = 0; i < s_Registered.Count; i++)
+                CollectException(ref exceptions, s_Registered[i].ClearNativeMetadata);
             Rethrow(exceptions);
         }
 
@@ -328,8 +311,8 @@ namespace AlicizaX
         {
             AssertMainThread();
             ThrowIfInCallback();
-            for (int i = 0; i < s_HandleValues.Length; i++)
-                s_HandleValues[i]?.SetCapacity(softCapacity, hardCapacity);
+            for (int i = 0; i < s_Registered.Count; i++)
+                s_Registered[i].SetCapacity(softCapacity, hardCapacity);
         }
 
         public static void ClearType(Type type)
@@ -386,111 +369,27 @@ namespace AlicizaX
             Rethrow(exceptions);
         }
 
-        private static void ReserveActiveCapacity(int required)
-        {
-            if (s_ActivePools.Length >= required)
-                return;
-
-            int newLength = s_ActivePools.Length == 0 ? 16 : s_ActivePools.Length;
-            while (newLength < required)
-                newLength <<= 1;
-
-            var activePools = new MemoryPoolHandle[newLength];
-            Array.Copy(s_ActivePools, 0, activePools, 0, s_ActiveCount);
-            s_ActivePools = activePools;
-        }
-
-        private static bool TryGetHandle(IntPtr key, out MemoryPoolHandle handle)
-        {
-            int index = FindHandleSlot(key, out bool found);
-            if (found)
-            {
-                handle = s_HandleValues[index];
-                return true;
-            }
-
-            handle = null;
-            return false;
-        }
-
-        private static void AddOrUpdateHandle(IntPtr key, MemoryPoolHandle handle)
-        {
-            if ((s_HandleCount + 1) * 4 >= s_HandleKeys.Length * 3)
-                GrowHandleCache();
-
-            int index = FindHandleSlot(key, out bool found);
-            if (!found)
-                s_HandleCount++;
-
-            s_HandleKeys[index] = key;
-            s_HandleValues[index] = handle;
-        }
-
-        private static int FindHandleSlot(IntPtr key, out bool found)
-        {
-            int mask = s_HandleKeys.Length - 1;
-            int index = Mix((ulong)key.ToInt64()) & mask;
-            while (true)
-            {
-                IntPtr existing = s_HandleKeys[index];
-                if (existing == IntPtr.Zero)
-                {
-                    found = false;
-                    return index;
-                }
-
-                if (existing == key)
-                {
-                    found = true;
-                    return index;
-                }
-
-                index = (index + 1) & mask;
-            }
-        }
-
-        private static void GrowHandleCache()
-        {
-            IntPtr[] oldKeys = s_HandleKeys;
-            MemoryPoolHandle[] oldValues = s_HandleValues;
-            s_HandleKeys = new IntPtr[oldKeys.Length << 1];
-            s_HandleValues = new MemoryPoolHandle[oldValues.Length << 1];
-            int oldCount = s_HandleCount;
-            s_HandleCount = 0;
-            for (int i = 0; i < oldKeys.Length; i++)
-            {
-                if (oldKeys[i] != IntPtr.Zero)
-                    AddOrUpdateHandle(oldKeys[i], oldValues[i]);
-            }
-
-            s_HandleCount = oldCount;
-        }
-
-        private static int Mix(ulong value)
-        {
-            value ^= value >> 33;
-            value *= 0xff51afd7ed558ccdUL;
-            value ^= value >> 33;
-            value *= 0xc4ceb9fe1a85ec53UL;
-            value ^= value >> 33;
-            return (int)value;
-        }
-
         private static MemoryPoolHandle GetOrCreateHandle(Type type)
         {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
 
-            RuntimeTypeHandle typeHandle = type.TypeHandle;
-            if (TryGetHandle(typeHandle.Value, out MemoryPoolHandle handle))
+            if (s_Handles.TryGetValue(type, out MemoryPoolHandle handle))
+            {
+                if (!handle.Registered)
+                    Register(type, handle);
                 return handle;
+            }
 
             ValidateMemoryObjectType(type);
-            RuntimeHelpers.RunClassConstructor(
-                typeof(MemoryPool<>).MakeGenericType(type).TypeHandle);
+            RuntimeHelpers.RunClassConstructor(typeof(MemoryPool<>).MakeGenericType(type).TypeHandle);
 
-            if (TryGetHandle(typeHandle.Value, out handle))
+            if (s_Handles.TryGetValue(type, out handle))
+            {
+                if (!handle.Registered)
+                    Register(type, handle);
                 return handle;
+            }
 
             throw new InvalidOperationException($"MemoryPool: Type '{type.FullName}' could not be materialized.");
         }

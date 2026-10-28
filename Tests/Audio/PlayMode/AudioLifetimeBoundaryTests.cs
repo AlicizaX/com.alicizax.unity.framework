@@ -149,7 +149,7 @@ namespace AlicizaX.Audio.Tests
             Assert.That(callbacks, Is.EqualTo(1));
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             Assert.That(host.transform.childCount, Is.Zero);
-            Assert.That(f.Pools.GetObjectPool<AudioSourceObject>("Audio Source Pool").Count, Is.Zero);
+            Assert.That(f.Pools.GetObjectPool<AudioSourceObject>("Audio Source Pool"), Is.Null, "the audio-owned source pool is destroyed on shutdown");
             AudioFixture.CheckAudioPoolsReleased();
         }
 

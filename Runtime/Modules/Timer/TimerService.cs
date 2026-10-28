@@ -20,6 +20,19 @@ namespace AlicizaX.Timer.Runtime
         }
     }
 
+    internal static class TimerStructInvokerCache<TCallback, TArg>
+        where TCallback : struct, ITimerCallback<TArg>
+        where TArg : class
+    {
+        public static readonly TimerGenericInvoker Invoke = InvokeCallback;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void InvokeCallback(object handler, object arg)
+        {
+            default(TCallback).Invoke((TArg)arg);
+        }
+    }
+
     [UnityEngine.Scripting.Preserve]
     [Il2CppSetOption(Option.NullChecks, false)]
     [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
@@ -39,7 +52,9 @@ namespace AlicizaX.Timer.Runtime
         private const int WHEEL_LEVEL_COUNT = 4;
         private const int WHEEL_MAX_LEVEL = WHEEL_LEVEL_COUNT - 1;
         private const int WHEEL_BUCKET_COUNT = WHEEL_SIZE * WHEEL_LEVEL_COUNT;
-        private const int MAX_WHEEL_TICKS_PER_FRAME = 64;
+        private const int MAX_TIMERS_PER_FRAME = 256;
+        private const int MAX_CATCHUP_TICKS = 4096;
+        private const int INITIAL_PAGE_DIRECTORY_CAPACITY = 4;
         private const double TICKS_PER_SECOND = 1000d;
         private const double MINIMUM_DELAY_SECONDS = 0.000001d;
 #if UNITY_EDITOR
@@ -98,6 +113,7 @@ namespace AlicizaX.Timer.Runtime
         private TimerPage[] _pages;
         private IntPage[] _freeSlotPages;
         private IntPage[] _activeSlotPages;
+        private int[] _pageActiveCounts;
         private int[] _scaledWheelHeads;
         private int[] _scaledWheelTails;
         private int[] _unscaledWheelHeads;
@@ -117,9 +133,10 @@ namespace AlicizaX.Timer.Runtime
 
         public TimerService(int initialCapacity)
         {
-            _pages = new TimerPage[MAX_PAGE_COUNT];
-            _freeSlotPages = new IntPage[MAX_PAGE_COUNT];
-            _activeSlotPages = new IntPage[MAX_PAGE_COUNT];
+            _pages = new TimerPage[INITIAL_PAGE_DIRECTORY_CAPACITY];
+            _freeSlotPages = new IntPage[INITIAL_PAGE_DIRECTORY_CAPACITY];
+            _activeSlotPages = new IntPage[INITIAL_PAGE_DIRECTORY_CAPACITY];
+            _pageActiveCounts = new int[INITIAL_PAGE_DIRECTORY_CAPACITY];
             _scaledWheelHeads = CreateWheelHeads();
             _scaledWheelTails = CreateWheelHeads();
             _unscaledWheelHeads = CreateWheelHeads();
@@ -192,6 +209,30 @@ namespace AlicizaX.Timer.Runtime
             SetHandlerType(slotIndex, HANDLER_GENERIC);
             SetGenericInvoker(slotIndex, TimerGenericInvokerCache<T>.Invoke);
             SetGenericHandler(slotIndex, callback);
+            SetGenericArg(slotIndex, arg);
+            AddActive(slotIndex);
+            AddToQueue(slotIndex, isUnscaled);
+            return GetHandle(slotIndex);
+        }
+
+        /// <summary>
+        /// 零分配回调路径。委托按 (TCallback, TArg) 缓存一次；调用方传入结构体类型而非
+        /// 方法组，因此每次调用都不会分配委托。
+        /// </summary>
+        public ulong AddTimer<TCallback, TArg>(TArg arg, float time, bool isLoop = false, bool isUnscaled = false)
+            where TCallback : struct, ITimerCallback<TArg>
+            where TArg : class
+        {
+            int slotIndex = AcquireSlot(time);
+            if (slotIndex < 0)
+            {
+                return 0UL;
+            }
+
+            InitializeSlot(slotIndex, NormalizeDelay(time), isLoop, isUnscaled);
+            SetHandlerType(slotIndex, HANDLER_GENERIC);
+            SetGenericInvoker(slotIndex, TimerStructInvokerCache<TCallback, TArg>.Invoke);
+            SetGenericHandler(slotIndex, null);
             SetGenericArg(slotIndex, arg);
             AddActive(slotIndex);
             AddToQueue(slotIndex, isUnscaled);
@@ -417,8 +458,10 @@ namespace AlicizaX.Timer.Runtime
                 return;
             }
 
+            EnsurePageDirectory(_pageCount + 1);
             _freeSlotPages[_pageCount] = new IntPage();
             _activeSlotPages[_pageCount] = new IntPage();
+            _pageActiveCounts[_pageCount] = 0;
 
             TimerPage page = new TimerPage();
             _pages[_pageCount] = page;
@@ -431,6 +474,54 @@ namespace AlicizaX.Timer.Runtime
 
             _pageCount++;
             _slotCapacity += PAGE_SIZE;
+        }
+
+        private void EnsurePageDirectory(int required)
+        {
+            if (_pages.Length >= required)
+                return;
+
+            int capacity = Math.Min(MAX_PAGE_COUNT, Math.Max(required, _pages.Length << 1));
+            Array.Resize(ref _pages, capacity);
+            Array.Resize(ref _freeSlotPages, capacity);
+            Array.Resize(ref _activeSlotPages, capacity);
+            Array.Resize(ref _pageActiveCounts, capacity);
+        }
+
+        /// <summary>
+        /// 释放尾部不含已租用槽位的页。需要重建空闲槽位栈，因为被释放页中的槽位必须从栈中消失。
+        /// 应在大量计时器被移除后调用。
+        /// </summary>
+        public void TrimExcess()
+        {
+            if (_executingSlotIndex >= 0)
+                return;
+
+            int newPageCount = _pageCount;
+            while (newPageCount > 0 && _pageActiveCounts[newPageCount - 1] == 0)
+            {
+                newPageCount--;
+            }
+
+            if (newPageCount == _pageCount)
+                return;
+
+            for (int page = newPageCount; page < _pageCount; page++)
+            {
+                _pages[page] = null;
+                _freeSlotPages[page] = null;
+                _activeSlotPages[page] = null;
+                _pageActiveCounts[page] = 0;
+            }
+
+            _pageCount = newPageCount;
+            _slotCapacity = _pageCount << PAGE_SHIFT;
+            _freeCount = 0;
+            for (int slot = 0; slot < _slotCapacity; slot++)
+            {
+                if (GetState(slot) == 0)
+                    SetFreeSlot(_freeCount++, slot);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -527,6 +618,7 @@ namespace AlicizaX.Timer.Runtime
             int activeIndex = _activeCount++;
             SetActiveSlot(activeIndex, slotIndex);
             SetActiveIndex(slotIndex, activeIndex);
+            _pageActiveCounts[slotIndex >> PAGE_SHIFT]++;
             if (_activeCount > _peakActiveCount)
             {
                 _peakActiveCount = _activeCount;
@@ -537,6 +629,7 @@ namespace AlicizaX.Timer.Runtime
         private void RemoveActive(int slotIndex)
         {
             int activeIndex = GetActiveIndex(slotIndex);
+            _pageActiveCounts[slotIndex >> PAGE_SHIFT]--;
             int lastIndex = --_activeCount;
             int lastSlotIndex = GetActiveSlot(lastIndex);
             SetActiveSlot(activeIndex, lastSlotIndex);
@@ -598,6 +691,8 @@ namespace AlicizaX.Timer.Runtime
             {
                 ReleaseSlot(GetActiveSlot(_activeCount - 1));
             }
+
+            TrimExcess();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -670,22 +765,66 @@ namespace AlicizaX.Timer.Runtime
         {
             long currentTick = TimeToTickFloor(currentTime);
             long cursorTick = GetCurrentWheelTick(isUnscaled);
-            int tickBudget = MAX_WHEEL_TICKS_PER_FRAME;
-            while (cursorTick <= currentTick && tickBudget > 0 && GetQueueCount(isUnscaled) > 0)
-            {
-                SetCurrentWheelTick(isUnscaled, cursorTick);
-                AdvanceWheelTick(isUnscaled, cursorTick, currentTime);
-                cursorTick++;
-                tickBudget--;
-            }
-
             if (GetQueueCount(isUnscaled) == 0)
             {
                 SetCurrentWheelTick(isUnscaled, currentTick + 1L);
                 return;
             }
 
-            SetCurrentWheelTick(isUnscaled, cursorTick <= currentTick ? cursorTick : currentTick + 1L);
+            if (cursorTick > currentTick)
+                return;
+
+            if (currentTick - cursorTick > MAX_CATCHUP_TICKS)
+            {
+                RebaseWheel(isUnscaled, currentTick);
+                cursorTick = currentTick;
+            }
+
+            int callbackBudget = MAX_TIMERS_PER_FRAME;
+            while (cursorTick <= currentTick && callbackBudget > 0 && GetQueueCount(isUnscaled) > 0)
+            {
+                SetCurrentWheelTick(isUnscaled, cursorTick);
+                AdvanceWheelTick(isUnscaled, cursorTick, currentTime, ref callbackBudget);
+                if (callbackBudget <= 0)
+                {
+                    // 游标停留在处理到一半的 tick 上：剩余计时器仍留在该桶中，
+                    // 下一帧用新的预算继续执行。
+                    return;
+                }
+
+                cursorTick++;
+            }
+
+            if (GetQueueCount(isUnscaled) == 0)
+                SetCurrentWheelTick(isUnscaled, currentTick + 1L);
+            else if (cursorTick > currentTick)
+                SetCurrentWheelTick(isUnscaled, currentTick + 1L);
+        }
+
+        /// <summary>
+        /// 长时间停滞后，将所有排队计时器重新以当前 tick 为基准。已过期计时器合并到当前
+        /// level-0 桶（突发量仍受回调预算约束），未来计时器回到其常规轮层级。
+        /// 复杂度为 O(桶数 + 计时器数)，避免挂起或长卡顿后遍历数百万个空 tick。
+        /// </summary>
+        private void RebaseWheel(bool isUnscaled, long currentTick)
+        {
+            for (int bucket = 0; bucket < WHEEL_BUCKET_COUNT; bucket++)
+            {
+                int slotIndex = GetWheelHead(bucket, isUnscaled);
+                SetWheelHead(bucket, INVALID_INDEX, isUnscaled);
+                SetWheelTail(bucket, INVALID_INDEX, isUnscaled);
+                while (slotIndex >= 0)
+                {
+                    int nextSlotIndex = GetQueueNextIndex(slotIndex);
+                    DetachRemovedBucketSlot(slotIndex);
+                    long dueTick = GetDueTick(slotIndex);
+                    long targetTick = dueTick > currentTick ? dueTick : currentTick;
+                    AddToBucket(slotIndex, GetWheelBucketIndex(targetTick, currentTick), isUnscaled);
+                    slotIndex = nextSlotIndex;
+                }
+            }
+
+            SetCurrentWheelTick(isUnscaled, currentTick);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -716,14 +855,14 @@ namespace AlicizaX.Timer.Runtime
             SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) - 1);
         }
 
-        private void AdvanceWheelTick(bool isUnscaled, long tick, double currentTime)
+        private void AdvanceWheelTick(bool isUnscaled, long tick, double currentTime, ref int callbackBudget)
         {
             for (int level = WHEEL_MAX_LEVEL; level > 0; level--)
             {
                 CascadeWheelLevel(isUnscaled, tick, level);
             }
 
-            ProcessBucket(isUnscaled, (int)(tick & WHEEL_MASK), currentTime);
+            ProcessBucket(isUnscaled, (int)(tick & WHEEL_MASK), currentTime, ref callbackBudget);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -747,16 +886,17 @@ namespace AlicizaX.Timer.Runtime
             }
         }
 
-        private void ProcessBucket(bool isUnscaled, int bucketIndex, double currentTime)
+        private void ProcessBucket(bool isUnscaled, int bucketIndex, double currentTime, ref int callbackBudget)
         {
-            int slotIndex = GetWheelHead(bucketIndex, isUnscaled);
-            while (slotIndex >= 0)
+            while (callbackBudget > 0)
             {
+                int slotIndex = GetWheelHead(bucketIndex, isUnscaled);
+                if (slotIndex < 0)
+                    return;
+
                 RemoveFromQueue(slotIndex, isUnscaled);
-
+                callbackBudget--;
                 ProcessDueTimer(slotIndex, currentTime);
-
-                slotIndex = GetWheelHead(bucketIndex, isUnscaled);
             }
         }
 

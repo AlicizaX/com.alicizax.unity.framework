@@ -15,16 +15,13 @@ namespace AlicizaX.Resource.Runtime
         StaleOwner = 4,
         Canceled = 5,
         LoadFailed = 6,
-        ApplyFailed = 7,
-        ServiceShutdown = 8,
-        NotImplemented = 9,
+        ServiceShutdown = 7,
     }
 
     [Flags]
     public enum ResourceBindingOptions : byte
     {
         None = 0,
-        KeepAliveOnRelease = 1,
         SetNativeSize = 2,
     }
 
@@ -45,7 +42,6 @@ namespace AlicizaX.Resource.Runtime
         ResourceBindStatus RegisterOwner(ResourceOwner owner);
         ResourceBindStatus ReleaseOwner(ResourceOwner owner);
         ResourceBindStatus ReleaseOwner(int ownerId, uint generation);
-        void Warmup(int ownerCapacity, int bindingCapacity, int registeredTargetCapacity);
         ResourceBindStatus RegisterTarget(ResourceOwner owner, Component target);
         ResourceBindStatus UnregisterTarget(ResourceOwner owner, Component target);
         ResourceBindStatus BindSprite(ResourceOwner owner, Image image, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None);

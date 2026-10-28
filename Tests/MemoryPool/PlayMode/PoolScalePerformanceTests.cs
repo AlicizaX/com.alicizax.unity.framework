@@ -119,7 +119,6 @@ namespace AlicizaX.MemoryPoolTests
         public IEnumerator ScheduledPoolMaintenanceDoesNotAllocateOnSuccessfulTicks()
         {
             MemoryPool.ShortDecayStartFrames = int.MaxValue;
-            MemoryPool.LongDecayStartFrames = int.MaxValue;
             MemoryPool.ZeroFreeReserveStartFrames = int.MaxValue;
             MemoryPool.UnscheduleIdleFrames = int.MaxValue;
             MemoryPool.AutoTrimNativeMetadataFrames = -1;

@@ -345,7 +345,6 @@ namespace AlicizaX.Audio.Editor
             configProperty.FindPropertyRelative("m_Name").stringValue = name;
             configProperty.FindPropertyRelative("m_Mute").boolValue = false;
             configProperty.FindPropertyRelative("m_Volume").floatValue = 1f;
-            configProperty.FindPropertyRelative("m_AgentHelperCount").intValue = maxSourceCount;
             configProperty.FindPropertyRelative("m_InitialSourceCount").intValue = initialSourceCount;
             configProperty.FindPropertyRelative("m_MaxSourceCount").intValue = maxSourceCount;
             configProperty.FindPropertyRelative("m_ExposedVolumeParameter").stringValue = exposedParameter;
@@ -617,7 +616,6 @@ namespace AlicizaX.Audio.Editor
 
                 debugService.FillServiceDebugInfo(_serviceInfo);
                 DrawDebugRow("Initialized", _serviceInfo.Initialized.ToString());
-                DrawDebugRow("Unity Audio Disabled", _serviceInfo.UnityAudioDisabled.ToString());
                 DrawDebugRow("Enable", _serviceInfo.Enable.ToString());
                 DrawDebugRow("Volume", _serviceInfo.Volume.ToString("F3"));
                 DrawDebugObjectRow("Listener", _serviceInfo.Listener, typeof(AudioListener));

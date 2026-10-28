@@ -40,7 +40,7 @@ namespace AlicizaX.ObjectPool.Tests
                 {
                     Ledger(pool, 0, 0, 0);
                     Assert.That(Read<Array>(pool, "m_Slots"), Is.Null);
-                    Assert.That(Read<Array>(Read<ReferenceOpenHashMap>(pool, "m_TargetMap"), "m_Buckets"), Is.Null);
+                    Assert.That(Read<Array>(Read<OpenHashMap<RefKey>>(pool, "m_TargetMap"), "m_Buckets"), Is.Null);
                     Assert.That(Read<Array>(Read<OpenHashMap<string>>(pool, "m_AvailableNameHeadMap"), "m_Buckets"), Is.Null);
                 }
                 Assert.That(Read<Array>(Read<OpenHashMap<ObjectPoolKey>>(Service, "m_PoolMap"), "m_Buckets"), Is.Null);
@@ -74,33 +74,20 @@ namespace AlicizaX.ObjectPool.Tests
             Ledger((ObjectPoolBase)other, 0, 0, 0);
         }
 
-        [TestCase("register")]
-        [TestCase("spawn")]
-        [TestCase("unspawn")]
-        [TestCase("release")]
-        public void ShutdownRequestedInsideACallbackFinishesAfterThatCallbackWithoutDoubleRecycling(string operation)
+        [Test]
+        public void PoolCannotBeDestroyedFromItsOwnCallback()
         {
             var pool = Pool();
             var obj = Item();
             var probe = obj.Probe;
-            Action destroy = () => ((IServiceLifecycle)Service).Destroy();
-            if (operation == "register" || operation == "spawn") probe.SpawnAction = destroy;
-            if (operation == "unspawn") probe.UnspawnAction = destroy;
-            if (operation == "release") probe.ReleaseAction = _ => { probe.ReleaseAction = null; destroy(); };
-            if (operation == "register") Assert.That(pool.Register(obj, true), Is.False);
-            else
-            {
-                pool.Register(obj, operation == "unspawn");
-                if (operation == "spawn") Assert.That(pool.Spawn(), Is.Null);
-                if (operation == "unspawn") pool.Unspawn(obj);
-                if (operation == "release") pool.ReleaseAllUnused();
-            }
+            pool.Register(obj, false);
+            probe.SpawnAction = () => Service.DestroyObjectPool<PoolObject>();
+
+            Assert.Throws<InvalidOperationException>(() => pool.Spawn(""));
+            Ledger((ObjectPoolBase)pool, 1, 1, 0);
+
+            pool.ReleaseAllUnused();
             Ledger((ObjectPoolBase)pool, 0, 0, 0);
-            Assert.That(Service.Count, Is.Zero);
-            Assert.That(Active(Service), Is.Zero);
-            Assert.That(probe.Releases, Is.EqualTo(1));
-            Assert.That(probe.Shutdowns, Is.EqualTo(operation == "release" ? 0 : 1));
-            Assert.That(probe.Clears, Is.EqualTo(1));
             Assert.That(Using<PoolObject>(), Is.Zero);
         }
 

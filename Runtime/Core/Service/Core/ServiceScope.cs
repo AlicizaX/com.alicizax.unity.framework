@@ -8,6 +8,12 @@ namespace AlicizaX
     {
         private const int MissingIndex = -1;
 
+        /// <summary>
+        /// 为 true 时，tick 中抛异常的服务在后续 tick 中被跳过，直到被注销或重新注册；
+        /// 无论该开关如何，首次异常都只记录一次。
+        /// </summary>
+        public static bool DisableFaultedServices { get; set; }
+
         private readonly Dictionary<RuntimeTypeHandle, IService> _servicesByContract = new Dictionary<RuntimeTypeHandle, IService>(ServiceContractUtility.HandleComparer);
         private readonly Dictionary<IService, ServiceEntry> _entriesByService = new Dictionary<IService, ServiceEntry>(ReferenceComparer<IService>.Instance);
         private readonly List<IService> _registrationOrder = new List<IService>();
@@ -18,6 +24,7 @@ namespace AlicizaX
         private readonly List<IServiceGizmoDrawable> _gizmoDrawables = new List<IServiceGizmoDrawable>();
 
         private readonly List<PendingChange> _pendingChanges = new List<PendingChange>();
+        private readonly HashSet<object> _faultedServices = new HashSet<object>(ReferenceComparer<object>.Instance);
 
         private bool _tickablesDirty;
         private bool _lateTickablesDirty;
@@ -115,36 +122,116 @@ namespace AlicizaX
         {
             SortTickablesIfDirty();
             _isIterating = true;
-            for (var i = 0; i < _tickables.Count; i++) _tickables[i].Tick(deltaTime);
-            _isIterating = false;
-            FlushPendingChanges();
+            try
+            {
+                for (var i = 0; i < _tickables.Count; i++)
+                {
+                    var service = _tickables[i];
+                    if (DisableFaultedServices && _faultedServices.Contains(service)) continue;
+                    try
+                    {
+                        service.Tick(deltaTime);
+                    }
+                    catch (Exception exception)
+                    {
+                        HandleTickException(service, exception);
+                    }
+                }
+            }
+            finally
+            {
+                _isIterating = false;
+                FlushPendingChanges();
+            }
         }
 
         internal void LateTick(float deltaTime)
         {
             SortLateTickablesIfDirty();
             _isIterating = true;
-            for (var i = 0; i < _lateTickables.Count; i++) _lateTickables[i].LateTick(deltaTime);
-            _isIterating = false;
-            FlushPendingChanges();
+            try
+            {
+                for (var i = 0; i < _lateTickables.Count; i++)
+                {
+                    var service = _lateTickables[i];
+                    if (DisableFaultedServices && _faultedServices.Contains(service)) continue;
+                    try
+                    {
+                        service.LateTick(deltaTime);
+                    }
+                    catch (Exception exception)
+                    {
+                        HandleTickException(service, exception);
+                    }
+                }
+            }
+            finally
+            {
+                _isIterating = false;
+                FlushPendingChanges();
+            }
         }
 
         internal void FixedTick(float fixedDeltaTime)
         {
             SortFixedTickablesIfDirty();
             _isIterating = true;
-            for (var i = 0; i < _fixedTickables.Count; i++) _fixedTickables[i].FixedTick(fixedDeltaTime);
-            _isIterating = false;
-            FlushPendingChanges();
+            try
+            {
+                for (var i = 0; i < _fixedTickables.Count; i++)
+                {
+                    var service = _fixedTickables[i];
+                    if (DisableFaultedServices && _faultedServices.Contains(service)) continue;
+                    try
+                    {
+                        service.FixedTick(fixedDeltaTime);
+                    }
+                    catch (Exception exception)
+                    {
+                        HandleTickException(service, exception);
+                    }
+                }
+            }
+            finally
+            {
+                _isIterating = false;
+                FlushPendingChanges();
+            }
         }
 
         internal void DrawGizmos()
         {
             SortGizmoDrawablesIfDirty();
             _isIterating = true;
-            for (var i = 0; i < _gizmoDrawables.Count; i++) _gizmoDrawables[i].DrawGizmos();
-            _isIterating = false;
-            FlushPendingChanges();
+            try
+            {
+                for (var i = 0; i < _gizmoDrawables.Count; i++)
+                {
+                    var service = _gizmoDrawables[i];
+                    if (DisableFaultedServices && _faultedServices.Contains(service)) continue;
+                    try
+                    {
+                        service.DrawGizmos();
+                    }
+                    catch (Exception exception)
+                    {
+                        HandleTickException(service, exception);
+                    }
+                }
+            }
+            finally
+            {
+                _isIterating = false;
+                FlushPendingChanges();
+            }
+        }
+
+        private void HandleTickException(object service, Exception exception)
+        {
+            // 每个服务只记录首次失败：异常 tick 不能刷屏，也不能中断其余服务。
+            // 除非显式启用故障隔离，否则该服务仍会继续 tick。
+            if (_faultedServices.Add(service))
+                AlicizaX.Log.Exception(exception);
         }
 
         public void Dispose()
@@ -161,7 +248,16 @@ namespace AlicizaX
 
                 RemoveEntry(service, entry, false);
                 if (service is IServiceLifecycle lifecycle)
-                    lifecycle.Destroy();
+                {
+                    try
+                    {
+                        lifecycle.Destroy();
+                    }
+                    catch (Exception exception)
+                    {
+                        AlicizaX.Log.Exception(exception);
+                    }
+                }
             }
 
             _registrationOrder.Clear();
@@ -169,6 +265,7 @@ namespace AlicizaX
             _lateTickables.Clear();
             _fixedTickables.Clear();
             _gizmoDrawables.Clear();
+            _faultedServices.Clear();
             IsDisposed = true;
         }
 
@@ -194,7 +291,18 @@ namespace AlicizaX
             ValidateContracts(contracts);
             AddEntry(service, contracts);
             if (service is IServiceLifecycle lifecycle)
-                lifecycle.Initialize(World, this);
+            {
+                try
+                {
+                    lifecycle.Initialize(World, this);
+                }
+                catch
+                {
+                    RemoveEntry(service, _entriesByService[service], true);
+                    throw;
+                }
+            }
+
             return service;
         }
 
@@ -229,6 +337,7 @@ namespace AlicizaX
 
         private void AddEntry(IService service, ServiceContracts contracts)
         {
+            _faultedServices.Remove(service);
             var entry = new ServiceEntry(contracts, _registrationOrder.Count);
             _registrationOrder.Add(service);
 
@@ -246,6 +355,7 @@ namespace AlicizaX
         private void RemoveEntry(IService service, ServiceEntry entry, bool removeRegistrationOrder)
         {
             _entriesByService.Remove(service);
+            _faultedServices.Remove(service);
             RemoveFromLifecycleLists(service, entry);
 
             for (var i = 0; i < entry.Contracts.Count; i++)
@@ -399,30 +509,44 @@ namespace AlicizaX
         {
             if (_pendingChanges.Count == 0) return;
 
-            for (var i = 0; i < _pendingChanges.Count; i++)
+            try
             {
-                var change = _pendingChanges[i];
-                if (change.IsAdd)
+                for (var i = 0; i < _pendingChanges.Count; i++)
                 {
-                    if (!_entriesByService.ContainsKey(change.Service))
+                    var change = _pendingChanges[i];
+                    try
                     {
-                        if (change.Service is IServiceLifecycle lifecycle)
-                            lifecycle.Initialize(World, this);
-                        AddEntry(change.Service, change.Contracts);
+                        if (change.IsAdd)
+                        {
+                            if (_entriesByService.ContainsKey(change.Service)) continue;
+
+                            AddEntry(change.Service, change.Contracts);
+                            if (change.Service is IServiceLifecycle lifecycle)
+                                lifecycle.Initialize(World, this);
+                            continue;
+                        }
+
+                        if (_entriesByService.TryGetValue(change.Service, out var entry))
+                        {
+                            RemoveEntry(change.Service, entry, true);
+                            if (change.Service is IServiceLifecycle lifecycle)
+                                lifecycle.Destroy();
+                        }
                     }
-
-                    continue;
-                }
-
-                if (_entriesByService.TryGetValue(change.Service, out var entry))
-                {
-                    RemoveEntry(change.Service, entry, true);
-                    if (change.Service is IServiceLifecycle lifecycle)
-                        lifecycle.Destroy();
+                    catch (Exception exception)
+                    {
+                        // 生命周期回调不能中断剩余待处理变更或调用方的 tick 循环。
+                        // 丢弃这个只注册了一半的服务，然后继续处理。
+                        if (_entriesByService.TryGetValue(change.Service, out var entry))
+                            RemoveEntry(change.Service, entry, true);
+                        AlicizaX.Log.Exception(exception);
+                    }
                 }
             }
-
-            _pendingChanges.Clear();
+            finally
+            {
+                _pendingChanges.Clear();
+            }
         }
 
         private void SortTickablesIfDirty()

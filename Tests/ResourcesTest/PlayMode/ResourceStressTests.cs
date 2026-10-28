@@ -43,7 +43,7 @@ namespace AlicizaX.Resource.Tests
                     f.Service.UnloadUnusedAssets(true);
                     Assert.That(f.Loader.LiveHandles, Is.Zero);
                     Assert.That(ReadCount(f.Service, "_assetLoadingOperationByKey"), Is.Zero);
-                    Assert.That(ReadCount(f.Service, "_resourceLocationIds"), Is.Zero);
+                    Assert.That(f.Service.KeyRegistry.LocationIdCount, Is.Zero);
                     Snapshot(f, "released", count);
                 }
             }

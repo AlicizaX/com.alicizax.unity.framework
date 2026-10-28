@@ -71,7 +71,7 @@ namespace AlicizaX.Timer.Tests
         }
 
         [UnityTest]
-        public IEnumerator MissedSecondRequiresBoundedCatchupAndNeverFiresBeforeDue()
+        public IEnumerator MissedSecondFiresOnTheNextTickWithoutTickByTickCatchup()
         {
             using var f = new TimerFixture();
             int calls = 0;
@@ -81,34 +81,30 @@ namespace AlicizaX.Timer.Tests
             yield return TimerProbe.Wait(1.05);
             Assert.That(calls, Is.Zero, "without Tick only the clock advances");
             Assert.That(f.Service.GetLeftTime(h), Is.Zero);
+
             long target = (long)(Time.unscaledTimeAsDouble * 1000);
-            int ticks = 0;
-            do
-            {
-                long before = TimerProbe.Cursor(f.Service);
-                f.Tick();
-                ticks++;
-                Assert.That(TimerProbe.Cursor(f.Service) - before, Is.InRange(1, 64));
-                if (ticks == 1) Assert.That(calls, Is.Zero);
-            } while (TimerProbe.Cursor(f.Service) <= target);
-            Assert.That(ticks, Is.EqualTo((int)Math.Ceiling((target - start + 1) / 64d)));
-            Assert.That(calls, Is.EqualTo(1));
-            TestContext.WriteLine($"CATCHUP,missed-ms,{target - start},tick-calls,{ticks},budget-per-clock,64");
+            f.Tick();
+            Assert.That(calls, Is.EqualTo(1), "an overdue timer fires on the first tick after the stall");
+            Assert.That(TimerProbe.Cursor(f.Service), Is.GreaterThanOrEqualTo(target));
+            Assert.That(f.Service.IsRunning(h), Is.False);
+            TestContext.WriteLine($"CATCHUP,missed-ms,{target - start},tick-calls,1,budget-per-clock,{256}");
             f.Service.RemoveTimer(sentinel);
             TimerProbe.Ledger(f.Service);
         }
 
         [UnityTest]
-        public IEnumerator BothClocksHaveIndependentSixtyFourTickBudgets()
+        public IEnumerator BothClocksAdvanceToTheCurrentTickIndependently()
         {
             using var f = new TimerFixture();
             f.Service.AddTimer(TimerProbe.NoOp, 60);
             f.Service.AddTimer(TimerProbe.NoOp, 60, isUnscaled: true);
-            long scaled = TimerProbe.Cursor(f.Service, false), unscaled = TimerProbe.Cursor(f.Service);
             yield return TimerProbe.Wait(0.2);
+
+            long scaledTarget = (long)(Time.timeAsDouble * 1000);
+            long unscaledTarget = (long)(Time.unscaledTimeAsDouble * 1000);
             f.Tick();
-            Assert.That(TimerProbe.Cursor(f.Service, false) - scaled, Is.EqualTo(64));
-            Assert.That(TimerProbe.Cursor(f.Service) - unscaled, Is.EqualTo(64));
+            Assert.That(TimerProbe.Cursor(f.Service, false), Is.GreaterThanOrEqualTo(scaledTarget));
+            Assert.That(TimerProbe.Cursor(f.Service), Is.GreaterThanOrEqualTo(unscaledTarget));
             TimerProbe.Ledger(f.Service);
         }
 

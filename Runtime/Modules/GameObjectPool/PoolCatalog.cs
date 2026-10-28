@@ -72,9 +72,9 @@ namespace AlicizaX
         private readonly PoolCompiledRule[] _rules;
         private readonly int[] _globRuleIndices;
         private readonly int _globRuleCount;
-        private StringOpenHashMap _exactRuleMap;
+        private OpenHashMap<string> _exactRuleMap;
 
-        private PoolCompiledCatalog(PoolCompiledRule[] rules, int[] globRuleIndices, int globRuleCount, StringOpenHashMap exactRuleMap)
+        private PoolCompiledCatalog(PoolCompiledRule[] rules, int[] globRuleIndices, int globRuleCount, OpenHashMap<string> exactRuleMap)
         {
             _rules = rules;
             _globRuleIndices = globRuleIndices;
@@ -125,7 +125,7 @@ namespace AlicizaX
                 Array.Empty<PoolCompiledRule>(),
                 Array.Empty<int>(),
                 0,
-                new StringOpenHashMap(8));
+                new OpenHashMap<string>(8));
         }
 
         public static PoolCompiledCatalog Build(IList<PoolEntry> entries)
@@ -177,7 +177,7 @@ namespace AlicizaX
 
             var rules = new PoolCompiledRule[normalized.Length];
             var globIndices = new int[normalized.Length];
-            var exactMap = new StringOpenHashMap(normalized.Length);
+            var exactMap = new OpenHashMap<string>(normalized.Length);
             int globCount = 0;
             for (int i = 0; i < order.Length; i++)
             {

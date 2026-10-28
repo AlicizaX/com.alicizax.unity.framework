@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -26,8 +27,8 @@ namespace AlicizaX.Resource.Runtime
         private int _idleCursor = -1;
         private int _idleCount;
         private readonly ResourceUlongIntMap _assetRecordsByKey = new ResourceUlongIntMap();
-        private readonly ResourceIndexMap<int, int> _assetRecordByLoadKeyId = new ResourceIndexMap<int, int>();
-        private readonly ResourceIndexMap<ulong, int> _legacyLeaseHeadByUnityObjectId = new ResourceIndexMap<ulong, int>();
+        private readonly Dictionary<int, int> _assetRecordByLoadKeyId = new Dictionary<int, int>();
+        private readonly Dictionary<ulong, int> _legacyLeaseHeadByUnityObjectId = new Dictionary<ulong, int>();
         private readonly ResourceUlongIntMap _ownerLeaseByKey = new ResourceUlongIntMap();
 
         private struct AssetSlot
@@ -69,20 +70,6 @@ namespace AlicizaX.Resource.Runtime
             _idleHead = -1;
             _idleTail = -1;
             _idleCursor = -1;
-        }
-
-        public void WarmupResourceRecords(int assetCapacity, int leaseCapacity, int unityObjectIndexCapacity)
-        {
-            for (int i = 0; i < assetCapacity; i += RecordPageSize)
-                ReserveAssetPage(i);
-            for (int i = 0; i < leaseCapacity; i += RecordPageSize)
-                ReserveLeasePage(i);
-            _assetRecordsByKey.ReserveCapacity(assetCapacity);
-            _assetRecordByLoadKeyId.ReserveCapacity(assetCapacity);
-            _assetLoadingOperationByKey.EnsureCapacity(assetCapacity);
-            _assetInfoByKey.ReserveCapacity(assetCapacity);
-            _legacyLeaseHeadByUnityObjectId.ReserveCapacity(unityObjectIndexCapacity);
-            _ownerLeaseByKey.ReserveCapacity(leaseCapacity);
         }
 
         private void ShutdownAssetRecords()
@@ -307,7 +294,7 @@ namespace AlicizaX.Resource.Runtime
                     lease.NextLegacy = head;
                     GetLeaseSlotRef(head).PreviousLegacy = leaseIndex;
                 }
-                _legacyLeaseHeadByUnityObjectId.Set(objectId, leaseIndex);
+                _legacyLeaseHeadByUnityObjectId[objectId] = leaseIndex;
             }
             else
                 asset.DirectRefCount++;
@@ -322,7 +309,7 @@ namespace AlicizaX.Resource.Runtime
             if (lease.PreviousLegacy >= 0)
                 GetLeaseSlotRef(lease.PreviousLegacy).NextLegacy = lease.NextLegacy;
             else if (lease.NextLegacy >= 0)
-                _legacyLeaseHeadByUnityObjectId.Set(objectId, lease.NextLegacy);
+                _legacyLeaseHeadByUnityObjectId[objectId] = lease.NextLegacy;
             else
                 _legacyLeaseHeadByUnityObjectId.Remove(objectId);
             if (lease.NextLegacy >= 0)
@@ -352,7 +339,7 @@ namespace AlicizaX.Resource.Runtime
             slot.State = ResourceAssetState.Active;
             _assetRecordsByKey.Set(slot.Key, assetId);
             RetainResourceKey(slot.Key);
-            _assetRecordByLoadKeyId.Set(slot.LoadKeyId, assetId);
+            _assetRecordByLoadKeyId[slot.LoadKeyId] = assetId;
             return assetId;
         }
 
@@ -562,3 +549,4 @@ namespace AlicizaX.Resource.Runtime
         }
     }
 }
+

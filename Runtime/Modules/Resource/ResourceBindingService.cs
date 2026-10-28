@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -29,9 +30,9 @@ namespace AlicizaX.Resource.Runtime
         private uint _nextRequestVersion;
         private uint _world;
         private bool _isShutdown;
-        private readonly ResourceIndexMap<ulong, int> _ownerByObject = new ResourceIndexMap<ulong, int>();
-        private readonly ResourceIndexMap<SlotKey, int> _bindingBySlot = new ResourceIndexMap<SlotKey, int>();
-        private readonly ResourceIndexMap<ulong, int> _targetByObject = new ResourceIndexMap<ulong, int>();
+        private readonly Dictionary<ulong, int> _ownerByObject = new Dictionary<ulong, int>();
+        private readonly Dictionary<SlotKey, int> _bindingBySlot = new Dictionary<SlotKey, int>();
+        private readonly Dictionary<ulong, int> _targetByObject = new Dictionary<ulong, int>();
 
         private struct OwnerSlot
         {
@@ -93,16 +94,6 @@ namespace AlicizaX.Resource.Runtime
             _resourceService = resourceService;
         }
 
-        public void Warmup(int ownerCapacity, int bindingCapacity, int registeredTargetCapacity)
-        {
-            for (int i = 0; i < ownerCapacity; i += PageSize) ReservePage(ref _owners, i);
-            for (int i = 0; i < bindingCapacity; i += PageSize) ReservePage(ref _bindings, i);
-            for (int i = 0; i < registeredTargetCapacity; i += PageSize) ReservePage(ref _targets, i);
-            _ownerByObject.ReserveCapacity(ownerCapacity);
-            _bindingBySlot.ReserveCapacity(bindingCapacity);
-            _targetByObject.ReserveCapacity(registeredTargetCapacity);
-        }
-
         public void Shutdown()
         {
             _isShutdown = true;
@@ -153,7 +144,7 @@ namespace AlicizaX.Resource.Runtime
             slot.Owner = owner;
             slot.ObjectId = objectId;
             slot.State = 1;
-            _ownerByObject.Set(objectId, index);
+            _ownerByObject[objectId] = index;
             owner.SetRegistered(this, index + 1, objectId, slot.Generation);
             return ResourceBindStatus.Success;
         }
@@ -194,7 +185,7 @@ namespace AlicizaX.Resource.Runtime
             {
                 slot.Generation = AllocateOwnerGeneration();
                 slot.State = 1;
-                _ownerByObject.Set(slot.ObjectId, index);
+                _ownerByObject[slot.ObjectId] = index;
                 slot.Owner.SetRegistered(this, ownerId, slot.ObjectId, slot.Generation);
                 if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
                 return ResourceBindStatus.Success;
@@ -252,7 +243,7 @@ namespace AlicizaX.Resource.Runtime
             if (slot.Next >= 0) Target(slot.Next).Previous = index;
             ownerSlot.TargetHead = index;
             ownerSlot.TargetCount++;
-            _targetByObject.Set(objectId, index);
+            _targetByObject[objectId] = index;
             if (transferred) ReleaseTargetBindings(objectId);
             return IsOwnerCurrent(owner) && _targetByObject.TryGetValue(objectId, out int current) && Target(current).OwnerId == owner.OwnerId
                 ? ResourceBindStatus.Success : ResourceBindStatus.StaleOwner;
@@ -377,7 +368,7 @@ namespace AlicizaX.Resource.Runtime
             if (binding.Next >= 0) Binding(binding.Next).Previous = index;
             slot.BindingHead = index;
             slot.BindingCount++;
-            _bindingBySlot.Set(key, index);
+            _bindingBySlot[key] = index;
             return index;
         }
 
@@ -743,3 +734,4 @@ namespace AlicizaX.Resource.Runtime
         }
     }
 }
+

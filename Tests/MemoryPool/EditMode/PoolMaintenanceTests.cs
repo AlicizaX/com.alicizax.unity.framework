@@ -8,6 +8,24 @@ namespace AlicizaX.MemoryPoolTests
     public sealed class PoolMaintenanceTests : PoolFixture
     {
         [Test]
+        public void DestroyReleasesStorageRejectsLeasesAndCanBeReactivated()
+        {
+            var item = MemoryPool<PoolItem>.Acquire();
+            Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.Destroy());
+
+            MemoryPool.Release(item);
+            Assert.That(MemoryPool<PoolItem>.Destroy(), Is.True);
+            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().PageCapacity, Is.Zero);
+            Assert.That(MemoryPool<PoolItem>.Destroy(), Is.False);
+
+            MemoryPool.Release(MemoryPool<PoolItem>.Acquire());
+            Assert.That(MemoryPool.Count, Is.GreaterThan(0));
+            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(1));
+            MemoryPool<PoolItem>.ClearAll();
+        }
+
+        [Test]
         public void RepeatedConstructorFailuresDoNotConsumeSlots()
         {
             var cause = new InvalidOperationException("constructor");
@@ -82,26 +100,23 @@ namespace AlicizaX.MemoryPoolTests
             Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
         }
 
-        [TestCase(MemoryPoolPhase.Boot, 32)]
-        [TestCase(MemoryPoolPhase.Loading, 32)]
-        [TestCase(MemoryPoolPhase.Gameplay, 2)]
-        [TestCase(MemoryPoolPhase.Background, 8)]
-        [TestCase(MemoryPoolPhase.LowMemory, 0)]
-        public void ExplicitAddUsesPhaseBudget(MemoryPoolPhase phase, int budget)
+        [Test]
+        public void ExplicitAddCreatesUpToTheBudgetAndTickCompletesTheRequest()
         {
-            MemoryPoolRegistry.Phase = phase;
             MemoryPool<PoolItem>.Add(100);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(budget));
+            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(64));
             Tick();
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(budget * 2));
+            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(100));
+            Tick();
+            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(100), "the requested reserve is kept while the pool is active");
         }
 
         [Test]
         public void AddIntMaxValueClampsWithoutOverflow()
         {
-            MemoryPoolRegistry.Phase = MemoryPoolPhase.Loading;
             MemoryPool<PoolItem>.SetCapacity(64, 64);
             MemoryPool<PoolItem>.Add(int.MaxValue);
+            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(64));
             Tick(3);
             Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(64));
         }
@@ -116,28 +131,28 @@ namespace AlicizaX.MemoryPoolTests
         }
 
         [Test]
-        public void LowMemoryEvictsWithinBudgetAndPreservesLeases()
+        public void ShrinkEvictsImmediatelyAndPreservesLeases()
         {
             var items = new PoolItem[81];
             for (int i = 0; i < items.Length; i++) items[i] = MemoryPool<PoolItem>.Acquire();
             for (int i = 0; i < 80; i++) MemoryPool.Release(items[i]);
-            MemoryPoolRegistry.Phase = MemoryPoolPhase.LowMemory;
-            Tick();
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(48));
+
+            MemoryPool<PoolItem>.Shrink(0);
+            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             Assert.That(Info<PoolItem>().UsingCount, Is.EqualTo(1));
-            Tick(2);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             Assert.That(items[80].Evictions, Is.Zero);
+
             MemoryPool.Release(items[80]);
-            Tick();
+            MemoryPool<PoolItem>.Shrink(0);
             Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
+            MemoryPool<PoolItem>.ClearAll();
         }
 
         [Test]
         public void IdleExpiryReleasesNativeStorageAndStopsScheduling()
         {
             MemoryPool.ShortDecayStartFrames = 1;
-            MemoryPool.LongDecayStartFrames = 2;
             MemoryPool.ZeroFreeReserveStartFrames = 2;
             MemoryPool.UnscheduleIdleFrames = 3;
             MemoryPool.AutoTrimNativeMetadataFrames = 4;
@@ -249,22 +264,22 @@ namespace AlicizaX.MemoryPoolTests
         [Test]
         public void GlobalClearPreservesSchedulingOfObjectsCreatedByAnotherPoolsEviction()
         {
-            var first = MemoryPool.GetHandle(typeof(PoolItem));
-            var second = MemoryPool.GetHandle(typeof(OtherItem));
-            var registry = (Array)typeof(MemoryPoolRegistry).GetField("s_HandleValues", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
-            int firstIndex = -1, secondIndex = -1;
-            for (int i = 0; i < registry.Length; i++)
-            {
-                if (ReferenceEquals(registry.GetValue(i), first.Inner)) firstIndex = i;
-                if (ReferenceEquals(registry.GetValue(i), second.Inner)) secondIndex = i;
-            }
-            var earlier = firstIndex < secondIndex ? first : second;
-            var later = firstIndex < secondIndex ? second : first;
+            // 注册顺序是全局的且会跨测试保留；按已知顺序重新注册两个池，使 PoolItem 先被清理，
+            // 从而回调在 ClearAll 已经越过它时触发。回调重新填充的池必须继续安排到下一 tick。
+            MemoryPool<PoolItem>.Destroy();
+            MemoryPool<OtherItem>.Destroy();
+            MemoryPool<PoolItem>.SetCapacity(128, 512);
+            MemoryPool<OtherItem>.SetCapacity(128, 512);
+
+            var earlier = MemoryPool.GetHandle(typeof(PoolItem));
+            var later = MemoryPool.GetHandle(typeof(OtherItem));
             earlier.Release(earlier.Acquire());
             var trigger = (PoolItem)later.Acquire();
             trigger.OnEviction = () => earlier.Release(earlier.Acquire());
             later.Release(trigger);
+
             MemoryPool.ClearAll();
+
             MemoryPoolInfo info = default;
             earlier.Inner.GetInfo(ref info);
             Assert.That(info.UnusedCount, Is.EqualTo(1));
@@ -287,7 +302,7 @@ namespace AlicizaX.MemoryPoolTests
         }
 
         [Test]
-        public void TickMaintenanceContinuesWhenOtherPoolsEvictionCallbacksFail()
+        public void GlobalMaintenanceContinuesWhenOtherPoolsEvictionCallbacksFail()
         {
             Use<ColdItem<PoolMaintenanceTests>>();
             var first = MemoryPool<PoolItem>.Acquire();
@@ -297,11 +312,10 @@ namespace AlicizaX.MemoryPoolTests
             MemoryPool.Release(first);
             MemoryPool.Release(second);
             MemoryPool.Release(MemoryPool<ColdItem<PoolMaintenanceTests>>.Acquire());
-            MemoryPoolRegistry.Phase = MemoryPoolPhase.LowMemory;
-            var error = Assert.Throws<AggregateException>(() => Tick());
-            Assert.That(Info<ColdItem<PoolMaintenanceTests>>().UnusedCount, Is.Zero);
+            var error = Assert.Throws<AggregateException>(() => MemoryPool.ClearAll());
             Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
             Assert.That(Info<OtherItem>().UnusedCount, Is.Zero);
+            Assert.That(Info<ColdItem<PoolMaintenanceTests>>().UnusedCount, Is.Zero);
             Assert.That(error.Flatten().InnerExceptions.Count, Is.EqualTo(2));
         }
     }

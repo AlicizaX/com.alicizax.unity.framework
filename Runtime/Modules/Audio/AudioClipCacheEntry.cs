@@ -9,6 +9,8 @@ namespace AlicizaX.Audio.Runtime
     {
         public AudioService Owner;
         public ulong Version;
+        // 池化条目跨多次加载复用；仅在加载中的条目被清理或条目从 MemoryPool 淘汰时释放。
+        // 其数量受 clip 缓存容量限制。
         public CancellationTokenSource Cancellation;
         public string Address;
         public ResourceAssetLease<AudioClip> Lease;
@@ -138,16 +140,33 @@ namespace AlicizaX.Audio.Runtime
             Owner = null;
             if (Loading)
             {
-                Cancellation?.Cancel();
+                try
+                {
+                    Cancellation?.Cancel();
+                }
+                catch (System.Exception exception)
+                {
+                    // 用户的取消回调不能阻塞缓存清理。
+                    AlicizaX.Log.Exception(exception);
+                }
+
                 OnEvict();
             }
 
             Lease.Dispose();
 
+            // 取消加载可能同步回调 OnClipLoadCompleted；此时 Owner 已置空，回调只会丢弃租约。
+            // 之后再摘除 pending 链表并通知 agent，确保每个请求只被处理一次。
             AudioLoadRequest request = PendingHead;
+            PendingHead = null;
+            PendingTail = null;
             while (request != null)
             {
                 AudioLoadRequest next = request.Next;
+                request.Entry = null;
+                request.Prev = null;
+                request.Next = null;
+                request.Agent?.OnClipLoadFailed(request.Generation);
                 MemoryPool.Release(request);
                 request = next;
             }

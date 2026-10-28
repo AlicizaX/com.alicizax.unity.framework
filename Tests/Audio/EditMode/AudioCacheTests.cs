@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using AlicizaX.Audio.Runtime;
 using NUnit.Framework;
 using UnityEngine;
@@ -40,7 +40,7 @@ namespace AlicizaX.Audio.Tests
         {
             using var f = new AudioFixture(1);
             f.Clip("pin"); f.Clip("new");
-            Assert.That(f.Audio.Preload("pin"), Is.True);
+            Assert.That(f.Audio.Preload("pin", AudioCachePolicy.Pin), Is.True);
             Assert.That(f.Audio.Preload("new"), Is.False);
             Assert.That(f.Loader.Loads, Is.EqualTo(1));
             f.Audio.ClearCache();
@@ -56,7 +56,7 @@ namespace AlicizaX.Audio.Tests
             f.Clip("old"); f.Clip("recent"); f.Clip("pin");
             f.Audio.Preload("old", AudioCachePolicy.Ttl);
             f.Audio.Preload("recent", AudioCachePolicy.Ttl);
-            f.Audio.Preload("pin");
+            f.Audio.Preload("pin", AudioCachePolicy.Pin);
             f.Entry("old").LastUseTime -= 20;
             f.Entry("recent").LastUseTime -= 20;
             f.Audio.Preload("recent", AudioCachePolicy.Ttl);
@@ -97,7 +97,7 @@ namespace AlicizaX.Audio.Tests
             using var f = new AudioFixture();
             f.Clip("ttl"); f.Clip("pin");
             f.Audio.Preload("ttl", AudioCachePolicy.Ttl);
-            f.Audio.Preload("pin");
+            f.Audio.Preload("pin", AudioCachePolicy.Pin);
             AudioFixture.Call(f.Audio, "OnLowMemory");
             Assert.That(f.Entry("ttl"), Is.Null);
             Assert.That(f.Entry("pin"), Is.Not.Null);
@@ -150,3 +150,4 @@ namespace AlicizaX.Audio.Tests
         }
     }
 }
+

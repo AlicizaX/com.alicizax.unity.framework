@@ -1,16 +1,7 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 namespace AlicizaX
 {
-    public enum MemoryPoolPhase
-    {
-        Boot,
-        Loading,
-        Gameplay,
-        Background,
-        LowMemory
-    }
-
     /// <summary>
     /// 内存池模块。
     /// </summary>
@@ -22,10 +13,6 @@ namespace AlicizaX
         [Tooltip("池空闲多少帧后开始衰减目标空闲水位。每 tick 驱逐数量由 Phase 预算决定（Gameplay=2）。@60fps: 1800帧≈30秒")]
         [SerializeField]
         private int m_ShortDecayStartFrames = 1800;
-
-        [Tooltip("池空闲多少帧后加速衰减目标空闲水位。每 tick 驱逐数量由 Phase 预算决定（Background=16, LowMemory=32）。@60fps: 7200帧≈2分钟")]
-        [SerializeField]
-        private int m_LongDecayStartFrames = 7200;
 
         [Tooltip("池空闲多少帧后停止调度Tick。@60fps: 18000帧≈5分钟")]
         [SerializeField]
@@ -48,9 +35,6 @@ namespace AlicizaX
         [SerializeField]
         private int m_HardFreeReserveLimit = 512;
 
-        [SerializeField]
-        private MemoryPoolPhase m_Phase = MemoryPoolPhase.Gameplay;
-
         private void OnValidate()
         {
             NormalizeSettings();
@@ -61,12 +45,10 @@ namespace AlicizaX
             NormalizeSettings();
             MemoryPoolRegistry.InitializeMainThread();
             MemoryPool.ShortDecayStartFrames = m_ShortDecayStartFrames;
-            MemoryPool.LongDecayStartFrames = m_LongDecayStartFrames;
             MemoryPool.UnscheduleIdleFrames = m_UnscheduleIdleFrames;
             MemoryPool.ZeroFreeReserveStartFrames = m_ZeroFreeReserveStartFrames;
             MemoryPool.AutoTrimNativeMetadataFrames = m_AutoTrimNativeMetadataFrames;
             MemoryPool.SetDefaultCapacity(m_SoftFreeReserveLimit, m_HardFreeReserveLimit);
-            MemoryPoolRegistry.Phase = m_Phase;
         }
 
         private void Update()
@@ -82,8 +64,7 @@ namespace AlicizaX
         private void NormalizeSettings()
         {
             m_ShortDecayStartFrames = Mathf.Max(0, m_ShortDecayStartFrames);
-            m_LongDecayStartFrames = Mathf.Max(m_ShortDecayStartFrames, m_LongDecayStartFrames);
-            m_ZeroFreeReserveStartFrames = Mathf.Max(m_LongDecayStartFrames, m_ZeroFreeReserveStartFrames);
+            m_ZeroFreeReserveStartFrames = Mathf.Max(m_ShortDecayStartFrames, m_ZeroFreeReserveStartFrames);
             m_UnscheduleIdleFrames = Mathf.Max(m_ZeroFreeReserveStartFrames, m_UnscheduleIdleFrames);
             m_AutoTrimNativeMetadataFrames = m_AutoTrimNativeMetadataFrames < 0
                 ? -1

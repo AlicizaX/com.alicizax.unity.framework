@@ -53,5 +53,6 @@ namespace AlicizaX.ObjectPool
         internal abstract int GetAllObjectInfos(ObjectInfo[] results);
         internal abstract void Update(float elapseSeconds, float realElapseSeconds);
         internal abstract void Shutdown();
+        internal abstract bool IsInCallback { get; }
     }
 }

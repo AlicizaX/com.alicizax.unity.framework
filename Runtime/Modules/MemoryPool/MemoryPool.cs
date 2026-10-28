@@ -13,11 +13,6 @@ namespace AlicizaX
         public static int ShortDecayStartFrames = 1800;
 
         /// <summary>
-        /// 池空闲多少帧后加速衰减目标空闲水位。实际每 tick 驱逐数量由 Phase 预算决定。默认 7200 帧（@60fps ≈ 2分钟）。
-        /// </summary>
-        public static int LongDecayStartFrames = 7200;
-
-        /// <summary>
         /// 池空闲多少帧后停止调度 Tick（省 CPU）。默认 18000 帧（@60fps ≈ 5分钟）。
         /// </summary>
         public static int UnscheduleIdleFrames = 18000;
@@ -32,6 +27,20 @@ namespace AlicizaX
 
 
         public static int Count => MemoryPoolRegistry.Count;
+
+        /// <summary>
+        /// 释放对象已全部归还的池的存储，并将该池从全局维护中移除。若仍有租出对象则抛异常；
+        /// 之后该类型下一次 Acquire/Release 会自动重新注册。
+        /// </summary>
+        public static bool Destroy<T>() where T : MemoryObject, new()
+        {
+            return MemoryPoolRegistry.Unregister(typeof(T));
+        }
+
+        public static bool Destroy(Type memoryType)
+        {
+            return MemoryPoolRegistry.Unregister(memoryType);
+        }
         
 
         public static int GetAllMemoryPoolInfos(MemoryPoolInfo[] infos)

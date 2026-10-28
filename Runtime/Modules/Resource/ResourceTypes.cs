@@ -54,7 +54,6 @@ namespace AlicizaX.Resource.Runtime
     public readonly struct ResourceKey
     {
         public readonly int LoadKeyId;
-        public readonly int ViewKeyId;
         public readonly string PackageName;
         public readonly string Location;
         public readonly Type AssetType;
@@ -63,17 +62,15 @@ namespace AlicizaX.Resource.Runtime
         public ResourceKey(string location, string packageName = "", Type assetType = null, ResourceAssetKind assetKind = ResourceAssetKind.Unknown)
         {
             LoadKeyId = 0;
-            ViewKeyId = 0;
             PackageName = packageName ?? string.Empty;
             Location = location ?? string.Empty;
             AssetType = assetType;
             AssetKind = assetKind;
         }
 
-        public ResourceKey(int loadKeyId, int viewKeyId)
+        public ResourceKey(int loadKeyId)
         {
             LoadKeyId = loadKeyId;
-            ViewKeyId = viewKeyId;
             PackageName = string.Empty;
             Location = string.Empty;
             AssetType = null;
@@ -103,8 +100,7 @@ namespace AlicizaX.Resource.Runtime
         Released = 0,
         Loading = 1,
         Active = 2,
-        KeepAlive = 3,
-        Idle = 4,
+        Idle = 3,
     }
 
     internal enum ResourceHandleKind : byte
@@ -140,11 +136,8 @@ namespace AlicizaX.Resource.Runtime
         public int LegacyDirectRefCount;
         public int BindingRefCount;
         public int PendingRefCount;
-        public int KeepAliveRefCount;
-        public float KeepAliveExpireIn;
         public float IdleExpireIn;
         public int RefCountTotal;
-        public bool IdleReleaseRequested;
         public bool HandleValid;
         public byte HandleKind;
     }
@@ -159,10 +152,8 @@ namespace AlicizaX.Resource.Runtime
         public ulong TargetComponentId;
         public ulong SlotKey;
         public int AssetId;
-        public int ViewKeyId;
         public ResourceLeaseHandle Lease;
         public uint Version;
-        public ushort SubIndex;
         public ResourceBindingSlotType SlotType;
         public bool HasAppliedAsset;
         public bool HasRuntimeObject;

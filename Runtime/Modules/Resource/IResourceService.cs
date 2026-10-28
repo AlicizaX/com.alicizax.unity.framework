@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using AlicizaX;
 using Cysharp.Threading.Tasks;
@@ -70,19 +70,6 @@ namespace AlicizaX.Resource.Runtime
         /// 获取或设置异步系统参数，每帧执行消耗的最大时间切片（单位：毫秒）。
         /// </summary>
         long Milliseconds { get; set; }
-
-        /// <summary>
-        /// 获取或设置资源资产记录预热容量。
-        /// </summary>
-        int AssetRecordCapacity { get; set; }
-
-        int AssetLeaseCapacity { get; set; }
-
-        int BindingOwnerCapacity { get; set; }
-
-        int BindingSlotCapacity { get; set; }
-
-        int RegisteredTargetCapacity { get; set; }
 
         /// <summary>
         /// 获取或设置无引用资源句柄进入 Idle 后的过期秒数。
@@ -168,8 +155,6 @@ namespace AlicizaX.Resource.Runtime
         /// <param name="asset">Unity 资源对象。</param>
         /// <returns>是否读取成功。</returns>
         bool TryGetLeaseAsset(ResourceLeaseHandle handle, out UnityEngine.Object asset);
-
-        void WarmupResourceRecords(int assetCapacity, int leaseCapacity, int unityObjectIndexCapacity);
 
         int GetAssetInfos(ResourceAssetInfo[] results, int startIndex, int maxCount);
 
@@ -320,7 +305,12 @@ namespace AlicizaX.Resource.Runtime
         /// 清理沙盒路径。
         /// </summary>
         /// <param name="customPackageName">指定资源包的名称。不传使用默认资源包</param>
-        void ClearAllBundleFiles(string customPackageName = "");
+        ClearCacheOperation ClearAllBundleFiles(string customPackageName = "");
+
+        /// <summary>
+        /// 销毁 YooAsset 后端。应在应用退出、且所有租约都释放完毕后调用。
+        /// </summary>
+        void ShutdownBackend();
 
         /// <summary>
         /// 创建资源下载器，用于下载当前资源版本所有的资源包文件。

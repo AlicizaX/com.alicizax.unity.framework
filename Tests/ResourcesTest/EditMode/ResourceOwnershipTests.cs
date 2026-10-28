@@ -149,7 +149,7 @@ namespace AlicizaX.Resource.Tests
         {
             f.Text("a");
             var lease = f.Service.LoadLease<TextAsset>("a");
-            var key = new ResourceKey(f.Info("a").LoadKeyId, 0);
+            var key = new ResourceKey(f.Info("a").LoadKeyId);
             using var cts = new CancellationTokenSource();
             cts.Cancel();
             Assert.That(f.Service.AcquireDirectAsync(key, cts.Token).GetAwaiter().GetResult().IsValid, Is.False);

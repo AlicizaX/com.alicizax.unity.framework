@@ -102,52 +102,12 @@ namespace AlicizaX.Resource.Runtime
 
         public float LastUnloadUnusedAssetsOperationElapseSeconds => _lastUnloadUnusedAssetsOperationElapseSeconds;
 
-        [SerializeField] private int assetRecordCapacity = 64;
-
-        [SerializeField] private int assetLeaseCapacity = 128;
-
-        [SerializeField] private int bindingOwnerCapacity = 64;
-
-        [SerializeField] private int bindingSlotCapacity = 128;
-
-        [SerializeField] private int registeredTargetCapacity = 128;
-
         [SerializeField] private float idleAssetExpireTime = 60f;
         [SerializeField] private int idleAssetCapacity = 256;
 
         [SerializeField] private int expireProcessCountPerFrame = 16;
 
         [SerializeField] private int expireProcessCountWhenUnloading = 256;
-
-        public int AssetRecordCapacity
-        {
-            get => _resourceService.AssetRecordCapacity;
-            set => _resourceService.AssetRecordCapacity = assetRecordCapacity = value;
-        }
-
-        public int AssetLeaseCapacity
-        {
-            get => _resourceService.AssetLeaseCapacity;
-            set => _resourceService.AssetLeaseCapacity = assetLeaseCapacity = value;
-        }
-
-        public int BindingOwnerCapacity
-        {
-            get => _resourceService.BindingOwnerCapacity;
-            set => _resourceService.BindingOwnerCapacity = bindingOwnerCapacity = value;
-        }
-
-        public int BindingSlotCapacity
-        {
-            get => _resourceService.BindingSlotCapacity;
-            set => _resourceService.BindingSlotCapacity = bindingSlotCapacity = value;
-        }
-
-        public int RegisteredTargetCapacity
-        {
-            get => _resourceService.RegisteredTargetCapacity;
-            set => _resourceService.RegisteredTargetCapacity = registeredTargetCapacity = value;
-        }
 
         public float IdleAssetExpireTime
         {
@@ -202,11 +162,6 @@ namespace AlicizaX.Resource.Runtime
             _resourceService.DownloadingMaxNum = DownloadingMaxNum;
             _resourceService.FailedTryAgain = FailedTryAgain;
             _resourceService.Initialize();
-            _resourceService.AssetRecordCapacity = assetRecordCapacity;
-            _resourceService.AssetLeaseCapacity = assetLeaseCapacity;
-            _resourceService.BindingOwnerCapacity = bindingOwnerCapacity;
-            _resourceService.BindingSlotCapacity = bindingSlotCapacity;
-            _resourceService.RegisteredTargetCapacity = registeredTargetCapacity;
             _resourceService.IdleAssetExpireTime = idleAssetExpireTime;
             _resourceService.IdleAssetCapacity = idleAssetCapacity;
             _resourceService.SetForceUnloadUnusedAssetsAction(ForceUnloadUnusedAssets);

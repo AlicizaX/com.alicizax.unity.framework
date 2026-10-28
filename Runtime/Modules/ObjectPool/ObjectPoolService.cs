@@ -67,16 +67,27 @@ namespace AlicizaX.ObjectPool
         {
             if (m_IsShuttingDown)
                 return;
+
+            // 池回调不能在其执行期间把服务自身拆掉。先拒绝再变更任何状态；
+            // 旧的延迟关闭路径已随重入契约一同删除。
+            for (int i = 0; i < m_PoolCount; i++)
+            {
+                if (m_Pools[i].IsInCallback)
+                    throw new InvalidOperationException("Object pool service cannot be destroyed from a pool callback.");
+            }
+
             m_IsShuttingDown = true;
             List<Exception> errors = null;
             while (m_PoolCount > 0)
             {
+                int before = m_PoolCount;
                 var pool = m_Pools[m_PoolCount - 1];
                 try { RemovePool(new ObjectPoolKey(pool.ObjectType, pool.Name)); }
                 catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
+                if (m_PoolCount >= before)
+                    throw new InvalidOperationException($"Object pool '{pool.FullName}' could not be detached during shutdown.");
             }
             m_PoolMap.Dispose();
-            Array.Clear(m_Pools, 0, m_PoolCount);
             Array.Clear(m_ActivePools, 0, m_ActiveCount);
             m_PoolCount = 0;
             m_ActiveCount = 0;
@@ -195,6 +206,8 @@ namespace AlicizaX.ObjectPool
                 return false;
 
             var pool = m_Pools[idx];
+            if (pool.IsInCallback)
+                throw new InvalidOperationException($"Object pool '{pool.FullName}' cannot be destroyed from its own callback.");
             SetPoolActive(pool, false);
 
             int lastIndex = m_PoolCount - 1;

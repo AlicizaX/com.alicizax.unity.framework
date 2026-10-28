@@ -85,7 +85,7 @@ namespace AlicizaX.Audio.Tests
         }
         internal AudioSource Source(ulong handle)
         {
-            foreach (var agent in Read<AudioAgent[]>(Audio, "_handleAgents"))
+            foreach (var agent in Audio.HandleAgents)
                 if (agent != null && agent.Handle == handle) return Read<AudioSource>(agent, "_source");
             return null;
         }
@@ -131,10 +131,11 @@ namespace AlicizaX.Audio.Tests
             }
             Assert.That(count, Is.EqualTo(Debug.ClipCacheCount));
             Assert.That(count, Is.LessThanOrEqualTo(Debug.ClipCacheCapacity));
-            Assert.That(previous, Is.SameAs(Read<AudioClipCacheEntry>(Audio, "_allTail")));
+            var table = Audio.ClipTable;
+            Assert.That(previous, Is.SameAs(table.AllTail));
             var lru = new HashSet<AudioClipCacheEntry>();
             previous = null;
-            for (var entry = Read<AudioClipCacheEntry>(Audio, "_lruHead"); entry != null; entry = entry.LruNext)
+            for (var entry = table.LruHead; entry != null; entry = entry.LruNext)
             {
                 Assert.That(lru.Add(entry), Is.True, "LRU cycle or duplicate.");
                 Assert.That(seen.Contains(entry) && entry.InLru, Is.True);
@@ -142,10 +143,10 @@ namespace AlicizaX.Audio.Tests
                 if (previous != null) Assert.That(entry.LastUseTime, Is.GreaterThanOrEqualTo(previous.LastUseTime));
                 previous = entry;
             }
-            Assert.That(previous, Is.SameAs(Read<AudioClipCacheEntry>(Audio, "_lruTail")));
+            Assert.That(previous, Is.SameAs(table.LruTail));
             foreach (var entry in seen) Assert.That(entry.InLru, Is.EqualTo(lru.Contains(entry)));
-            var slots = Read<AudioClipCacheEntry[]>(Audio, "_clipEntries");
-            var buckets = Read<int[]>(Audio, "_clipBuckets");
+            var slots = table.Entries;
+            var buckets = table.Buckets;
             var hashed = new HashSet<AudioClipCacheEntry>();
             for (int bucket = 0; bucket < buckets.Length; bucket++)
                 for (int slot = buckets[bucket]; slot >= 0; slot = slots[slot].HashNextIndex)
@@ -158,8 +159,8 @@ namespace AlicizaX.Audio.Tests
                     Assert.That(entry.AddressHash & (buckets.Length - 1), Is.EqualTo(bucket));
                 }
             Assert.That(hashed.SetEquals(seen), Is.True);
-            var freeSlots = Read<int[]>(Audio, "_clipFreeSlots");
-            int freeCount = Read<int>(Audio, "_clipFreeCount");
+            var freeSlots = table.FreeSlots;
+            int freeCount = table.FreeCount;
             var free = new HashSet<int>();
             for (int i = 0; i < freeCount; i++)
             {
@@ -174,7 +175,7 @@ namespace AlicizaX.Audio.Tests
             CheckCache();
             var references = new Dictionary<AudioClipCacheEntry, int>();
             var pending = new HashSet<AudioLoadRequest>();
-            var handles = Read<AudioAgent[]>(Audio, "_handleAgents");
+            var handles = Audio.HandleAgents;
             var occupied = new HashSet<AudioAgent>();
             foreach (var category in Read<AudioCategory[]>(Audio, "_categories"))
             {

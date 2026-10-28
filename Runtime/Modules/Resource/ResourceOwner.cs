@@ -9,7 +9,6 @@ namespace AlicizaX.Resource.Runtime
     public sealed class ResourceOwner : MonoBehaviour
     {
         private static readonly Stack<List<ResourceOwner>> releaseBuffers = new Stack<List<ResourceOwner>>();
-        private static int releaseBufferCapacity = 64;
         private int ownerId;
         private ulong gameObjectId;
         private uint generation;
@@ -44,7 +43,7 @@ namespace AlicizaX.Resource.Runtime
         public static int ReleaseBindingsInHierarchy(GameObject root)
         {
             if (root == null) return 0;
-            List<ResourceOwner> buffer = releaseBuffers.Count > 0 ? releaseBuffers.Pop() : new List<ResourceOwner>(releaseBufferCapacity);
+            List<ResourceOwner> buffer = releaseBuffers.Count > 0 ? releaseBuffers.Pop() : new List<ResourceOwner>(64);
             int releasedCount = 0;
             Exception error = null;
             try
@@ -66,15 +65,6 @@ namespace AlicizaX.Resource.Runtime
             }
             if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
             return releasedCount;
-        }
-
-        public static void WarmupReleaseBuffer(int capacity)
-        {
-            if (capacity > releaseBufferCapacity) releaseBufferCapacity = capacity;
-            if (releaseBuffers.Count == 0)
-                releaseBuffers.Push(new List<ResourceOwner>(releaseBufferCapacity));
-            else if (releaseBuffers.Peek().Capacity < releaseBufferCapacity)
-                releaseBuffers.Peek().Capacity = releaseBufferCapacity;
         }
 
         public static ResourceOwner RegisterFor(Component target, IResourceBindingService bindingService)

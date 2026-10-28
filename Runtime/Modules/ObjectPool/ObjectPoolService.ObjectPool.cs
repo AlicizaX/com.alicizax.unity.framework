@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using UnityEngine;
@@ -42,7 +41,7 @@ namespace AlicizaX.ObjectPool
             private int m_FreeTop;
             private int m_SlotCount;
 
-            private ReferenceOpenHashMap m_TargetMap;
+            private OpenHashMap<RefKey> m_TargetMap;
             private OpenHashMap<string> m_AvailableNameHeadMap;
             private OpenHashMap<string> m_AllNameHeadMap;
             private bool m_HasNameMap;
@@ -60,8 +59,6 @@ namespace AlicizaX.ObjectPool
             private float m_AutoReleaseTime;
             private int m_PendingReleaseCount;
             private bool m_IsShuttingDown;
-            private bool m_IsReleasing;
-            private int m_ReleaseCursor = -1;
             private int m_CallbackCount;
 
             private const int DefaultReleasePerFrame = 8;
@@ -79,7 +76,7 @@ namespace AlicizaX.ObjectPool
                     m_FreeStack[i] = i;
                 m_FreeTop = initCap;
                 m_SlotCount = initCap;
-                m_TargetMap = new ReferenceOpenHashMap(initCap);
+                m_TargetMap = new OpenHashMap<RefKey>(initCap);
                 m_AllowMultiSpawn = allowMultiSpawn;
                 m_AutoReleaseInterval = autoReleaseInterval;
                 m_Capacity = capacity;
@@ -98,6 +95,7 @@ namespace AlicizaX.ObjectPool
             public override Type ObjectType => typeof(T);
             public override int Count => m_TargetMap.Count;
             public override bool AllowMultiSpawn => m_AllowMultiSpawn;
+            internal override bool IsInCallback => m_CallbackCount > 0;
 
             public override float AutoReleaseInterval
             {
@@ -105,6 +103,7 @@ namespace AlicizaX.ObjectPool
                 set
                 {
                     ThrowIfShuttingDown();
+                    EnsureNotInCallback();
                     if (value < 0f)
                     {
                         Log.Error("AutoReleaseInterval is invalid.");
@@ -122,6 +121,7 @@ namespace AlicizaX.ObjectPool
                 set
                 {
                     ThrowIfShuttingDown();
+                    EnsureNotInCallback();
                     if (value < 0)
                     {
                         Log.Error("Capacity is invalid.");
@@ -140,6 +140,7 @@ namespace AlicizaX.ObjectPool
                 set
                 {
                     ThrowIfShuttingDown();
+                    EnsureNotInCallback();
                     if (value < 0f)
                     {
                         Log.Error("ExpireTime is invalid.");
@@ -159,9 +160,13 @@ namespace AlicizaX.ObjectPool
                 set => m_Priority = value;
             }
 
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static RefKey Key(object target) => new RefKey(target);
+
             public bool Register(T obj, bool spawned)
             {
                 ThrowIfShuttingDown();
+                EnsureNotInCallback();
                 if (obj == null)
                 {
                     Log.Error($"Object or target is invalid in pool '{FullName}'.");
@@ -181,7 +186,7 @@ namespace AlicizaX.ObjectPool
                     return false;
                 }
 
-                if (m_TargetMap.TryGetValue(obj.Target, out int existingIdx) && m_Slots[existingIdx].IsAlive())
+                if (m_TargetMap.TryGetValue(Key(obj.Target), out int existingIdx) && m_Slots[existingIdx].IsAlive())
                 {
                     Log.Error($"Target '{obj.Target.GetType().FullName}' is already registered in pool '{FullName}'.");
                     RecycleObject(obj);
@@ -201,18 +206,17 @@ namespace AlicizaX.ObjectPool
                     throw;
                 }
 
-                if (!hasCapacity || m_IsShuttingDown || m_Slots == null || (m_Capacity != int.MaxValue && Count >= m_Capacity))
+                if (m_IsShuttingDown)
                 {
-                    if (!m_IsShuttingDown && m_Slots != null)
-                        Log.Error($"Object pool '{FullName}' capacity is full.");
+                    // 预留容量期间回调销毁了该池。Shutdown 会拒绝变更，但本次请求仍需干净地拒绝。
                     obj.Pool = null;
                     RecycleObject(obj);
                     return false;
                 }
 
-                if (m_TargetMap.TryGetValue(obj.Target, out existingIdx) && m_Slots[existingIdx].IsAlive())
+                if (!hasCapacity || (m_Capacity != int.MaxValue && Count >= m_Capacity))
                 {
-                    Log.Error($"Target '{obj.Target.GetType().FullName}' is already registered in pool '{FullName}'.");
+                    Log.Error($"Object pool '{FullName}' capacity is full.");
                     obj.Pool = null;
                     RecycleObject(obj);
                     return false;
@@ -231,9 +235,9 @@ namespace AlicizaX.ObjectPool
                 slot.NextAll = -1;
                 slot.SetAlive(true);
 
-                m_TargetMap.AddOrUpdate(obj.Target, idx);
+                m_TargetMap.AddOrUpdate(Key(obj.Target), idx);
                 if (m_AllowMultiSpawn)
-                    AddToAllNameChain(idx);
+                    AddToNameChain(idx, false);
 
                 if (TrackLastUseTime)
                 {
@@ -246,11 +250,7 @@ namespace AlicizaX.ObjectPool
                 if (spawned)
                     SpawnSlot(idx);
 
-                if (m_IsShuttingDown || m_Slots == null)
-                    return false;
-
                 UpdateActiveState();
-                ValidateState();
                 return true;
             }
 
@@ -260,6 +260,7 @@ namespace AlicizaX.ObjectPool
             public T Spawn(string name)
             {
                 ThrowIfShuttingDown();
+                EnsureNotInCallback();
                 if (name == null)
                     name = string.Empty;
 
@@ -279,10 +280,11 @@ namespace AlicizaX.ObjectPool
             {
                 if (m_IsShuttingDown)
                     return;
+                EnsureNotInCallback();
                 if (obj == null || obj.Target == null)
                     return;
                 if (obj.Pool != this
-                    || !m_TargetMap.TryGetValue(obj.Target, out int idx)
+                    || !m_TargetMap.TryGetValue(Key(obj.Target), out int idx)
                     || !m_Slots[idx].IsAlive()
                     || !ReferenceEquals(m_Slots[idx].Obj, obj))
                 {
@@ -297,9 +299,10 @@ namespace AlicizaX.ObjectPool
             {
                 if (m_IsShuttingDown)
                     return;
+                EnsureNotInCallback();
                 if (target == null)
                     return;
-                if (!m_TargetMap.TryGetValue(target, out int idx))
+                if (!m_TargetMap.TryGetValue(Key(target), out int idx))
                 {
                     Log.Error($"Cannot find target in pool '{Name}', type='{target.GetType().FullName}'");
                     return;
@@ -315,23 +318,21 @@ namespace AlicizaX.ObjectPool
 
             public override void Release(int toReleaseCount)
             {
+                EnsureNotInCallback();
                 if (toReleaseCount <= 0)
                     return;
 
                 int released = ReleaseUnused(toReleaseCount, false, float.MinValue);
                 m_PendingReleaseCount = Math.Max(0, m_PendingReleaseCount - released);
                 UpdateActiveState();
-                if (released > 0)
-                    ValidateState();
             }
 
             public override void ReleaseAllUnused()
             {
+                EnsureNotInCallback();
                 int released = ReleaseUnused(int.MaxValue, false, float.MinValue);
                 m_PendingReleaseCount = 0;
                 UpdateActiveState();
-                if (released > 0)
-                    ValidateState();
             }
 
             internal override void Update(float elapseSeconds, float realElapseSeconds)
@@ -372,14 +373,12 @@ namespace AlicizaX.ObjectPool
 
             internal override void Shutdown()
             {
-                if (m_Slots == null)
+                if (m_Slots == null || m_IsShuttingDown)
                     return;
                 m_IsShuttingDown = true;
+                EnsureNotInCallback();
                 m_Owner.SetPoolActive(this, false);
-                if (m_CallbackCount > 0 || m_IsReleasing)
-                    return;
                 List<Exception> errors = null;
-                m_CallbackCount++;
                 for (int i = 0; i < m_SlotCount; i++)
                 {
                     ref var slot = ref m_Slots[i];
@@ -387,14 +386,13 @@ namespace AlicizaX.ObjectPool
                         continue;
 
                     T obj = slot.Obj;
-                    m_TargetMap.Remove(obj.Target);
+                    m_TargetMap.Remove(Key(obj.Target));
                     m_Slots[i] = default;
                     try { obj.Release(true); }
                     catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
                     try { RecycleObject(obj); }
                     catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
                 }
-                m_CallbackCount--;
                 m_TargetMap.Dispose();
                 if (m_HasNameMap)
                 {
@@ -469,8 +467,6 @@ namespace AlicizaX.ObjectPool
             private void SpawnSlot(int idx)
             {
                 ref var slot = ref m_Slots[idx];
-                if ((slot.Flags & 2) != 0)
-                    throw new InvalidOperationException("Object is executing a pool callback.");
                 if (slot.SpawnCount == 0)
                     MarkSlotUnavailable(idx);
 
@@ -483,55 +479,44 @@ namespace AlicizaX.ObjectPool
                 }
 
                 T obj = slot.Obj;
-                slot.Flags |= 2;
                 m_CallbackCount++;
-                Exception callbackError = null;
                 try
                 {
                     obj.OnSpawn();
                 }
-                catch (Exception error)
+                catch
                 {
-                    m_Slots[idx].SpawnCount--;
-                    if (m_Slots[idx].SpawnCount == 0 && !m_IsShuttingDown)
+                    ref var returned = ref m_Slots[idx];
+                    returned.SpawnCount--;
+                    if (returned.SpawnCount == 0)
                         MarkSlotAvailable(idx);
-                    callbackError = error;
+                    throw;
                 }
                 finally
                 {
-                    m_Slots[idx].Flags &= unchecked((byte)~2);
                     m_CallbackCount--;
                 }
-                CompleteCallback(callbackError);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             private void UnspawnSlot(int idx)
             {
                 ref var slot = ref m_Slots[idx];
-                if ((slot.Flags & 2) != 0)
-                    throw new InvalidOperationException("Object is executing a pool callback.");
                 if (slot.SpawnCount == 0)
                 {
                     Log.Error($"Object '{slot.Obj.Name}' is not spawned.");
                     return;
                 }
                 T obj = slot.Obj;
-                slot.Flags |= 2;
                 m_CallbackCount++;
-                Exception callbackError = null;
                 try
                 {
                     obj.OnUnspawn();
                 }
-                catch (Exception error)
-                {
-                    callbackError = error;
-                }
                 finally
                 {
+                    m_CallbackCount--;
                     ref var returned = ref m_Slots[idx];
-                    returned.Flags &= unchecked((byte)~2);
                     returned.SpawnCount--;
                     if (TrackLastUseTime)
                     {
@@ -539,13 +524,11 @@ namespace AlicizaX.ObjectPool
                         returned.LastUseTime = now;
                         obj.LastUseTime = now;
                     }
-                    if (returned.SpawnCount == 0 && !m_IsShuttingDown)
+                    if (returned.SpawnCount == 0)
                         MarkSlotAvailable(idx);
                     if (Count > m_Capacity && returned.SpawnCount == 0)
                         MarkRelease(Count - m_Capacity);
-                    m_CallbackCount--;
                 }
-                CompleteCallback(callbackError);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -581,46 +564,47 @@ namespace AlicizaX.ObjectPool
                 T obj = slot.Obj;
                 object target = obj.Target;
                 MarkSlotUnavailable(idx);
-                if (m_AllowMultiSpawn && (slot.Flags & 4) == 0)
-                    RemoveFromAllNameChain(idx);
-                slot.Flags |= 6;
-                m_TargetMap.Remove(target);
+                if (m_AllowMultiSpawn)
+                    RemoveFromNameChain(idx, false);
+                m_TargetMap.Remove(Key(target));
+
+                // 调用用户代码前先摘除槽位。回调不能变更当前池，因此即使 Release() 抛异常，
+                // 池仍保持一致；包装对象被回收，调用方看到原始异常。
+                m_Slots[idx] = default;
+                m_FreeStack[m_FreeTop++] = idx;
+
+                Exception error = null;
                 m_CallbackCount++;
                 try
                 {
                     obj.Release(false);
                 }
-                catch
+                catch (Exception exception)
                 {
-                    if (m_Slots != null && !m_IsShuttingDown)
-                    {
-                        if (!m_TargetMap.TryGetValue(target, out int mapped) || mapped == idx)
-                            m_TargetMap.AddOrUpdate(target, idx);
-                        AddToUnusedListTail(idx);
-                    }
-                    throw;
+                    error = exception;
                 }
                 finally
                 {
-                    if (m_Slots != null)
-                        m_Slots[idx].Flags &= unchecked((byte)~2);
                     m_CallbackCount--;
                 }
 
-                if (m_Slots == null)
-                    return;
+                try
+                {
+                    RecycleObject(obj);
+                }
+                catch (Exception exception)
+                {
+                    error = error == null ? exception : new AggregateException(error, exception);
+                }
 
-                m_Slots[idx] = default;
-                m_FreeStack[m_FreeTop++] = idx;
-                RecycleObject(obj);
+                if (error != null)
+                    ExceptionDispatchInfo.Capture(error).Throw();
             }
 
             private bool ReserveRegisterSlot()
             {
                 if (m_Capacity == int.MaxValue || Count < m_Capacity)
                     return true;
-                if (m_IsReleasing)
-                    return false;
 
                 int released = ReleaseUnused(1, false, float.MinValue);
                 if (released > 0)
@@ -677,44 +661,47 @@ namespace AlicizaX.ObjectPool
             {
                 if (m_IsShuttingDown)
                     return 0;
-                if (m_IsReleasing)
-                    throw new InvalidOperationException("Object pool is already releasing objects.");
+
                 int released = 0;
                 int visited = 0;
                 int limit = m_UnusedCount;
-                m_ReleaseCursor = m_UnusedHead;
-                m_IsReleasing = true;
+                int current = m_UnusedHead;
                 Exception callbackError = null;
-                try
+                while (current >= 0 && released < maxReleaseCount && visited < limit)
                 {
-                    while (m_ReleaseCursor >= 0 && released < maxReleaseCount && visited < limit && !m_IsShuttingDown)
+                    visited++;
+                    ref var slot = ref m_Slots[current];
+                    int next = slot.NextUnused;
+
+                    if (requireExpired && (slot.LastUseTime == 0f || slot.LastUseTime > expireThreshold))
                     {
-                        int current = m_ReleaseCursor;
-                        visited++;
-                        ref var slot = ref m_Slots[current];
-                        m_ReleaseCursor = slot.NextUnused;
-
-                        if (requireExpired && (slot.LastUseTime == 0f || slot.LastUseTime > expireThreshold))
-                            continue;
-
-                        if (CanReleaseSlot(ref slot))
-                        {
-                            ReleaseSlot(current);
-                            released++;
-                        }
+                        current = next;
+                        continue;
                     }
-                }
-                catch (Exception error)
-                {
-                    callbackError = error;
-                }
-                finally
-                {
-                    m_IsReleasing = false;
-                    m_ReleaseCursor = -1;
-                }
-                CompleteCallback(callbackError);
 
+                    if (!CanReleaseSlot(ref slot))
+                    {
+                        current = next;
+                        continue;
+                    }
+
+                    try
+                    {
+                        ReleaseSlot(current);
+                        released++;
+                    }
+                    catch (Exception error)
+                    {
+                        callbackError = callbackError == null ? error : new AggregateException(callbackError, error);
+                    }
+
+                    // Release() 回调不能变更当前池，因此已保存的 next 槽位在释放槽位
+                    // 自行摘除后，仍是正确的续遍历位置。
+                    current = next;
+                }
+
+                if (callbackError != null)
+                    ExceptionDispatchInfo.Capture(callbackError).Throw();
                 return released;
             }
 
@@ -723,7 +710,6 @@ namespace AlicizaX.ObjectPool
             {
                 return slot.IsAlive()
                        && slot.SpawnCount == 0
-                       && (slot.Flags & 2) == 0
                        && !slot.Obj.Locked
                        && slot.Obj.CustomCanReleaseFlag;
             }
@@ -731,149 +717,134 @@ namespace AlicizaX.ObjectPool
             private void MarkSlotAvailable(int idx)
             {
                 AddToUnusedListTail(idx);
-                AddToAvailableNameChain(idx);
+                AddToNameChain(idx, true);
             }
 
             private void MarkSlotUnavailable(int idx)
             {
-                RemoveFromAvailableNameChain(idx);
+                RemoveFromNameChain(idx, true);
                 RemoveFromUnusedList(idx);
             }
 
-            private void AddToAvailableNameChain(int idx)
+            /// <summary>
+            /// 将槽位加入可用链（available: true）或全量名称链（available: false）。
+            /// 两条链的区别仅在于使用的链接字段和头节点。
+            /// </summary>
+            private void AddToNameChain(int idx, bool available)
             {
                 ref var slot = ref m_Slots[idx];
-                if (!slot.IsAlive() || slot.SpawnCount != 0)
-                    return;
-                if (slot.PrevAvailable >= 0 || slot.NextAvailable >= 0)
-                    return;
+                if (available)
+                {
+                    if (!slot.IsAlive() || slot.SpawnCount != 0)
+                        return;
+                    if (slot.PrevAvailable >= 0 || slot.NextAvailable >= 0)
+                        return;
+                }
 
+                ref int prev = ref (available ? ref slot.PrevAvailable : ref slot.PrevAll);
+                ref int next = ref (available ? ref slot.NextAvailable : ref slot.NextAll);
                 string objectName = slot.Obj.Name ?? string.Empty;
                 if (objectName.Length == 0)
                 {
-                    if (m_UnnamedAvailableHead == idx)
-                        return;
-                    slot.NextAvailable = m_UnnamedAvailableHead;
-                    slot.PrevAvailable = -1;
-                    if (m_UnnamedAvailableHead >= 0)
-                        m_Slots[m_UnnamedAvailableHead].PrevAvailable = idx;
-                    m_UnnamedAvailableHead = idx;
-                    return;
-                }
-
-                EnsureNameMap();
-                if (m_AvailableNameHeadMap.TryGetValue(objectName, out int head))
-                {
+                    ref int head = ref (available ? ref m_UnnamedAvailableHead : ref m_UnnamedAllHead);
                     if (head == idx)
                         return;
-                    m_Slots[head].PrevAvailable = idx;
-                    slot.NextAvailable = head;
-                }
-                else
-                {
-                    slot.NextAvailable = -1;
-                }
-
-                slot.PrevAvailable = -1;
-                m_AvailableNameHeadMap.AddOrUpdate(objectName, idx);
-            }
-
-            private void RemoveFromAvailableNameChain(int idx)
-            {
-                ref var slot = ref m_Slots[idx];
-                if (!slot.IsAlive())
-                    return;
-
-                string objectName = slot.Obj.Name ?? string.Empty;
-                int prev = slot.PrevAvailable;
-                int next = slot.NextAvailable;
-                bool isUnnamed = objectName.Length == 0;
-                bool isHead = isUnnamed ? m_UnnamedAvailableHead == idx : false;
-                if (!isUnnamed && m_HasNameMap && m_AvailableNameHeadMap.TryGetValue(objectName, out int namedHead))
-                    isHead = namedHead == idx;
-
-                if (!isHead && prev < 0 && next < 0)
-                    return;
-
-                if (prev >= 0)
-                    m_Slots[prev].NextAvailable = next;
-                else if (isHead)
-                {
-                    if (isUnnamed)
-                        m_UnnamedAvailableHead = next;
-                    else if (next >= 0)
-                        m_AvailableNameHeadMap.AddOrUpdate(objectName, next);
-                    else
-                        m_AvailableNameHeadMap.Remove(objectName);
-                }
-
-                if (next >= 0)
-                    m_Slots[next].PrevAvailable = prev;
-
-                slot.PrevAvailable = -1;
-                slot.NextAvailable = -1;
-            }
-
-            private void AddToAllNameChain(int idx)
-            {
-                ref var slot = ref m_Slots[idx];
-                string objectName = slot.Obj.Name ?? string.Empty;
-                if (objectName.Length == 0)
-                {
-                    slot.NextAll = m_UnnamedAllHead;
-                    slot.PrevAll = -1;
-                    if (m_UnnamedAllHead >= 0)
-                        m_Slots[m_UnnamedAllHead].PrevAll = idx;
-                    m_UnnamedAllHead = idx;
+                    next = head;
+                    prev = -1;
+                    if (head >= 0)
+                        SetPrevLink(head, idx, available);
+                    head = idx;
                     return;
                 }
 
                 EnsureNameMap();
-                if (m_AllNameHeadMap.TryGetValue(objectName, out int head))
+                ref OpenHashMap<string> map = ref (available ? ref m_AvailableNameHeadMap : ref m_AllNameHeadMap);
+                if (map.TryGetValue(objectName, out int namedHead))
                 {
-                    m_Slots[head].PrevAll = idx;
-                    slot.NextAll = head;
+                    if (namedHead == idx)
+                        return;
+                    SetPrevLink(namedHead, idx, available);
+                    next = namedHead;
                 }
                 else
                 {
-                    slot.NextAll = -1;
+                    next = -1;
                 }
 
-                slot.PrevAll = -1;
-                m_AllNameHeadMap.AddOrUpdate(objectName, idx);
+                prev = -1;
+                map.AddOrUpdate(objectName, idx);
             }
 
-            private void RemoveFromAllNameChain(int idx)
+            private void RemoveFromNameChain(int idx, bool available)
             {
                 ref var slot = ref m_Slots[idx];
-                string objectName = slot.Obj.Name ?? string.Empty;
-                int prev = slot.PrevAll;
-                int next = slot.NextAll;
-                bool isUnnamed = objectName.Length == 0;
-                bool isHead = isUnnamed ? m_UnnamedAllHead == idx : false;
-                if (!isUnnamed && m_HasNameMap && m_AllNameHeadMap.TryGetValue(objectName, out int namedHead))
-                    isHead = namedHead == idx;
-
-                if (!isHead && prev < 0 && next < 0)
+                if (available && !slot.IsAlive())
                     return;
 
-                if (prev >= 0)
-                    m_Slots[prev].NextAll = next;
+                string objectName = slot.Obj.Name ?? string.Empty;
+                bool isUnnamed = objectName.Length == 0;
+                ref int prev = ref (available ? ref slot.PrevAvailable : ref slot.PrevAll);
+                ref int next = ref (available ? ref slot.NextAvailable : ref slot.NextAll);
+                int previousIndex = prev;
+                int nextIndex = next;
+
+                bool isHead;
+                if (isUnnamed)
+                {
+                    ref int head = ref (available ? ref m_UnnamedAvailableHead : ref m_UnnamedAllHead);
+                    isHead = head == idx;
+                }
+                else
+                {
+                    ref OpenHashMap<string> map = ref (available ? ref m_AvailableNameHeadMap : ref m_AllNameHeadMap);
+                    isHead = m_HasNameMap && map.TryGetValue(objectName, out int namedHead) && namedHead == idx;
+                }
+
+                if (!isHead && previousIndex < 0 && nextIndex < 0)
+                    return;
+
+                if (previousIndex >= 0)
+                {
+                    SetNextLink(previousIndex, nextIndex, available);
+                }
                 else if (isHead)
                 {
                     if (isUnnamed)
-                        m_UnnamedAllHead = next;
-                    else if (next >= 0)
-                        m_AllNameHeadMap.AddOrUpdate(objectName, next);
+                    {
+                        ref int head = ref (available ? ref m_UnnamedAvailableHead : ref m_UnnamedAllHead);
+                        head = nextIndex;
+                    }
                     else
-                        m_AllNameHeadMap.Remove(objectName);
+                    {
+                        ref OpenHashMap<string> map = ref (available ? ref m_AvailableNameHeadMap : ref m_AllNameHeadMap);
+                        if (nextIndex >= 0)
+                            map.AddOrUpdate(objectName, nextIndex);
+                        else
+                            map.Remove(objectName);
+                    }
                 }
 
-                if (next >= 0)
-                    m_Slots[next].PrevAll = prev;
+                if (nextIndex >= 0)
+                    SetPrevLink(nextIndex, previousIndex, available);
 
-                slot.PrevAll = -1;
-                slot.NextAll = -1;
+                prev = -1;
+                next = -1;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void SetPrevLink(int idx, int value, bool available)
+            {
+                ref var slot = ref m_Slots[idx];
+                if (available) slot.PrevAvailable = value;
+                else slot.PrevAll = value;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void SetNextLink(int idx, int value, bool available)
+            {
+                ref var slot = ref m_Slots[idx];
+                if (available) slot.NextAvailable = value;
+                else slot.NextAll = value;
             }
 
             private void AddToUnusedListTail(int idx)
@@ -900,8 +871,6 @@ namespace AlicizaX.ObjectPool
 
                 int prev = slot.PrevUnused;
                 int next = slot.NextUnused;
-                if (m_ReleaseCursor == idx)
-                    m_ReleaseCursor = next;
                 if (prev >= 0)
                     m_Slots[prev].NextUnused = next;
                 else
@@ -944,69 +913,18 @@ namespace AlicizaX.ObjectPool
                     throw new ObjectDisposedException(FullName);
             }
 
-            private void CompleteCallback(Exception error)
+            /// <summary>
+            /// 池回调（OnSpawn/OnUnspawn/Release）可以使用其他池和服务，但不得变更
+            /// 当前正在调用它的池。拒绝重入变更，使槽位/名称/空闲链表无需回滚记账也能保持一致。
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void EnsureNotInCallback()
             {
-                UpdateActiveState();
-                if (m_IsShuttingDown && m_CallbackCount == 0 && !m_IsReleasing)
-                {
-                    try { Shutdown(); }
-                    catch (Exception shutdownError)
-                    {
-                        if (error != null)
-                            throw new AggregateException(error, shutdownError);
-                        throw;
-                    }
-                }
-                if (error != null)
-                    ExceptionDispatchInfo.Capture(error).Throw();
+                if (m_CallbackCount > 0)
+                    throw new InvalidOperationException($"Object pool '{FullName}' cannot be mutated from a pool callback.");
             }
 
-            [Conditional("UNITY_EDITOR")]
-            private void ValidateState()
-            {
-#if UNITY_EDITOR && ENABLE_OBJECTPOOL_VALIDATION
-                int aliveCount = 0;
-                int unusedCount = 0;
-                for (int idx = 0; idx < m_SlotCount; idx++)
-                {
-                    ref var slot = ref m_Slots[idx];
-                    if (!slot.IsAlive())
-                        continue;
-
-                    aliveCount++;
-                    object target = slot.Obj.Target;
-                    if (!m_TargetMap.TryGetValue(target, out int mappedIdx) || mappedIdx != idx)
-                    {
-                        Log.Error($"Object pool '{FullName}' target index map is inconsistent.");
-                        continue;
-                    }
-
-                    if (slot.SpawnCount == 0)
-                        unusedCount++;
-                }
-
-                if (aliveCount != m_TargetMap.Count)
-                    Log.Error($"Object pool '{FullName}' alive count is inconsistent.");
-
-                int walkUnusedCount = 0;
-                int current = m_UnusedHead;
-                int prevUnused = -1;
-                while (current >= 0)
-                {
-                    ref var slot = ref m_Slots[current];
-                    if (!slot.IsAlive() || slot.SpawnCount != 0)
-                        Log.Error($"Object pool '{FullName}' unused chain contains invalid slot.");
-                    if (slot.PrevUnused != prevUnused)
-                        Log.Error($"Object pool '{FullName}' unused chain linkage is inconsistent.");
-                    walkUnusedCount++;
-                    prevUnused = current;
-                    current = slot.NextUnused;
-                }
-
-                if (walkUnusedCount != unusedCount || walkUnusedCount != m_UnusedCount)
-                    Log.Error($"Object pool '{FullName}' unused chain count is inconsistent.");
-#endif
-            }
         }
     }
 }
+

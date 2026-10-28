@@ -4,6 +4,26 @@ using System.Runtime.CompilerServices;
 
 namespace AlicizaX.ObjectPool
 {
+    /// <summary>
+    /// <see cref="OpenHashMap{TKey}"/> 的引用身份键。用包装结构承载对象，
+    /// 使值键、字符串键和引用键共用同一套哈希表实现。
+    /// </summary>
+    internal readonly struct RefKey : IEquatable<RefKey>
+    {
+        public readonly object Value;
+
+        public RefKey(object value)
+        {
+            Value = value;
+        }
+
+        public bool Equals(RefKey other) => ReferenceEquals(Value, other.Value);
+
+        public override bool Equals(object obj) => obj is RefKey other && Equals(other);
+
+        public override int GetHashCode() => Value == null ? 0 : RuntimeHelpers.GetHashCode(Value);
+    }
+
     internal struct OpenHashMap<TKey> where TKey : IEquatable<TKey>
     {
         private int[] m_Buckets;
@@ -95,12 +115,7 @@ namespace AlicizaX.ObjectPool
             }
             else
             {
-                if (m_AllocCount > m_Mask)
-                {
-                    Grow();
-                    bucket = hash & m_Mask;
-                }
-
+                // 上方的 75% 负载因子检查已保证容量充足；这里再 Grow 一次是不可达分支。
                 idx = m_AllocCount++;
             }
 
@@ -109,6 +124,21 @@ namespace AlicizaX.ObjectPool
             m_Next[idx] = m_Buckets[bucket];
             m_Buckets[bucket] = idx + 1;
             m_Count++;
+        }
+
+        public void Clear()
+        {
+            if (m_Buckets == null)
+                return;
+
+            int capacity = m_Mask + 1;
+            Array.Clear(m_Buckets, 0, capacity);
+            Array.Clear(m_Keys, 0, capacity);
+            Array.Clear(m_Values, 0, capacity);
+            Array.Clear(m_Next, 0, capacity);
+            m_Count = 0;
+            m_FreeList = 0;
+            m_AllocCount = 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

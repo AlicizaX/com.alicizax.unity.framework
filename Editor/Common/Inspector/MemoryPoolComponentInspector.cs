@@ -1,4 +1,4 @@
-﻿using AlicizaX;
+using AlicizaX;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,7 +29,6 @@ namespace AlicizaX.Editor
         private MemoryPoolInfo[] m_InfoBuffer = Array.Empty<MemoryPoolInfo>();
 
         private SerializedProperty m_ShortDecayStartFrames;
-        private SerializedProperty m_LongDecayStartFrames;
         private SerializedProperty m_UnscheduleIdleFrames;
         private SerializedProperty m_ZeroFreeReserveStartFrames;
         private SerializedProperty m_AutoTrimNativeMetadataFrames;
@@ -76,7 +75,6 @@ namespace AlicizaX.Editor
         private void OnEnable()
         {
             m_ShortDecayStartFrames = serializedObject.FindProperty("m_ShortDecayStartFrames");
-            m_LongDecayStartFrames = serializedObject.FindProperty("m_LongDecayStartFrames");
             m_UnscheduleIdleFrames = serializedObject.FindProperty("m_UnscheduleIdleFrames");
             m_ZeroFreeReserveStartFrames = serializedObject.FindProperty("m_ZeroFreeReserveStartFrames");
             m_AutoTrimNativeMetadataFrames = serializedObject.FindProperty("m_AutoTrimNativeMetadataFrames");
@@ -116,8 +114,7 @@ namespace AlicizaX.Editor
         {
             NormalizeSerializedConfiguration();
             DrawIntPropertyRow("Short Decay Start", m_ShortDecayStartFrames, 0);
-            DrawIntPropertyRow("Long Decay Start", m_LongDecayStartFrames, m_ShortDecayStartFrames.intValue);
-            DrawIntPropertyRow("Zero Free Start", m_ZeroFreeReserveStartFrames, m_LongDecayStartFrames.intValue);
+            DrawIntPropertyRow("Zero Free Start", m_ZeroFreeReserveStartFrames, m_ShortDecayStartFrames.intValue);
             DrawIntPropertyRow("Unschedule Idle", m_UnscheduleIdleFrames, m_ZeroFreeReserveStartFrames.intValue);
             DrawIntPropertyRow("Auto Trim Native", m_AutoTrimNativeMetadataFrames, -1);
             DrawIntPropertyRow("Soft Free Limit", m_SoftFreeReserveLimit, MemoryPool.MinimumFreeReserveLimit);
@@ -141,13 +138,7 @@ namespace AlicizaX.Editor
                 MemoryPool.ShortDecayStartFrames = shortDecay;
             }
 
-            int longDecay = DrawIntValueRow("Long Decay Start", MemoryPool.LongDecayStartFrames, MemoryPool.ShortDecayStartFrames);
-            if (longDecay != MemoryPool.LongDecayStartFrames)
-            {
-                MemoryPool.LongDecayStartFrames = longDecay;
-            }
-
-            int zeroFree = DrawIntValueRow("Zero Free Start", MemoryPool.ZeroFreeReserveStartFrames, MemoryPool.LongDecayStartFrames);
+            int zeroFree = DrawIntValueRow("Zero Free Start", MemoryPool.ZeroFreeReserveStartFrames, MemoryPool.ShortDecayStartFrames);
             if (zeroFree != MemoryPool.ZeroFreeReserveStartFrames)
             {
                 MemoryPool.ZeroFreeReserveStartFrames = zeroFree;
@@ -469,8 +460,7 @@ namespace AlicizaX.Editor
         private void NormalizeSerializedConfiguration()
         {
             m_ShortDecayStartFrames.intValue = Math.Max(0, m_ShortDecayStartFrames.intValue);
-            m_LongDecayStartFrames.intValue = Math.Max(m_ShortDecayStartFrames.intValue, m_LongDecayStartFrames.intValue);
-            m_ZeroFreeReserveStartFrames.intValue = Math.Max(m_LongDecayStartFrames.intValue, m_ZeroFreeReserveStartFrames.intValue);
+            m_ZeroFreeReserveStartFrames.intValue = Math.Max(m_ShortDecayStartFrames.intValue, m_ZeroFreeReserveStartFrames.intValue);
             m_UnscheduleIdleFrames.intValue = Math.Max(m_ZeroFreeReserveStartFrames.intValue, m_UnscheduleIdleFrames.intValue);
             if (m_AutoTrimNativeMetadataFrames.intValue >= 0)
             {

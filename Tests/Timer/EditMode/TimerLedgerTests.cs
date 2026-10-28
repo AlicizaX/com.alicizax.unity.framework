@@ -22,6 +22,26 @@ namespace AlicizaX.Timer.Tests
         }
 
         [Test]
+        public void TrimExcessReleasesTrailingPagesAndRegrowsOnDemand()
+        {
+            using var f = new TimerFixture();
+            var handles = new ulong[1024];
+            for (int i = 0; i < handles.Length; i++)
+                handles[i] = f.Service.AddTimer(TimerProbe.NoOp, 3600);
+            TimerProbe.Statistics(f.Service, handles.Length, handles.Length, capacity: 1024);
+            foreach (ulong handle in handles)
+                f.Service.RemoveTimer(handle);
+
+            f.Service.TrimExcess();
+            TimerProbe.Statistics(f.Service, 0, 0, capacity: 0);
+            TimerProbe.Ledger(f.Service);
+
+            Assert.That(f.Service.AddTimer(TimerProbe.NoOp, 1), Is.Not.Zero);
+            TimerProbe.Statistics(f.Service, 1, 1, capacity: 256);
+            TimerProbe.Ledger(f.Service);
+        }
+
+        [Test]
         public void CapacityNormalizationCannotOverflow()
         {
             using var f = new TimerFixture(int.MaxValue);
@@ -182,7 +202,7 @@ namespace AlicizaX.Timer.Tests
             TimerProbe.Statistics(f.Service, count / 2, 0);
             TimerProbe.Ledger(f.Service);
             f.Dispose();
-            TimerProbe.Statistics(f.Service, 0, 0, capacity: capacity);
+            TimerProbe.Statistics(f.Service, 0, 0, capacity: 0);
             ((ITimerDebugService)f.Service).GetStatistics(out _, out _, out int peak, out _);
             Assert.That(peak, Is.EqualTo(count));
             TimerProbe.Ledger(f.Service);
@@ -207,13 +227,11 @@ namespace AlicizaX.Timer.Tests
             ulong retried = f.Service.AddTimer(TimerProbe.CountArg, null, 1);
             Assert.That(retried, Is.Not.Zero.And.Not.EqualTo(last));
             f.Dispose();
-            TimerProbe.Statistics(f.Service, 0, 0, capacity: 1048576);
+            TimerProbe.Statistics(f.Service, 0, 0, capacity: 0);
             Array pages = TimerProbe.Read<Array>(f.Service, "_pages");
             foreach (object page in pages)
             {
-                Assert.That(TimerProbe.Read<TimerHandlerNoArgs[]>(page, "NoArgsHandlers"), Is.All.Null);
-                Assert.That(TimerProbe.Read<object[]>(page, "GenericHandlers"), Is.All.Null);
-                Assert.That(TimerProbe.Read<object[]>(page, "GenericArgs"), Is.All.Null);
+                Assert.That(page, Is.Null, "destroyed service keeps no timer pages");
             }
         }
 

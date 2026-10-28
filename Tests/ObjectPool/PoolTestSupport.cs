@@ -158,7 +158,7 @@ namespace AlicizaX.ObjectPool.Tests
             var rentable = new HashSet<int>();
             var allRentable = new HashSet<int>();
             var names = new HashSet<string>();
-            var map = Read<ReferenceOpenHashMap>(pool, "m_TargetMap");
+            var map = Read<OpenHashMap<RefKey>>(pool, "m_TargetMap");
             int spawnCount = 0;
             for (int i = 0; i < slots.Length; i++)
             {
@@ -169,17 +169,14 @@ namespace AlicizaX.ObjectPool.Tests
                 alive.Add(i);
                 Assert.That(obj, Is.Not.Null);
                 Assert.That(obj.Target, Is.Not.Null);
-                Assert.That(map.TryGetValue(obj.Target, out int index), Is.True);
+                Assert.That(map.TryGetValue(new RefKey(obj.Target), out int index), Is.True);
                 Assert.That(index, Is.EqualTo(i));
                 int spawned = Read<int>(slot, "SpawnCount");
                 Assert.That(spawned, Is.GreaterThanOrEqualTo(0));
                 spawnCount += spawned;
                 if (spawned == 0) idle.Add(i);
-                if ((Read<byte>(slot, "Flags") & 4) == 0)
-                {
-                    allRentable.Add(i);
-                    if (spawned == 0) rentable.Add(i);
-                }
+                allRentable.Add(i);
+                if (spawned == 0) rentable.Add(i);
                 names.Add(obj.Name ?? "");
             }
             Assert.That(alive.Count, Is.EqualTo(count));

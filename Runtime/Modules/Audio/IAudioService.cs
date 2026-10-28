@@ -34,7 +34,7 @@ namespace AlicizaX.Audio.Runtime
         void Stop(AudioType type, bool fadeout);
         void StopAll(bool fadeout);
         void Warmup(AudioType type, int count);
-        bool Preload(string address, AudioCachePolicy policy = AudioCachePolicy.Pin);
+        bool Preload(string address, AudioCachePolicy policy = AudioCachePolicy.Ttl);
         void PreloadAsync(string address, AudioCachePolicy policy, Action<bool> completed = null);
         bool Unload(string address, bool force = false);
         void ClearCache(bool force = false);

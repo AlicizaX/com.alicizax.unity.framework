@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using NUnit.Framework;
 using UnityEngine;
@@ -8,7 +9,7 @@ namespace AlicizaX.ObjectPool.Tests
     public sealed class ObjectPoolLifecycleTests : ObjectPoolFixture
     {
         [UnityTest]
-        public IEnumerator UnityCallbackShutdownDefersTargetDestructionUntilCallbackCompletes()
+        public IEnumerator UnityCallbackShutdownIsRejectedAndExplicitShutdownCompletesCleanup()
         {
             var pool = Service.GetOrCreatePool<UnityPoolObject>();
             var source = new GameObject("shutdown-from-unspawn").AddComponent<AudioSource>();
@@ -18,11 +19,13 @@ namespace AlicizaX.ObjectPool.Tests
             pool.Register(obj, true);
             probe.UnspawnAction = () =>
             {
-                ((IServiceLifecycle)Service).Destroy();
+                Assert.Throws<InvalidOperationException>(() => ((IServiceLifecycle)Service).Destroy());
                 Assert.That(obj.Target, Is.SameAs(source));
                 Assert.That(Using<UnityPoolObject>(), Is.EqualTo(1));
             };
             pool.Unspawn(obj);
+
+            ((IServiceLifecycle)Service).Destroy();
             Assert.That(probe.Shutdowns, Is.EqualTo(1));
             Assert.That(probe.Clears, Is.EqualTo(1));
             Assert.That(Using<UnityPoolObject>(), Is.Zero);

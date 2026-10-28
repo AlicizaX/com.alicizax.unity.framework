@@ -55,7 +55,7 @@ namespace AlicizaX.Timer.Tests
         }
 
         [UnityTest]
-        public IEnumerator DisablingRootStopsDispatchAndResumeCatchesUpWithinTickBudget()
+        public IEnumerator DisablingRootStopsDispatchAndResumeCatchesUpOnTheNextTick()
         {
             var root = CreateRoot();
             var service = (TimerService)AppServices.App.Require<ITimerService>();
@@ -72,13 +72,12 @@ namespace AlicizaX.Timer.Tests
             double deadline = Time.realtimeSinceStartupAsDouble + 5;
             while (calls == 0 && Time.realtimeSinceStartupAsDouble < deadline)
             {
-                long cursor = TimerProbe.Cursor(service);
                 yield return null;
-                Assert.That(TimerProbe.Cursor(service) - cursor, Is.InRange(0, 64));
                 frames++;
             }
             Assert.That(calls, Is.EqualTo(1));
-            Assert.That(frames, Is.GreaterThanOrEqualTo(4));
+            Assert.That(frames, Is.LessThanOrEqualTo(2), "one tick must consume the whole stall");
+            Assert.That(TimerProbe.Cursor(service), Is.GreaterThan(before));
             TimerProbe.Ledger(service);
         }
 

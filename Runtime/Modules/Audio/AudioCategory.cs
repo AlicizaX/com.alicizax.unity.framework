@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.Audio;
 
@@ -71,6 +72,7 @@ namespace AlicizaX.Audio.Runtime
             for (int i = 0; i < initialCount; i++)
             {
                 AudioAgent agent = CreateAgent();
+                agent.IsFreeListed = true;
                 _freeStack[_freeCount++] = agent.Index;
             }
         }
@@ -82,7 +84,17 @@ namespace AlicizaX.Audio.Runtime
                 return 0UL;
             }
 
-            AudioAgent agent = AcquireAgent(request);
+            AudioAgent agent;
+            try
+            {
+                agent = AcquireAgent(request);
+            }
+            catch (Exception exception)
+            {
+                AlicizaX.Log.Exception(exception);
+                return 0UL;
+            }
+
             if (agent == null)
             {
                 return 0UL;
@@ -92,10 +104,13 @@ namespace AlicizaX.Audio.Runtime
             {
                 return agent.Play(request);
             }
-            catch
+            catch (Exception exception)
             {
+                // Play() 在操作 source 前已进入 Loading，因此 Stop() 会走正常拆除路径，
+                // 且 MarkFree 幂等；对外契约是失败返回 0。
+                AlicizaX.Log.Exception(exception);
                 agent.Stop(false);
-                throw;
+                return 0UL;
             }
         }
 
@@ -113,6 +128,7 @@ namespace AlicizaX.Audio.Runtime
             while (_createdCount < targetCount)
             {
                 AudioAgent agent = CreateAgent();
+                agent.IsFreeListed = true;
                 _freeStack[_freeCount++] = agent.Index;
             }
         }
@@ -162,6 +178,7 @@ namespace AlicizaX.Audio.Runtime
 
         internal void MarkOccupied(AudioAgent agent)
         {
+            agent.IsFreeListed = false;
             agent.ActiveIndex = _activeCount;
             _activeAgents[_activeCount++] = agent;
             int priority = agent.PlaybackPriority;
@@ -187,9 +204,13 @@ namespace AlicizaX.Audio.Runtime
 
         internal void MarkFree(AudioAgent agent)
         {
+            if (agent.IsFreeListed)
+                return;
+
             RemoveActive(agent);
             RemovePriority(agent);
             _freeStack[_freeCount++] = agent.Index;
+            agent.IsFreeListed = true;
         }
 
         internal void Shutdown()
@@ -201,8 +222,9 @@ namespace AlicizaX.Audio.Runtime
                 AudioAgent agent = _agents[i];
                 if (agent != null)
                 {
+                    AudioSourceObject sourceObject = agent.SourceObject;
                     agent.Shutdown();
-                    _service.ReleaseSourceObject(TypeIndex, i);
+                    _service.ReleaseSourceObject(sourceObject);
                     MemoryPool.Release(agent);
                     _agents[i] = null;
                 }
@@ -216,11 +238,11 @@ namespace AlicizaX.Audio.Runtime
             {
                 if (Application.isPlaying)
                 {
-                    Object.Destroy(InstanceRoot.gameObject);
+                    UnityEngine.Object.Destroy(InstanceRoot.gameObject);
                 }
                 else
                 {
-                    Object.DestroyImmediate(InstanceRoot.gameObject);
+                    UnityEngine.Object.DestroyImmediate(InstanceRoot.gameObject);
                 }
                 InstanceRoot = null;
             }
@@ -231,7 +253,9 @@ namespace AlicizaX.Audio.Runtime
             if (_freeCount > 0)
             {
                 int index = _freeStack[--_freeCount];
-                return _agents[index];
+                AudioAgent free = _agents[index];
+                free.IsFreeListed = false;
+                return free;
             }
 
             if (_createdCount < _agents.Length)
@@ -249,13 +273,17 @@ namespace AlicizaX.Audio.Runtime
 
             RemoveActive(candidate);
             RemovePriority(candidate);
+            candidate.IsFreeListed = false;
             return candidate;
         }
 
         private AudioAgent CreateAgent()
         {
             int index = _createdCount;
-            AudioSourceObject sourceObject = _service.AcquireSourceObject(this, index);
+            AudioSourceObject sourceObject = _service.AcquireSourceObject(this);
+            if (sourceObject == null)
+                throw new GameFrameworkException($"Audio category '{Type}' could not create an AudioSource.");
+
             AudioAgent agent = MemoryPool.Acquire<AudioAgent>();
             agent.Initialize(_service, this, index, _globalIndexOffset + index, sourceObject);
             _agents[index] = agent;

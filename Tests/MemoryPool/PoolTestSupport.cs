@@ -45,8 +45,7 @@ namespace AlicizaX.MemoryPoolTests
     public abstract class PoolFixture
     {
         private readonly HashSet<Type> types = new HashSet<Type>();
-        private int shortDecay, longDecay, zeroReserve, unschedule, autoTrim;
-        private MemoryPoolPhase phase;
+        private int shortDecay, zeroReserve, unschedule, autoTrim;
         protected int Frame;
 
         [SetUp]
@@ -54,12 +53,9 @@ namespace AlicizaX.MemoryPoolTests
         {
             MemoryPoolRegistry.InitializeMainThread();
             shortDecay = MemoryPool.ShortDecayStartFrames;
-            longDecay = MemoryPool.LongDecayStartFrames;
             zeroReserve = MemoryPool.ZeroFreeReserveStartFrames;
             unschedule = MemoryPool.UnscheduleIdleFrames;
             autoTrim = MemoryPool.AutoTrimNativeMetadataFrames;
-            phase = MemoryPoolRegistry.Phase;
-            MemoryPoolRegistry.Phase = MemoryPoolPhase.Gameplay;
             Frame = MemoryPoolRegistry.CurrentFrame + 100;
             Use<PoolItem>();
             Use<OtherItem>();
@@ -111,11 +107,9 @@ namespace AlicizaX.MemoryPoolTests
             {
                 types.Clear();
                 MemoryPool.ShortDecayStartFrames = shortDecay;
-                MemoryPool.LongDecayStartFrames = longDecay;
                 MemoryPool.ZeroFreeReserveStartFrames = zeroReserve;
                 MemoryPool.UnscheduleIdleFrames = unschedule;
                 MemoryPool.AutoTrimNativeMetadataFrames = autoTrim;
-                MemoryPoolRegistry.Phase = phase;
             }
             if (errors != null) throw new AggregateException(errors);
         }

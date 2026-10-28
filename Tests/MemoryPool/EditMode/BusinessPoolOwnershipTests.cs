@@ -19,7 +19,15 @@ namespace AlicizaX.MemoryPoolTests
                 if (ThrowOnRelease) throw new InvalidOperationException("business release");
                 Lease.Dispose();
             }
-            public override void Clear() { base.Clear(); Lease = default; ThrowOnRelease = false; }
+            public override void Clear()
+            {
+                // 业务 Release() 失败也不能泄漏底层资源：包装对象归还 MemoryPool 时会执行
+                // Clear()，这里才是最终释放点。
+                Lease.Dispose();
+                base.Clear();
+                Lease = default;
+                ThrowOnRelease = false;
+            }
         }
 
         [Test]
@@ -51,7 +59,7 @@ namespace AlicizaX.MemoryPoolTests
         }
 
         [Test]
-        public void BusinessReleaseFailureRetainsAccountedOwnershipUntilShutdown()
+        public void BusinessReleaseFailureDetachesAndClearReleasesTheLease()
         {
             Use<ResourceWrapper>();
             using var f = new ResourceFixture();
@@ -67,20 +75,16 @@ namespace AlicizaX.MemoryPoolTests
             try
             {
                 Assert.Throws<InvalidOperationException>(() => pool.ReleaseAllUnused());
-                Assert.That(pool.Count, Is.EqualTo(1));
+                Assert.That(pool.Count, Is.Zero, "a failed release must not retain a zombie slot");
                 Assert.That(pool.Spawn(), Is.Null);
-                Assert.Throws<InvalidOperationException>(() => pool.ReleaseAllUnused());
-                Assert.That(Info<ResourceWrapper>().UsingCount, Is.EqualTo(1));
-                Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
-                TestContext.WriteLine($"OWNERSHIP-LIMIT,business-release-failed,object-pool-count={pool.Count},memory-leases={Info<ResourceWrapper>().UsingCount}");
+                Assert.That(Info<ResourceWrapper>().UsingCount, Is.Zero);
+                Assert.That(f.Loader.LiveHandles, Is.Zero, "Clear() releases the underlying resource lease");
             }
             finally
             {
                 wrapper.ThrowOnRelease = false;
                 ((IServiceLifecycle)service).Destroy();
             }
-            Assert.That(Info<ResourceWrapper>().UsingCount, Is.Zero);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
     }
 }

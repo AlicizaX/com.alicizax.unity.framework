@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using AlicizaX.Editor;
 using AlicizaX.Resource.Runtime;
@@ -38,11 +38,6 @@ namespace AlicizaX.Resource.Editor
         private SerializedProperty _milliseconds = null;
         private SerializedProperty _maxUnloadUnusedAssetsInterval = null;
         private SerializedProperty _useSystemUnloadUnusedAssets = null;
-        private SerializedProperty _assetRecordCapacity = null;
-        private SerializedProperty _assetLeaseCapacity = null;
-        private SerializedProperty _bindingOwnerCapacity = null;
-        private SerializedProperty _bindingSlotCapacity = null;
-        private SerializedProperty _registeredTargetCapacity = null;
         private SerializedProperty _idleAssetExpireTime = null;
         private SerializedProperty _idleAssetCapacity = null;
         private SerializedProperty _expireProcessCountPerFrame = null;
@@ -95,11 +90,6 @@ namespace AlicizaX.Resource.Editor
             _milliseconds = serializedObject.FindProperty("milliseconds");
             _maxUnloadUnusedAssetsInterval = serializedObject.FindProperty("maxUnloadUnusedAssetsInterval");
             _useSystemUnloadUnusedAssets = serializedObject.FindProperty("useSystemUnloadUnusedAssets");
-            _assetRecordCapacity = serializedObject.FindProperty("assetRecordCapacity");
-            _assetLeaseCapacity = serializedObject.FindProperty("assetLeaseCapacity");
-            _bindingOwnerCapacity = serializedObject.FindProperty("bindingOwnerCapacity");
-            _bindingSlotCapacity = serializedObject.FindProperty("bindingSlotCapacity");
-            _registeredTargetCapacity = serializedObject.FindProperty("registeredTargetCapacity");
             _idleAssetExpireTime = serializedObject.FindProperty("idleAssetExpireTime");
             _idleAssetCapacity = serializedObject.FindProperty("idleAssetCapacity");
             _expireProcessCountPerFrame = serializedObject.FindProperty("expireProcessCountPerFrame");
@@ -239,71 +229,6 @@ namespace AlicizaX.Resource.Editor
             DrawSectionBegin("Resource Cache");
             using (new EditorGUI.DisabledGroupScope(EditorApplication.isPlaying))
             {
-                int assetRecordCapacity = _assetRecordCapacity.intValue;
-                if (DrawDelayedIntRow("Asset Record Capacity", assetRecordCapacity, out assetRecordCapacity))
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        component.AssetRecordCapacity = assetRecordCapacity;
-                    }
-                    else
-                    {
-                        _assetRecordCapacity.intValue = assetRecordCapacity;
-                    }
-                }
-
-                int assetLeaseCapacity = _assetLeaseCapacity.intValue;
-                if (DrawDelayedIntRow("Asset Lease Capacity", assetLeaseCapacity, out assetLeaseCapacity))
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        component.AssetLeaseCapacity = assetLeaseCapacity;
-                    }
-                    else
-                    {
-                        _assetLeaseCapacity.intValue = assetLeaseCapacity;
-                    }
-                }
-
-                int bindingOwnerCapacity = _bindingOwnerCapacity.intValue;
-                if (DrawDelayedIntRow("Binding Owner Capacity", bindingOwnerCapacity, out bindingOwnerCapacity))
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        component.BindingOwnerCapacity = bindingOwnerCapacity;
-                    }
-                    else
-                    {
-                        _bindingOwnerCapacity.intValue = bindingOwnerCapacity;
-                    }
-                }
-
-                int bindingSlotCapacity = _bindingSlotCapacity.intValue;
-                if (DrawDelayedIntRow("Binding Slot Capacity", bindingSlotCapacity, out bindingSlotCapacity))
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        component.BindingSlotCapacity = bindingSlotCapacity;
-                    }
-                    else
-                    {
-                        _bindingSlotCapacity.intValue = bindingSlotCapacity;
-                    }
-                }
-
-                int registeredTargetCapacity = _registeredTargetCapacity.intValue;
-                if (DrawDelayedIntRow("Registered Target Capacity", registeredTargetCapacity, out registeredTargetCapacity))
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        component.RegisteredTargetCapacity = registeredTargetCapacity;
-                    }
-                    else
-                    {
-                        _registeredTargetCapacity.intValue = registeredTargetCapacity;
-                    }
-                }
-
                 int idleAssetCapacity = _idleAssetCapacity.intValue;
                 if (DrawDelayedIntRow("Idle Asset Capacity", idleAssetCapacity, out idleAssetCapacity))
                 {
@@ -388,34 +313,30 @@ namespace AlicizaX.Resource.Editor
                 out int visibleCount,
                 out int activeCount,
                 out int idleCount,
-                out int keepAliveCount,
                 out int releasedCount,
                 out int handleCount,
                 out int directRefTotal,
                 out int legacyRefTotal,
-                out int bindingRefTotal,
-                out int keepAliveRefTotal);
+                out int bindingRefTotal);
             int count = resourceService.GetAssetInfos(_assetInfos, 0, _assetInfos.Length);
             count = Mathf.Min(count, _assetInfos.Length);
             DrawReadOnlyRow("Asset Slot Count", total.ToString());
             DrawReadOnlyRow(
                 "Visible Assets",
                 AlicizaX.Utility.Text.Format(
-                    "{0} | Active:{1} Idle:{2} KeepAlive:{3} Released:{4}",
+                    "{0} | Active:{1} Idle:{2} Released:{3}",
                     visibleCount,
                     activeCount,
                     idleCount,
-                    keepAliveCount,
                     releasedCount));
             DrawReadOnlyRow(
                 "Handles / Refs",
                 AlicizaX.Utility.Text.Format(
-                    "Handle:{0} | Direct:{1} Legacy:{2} Binding:{3} KeepAlive:{4}",
+                    "Handle:{0} | Direct:{1} Legacy:{2} Binding:{3}",
                     handleCount,
                     directRefTotal,
                     legacyRefTotal,
-                    bindingRefTotal,
-                    keepAliveRefTotal));
+                    bindingRefTotal));
 
             bool showReleased = DrawToggleValueRow("Show Released Slots", _showReleasedAssetSlots);
             if (showReleased != _showReleasedAssetSlots)
@@ -435,7 +356,7 @@ namespace AlicizaX.Resource.Editor
                 DrawReadOnlyRow(
                     "#" + i,
                     AlicizaX.Utility.Text.Format(
-                        "{0} | {1}/{2} | {3} | {4} | D:{5} L:{6} B:{7} K:{8} | KA:{9:F0}s Idle:{10:F0}s{11}",
+                        "{0} | {1}/{2} | {3} | {4} | D:{5} L:{6} B:{7} | Idle:{8:F0}s",
                         info.State,
                         string.IsNullOrEmpty(info.Package) ? "<None>" : info.Package,
                         info.Location,
@@ -444,10 +365,7 @@ namespace AlicizaX.Resource.Editor
                         info.DirectRefCount,
                         info.LegacyDirectRefCount,
                         info.BindingRefCount,
-                        info.KeepAliveRefCount,
-                        info.KeepAliveExpireIn,
-                        info.IdleExpireIn,
-                        info.IdleReleaseRequested ? " ReleasePending" : string.Empty));
+                        info.IdleExpireIn));
             }
         }
 
@@ -456,24 +374,20 @@ namespace AlicizaX.Resource.Editor
             out int visibleCount,
             out int activeCount,
             out int idleCount,
-            out int keepAliveCount,
             out int releasedCount,
             out int handleCount,
             out int directRefTotal,
             out int legacyRefTotal,
-            out int bindingRefTotal,
-            out int keepAliveRefTotal)
+            out int bindingRefTotal)
         {
             visibleCount = 0;
             activeCount = 0;
             idleCount = 0;
-            keepAliveCount = 0;
             releasedCount = 0;
             handleCount = 0;
             directRefTotal = 0;
             legacyRefTotal = 0;
             bindingRefTotal = 0;
-            keepAliveRefTotal = 0;
 
             int total = resourceService.GetAssetInfos(_assetInfos, 0, _assetInfos.Length);
             int startIndex = 0;
@@ -492,9 +406,6 @@ namespace AlicizaX.Resource.Editor
                         case ResourceAssetState.Idle:
                             idleCount++;
                             break;
-                        case ResourceAssetState.KeepAlive:
-                            keepAliveCount++;
-                            break;
                         case ResourceAssetState.Released:
                             releasedCount++;
                             break;
@@ -508,7 +419,6 @@ namespace AlicizaX.Resource.Editor
                     directRefTotal += info.DirectRefCount;
                     legacyRefTotal += info.LegacyDirectRefCount;
                     bindingRefTotal += info.BindingRefCount;
-                    keepAliveRefTotal += info.KeepAliveRefCount;
 
                     if (!ShouldHideReleasedAssetSlot(info))
                     {
@@ -621,8 +531,7 @@ namespace AlicizaX.Resource.Editor
                    !info.HandleValid &&
                    info.DirectRefCount == 0 &&
                    info.LegacyDirectRefCount == 0 &&
-                   info.BindingRefCount == 0 &&
-                   info.KeepAliveRefCount == 0;
+                   info.BindingRefCount == 0;
         }
 
         private bool DrawToggleValueRow(string label, bool value)

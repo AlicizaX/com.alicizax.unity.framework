@@ -42,7 +42,7 @@ namespace AlicizaX.Timer.Tests
         {
             TimerService service = null;
             yield return AllocationCapture.Measure("new-service-256", 1, () => service = new TimerService(256),
-                s => Assert.That(s.Bytes, Is.InRange(140000, 250000)), true);
+                s => Assert.That(s.Bytes, Is.InRange(40000, 60000)), true);
             ulong handle = 0;
             yield return AllocationCapture.Measure("first-no-args-add-remove", 1, () =>
             {
@@ -63,7 +63,7 @@ namespace AlicizaX.Timer.Tests
             yield return AllocationCapture.Measure("continued-growth-to-4096", 3839, () =>
             {
                 for (int i = 257; i < handles.Length; i++) handles[i] = service.AddTimer(TimerProbe.NoOp, 60);
-            }, s => Assert.That(s.Bytes, Is.EqualTo(14 * 28968)));
+            }, s => Assert.That(s.Bytes, Is.InRange(14 * 28968, 14 * 28968 + 4096))); // 页分配 + 页目录增长
             TimerProbe.Statistics(service, 4096, 4096, capacity: 4096);
             foreach (ulong h in handles) service.RemoveTimer(h);
             yield return AllocationCapture.Measure("demand-grown-reuse-10000", 10000, () =>
@@ -96,6 +96,25 @@ namespace AlicizaX.Timer.Tests
             {
                 for (int i = 0; i < 1000; i++)
                     f.Service.RemoveTimer(f.Service.AddTimer(CachedMethodGroup, arg, 60));
+            }, s => Assert.That(s.Bytes, Is.Zero));
+            TimerProbe.Ledger(f.Service);
+        }
+
+        private struct CountingCallback : ITimerCallback<TimerArg>
+        {
+            public void Invoke(TimerArg arg) => arg.Calls++;
+        }
+
+        [UnityTest]
+        public IEnumerator StructCallbackOverloadAllocatesNothingPerCall()
+        {
+            using var f = new TimerFixture();
+            var arg = new TimerArg();
+            f.Service.RemoveTimer(f.Service.AddTimer<CountingCallback, TimerArg>(arg, 60));
+            yield return AllocationCapture.Measure("struct-callback-10000", 10000, () =>
+            {
+                for (int i = 0; i < 10000; i++)
+                    f.Service.RemoveTimer(f.Service.AddTimer<CountingCallback, TimerArg>(arg, 60));
             }, s => Assert.That(s.Bytes, Is.Zero));
             TimerProbe.Ledger(f.Service);
         }
@@ -189,7 +208,7 @@ namespace AlicizaX.Timer.Tests
             yield return AllocationCapture.Measure("32-new-services", 32, () =>
             {
                 for (int i = 0; i < services.Length; i++) services[i] = new TimerService(256);
-            }, s => Assert.That(s.Bytes, Is.InRange(32 * 140000, 32 * 180000)));
+            }, s => Assert.That(s.Bytes, Is.InRange(32 * 40000, 32 * 60000)));
             for (int i = 0; i < services.Length; i++)
             {
                 var world = new ServiceWorld();

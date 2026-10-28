@@ -73,10 +73,10 @@ namespace AlicizaX.ObjectPool.Tests
             Service.DestroyObjectPool<PoolObject>();
             pool = Pool();
             for (int i = 0; i < 12; i++) pool.Register(Silent(new object()), true);
-            Assert.That(Read<int>(Read<ReferenceOpenHashMap>(pool, "m_TargetMap"), "m_Mask"), Is.EqualTo(15));
+            Assert.That(Read<int>(Read<OpenHashMap<RefKey>>(pool, "m_TargetMap"), "m_Mask"), Is.EqualTo(15));
             obj = Silent(new object());
             yield return AllocationCapture.Measure("target-map-grow-16-to-32", 1, () => pool.Register(obj, true), sample => Assert.That(sample.Bytes, Is.GreaterThanOrEqualTo(0)));
-            Assert.That(Read<int>(Read<ReferenceOpenHashMap>(pool, "m_TargetMap"), "m_Mask"), Is.EqualTo(31));
+            Assert.That(Read<int>(Read<OpenHashMap<RefKey>>(pool, "m_TargetMap"), "m_Mask"), Is.EqualTo(31));
             for (int i = 0; i < 3; i++) pool.Register(Silent(new object()), true);
             obj = Silent(new object());
             yield return AllocationCapture.Measure("slot-grow-16-to-32", 1, () => pool.Register(obj, true), sample => Assert.That(sample.Bytes, Is.GreaterThan(0)));

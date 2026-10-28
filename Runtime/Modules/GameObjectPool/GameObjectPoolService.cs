@@ -22,10 +22,10 @@ namespace AlicizaX
         private readonly IPrefabLoader _loader;
         private readonly Transform _containerRoot;
         private readonly List<GameObjectPoolSnapshot> _debugSnapshots = new List<GameObjectPoolSnapshot>(16);
-        private StringOpenHashMap _unregisteredWarned = new StringOpenHashMap(8);
-        private StringOpenHashMap _unhandledDespawnWarned = new StringOpenHashMap(8);
-        private StringOpenHashMap _groupRootMap = new StringOpenHashMap(8);
-        private StringOpenHashMap _poolByLocation = new StringOpenHashMap(32);
+        private OpenHashMap<string> _unregisteredWarned = new OpenHashMap<string>(8);
+        private OpenHashMap<string> _unhandledDespawnWarned = new OpenHashMap<string>(8);
+        private OpenHashMap<string> _groupRootMap = new OpenHashMap<string>(8);
+        private OpenHashMap<string> _poolByLocation = new OpenHashMap<string>(32);
 
         private RuntimeGameObjectPool[] _pools = new RuntimeGameObjectPool[8];
         private int _poolCount;

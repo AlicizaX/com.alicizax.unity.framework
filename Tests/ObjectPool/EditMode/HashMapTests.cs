@@ -49,14 +49,16 @@ namespace AlicizaX.ObjectPool.Tests
         public void ReferenceMapAndObjectPoolIgnoreTargetValueEqualityAndVirtualHashCode()
         {
             var first = new EqualTarget(); var second = new EqualTarget();
-            var map = new ReferenceOpenHashMap(1);
+            var firstKey = new RefKey(first);
+            var secondKey = new RefKey(second);
+            var map = new OpenHashMap<RefKey>(1);
             try
             {
-                map.AddOrUpdate(first, 3); map.AddOrUpdate(second, 9);
+                map.AddOrUpdate(firstKey, 3); map.AddOrUpdate(secondKey, 9);
                 Assert.That(map.Count, Is.EqualTo(2));
-                Assert.That(map.TryGetValue(first, out int value), Is.True); Assert.That(value, Is.EqualTo(3));
-                Assert.That(map.Remove(first), Is.True);
-                Assert.That(map.TryGetValue(second, out value), Is.True); Assert.That(value, Is.EqualTo(9));
+                Assert.That(map.TryGetValue(firstKey, out int value), Is.True); Assert.That(value, Is.EqualTo(3));
+                Assert.That(map.Remove(firstKey), Is.True);
+                Assert.That(map.TryGetValue(secondKey, out value), Is.True); Assert.That(value, Is.EqualTo(9));
             }
             finally { map.Dispose(); }
             Assert.That(Read<Array>(map, "m_Keys"), Is.Null);

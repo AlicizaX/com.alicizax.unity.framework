@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Editor")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Resources.Tests")]
@@ -19,3 +19,4 @@
 
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Event.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Event.Editor.Tests")]
+[assembly: InternalsVisibleTo("AlicizaX.Framework.Core.Editor.Tests")]

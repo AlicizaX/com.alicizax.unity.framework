@@ -5,6 +5,8 @@ using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
 
+namespace AlicizaX.Resource.Runtime
+{
 public static class ResourceBindingExtensions
 {
     private static bool TryGetBindingService(out IResourceBindingService bindingService)
@@ -227,4 +229,5 @@ public static class ResourceBindingExtensions
         return new ResourceKey(location, packageName, typeof(Material), ResourceAssetKind.Material);
     }
 
+}
 }

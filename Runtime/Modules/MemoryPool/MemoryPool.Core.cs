@@ -13,9 +13,8 @@ namespace AlicizaX
         private const int PageMask = PageSize - 1;
         private const int InvalidIndex = -1;
         private const int MinKeep = MemoryPool.MinimumFreeReserveLimit;
-        private const int LookaheadFrames = 8;
-        private const int MissBoost = 2;
-        private const float RateEwmaAlpha = 0.25f;
+        private const int GrowthBudgetPerTick = 64;
+        private const int EvictBudgetPerTick = 16;
 
         private const byte ObjectStateNone = 0;
         private const byte ObjectStateFree = 1;
@@ -84,8 +83,7 @@ namespace AlicizaX
         private static int s_ReleaseCount;
         private static int s_AcquireThisFrame;
         private static int s_ReleaseThisFrame;
-        private static float s_AcquireRateEwma;
-        private static float s_BurstEwma;
+        private static int s_PeakInUse;
         private static int s_TargetFreeReserve = MinKeep;
         private static int s_SoftFreeReserveLimit = MemoryPool.DefaultSoftFreeReserveLimit;
         private static int s_HardFreeReserveLimit = MemoryPool.DefaultHardFreeReserveLimit;
@@ -109,11 +107,11 @@ namespace AlicizaX
                 shrink: Shrink,
                 compact: Compact,
                 trimNativeMetadata: TrimNativeMetadata,
-                resetStats: ResetStats);
+                resetStats: ResetStats,
+                forceReleaseNativeMetadata: ForceReleaseNativeMetadata);
             s_PublicHandle = new MemoryPoolHandle(s_Handle);
             s_PoolId = s_Handle.PoolId;
             MemoryPoolRegistry.Register(typeof(T), s_Handle);
-            MemoryPoolRegistry.RegisterNativeReleaser(ForceReleaseNativeMetadata);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -139,10 +137,19 @@ namespace AlicizaX
             s_AcquireCount++;
             s_AcquireThisFrame++;
             s_InUse++;
-            if (s_InUse > s_TargetFreeReserve)
-                s_TargetFreeReserve = Clamp(s_InUse, MinKeep, s_SoftFreeReserveLimit);
+            if (s_InUse > s_PeakInUse)
+                s_PeakInUse = s_InUse;
             MemoryPoolRegistry.ScheduleTick(s_Handle);
             return item;
+        }
+
+        /// <summary>
+        /// 释放该类型的存储并从全局维护中注销。调用前必须先归还所有已租出的对象；
+        /// 之后再次 Acquire 会自动重新注册该池。
+        /// </summary>
+        public static bool Destroy()
+        {
+            return MemoryPoolRegistry.Unregister(typeof(T));
         }
 
         public static void Release(T item)
@@ -168,8 +175,7 @@ namespace AlicizaX
             s_PendingGrowth = (int)Math.Min((long)s_PendingGrowth + count, s_HardFreeReserveLimit);
             LimitPendingGrowth();
 
-            int budget = MemoryPoolRegistry.GetGrowthBudget();
-            ProcessGrowth(Math.Min(count, budget));
+            ProcessGrowth(Math.Min(count, GrowthBudgetPerTick));
         }
 
         public static void Shrink(int keepCount)
@@ -238,8 +244,7 @@ namespace AlicizaX
             s_AcquireThisFrame = 0;
             s_ReleaseThisFrame = 0;
             s_PendingGrowth = 0;
-            s_AcquireRateEwma = 0f;
-            s_BurstEwma = 0f;
+            s_PeakInUse = 0;
             s_TargetFreeReserve = 0;
             s_IdleFrames = 0;
             s_LastTickFrame = InvalidIndex;
@@ -292,8 +297,7 @@ namespace AlicizaX
 
             s_AcquireThisFrame = 0;
             s_ReleaseThisFrame = 0;
-            s_AcquireRateEwma = 0f;
-            s_BurstEwma = 0f;
+            s_PeakInUse = s_InUse;
         }
 
         public static int UnusedCount
@@ -326,8 +330,8 @@ namespace AlicizaX
 
             UpdateWatermarks();
             LimitPendingGrowth();
-            ProcessGrowth(MemoryPoolRegistry.GetGrowthBudget());
-            ProcessEvict(MemoryPoolRegistry.GetEvictBudget());
+            ProcessGrowth(GrowthBudgetPerTick);
+            ProcessEvict(EvictBudgetPerTick);
 
             s_AcquireThisFrame = 0;
             s_ReleaseThisFrame = 0;
@@ -658,12 +662,6 @@ namespace AlicizaX
             if (s_PendingGrowth <= 0)
                 return;
 
-            if (MemoryPoolRegistry.GetGrowthBudget() <= 0)
-            {
-                s_PendingGrowth = 0;
-                return;
-            }
-
             int reserveLimit = Math.Min(s_TargetFreeReserve, s_HardFreeReserveLimit);
             int maxDebt = Math.Max(0, reserveLimit - s_FreeCount);
             if (s_PendingGrowth > maxDebt)
@@ -672,30 +670,28 @@ namespace AlicizaX
 
         private static void UpdateWatermarks()
         {
-            if (MemoryPoolRegistry.Phase == MemoryPoolPhase.LowMemory || s_IdleFrames >= MemoryPool.ZeroFreeReserveStartFrames)
+            // 空闲储备策略，刻意保持简单且可度量：
+            //   活跃/短空闲：保留最近峰值并发所需的数量，并以软上限封顶
+            //   短空闲：    衰减到最小储备
+            //   长空闲：    允许储备降到零（可裁剪 native 元数据）
+            if (s_IdleFrames >= MemoryPool.ZeroFreeReserveStartFrames)
             {
                 s_TargetFreeReserve = 0;
                 return;
             }
-            int minFreeReserve = MinKeep;
-            s_AcquireRateEwma = Lerp(s_AcquireRateEwma, s_AcquireThisFrame, RateEwmaAlpha);
-            int frameBurst = Math.Max(0, s_AcquireThisFrame - s_ReleaseThisFrame);
-            s_BurstEwma = Lerp(s_BurstEwma, frameBurst, RateEwmaAlpha);
 
-            if (s_IdleFrames >= MemoryPool.ShortDecayStartFrames)
-                s_BurstEwma *= 0.9375f;
-            if (s_IdleFrames >= MemoryPool.LongDecayStartFrames)
-                s_AcquireRateEwma *= 0.984375f;
+            int desiredFree = s_IdleFrames >= MemoryPool.ShortDecayStartFrames
+                ? MinKeep
+                : Math.Max(s_PeakInUse, MinKeep);
 
-            int desiredFree = Max(
-                CeilToInt(s_BurstEwma),
-                CeilToInt(s_AcquireRateEwma * LookaheadFrames),
-                s_PendingGrowth * MissBoost,
-                minFreeReserve);
+            // 显式 Add() 会立即提高目标储备；在该需求被满足或池空闲足够久开始衰减之前，
+            // 一直保留这个目标值。
             if (s_PendingGrowth > 0 || s_IdleFrames < MemoryPool.ShortDecayStartFrames)
                 desiredFree = Math.Max(desiredFree, s_TargetFreeReserve);
 
-            s_TargetFreeReserve = Clamp(desiredFree, minFreeReserve, Math.Min(s_SoftFreeReserveLimit, s_HardFreeReserveLimit));
+            s_TargetFreeReserve = Math.Min(
+                Math.Max(desiredFree, MinKeep),
+                Math.Min(s_SoftFreeReserveLimit, s_HardFreeReserveLimit));
         }
 
         private static Exception TombstonePage(int pageIndex)
@@ -982,29 +978,6 @@ namespace AlicizaX
         private static int GetSlotMetaIndex(int pageIndex, int slotIndex)
         {
             return (pageIndex << PageShift) + slotIndex;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int Clamp(int value, int min, int max)
-        {
-            if (value < min) return min;
-            if (value > max) return max;
-            return value;
-        }
-
-        private static int Max(int a, int b, int c, int d)
-        {
-            return Math.Max(Math.Max(a, b), Math.Max(c, d));
-        }
-
-        private static int CeilToInt(float value)
-        {
-            return (int)Math.Ceiling(value);
-        }
-
-        private static float Lerp(float from, float to, float alpha)
-        {
-            return from + (to - from) * alpha;
         }
 
         private static void ThrowInvalidState(string message)

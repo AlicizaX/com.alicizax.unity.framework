@@ -11,7 +11,6 @@ namespace AlicizaX.Audio.Runtime
         AudioCachePolicy DefaultCachePolicy { get; }
         int HandleCapacity { get; }
         bool Initialized { get; }
-        bool UnityAudioDisabled { get; }
         AudioClipCacheEntry FirstClipCacheEntry { get; }
 
         void FillServiceDebugInfo(AudioServiceDebugInfo info);
@@ -23,7 +22,6 @@ namespace AlicizaX.Audio.Runtime
     internal sealed class AudioServiceDebugInfo
     {
         public bool Initialized;
-        public bool UnityAudioDisabled;
         public bool Enable;
         public float Volume;
         public int CategoryCount;
@@ -46,7 +44,6 @@ namespace AlicizaX.Audio.Runtime
         public void Clear()
         {
             Initialized = false;
-            UnityAudioDisabled = false;
             Enable = false;
             Volume = 0f;
             CategoryCount = 0;
