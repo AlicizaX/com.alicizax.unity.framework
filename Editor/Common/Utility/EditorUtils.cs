@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Reflection;
 using System;
 using UnityEngine;
@@ -549,6 +549,14 @@ namespace AlicizaX.Editor
             public static readonly Color ButtonHover = new Color(0.31f, 0.31f, 0.31f, 1f);
             public static readonly Color ButtonActive = new Color(0.17f, 0.17f, 0.18f, 1f);
             public static readonly Color ButtonText = new Color(0.84f, 0.84f, 0.84f, 1f);
+            public static readonly Color PillOn = new Color(0.20f, 0.36f, 0.53f, 1f);
+            public static readonly Color PillOnHover = new Color(0.24f, 0.42f, 0.62f, 1f);
+            public static readonly Color PillOnActive = new Color(0.15f, 0.29f, 0.43f, 1f);
+            public static readonly Color PillOff = new Color(0.30f, 0.30f, 0.31f, 1f);
+            public static readonly Color PillOffHover = new Color(0.36f, 0.36f, 0.37f, 1f);
+            public static readonly Color PillOffActive = new Color(0.24f, 0.24f, 0.25f, 1f);
+            public static readonly Color PillOnText = Color.white;
+            public static readonly Color PillOffText = new Color(0.78f, 0.78f, 0.76f, 1f);
         }
 
         public static class Styles
@@ -712,24 +720,64 @@ namespace AlicizaX.Editor
                 alignment = TextAnchor.MiddleCenter
             };
 
-            public static GUIStyle PillOn => _pillOn ??= new GUIStyle(EditorStyles.miniButton)
-            {
-                normal = { background = CreateTexture(new Color(0.20f, 0.36f, 0.53f, 1f)), textColor = Color.white },
-                hover = { background = CreateTexture(new Color(0.24f, 0.42f, 0.62f, 1f)), textColor = Color.white },
-                fontStyle = FontStyle.Bold,
-                fixedHeight = 18f,
-                margin = new RectOffset(1, 1, 1, 1),
-                padding = new RectOffset(2, 2, 1, 1)
-            };
+            public static GUIStyle PillOn => _pillOn ??= CreatePillStyle(
+                Colors.PillOn,
+                Colors.PillOnHover,
+                Colors.PillOnActive,
+                Colors.PillOnText,
+                true);
 
-            public static GUIStyle PillOff => _pillOff ??= new GUIStyle(EditorStyles.miniButton)
+            public static GUIStyle PillOff => _pillOff ??= CreatePillStyle(
+                Colors.PillOff,
+                Colors.PillOffHover,
+                Colors.PillOffActive,
+                Colors.PillOffText,
+                false);
+
+            /// <summary>
+            /// Builds a pill style that does not depend on the host editor skin.
+            /// GUI.Toggle switches to the on* states when the value is true, but the old implementation
+            /// only overrode normal/hover/active. macOS therefore kept drawing the platform mini-button
+            /// texture (rounded gradient with a border) while Windows fell back to the flat texture.
+            /// Overriding every state and resetting border/overflow keeps both platforms identical.
+            /// </summary>
+            private static GUIStyle CreatePillStyle(
+                Color normalColor,
+                Color hoverColor,
+                Color activeColor,
+                Color textColor,
+                bool bold)
             {
-                normal = { background = CreateTexture(new Color(0.30f, 0.30f, 0.31f, 1f)), textColor = Colors.MainText },
-                hover = { background = CreateTexture(new Color(0.36f, 0.36f, 0.37f, 1f)), textColor = Color.white },
-                fixedHeight = 18f,
-                margin = new RectOffset(1, 1, 1, 1),
-                padding = new RectOffset(2, 2, 1, 1)
-            };
+                Texture2D normalTexture = CreateTexture(normalColor);
+                Texture2D hoverTexture = CreateTexture(hoverColor);
+                Texture2D activeTexture = CreateTexture(activeColor);
+
+                return new GUIStyle(EditorStyles.miniButton)
+                {
+                    normal = { background = normalTexture, textColor = textColor },
+                    hover = { background = hoverTexture, textColor = Color.white },
+                    active = { background = activeTexture, textColor = Color.white },
+                    onNormal = { background = normalTexture, textColor = textColor },
+                    onHover = { background = hoverTexture, textColor = Color.white },
+                    onActive = { background = activeTexture, textColor = Color.white },
+                    focused = { background = normalTexture, textColor = textColor },
+                    onFocused = { background = normalTexture, textColor = textColor },
+                    border = new RectOffset(0, 0, 0, 0),
+                    overflow = new RectOffset(0, 0, 0, 0),
+                    margin = new RectOffset(1, 1, 1, 1),
+                    padding = new RectOffset(2, 2, 1, 1),
+                    fixedHeight = 18f,
+                    fixedWidth = 0f,
+                    stretchWidth = false,
+                    stretchHeight = false,
+                    alignment = TextAnchor.MiddleCenter,
+                    clipping = TextClipping.Clip,
+                    wordWrap = false,
+                    richText = false,
+                    contentOffset = Vector2.zero,
+                    fontStyle = bold ? FontStyle.Bold : FontStyle.Normal
+                };
+            }
         }
 
         public static Texture2D CreateTexture(Color color)
