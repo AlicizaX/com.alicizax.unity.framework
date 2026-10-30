@@ -4,9 +4,7 @@ using UnityEngine.UIElements;
 
 namespace AlicizaX.Editor.UIToolkit
 {
-    /// <summary>
-    /// Loads the shared AlicizaX UI Toolkit style sheet and applies the editor skin class to a root element.
-    /// </summary>
+
     public static class AlicizaEditorTheme
     {
         private const string StyleSheetRelativePath = "Editor/UIToolkit/Styles/AlicizaEditor.uss";
@@ -16,9 +14,6 @@ namespace AlicizaX.Editor.UIToolkit
         private static bool _loadAttempted;
         private static bool _missingLogged;
 
-        /// <summary>
-        /// Gets the shared editor style sheet. Returns null when the asset has not been imported yet.
-        /// </summary>
         public static StyleSheet StyleSheet
         {
             get
@@ -33,9 +28,6 @@ namespace AlicizaX.Editor.UIToolkit
             }
         }
 
-        /// <summary>
-        /// Adds the shared style sheet and the current editor skin class to <paramref name="root"/>.
-        /// </summary>
         public static void Apply(VisualElement root)
         {
             if (root == null)

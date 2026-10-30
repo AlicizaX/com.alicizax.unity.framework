@@ -5,11 +5,8 @@ using UnityEngine.UIElements;
 
 namespace AlicizaX.Editor.UIToolkit
 {
-    /// <summary>
-    /// A flat enum dropdown with a dedicated arrow area, matching the original IMGUI popup look while still
-    /// supporting <see cref="UnityEditor.UIElements.BindingExtensions.BindProperty"/>.
-    /// </summary>
-    public sealed class AlicizaEnumField : BaseField<Enum>
+
+    public sealed class AlicizaEnumField : BaseField<int>
     {
         private sealed class DropdownSurface : VisualElement
         {
@@ -34,29 +31,14 @@ namespace AlicizaX.Editor.UIToolkit
             }
         }
 
-        private readonly Enum[] _values;
         private readonly string[] _names;
         private readonly DropdownSurface _surface;
         private readonly SerializedProperty _property;
 
-        /// <summary>
-        /// Creates a dropdown for <paramref name="enumType"/> with the supplied initial value.
-        /// </summary>
-        public AlicizaEnumField(Type enumType, Enum value) : base(null, new DropdownSurface())
+        public AlicizaEnumField(string[] names, int index) : base(null, new DropdownSurface())
         {
-            if (enumType == null || !enumType.IsEnum)
-            {
-                throw new ArgumentException("A valid enum type is required.", nameof(enumType));
-            }
-
+            _names = names == null ? Array.Empty<string>() : (string[])names.Clone();
             _property = null;
-            Array values = Enum.GetValues(enumType);
-            _values = new Enum[values.Length];
-            _names = Enum.GetNames(enumType);
-            for (int i = 0; i < values.Length; i++)
-            {
-                _values[i] = (Enum)values.GetValue(i);
-            }
 
             AddToClassList("alicia-enum");
             _surface = this.Q<DropdownSurface>();
@@ -66,15 +48,11 @@ namespace AlicizaX.Editor.UIToolkit
             focusable = true;
             tabIndex = 0;
 
-            SetValueWithoutNotify(value ?? (_values.Length > 0 ? _values[0] : null));
+            SetValueWithoutNotify(index);
         }
 
-        /// <summary>
-        /// Creates a dropdown bound directly to an enum SerializedProperty. This overload avoids generic
-        /// EnumField binding differences and keeps the displayed value in sync with Undo/Redo.
-        /// </summary>
-        public AlicizaEnumField(Type enumType, SerializedProperty property)
-            : this(enumType, GetInitialValue(enumType, property))
+        public AlicizaEnumField(SerializedProperty property)
+            : this(property == null ? Array.Empty<string>() : property.enumNames, GetInitialIndex(property))
         {
             _property = property;
             if (_property != null)
@@ -84,31 +62,24 @@ namespace AlicizaX.Editor.UIToolkit
             }
         }
 
-        private static Enum GetInitialValue(Type enumType, SerializedProperty property)
+        private static int GetInitialIndex(SerializedProperty property)
         {
-            if (property == null)
+            if (property == null || property.enumNames == null || property.enumNames.Length == 0)
             {
-                return null;
+                return 0;
             }
 
-            Array values = Enum.GetValues(enumType);
-            if (values.Length == 0)
-            {
-                return null;
-            }
-
-            int index = Mathf.Clamp(property.enumValueIndex, 0, values.Length - 1);
-            return (Enum)values.GetValue(index);
+            return Mathf.Clamp(property.enumValueIndex, 0, property.enumNames.Length - 1);
         }
 
-        /// <inheritdoc />
-        public override void SetValueWithoutNotify(Enum newValue)
+        public override void SetValueWithoutNotify(int newValue)
         {
-            base.SetValueWithoutNotify(newValue);
+            int length = _names == null ? 0 : _names.Length;
+            int clamped = length == 0 ? 0 : Mathf.Clamp(newValue, 0, length - 1);
+            base.SetValueWithoutNotify(clamped);
             UpdateLabel();
         }
 
-        /// <inheritdoc />
         protected override void UpdateMixedValueContent()
         {
             base.UpdateMixedValueContent();
@@ -134,9 +105,9 @@ namespace AlicizaX.Editor.UIToolkit
                 return;
             }
 
-            int index = value == null ? -1 : Array.IndexOf(_values, value);
-            _surface.Value.text = index >= 0 ? _names[index] : "—";
-            tooltip = index >= 0 ? _names[index] : string.Empty;
+            bool valid = value >= 0 && value < _names.Length;
+            _surface.Value.text = valid ? _names[value] : "—";
+            tooltip = valid ? _names[value] : string.Empty;
         }
 
         private void OnPointerDown(PointerDownEvent evt)
@@ -153,9 +124,9 @@ namespace AlicizaX.Editor.UIToolkit
 
         private void OnKeyDown(KeyDownEvent evt)
         {
-            if (evt.keyCode != UnityEngine.KeyCode.Space &&
-                evt.keyCode != UnityEngine.KeyCode.Return &&
-                evt.keyCode != UnityEngine.KeyCode.KeypadEnter)
+            if (evt.keyCode != KeyCode.Space &&
+                evt.keyCode != KeyCode.Return &&
+                evt.keyCode != KeyCode.KeypadEnter)
             {
                 return;
             }
@@ -166,7 +137,7 @@ namespace AlicizaX.Editor.UIToolkit
 
         private void SyncFromProperty()
         {
-            if (_property == null || _values.Length == 0)
+            if (_property == null || _names.Length == 0)
             {
                 return;
             }
@@ -177,32 +148,32 @@ namespace AlicizaX.Editor.UIToolkit
                 return;
             }
 
-            int index = Mathf.Clamp(_property.enumValueIndex, 0, _values.Length - 1);
-            if (!Equals(value, _values[index]))
+            int index = Mathf.Clamp(_property.enumValueIndex, 0, _names.Length - 1);
+            if (value != index)
             {
-                SetValueWithoutNotify(_values[index]);
+                SetValueWithoutNotify(index);
             }
         }
 
         private void ShowMenu()
         {
-            if (_values.Length == 0)
+            if (_names.Length == 0)
             {
                 return;
             }
 
             var menu = new GenericMenu();
-            for (int i = 0; i < _values.Length; i++)
+            for (int i = 0; i < _names.Length; i++)
             {
                 int index = i;
                 menu.AddItem(
                     new GUIContent(_names[i]),
-                    Equals(value, _values[i]),
+                    value == index,
                     () => SelectValue(index));
             }
 
-            UnityEngine.Rect rect = worldBound;
-            menu.DropDown(new UnityEngine.Rect(rect.x, rect.yMax, rect.width, 1f));
+            Rect rect = worldBound;
+            menu.DropDown(new Rect(rect.x, rect.yMax, rect.width, 1f));
         }
 
         private void SelectValue(int index)
@@ -213,7 +184,7 @@ namespace AlicizaX.Editor.UIToolkit
                 _property.serializedObject.ApplyModifiedProperties();
             }
 
-            SetValueWithoutNotify(_values[index]);
+            value = index;
         }
     }
 }

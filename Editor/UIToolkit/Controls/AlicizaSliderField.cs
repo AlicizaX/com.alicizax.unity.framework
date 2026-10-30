@@ -3,10 +3,7 @@ using UnityEngine.UIElements;
 
 namespace AlicizaX.Editor.UIToolkit
 {
-    /// <summary>
-    /// A slider with an editable numeric field. The control binds to a float SerializedProperty
-    /// through <see cref="UnityEditor.UIElements.BindingExtensions.BindProperty"/>.
-    /// </summary>
+
     public sealed class AlicizaSliderField : BaseField<float>
     {
         private sealed class SliderSurface : VisualElement
@@ -39,9 +36,6 @@ namespace AlicizaX.Editor.UIToolkit
         private readonly float _min;
         private readonly float _max;
 
-        /// <summary>
-        /// Creates a slider constrained to the supplied range.
-        /// </summary>
         public AlicizaSliderField(float min, float max, float valueFieldWidth = 46f)
             : base(null, new SliderSurface(min, max, valueFieldWidth))
         {
@@ -56,7 +50,6 @@ namespace AlicizaX.Editor.UIToolkit
             _surface.ValueField.RegisterValueChangedCallback(evt => SetValue(evt.newValue));
         }
 
-        /// <inheritdoc />
         public override void SetValueWithoutNotify(float newValue)
         {
             base.SetValueWithoutNotify(newValue);

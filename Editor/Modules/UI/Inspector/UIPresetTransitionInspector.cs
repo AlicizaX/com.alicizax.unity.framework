@@ -1,25 +1,20 @@
+using AlicizaX.Editor.UIToolkit;
 using AlicizaX.UI.Runtime;
-using AlicizaX.Editor;
 using UnityEditor;
+using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.UI.Editor
 {
     [CustomEditor(typeof(UIPresetTransition))]
-    internal sealed class UIPresetTransitionInspector : UnityEditor.Editor
+    internal sealed class UIPresetTransitionInspector : AlicizaUIEditor
     {
         private enum PreviewMode
         {
             Open,
             Close,
         }
-
-        private const float ToolbarHeight = 30f;
-        private const float SectionHeaderHeight = 24f;
-        private const float FieldLabelWidth = 146f;
-        private const float SliderValueWidth = 48f;
-        private const float PreviewButtonWidth = 92f;
-        private const float PreviewWideButtonWidth = 112f;
 
         private static readonly string[] PreviewModeOptions = { "Open", "Close" };
 
@@ -38,14 +33,10 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty _slideDistance;
         private SerializedProperty _toastDistance;
         private SerializedProperty _closedScale;
-        private GUIStyle _panelStyle;
-        private GUIStyle _entryBodyStyle;
-        private GUIStyle _fieldRowStyle;
-        private GUIStyle _fieldLabelStyle;
-        private GUIStyle _rowLabelStyle;
-        private GUIStyle _sectionTitleStyle;
-        private GUIStyle _pillOnStyle;
-        private GUIStyle _pillOffStyle;
+        private Label _previewState;
+        private Label _canvasGroupHint;
+        private Slider _previewSlider;
+        private FloatField _previewField;
 
         private void OnEnable()
         {
@@ -69,262 +60,226 @@ namespace AlicizaX.UI.Editor
             StopPreview();
         }
 
-        public override void OnInspectorGUI()
+        protected override void BuildInspector(VisualElement root)
         {
-            serializedObject.Update();
-            EnsureStyles();
+            AlicizaPanel animationPanel = AlicizaEditorUI.CreatePanel(null);
+            root.Add(animationPanel);
+            BuildAnimationSection(animationPanel.Body);
 
-            EditorGUI.BeginChangeCheck();
+            AlicizaPanel previewPanel = AlicizaEditorUI.CreatePanel(null);
+            root.Add(previewPanel);
+            BuildPreviewSection(previewPanel.Body);
 
-            EditorGUILayout.Space(6f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            DrawTargetSection();
-            EditorGUILayout.EndVertical();
-
-            bool inspectorChanged = EditorGUI.EndChangeCheck();
-            serializedObject.ApplyModifiedProperties();
-
-            EditorGUILayout.Space(4f);
-            DrawPreviewPanel();
-
-            if (inspectorChanged && _transition != null && _transition.EditorHasActivePreview())
-            {
-                ApplyPreview();
-            }
+            AlicizaEditorUI.RefreshEvery(root, RefreshTransientState, 250);
         }
 
-        private void DrawTargetSection()
+        private void BuildAnimationSection(VisualElement parent)
         {
-            DrawSectionHeader("Animation");
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawField(_targetRect);
-            DrawField(_canvasGroup);
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Animation");
+            parent.Add(section);
 
-            if (RequiresCanvasGroup() && !_canvasGroup.hasMultipleDifferentValues && _canvasGroup.objectReferenceValue == null)
-            {
-                EditorUtils.TrHelpIconText("Fade presets need a CanvasGroup on Widget holders. Windows should not use alpha presets.", MessageType.Info);
-            }
+            AlicizaEditorUI.AddPropertyRow(
+                section.Body, "Target Rect", _targetRect, true, typeof(RectTransform), true);
+            AlicizaEditorUI.AddPropertyRow(
+                section.Body, "Canvas Group", _canvasGroup, true, typeof(CanvasGroup), true);
 
-            DrawEnumField(_openPreset);
-            DrawEnumField(_closePreset);
-            DrawEnumField(_openEase);
-            DrawEnumField(_closeEase);
+            _canvasGroupHint = AlicizaEditorUI.CreateHint(
+                "Fade presets need a CanvasGroup on widget holders. Windows should not use alpha presets.");
+            _canvasGroupHint.style.marginTop = 4f;
+            _canvasGroupHint.style.marginBottom = 4f;
+            section.Body.Add(_canvasGroupHint);
 
-            DrawField(_openDuration);
-            DrawField(_closeDuration);
-            DrawField(_slideDistance);
-            DrawField(_toastDistance);
-            DrawField(_closedScale);
+            AddEnumRow(section.Body, "Open Preset", _openPreset);
+            AddEnumRow(section.Body, "Close Preset", _closePreset);
+            AddEnumRow(section.Body, "Open Ease", _openEase);
+            AddEnumRow(section.Body, "Close Ease", _closeEase);
 
-            DrawBoolRow(_useUnscaledTime);
-            EditorGUILayout.EndVertical();
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Open Duration", _openDuration);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Close Duration", _closeDuration);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Slide Distance", _slideDistance);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Toast Distance", _toastDistance);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Closed Scale", _closedScale);
+
+            var unscaled = new AlicizaPillToggle();
+            unscaled.BindProperty(_useUnscaledTime);
+            AlicizaEditorUI.AddRow(section.Body, "Unscaled Time", unscaled);
+
+            RefreshCanvasGroupHint();
         }
 
-        private void DrawPreviewPanel()
+        private void BuildPreviewSection(VisualElement parent)
         {
-            EditorGUILayout.BeginVertical(_panelStyle);
-            DrawPreviewToolbar();
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Editor Preview");
+            parent.Add(section);
+
+            var header = new VisualElement();
+            header.AddToClassList("alicia-preview-header");
+            _previewState = AlicizaEditorUI.CreateBadge("IDLE", AlicizaValueTone.Muted);
+            header.Add(_previewState);
+            section.Header.Add(header);
 
             if (targets.Length != 1)
             {
-                DrawPreviewMessage("Preview is available when a single UIPresetTransition is selected.", MessageType.Info);
-                EditorGUILayout.EndVertical();
+                section.Body.Add(AlicizaEditorUI.CreateHint(
+                    "Preview is available when a single UIPresetTransition is selected."));
                 return;
             }
 
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
-                DrawPreviewMessage("Preset preview is only available in edit mode.", MessageType.Info);
-                EditorGUILayout.EndVertical();
+                section.Body.Add(AlicizaEditorUI.CreateHint("Preset preview is only available in edit mode."));
                 return;
             }
 
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            EditorUtils.TrHelpIconText("Preview scrubs the selected transition in edit mode and restores automatically when this inspector closes.", MessageType.Info);
+            Label info = AlicizaEditorUI.CreateHint(
+                "Preview scrubs the selected transition in edit mode and restores automatically when this inspector closes.");
+            info.style.marginBottom = 6f;
+            section.Body.Add(info);
 
-            EditorGUI.BeginChangeCheck();
-            DrawPreviewModeRow();
-            DrawPreviewProgressRow();
-            if (EditorGUI.EndChangeCheck())
+            var modeField = new AlicizaEnumField(PreviewModeOptions, (int)_previewMode);
+            modeField.AddToClassList("alicia-control--grow");
+            modeField.RegisterValueChangedCallback(evt =>
             {
+                _previewMode = (PreviewMode)evt.newValue;
                 ApplyPreview();
-            }
+            });
+            AlicizaEditorUI.AddRow(section.Body, "Transition", modeField);
 
-            EditorGUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("At Start", AlicizaEditorGUI.Styles.InlineButton, GUILayout.Width(PreviewButtonWidth)))
-            {
-                _previewProgress = 0f;
-                ApplyPreview();
-            }
+            AddProgressRow(section.Body);
 
-            if (GUILayout.Button("At End", AlicizaEditorGUI.Styles.InlineButton, GUILayout.Width(PreviewButtonWidth)))
-            {
-                _previewProgress = 1f;
-                ApplyPreview();
-            }
+            var actions = new VisualElement();
+            actions.AddToClassList("alicia-actions");
 
-            if (GUILayout.Button("Restore", AlicizaEditorGUI.Styles.InlineButton, GUILayout.Width(PreviewButtonWidth)))
-            {
-                StopPreview();
-            }
-            EditorGUILayout.EndHorizontal();
+            Button atStart = AlicizaEditorUI.CreateTextButton("At Start");
+            atStart.clicked += () => ApplyPreviewProgress(0f);
+            actions.Add(atStart);
 
-            EditorGUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("Preview Open", AlicizaEditorGUI.Styles.InlineButton, GUILayout.Width(PreviewWideButtonWidth)))
+            Button atEnd = AlicizaEditorUI.CreateTextButton("At End");
+            atEnd.clicked += () => ApplyPreviewProgress(1f);
+            actions.Add(atEnd);
+
+            Button restore = AlicizaEditorUI.CreateTextButton(
+                "Restore", "Stop preview and restore the transition.", AlicizaButtonTone.Warning);
+            restore.clicked += StopPreview;
+            actions.Add(restore);
+            section.Body.Add(actions);
+
+            var previewActions = new VisualElement();
+            previewActions.AddToClassList("alicia-actions");
+
+            Button previewOpen = AlicizaEditorUI.CreateTextButton(
+                "Preview Open", "Preview the open transition at its end state.", AlicizaButtonTone.Accent);
+            previewOpen.clicked += () =>
             {
                 _previewMode = PreviewMode.Open;
-                _previewProgress = 1f;
-                ApplyPreview();
-            }
+                modeField.SetValueWithoutNotify((int)PreviewMode.Open);
+                ApplyPreviewProgress(1f);
+            };
+            previewActions.Add(previewOpen);
 
-            if (GUILayout.Button("Preview Close", AlicizaEditorGUI.Styles.InlineButton, GUILayout.Width(PreviewWideButtonWidth)))
+            Button previewClose = AlicizaEditorUI.CreateTextButton(
+                "Preview Close", "Preview the close transition at its end state.", AlicizaButtonTone.Warning);
+            previewClose.clicked += () =>
             {
                 _previewMode = PreviewMode.Close;
-                _previewProgress = 1f;
+                modeField.SetValueWithoutNotify((int)PreviewMode.Close);
+                ApplyPreviewProgress(1f);
+            };
+            previewActions.Add(previewClose);
+            section.Body.Add(previewActions);
+        }
+
+        private void AddProgressRow(VisualElement parent)
+        {
+            var row = new AlicizaRow("Progress");
+            _previewSlider = new Slider(0f, 1f) { label = string.Empty, value = _previewProgress };
+            _previewSlider.AddToClassList("alicia-slider__track");
+            _previewSlider.style.flexGrow = 1f;
+            _previewSlider.showInputField = false;
+
+            _previewField = new FloatField { label = string.Empty, value = _previewProgress };
+            _previewField.AddToClassList("alicia-control");
+            _previewField.style.width = 56f;
+            _previewField.style.minWidth = 56f;
+
+            _previewSlider.RegisterValueChangedCallback(evt =>
+            {
+                _previewProgress = Mathf.Clamp01(evt.newValue);
+                _previewField.SetValueWithoutNotify(_previewProgress);
                 ApplyPreview();
+            });
+            _previewField.RegisterValueChangedCallback(evt =>
+            {
+                _previewProgress = Mathf.Clamp01(evt.newValue);
+                _previewSlider.SetValueWithoutNotify(_previewProgress);
+                ApplyPreview();
+            });
+
+            row.Content.Add(_previewSlider);
+            row.Content.Add(_previewField);
+            parent.Add(row);
+        }
+
+        private void ApplyPreviewProgress(float value)
+        {
+            _previewProgress = Mathf.Clamp01(value);
+            _previewSlider?.SetValueWithoutNotify(_previewProgress);
+            _previewField?.SetValueWithoutNotify(_previewProgress);
+            ApplyPreview();
+        }
+
+        private void RefreshTransientState()
+        {
+            if (_transition == null)
+            {
+                return;
             }
-            EditorGUILayout.EndHorizontal();
 
-            EditorGUILayout.EndVertical();
-            EditorGUILayout.EndVertical();
+            bool active = _transition.EditorHasActivePreview();
+            if (_previewState != null)
+            {
+                _previewState.text = active ? "ACTIVE" : "IDLE";
+                _previewState.EnableInClassList("alicia-tone--success", active);
+                _previewState.EnableInClassList("alicia-tone--muted", !active);
+            }
+
+            RefreshCanvasGroupHint();
         }
 
-        private void DrawPreviewToolbar()
+        private void RefreshCanvasGroupHint()
         {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
+            if (_canvasGroupHint == null)
+            {
+                return;
+            }
 
-            Rect labelRect = new Rect(toolbarRect.x + 8f, toolbarRect.y + 5f, toolbarRect.width - 96f, 20f);
-            GUI.Label(labelRect, "Editor Preview", _rowLabelStyle);
-
-            bool active = _transition != null && _transition.EditorHasActivePreview();
-            Rect stateRect = new Rect(toolbarRect.xMax - 78f, toolbarRect.y + 6f, 70f, 18f);
-            GUI.Label(stateRect, active ? "ACTIVE" : "IDLE", active ? _pillOnStyle : _pillOffStyle);
+            bool visible = _canvasGroup != null &&
+                           RequiresCanvasGroup() &&
+                           !_canvasGroup.hasMultipleDifferentValues &&
+                           _canvasGroup.objectReferenceValue == null;
+            _canvasGroupHint.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
-        private void DrawSectionHeader(string title)
-        {
-            EditorGUILayout.Space(4f);
-            Rect rect = GUILayoutUtility.GetRect(1f, SectionHeaderHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(rect);
-
-            Rect labelRect = new Rect(rect.x + 8f, rect.y + 2f, rect.width - 16f, rect.height - 4f);
-            GUI.Label(labelRect, title, _sectionTitleStyle);
-        }
-
-        private void DrawField(SerializedProperty property)
+        private void AddEnumRow(VisualElement parent, string caption, SerializedProperty property)
         {
             if (property == null)
             {
                 return;
             }
 
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-            EditorGUILayout.PropertyField(property, GUIContent.none, true);
-            EditorGUILayout.EndHorizontal();
+            var field = new AlicizaEnumField(property);
+            field.AddToClassList("alicia-control--grow");
+            AlicizaEditorUI.AddRow(parent, caption, field);
         }
 
-        private void DrawEnumField(SerializedProperty property)
+        private bool RequiresCanvasGroup()
         {
-            if (property == null)
-            {
-                return;
-            }
-
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-
-            Rect fieldRect = GUILayoutUtility.GetRect(90f, 20f, GUILayout.MinWidth(90f), GUILayout.ExpandWidth(true));
-            EditorGUI.BeginChangeCheck();
-            bool showMixedValue = EditorGUI.showMixedValue;
-            EditorGUI.showMixedValue = property.hasMultipleDifferentValues;
-            int nextIndex = AlicizaEditorGUI.DrawStyledPopup(fieldRect, property.enumValueIndex, property.enumDisplayNames);
-            EditorGUI.showMixedValue = showMixedValue;
-            if (EditorGUI.EndChangeCheck())
-            {
-                property.enumValueIndex = nextIndex;
-            }
-
-            EditorGUILayout.EndHorizontal();
+            return UsesAlpha(_openPreset) || UsesAlpha(_closePreset);
         }
-
-        private void DrawBoolRow(SerializedProperty property)
-        {
-            if (property == null)
-            {
-                return;
-            }
-
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-
-            if (property.hasMultipleDifferentValues)
-            {
-                EditorGUILayout.PropertyField(property, GUIContent.none, true);
-            }
-            else
-            {
-                bool value = property.boolValue;
-                EditorGUI.BeginChangeCheck();
-                bool nextValue = GUILayout.Toggle(
-                    value,
-                    value ? "Enabled" : "Disabled",
-                    value ? _pillOnStyle : _pillOffStyle,
-                    GUILayout.Width(82f));
-                if (EditorGUI.EndChangeCheck())
-                {
-                    property.boolValue = nextValue;
-                }
-
-                GUILayout.FlexibleSpace();
-            }
-
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawPreviewModeRow()
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField("Transition", _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-
-            Rect fieldRect = GUILayoutUtility.GetRect(90f, 20f, GUILayout.MinWidth(90f), GUILayout.ExpandWidth(true));
-            _previewMode = (PreviewMode)AlicizaEditorGUI.DrawStyledPopup(fieldRect, (int)_previewMode, PreviewModeOptions);
-
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawPreviewProgressRow()
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField("Progress", _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-
-            _previewProgress = Mathf.Clamp01(_previewProgress);
-            _previewProgress = GUILayout.HorizontalSlider(_previewProgress, 0f, 1f, GUILayout.MinWidth(90f));
-            _previewProgress = Mathf.Clamp01(EditorGUILayout.FloatField(_previewProgress, GUILayout.Width(SliderValueWidth)));
-
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawPreviewMessage(string message, MessageType messageType)
-        {
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            EditorUtils.TrHelpIconText(message, messageType);
-            EditorGUILayout.EndVertical();
-        }
-
-        private bool RequiresCanvasGroup() => UsesAlpha(_openPreset) || UsesAlpha(_closePreset);
 
         private static bool UsesAlpha(SerializedProperty property)
         {
-            if (property == null)
-            {
-                return false;
-            }
-
-            if (property.hasMultipleDifferentValues)
+            if (property == null || property.hasMultipleDifferentValues)
             {
                 return false;
             }
@@ -349,27 +304,6 @@ namespace AlicizaX.UI.Editor
             }
         }
 
-        private void EnsureStyles()
-        {
-            if (_panelStyle != null)
-            {
-                return;
-            }
-
-            _panelStyle = AlicizaEditorGUI.Styles.Panel;
-            _entryBodyStyle = AlicizaEditorGUI.Styles.EntryBody;
-            _fieldRowStyle = AlicizaEditorGUI.Styles.FieldRow;
-            _fieldLabelStyle = AlicizaEditorGUI.Styles.FieldLabel;
-            _rowLabelStyle = AlicizaEditorGUI.Styles.RowLabel;
-            _sectionTitleStyle = new GUIStyle(AlicizaEditorGUI.Styles.RowLabel)
-            {
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleLeft
-            };
-            _pillOnStyle = AlicizaEditorGUI.Styles.PillOn;
-            _pillOffStyle = AlicizaEditorGUI.Styles.PillOff;
-        }
-
         private void ApplyPreview()
         {
             if (_transition == null)
@@ -387,7 +321,7 @@ namespace AlicizaX.UI.Editor
             }
 
             SceneView.RepaintAll();
-            Repaint();
+            RefreshTransientState();
         }
 
         private void StopPreview()
@@ -399,7 +333,8 @@ namespace AlicizaX.UI.Editor
 
             _transition.EditorStopPreview();
             SceneView.RepaintAll();
-            Repaint();
+            RefreshTransientState();
         }
     }
 }
+

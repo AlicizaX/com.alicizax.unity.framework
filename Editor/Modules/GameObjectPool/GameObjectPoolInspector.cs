@@ -1,337 +1,404 @@
+using System;
 using System.Collections.Generic;
-using AlicizaX.Editor;
+using AlicizaX.Editor.UIToolkit;
 using UnityEditor;
+using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX
 {
+
     [CustomEditor(typeof(GameObjectPoolComponent))]
-    public sealed class GameObjectPoolInspector : GameFrameworkInspector
+    public sealed class GameObjectPoolInspector : AlicizaUIEditor
     {
-        private const float ToolbarHeight = 30f;
-        private const float RowHeight = 24f;
-        private const float RowLabelWidth = 150f;
-        private const float HeaderKindWidth = 44f;
-        private const float HeaderSummaryWidth = 220f;
-        private const float InstanceNameWidth = 190f;
-        private const float InstanceStateWidth = 66f;
-        private const float InstanceTimeWidth = 76f;
-        private const float InstanceObjectWidth = 140f;
         private const int InitialSnapshotBufferSize = 32;
+        private const long RefreshIntervalMs = 250;
+        private const double PointerHoldTimeoutSeconds = 3d;
 
-        private readonly Dictionary<string, bool> _foldoutState = new Dictionary<string, bool>(System.StringComparer.Ordinal);
+        private readonly HashSet<string> _expandedPools = new HashSet<string>(StringComparer.Ordinal);
         private GameObjectPoolSnapshot[] _snapshotBuffer = new GameObjectPoolSnapshot[InitialSnapshotBufferSize];
-        private GUIStyle _panelStyle;
-        private GUIStyle _entryBodyStyle;
-        private GUIStyle _fieldRowStyle;
-        private GUIStyle _fieldLabelStyle;
-        private GUIStyle _rowLabelStyle;
-        private GUIStyle _mutedLabelStyle;
-        private GUIStyle _mutedMiniLabelStyle;
-        private GUIStyle _warningLabelStyle;
-        private GUIStyle _kindBadgeStyle;
-        private GUIStyle _emptyStateStyle;
+        private VisualElement _runtimeRoot;
+        private double _pointerHoldDeadline;
 
-        public override void OnInspectorGUI()
+        protected override void BuildInspector(VisualElement root)
         {
-            base.OnInspectorGUI();
-            serializedObject.Update();
-            EnsureStyles();
+            AlicizaPanel panel = AlicizaEditorUI.CreatePanel(null);
+            panel.Body.style.paddingBottom = 0f;
+            root.Add(panel);
 
-            EditorGUILayout.Space(6f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            DrawToolbar("GameObject Pool");
+            _runtimeRoot = new VisualElement { name = "game-object-pool-runtime" };
+            _runtimeRoot.RegisterCallback<PointerDownEvent>(OnRuntimePointerDown, TrickleDown.TrickleDown);
+            _runtimeRoot.RegisterCallback<PointerUpEvent>(OnRuntimePointerUp, TrickleDown.TrickleDown);
+            panel.Body.Add(_runtimeRoot);
+
+            RefreshRuntime();
+            AlicizaEditorUI.RefreshEvery(root, RefreshRuntime, RefreshIntervalMs);
+        }
+
+        private void OnRuntimePointerDown(PointerDownEvent evt)
+        {
+            if (evt.button != 0)
+            {
+                return;
+            }
+
+            _pointerHoldDeadline = EditorApplication.timeSinceStartup + PointerHoldTimeoutSeconds;
+        }
+
+        private void OnRuntimePointerUp(PointerUpEvent evt)
+        {
+            if (evt.button != 0)
+            {
+                return;
+            }
+
+            _pointerHoldDeadline = 0d;
+        }
+
+        private void RefreshRuntime()
+        {
+            if (_runtimeRoot == null || EditorApplication.timeSinceStartup < _pointerHoldDeadline)
+            {
+                return;
+            }
+
+            _runtimeRoot.Clear();
 
             if (!EditorApplication.isPlaying)
             {
-                EditorUtils.TrHelpIconText("Enter Play Mode to inspect the runtime pool.", MessageType.Info);
-                EditorGUILayout.EndVertical();
-                serializedObject.ApplyModifiedProperties();
+                _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
+                    "Enter Play Mode to inspect the runtime pool."));
                 return;
             }
 
             if (!AppServices.HasWorld ||
                 !AppServices.App.TryGet<IGameObjectPoolDebugService>(out IGameObjectPoolDebugService debugService))
             {
-                EditorUtils.TrHelpIconText("GameObject pool service is not initialized.", MessageType.Info);
-                EditorGUILayout.EndVertical();
-                serializedObject.ApplyModifiedProperties();
+                _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
+                    "GameObject pool service is not initialized."));
                 return;
             }
 
-            DrawRuntimeState(debugService);
-            EditorGUILayout.EndVertical();
-            serializedObject.ApplyModifiedProperties();
-            Repaint();
-        }
-
-        public override bool RequiresConstantRepaint()
-        {
-            return EditorApplication.isPlaying && AppServices.HasWorld && AppServices.App.TryGet<IGameObjectPoolDebugService>(out _);
-        }
-
-        private void EnsureStyles()
-        {
-            if (_panelStyle != null)
-            {
-                return;
-            }
-
-            _panelStyle = AlicizaEditorGUI.Styles.Panel;
-            _entryBodyStyle = AlicizaEditorGUI.Styles.EntryBody;
-            _fieldRowStyle = AlicizaEditorGUI.Styles.FieldRow;
-            _fieldLabelStyle = AlicizaEditorGUI.Styles.FieldLabel;
-            _rowLabelStyle = AlicizaEditorGUI.Styles.RowLabel;
-            _mutedLabelStyle = AlicizaEditorGUI.Styles.MutedLabel;
-            _mutedMiniLabelStyle = AlicizaEditorGUI.Styles.MutedMiniLabel;
-            _warningLabelStyle = AlicizaEditorGUI.Styles.WarningLabel;
-            _kindBadgeStyle = AlicizaEditorGUI.Styles.KindBadge;
-            _emptyStateStyle = AlicizaEditorGUI.Styles.EmptyState;
-        }
-
-        private void DrawToolbar(string title)
-        {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-            Rect labelRect = new Rect(toolbarRect.x + 8f, toolbarRect.y + 5f, toolbarRect.width - 16f, 20f);
-            GUI.Label(labelRect, title, _rowLabelStyle);
-        }
-
-        private void DrawRuntimeState(IGameObjectPoolDebugService debugService)
-        {
             GameObjectPoolSummarySnapshot summary = debugService.GetDebugSummary();
-            DrawSummary(summary);
+            BuildSummary(summary);
+
             if (!summary.IsReady)
             {
-                EditorUtils.TrHelpIconText("Pool manager is not ready.", MessageType.Warning);
+                _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
+                    "Pool manager is not ready."));
                 return;
             }
 
+            AlicizaSection poolsSection = AlicizaEditorUI.CreateStaticSection("Pools");
+            _runtimeRoot.Add(poolsSection);
+
             int snapshotCount = GetDebugSnapshots(debugService);
-            DrawSectionBegin("Pools");
             if (snapshotCount == 0)
             {
-                DrawEmptyState("No pooled runtime instances exist yet.");
-                DrawSectionEnd();
+                poolsSection.Body.Add(AlicizaEditorUI.CreateEmptyState("No pooled runtime instances exist yet."));
                 return;
             }
 
             for (int i = 0; i < snapshotCount; i++)
             {
-                DrawSnapshot(debugService, _snapshotBuffer[i]);
+                BuildPoolCard(poolsSection.Body, debugService, _snapshotBuffer[i]);
             }
-
-            DrawSectionEnd();
         }
 
-        private void DrawSummary(in GameObjectPoolSummarySnapshot summary)
+        private void BuildSummary(in GameObjectPoolSummarySnapshot summary)
         {
-            DrawSectionBegin("Runtime Summary");
-            DrawReadOnlyRow("Ready", summary.IsReady ? "Yes" : "No", summary.IsReady ? _rowLabelStyle : _warningLabelStyle);
-            DrawReadOnlyRow("Pools", summary.PoolCount.ToString(), summary.PoolCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Loaded Prefabs", summary.LoadedPrefabCount.ToString(), summary.LoadedPrefabCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Instances", summary.TotalInstanceCount.ToString(), summary.TotalInstanceCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Active", summary.ActiveInstanceCount.ToString(), summary.ActiveInstanceCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Inactive", summary.InactiveInstanceCount.ToString(), summary.InactiveInstanceCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Pending Maintenance", summary.PendingMaintenanceCount.ToString(), summary.PendingMaintenanceCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawSectionEnd();
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Runtime Summary");
+            _runtimeRoot.Add(section);
+
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Ready",
+                summary.IsReady ? "Yes" : "No",
+                summary.IsReady ? AlicizaValueTone.Default : AlicizaValueTone.Warning);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Pools",
+                summary.PoolCount.ToString(),
+                summary.PoolCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Loaded Prefabs",
+                summary.LoadedPrefabCount.ToString(),
+                summary.LoadedPrefabCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Instances",
+                summary.TotalInstanceCount.ToString(),
+                summary.TotalInstanceCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Active",
+                summary.ActiveInstanceCount.ToString(),
+                summary.ActiveInstanceCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Inactive",
+                summary.InactiveInstanceCount.ToString(),
+                summary.InactiveInstanceCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Pending Maintenance",
+                summary.PendingMaintenanceCount.ToString(),
+                summary.PendingMaintenanceCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
         }
 
-        private void DrawSnapshot(IGameObjectPoolDebugService debugService, GameObjectPoolSnapshot snapshot)
+        private void BuildPoolCard(
+            VisualElement parent,
+            IGameObjectPoolDebugService debugService,
+            GameObjectPoolSnapshot snapshot)
         {
             if (snapshot == null)
             {
                 return;
             }
 
-            string foldoutKey = string.Concat(snapshot.group, "|", snapshot.location);
-            if (!_foldoutState.TryGetValue(foldoutKey, out bool expanded))
-            {
-                expanded = false;
-                _foldoutState.Add(foldoutKey, expanded);
-            }
+            string poolKey = GetPoolKey(snapshot);
+            bool expanded = _expandedPools.Contains(poolKey);
+            AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard(GetEntryLabel(snapshot), expanded);
+            card.Meta.text = $"A{snapshot.activeCount}/I{snapshot.inactiveCount}/T{snapshot.totalCount} | Hit {snapshot.hitCount}/{snapshot.spawnCount}";
+            card.Actions.Add(AlicizaEditorUI.CreateBadge(
+                snapshot.policy.ToString().ToUpperInvariant(),
+                AlicizaValueTone.Accent));
 
-            bool nextExpanded = DrawSnapshotHeader(snapshot, expanded);
-            if (nextExpanded != expanded)
+            card.ExpandedChanged += value =>
             {
-                _foldoutState[foldoutKey] = nextExpanded;
-            }
+                if (!value)
+                {
+                    _expandedPools.Remove(poolKey);
+                    return;
+                }
 
-            if (!nextExpanded)
+                _expandedPools.Add(poolKey);
+                if (card.Body.childCount == 0)
+                {
+                    BuildPoolBody(card.Body, debugService, snapshot);
+                }
+            };
+
+            parent.Add(card);
+
+            if (expanded)
             {
-                return;
+                BuildPoolBody(card.Body, debugService, snapshot);
             }
+        }
+
+        private void BuildPoolBody(
+            VisualElement parent,
+            IGameObjectPoolDebugService debugService,
+            GameObjectPoolSnapshot snapshot)
+        {
+            string ruleName = string.IsNullOrWhiteSpace(snapshot.entryName)
+                ? snapshot.location
+                : snapshot.entryName;
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Rule",
+                ruleName,
+                string.IsNullOrEmpty(ruleName) ? AlicizaValueTone.Muted : AlicizaValueTone.Default);
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Group",
+                string.IsNullOrWhiteSpace(snapshot.group) ? "<None>" : snapshot.group);
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Location",
+                snapshot.location,
+                string.IsNullOrEmpty(snapshot.location) ? AlicizaValueTone.Muted : AlicizaValueTone.Default);
+            AlicizaEditorUI.AddValueRow(parent, "Policy", snapshot.policy.ToString());
+            AlicizaEditorUI.AddValueRow(parent, "Min Idle", snapshot.minIdle.ToString());
+            AlicizaEditorUI.AddValueRow(parent, "Retain Target", snapshot.retainTarget.ToString());
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Soft / Hard",
+                $"{snapshot.softCapacity} / {snapshot.hardCapacity}");
+            AlicizaEditorUI.AddValueRow(parent, "Unload Prefab", snapshot.unloadPrefab ? "Yes" : "No");
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Active / Idle / Total",
+                $"{snapshot.activeCount} / {snapshot.inactiveCount} / {snapshot.totalCount}");
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Prefab Loaded",
+                snapshot.prefabLoaded ? "Yes" : "No",
+                snapshot.prefabLoaded ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                "Next Maintenance",
+                snapshot.nextMaintenanceIn < 0f ? "None" : FormatSeconds(snapshot.nextMaintenanceIn));
+
+            AlicizaSection counters = AlicizaEditorUI.CreateStaticSection("Counters");
+            parent.Add(counters);
+
+            AlicizaEditorUI.AddValueRow(counters.Body, "Spawn", snapshot.spawnCount.ToString());
+            AlicizaEditorUI.AddValueRow(counters.Body, "Despawn", snapshot.despawnCount.ToString());
+            AlicizaEditorUI.AddValueRow(
+                counters.Body,
+                "Hit",
+                snapshot.hitCount.ToString(),
+                snapshot.hitCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                counters.Body,
+                "Miss",
+                snapshot.missCount.ToString(),
+                snapshot.missCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                counters.Body,
+                "Expand",
+                snapshot.expandCount.ToString(),
+                snapshot.expandCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                counters.Body,
+                "Destroy",
+                snapshot.destroyCount.ToString(),
+                snapshot.destroyCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(counters.Body, "Peak Active", snapshot.peakActive.ToString());
+
+            BuildPoolActions(parent, debugService, snapshot);
 
             debugService.FillDebugInstances(snapshot);
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawReadOnlyRow("Rule", string.IsNullOrWhiteSpace(snapshot.entryName) ? snapshot.location : snapshot.entryName);
-            DrawReadOnlyRow("Group", string.IsNullOrWhiteSpace(snapshot.group) ? "<None>" : snapshot.group);
-            DrawReadOnlyRow("Location", snapshot.location);
-            DrawReadOnlyRow("Policy", snapshot.policy.ToString());
-            DrawReadOnlyRow("Min Idle", snapshot.minIdle.ToString());
-            DrawReadOnlyRow("Retain Target", snapshot.retainTarget.ToString());
-            DrawReadOnlyRow("Soft / Hard", Utility.Text.Format("{0} / {1}", snapshot.softCapacity, snapshot.hardCapacity));
-            DrawReadOnlyRow("Unload Prefab", snapshot.unloadPrefab ? "Yes" : "No");
-            DrawReadOnlyRow("Active / Idle / Total", Utility.Text.Format("{0} / {1} / {2}", snapshot.activeCount, snapshot.inactiveCount, snapshot.totalCount));
-            DrawReadOnlyRow("Prefab Loaded", snapshot.prefabLoaded ? "Yes" : "No", snapshot.prefabLoaded ? _rowLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Next Maintenance", snapshot.nextMaintenanceIn < 0f ? "None" : FormatSeconds(snapshot.nextMaintenanceIn));
 
-            DrawSubHeader("Counters");
-            DrawReadOnlyRow("Spawn", snapshot.spawnCount.ToString());
-            DrawReadOnlyRow("Despawn", snapshot.despawnCount.ToString());
-            DrawReadOnlyRow("Hit", snapshot.hitCount.ToString(), snapshot.hitCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Miss", snapshot.missCount.ToString(), snapshot.missCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Expand", snapshot.expandCount.ToString(), snapshot.expandCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Destroy", snapshot.destroyCount.ToString(), snapshot.destroyCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            DrawReadOnlyRow("Peak Active", snapshot.peakActive.ToString());
+            AlicizaSection instances = AlicizaEditorUI.CreateStaticSection("Instances");
+            parent.Add(instances);
 
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            if (GUILayout.Button("Flush This", GUILayout.Height(22f)))
+            if (snapshot.InstanceCount == 0)
             {
-                debugService.Flush(snapshot.location);
+                instances.Body.Add(AlicizaEditorUI.CreateEmptyState("No live instances in this pool."));
+                return;
             }
 
-            if (GUILayout.Button("Flush Group", GUILayout.Height(22f)))
+            for (int i = 0; i < snapshot.InstanceCount; i++)
             {
-                debugService.FlushGroup(snapshot.group);
+                BuildInstanceRow(instances.Body, snapshot.GetInstance(i), i);
             }
+        }
 
-            EditorGUILayout.EndHorizontal();
+        private void BuildPoolActions(
+            VisualElement parent,
+            IGameObjectPoolDebugService debugService,
+            GameObjectPoolSnapshot snapshot)
+        {
+            string location = snapshot.location;
+            string group = snapshot.group;
 
-            if (snapshot.InstanceCount > 0)
+            var actions = new VisualElement();
+            actions.AddToClassList("alicia-actions");
+
+            Button flushThis = AlicizaEditorUI.CreateTextButton(
+                "Flush This",
+                "Flush the idle instances of this pool.",
+                AlicizaButtonTone.Warning);
+            flushThis.clicked += () =>
             {
-                DrawSubHeader("Instances");
-                DrawInstanceHeader();
-                for (int i = 0; i < snapshot.InstanceCount; i++)
-                {
-                    DrawInstance(snapshot.GetInstance(i));
-                }
-            }
+                debugService.Flush(location);
+                RequestRuntimeRefresh();
+            };
+            actions.Add(flushThis);
 
-            EditorGUILayout.EndVertical();
-        }
-
-        private bool DrawSnapshotHeader(GameObjectPoolSnapshot snapshot, bool expanded)
-        {
-            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            Event currentEvent = Event.current;
-            bool hovered = rowRect.Contains(currentEvent.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, expanded, hovered);
-
-            Rect foldRect = new Rect(rowRect.x + 7f, rowRect.y + 3f, 16f, 18f);
-            Rect kindRect = new Rect(foldRect.xMax + 4f, rowRect.y + 3f, HeaderKindWidth, 18f);
-            Rect summaryRect = new Rect(rowRect.xMax - HeaderSummaryWidth - 8f, rowRect.y + 3f, HeaderSummaryWidth, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, summaryRect.x - kindRect.xMax - 14f, 18f);
-
-            AlicizaEditorGUI.DrawFoldoutIcon(foldRect, expanded);
-            GUI.Label(kindRect, snapshot.policy.ToString().ToUpperInvariant(), _kindBadgeStyle);
-            GUI.Label(titleRect, GetEntryLabel(snapshot), _rowLabelStyle);
-            GUI.Label(
-                summaryRect,
-                Utility.Text.Format("A{0}/I{1}/T{2} | Hit {3}/{4}", snapshot.activeCount, snapshot.inactiveCount, snapshot.totalCount, snapshot.hitCount, snapshot.spawnCount),
-                _mutedMiniLabelStyle);
-
-            if (currentEvent.type == EventType.MouseDown && currentEvent.button == 0 && rowRect.Contains(currentEvent.mousePosition))
+            Button flushGroup = AlicizaEditorUI.CreateTextButton(
+                "Flush Group",
+                "Flush every pool in this group.",
+                AlicizaButtonTone.Danger);
+            flushGroup.clicked += () =>
             {
-                expanded = !expanded;
-                GUI.FocusControl(string.Empty);
-                currentEvent.Use();
-            }
+                debugService.FlushGroup(group);
+                RequestRuntimeRefresh();
+            };
+            actions.Add(flushGroup);
 
-            return expanded;
+            parent.Add(actions);
         }
 
-        private void DrawSectionBegin(string title)
-        {
-            EditorGUILayout.Space(2f);
-            Rect headerRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = headerRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(headerRect, true, hovered);
-            Rect labelRect = new Rect(headerRect.x + 8f, headerRect.y + 3f, headerRect.width - 16f, 18f);
-            GUI.Label(labelRect, title, _rowLabelStyle);
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-        }
-
-        private static void DrawSectionEnd()
-        {
-            EditorGUILayout.EndVertical();
-        }
-
-        private void DrawSubHeader(string title)
-        {
-            Rect headerRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = headerRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(headerRect, true, hovered);
-            Rect labelRect = new Rect(headerRect.x + 8f, headerRect.y + 3f, headerRect.width - 16f, 18f);
-            GUI.Label(labelRect, title, _rowLabelStyle);
-        }
-
-        private void DrawReadOnlyRow(string label, string value)
-        {
-            DrawReadOnlyRow(label, value, string.IsNullOrEmpty(value) ? _mutedLabelStyle : _rowLabelStyle);
-        }
-
-        private void DrawReadOnlyRow(string label, string value, GUIStyle valueStyle)
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            EditorGUILayout.LabelField(value, valueStyle);
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawInstanceHeader()
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            DrawTableCell("Instance", _fieldLabelStyle, InstanceNameWidth);
-            DrawTableCell("State", _fieldLabelStyle, InstanceStateWidth);
-            DrawTableCell("Life", _fieldLabelStyle, InstanceTimeWidth);
-            DrawTableCell("Idle", _fieldLabelStyle, InstanceTimeWidth);
-            GUILayout.FlexibleSpace();
-            DrawTableCell("Object", _fieldLabelStyle, InstanceObjectWidth);
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawInstance(GameObjectPoolInstanceSnapshot snapshot)
+        private static void BuildInstanceRow(
+            VisualElement parent,
+            GameObjectPoolInstanceSnapshot snapshot,
+            int index)
         {
             if (snapshot == null)
             {
                 return;
             }
 
-            GUIStyle stateStyle = snapshot.isActive ? _warningLabelStyle : _mutedLabelStyle;
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            DrawTableCell(snapshot.instanceName, _rowLabelStyle, InstanceNameWidth);
-            DrawTableCell(snapshot.isActive ? "Active" : "Inactive", stateStyle, InstanceStateWidth);
-            DrawTableCell(FormatSeconds(snapshot.lifeDuration), _rowLabelStyle, InstanceTimeWidth);
-            DrawTableCell(snapshot.isActive ? "-" : FormatSeconds(snapshot.idleDuration), snapshot.isActive ? _mutedLabelStyle : _rowLabelStyle, InstanceTimeWidth);
-            GUILayout.FlexibleSpace();
-            EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.ObjectField(snapshot.gameObject, typeof(GameObject), true, GUILayout.Width(InstanceObjectWidth));
-            EditorGUI.EndDisabledGroup();
-            EditorGUILayout.EndHorizontal();
+            string instanceName = snapshot.instanceName;
+            if (string.IsNullOrWhiteSpace(instanceName) && snapshot.gameObject != null)
+            {
+                instanceName = snapshot.gameObject.name;
+            }
+
+            if (string.IsNullOrWhiteSpace(instanceName))
+            {
+                instanceName = "Instance #" + (index + 1);
+            }
+
+            AlicizaRow row = AlicizaEditorUI.AddRow(parent, instanceName, null);
+            row.Caption.tooltip = instanceName;
+            row.Caption.style.whiteSpace = WhiteSpace.NoWrap;
+            row.Caption.style.overflow = Overflow.Hidden;
+
+            row.Content.Add(AlicizaEditorUI.CreateBadge(
+                snapshot.isActive ? "ACTIVE" : "IDLE",
+                snapshot.isActive ? AlicizaValueTone.Warning : AlicizaValueTone.Muted));
+
+            Label life = AlicizaEditorUI.CreateValueLabel($"Life {FormatSeconds(snapshot.lifeDuration)}");
+            life.style.flexGrow = 0f;
+            life.style.marginLeft = 12f;
+            row.Content.Add(life);
+
+            Label idle = AlicizaEditorUI.CreateValueLabel(
+                snapshot.isActive ? "Idle -" : $"Idle {FormatSeconds(snapshot.idleDuration)}",
+                snapshot.isActive ? AlicizaValueTone.Muted : AlicizaValueTone.Default);
+            idle.style.flexGrow = 0f;
+            idle.style.marginLeft = 12f;
+            row.Content.Add(idle);
+
+            var spacer = new VisualElement { pickingMode = PickingMode.Ignore };
+            spacer.style.flexGrow = 1f;
+            row.Content.Add(spacer);
+
+            var objectField = new ObjectField
+            {
+                objectType = typeof(GameObject),
+                allowSceneObjects = true,
+                label = string.Empty
+            };
+            objectField.AddToClassList("alicia-control");
+            objectField.style.width = 140f;
+            objectField.style.minWidth = 140f;
+            objectField.SetValueWithoutNotify(snapshot.gameObject);
+            objectField.SetEnabled(false);
+            row.Content.Add(objectField);
         }
 
-        private void DrawEmptyState(string message)
+        private void RequestRuntimeRefresh()
         {
-            Rect rect = GUILayoutUtility.GetRect(1f, 36f, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawBodyBackground(rect);
-            GUI.Label(rect, message, _emptyStateStyle);
+            if (_runtimeRoot == null)
+            {
+                return;
+            }
+
+            _runtimeRoot.schedule.Execute(RefreshRuntime).ExecuteLater(0);
         }
 
-        private static void DrawTableCell(string value, GUIStyle style, float width)
+        private static string GetPoolKey(GameObjectPoolSnapshot snapshot)
         {
-            EditorGUILayout.LabelField(value, style, GUILayout.Width(width));
+            return string.IsNullOrWhiteSpace(snapshot.location) ? GetEntryLabel(snapshot) : snapshot.location;
         }
 
         private static string GetEntryLabel(GameObjectPoolSnapshot snapshot)
         {
             string name = string.IsNullOrWhiteSpace(snapshot.entryName) ? snapshot.location : snapshot.entryName;
-            return Utility.Text.Format("[{0}] {1}", snapshot.group, name);
+            return $"[{snapshot.group}] {name}";
         }
 
         private static string FormatSeconds(float seconds)
         {
-            return Utility.Text.Format("{0:F2}s", seconds);
+            return $"{seconds:F2}s";
         }
 
         private int GetDebugSnapshots(IGameObjectPoolDebugService debugService)

@@ -1,16 +1,14 @@
 using AlicizaX.Audio.Runtime;
-using AlicizaX.Editor;
+using AlicizaX.Editor.UIToolkit;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.Audio.Editor
 {
     [CustomEditor(typeof(AudioEmitter))]
-    internal sealed class AudioEmitterInspector : UnityEditor.Editor
+    internal sealed class AudioEmitterInspector : AlicizaUIEditor
     {
-        private const float SectionHeaderHeight = 24f;
-        private const float FieldLabelWidth = 112f;
-
         private SerializedProperty _audioType;
         private SerializedProperty _clipMode;
         private SerializedProperty _address;
@@ -35,151 +33,16 @@ namespace AlicizaX.Audio.Editor
         private SerializedProperty _triggerColor;
         private SerializedProperty _minDistanceColor;
         private SerializedProperty _maxDistanceColor;
-        private GUIStyle _panelStyle;
-        private GUIStyle _entryBodyStyle;
-        private GUIStyle _fieldRowStyle;
-        private GUIStyle _sectionTitleStyle;
-        private GUIStyle _fieldLabelStyle;
 
-        public override void OnInspectorGUI()
-        {
-            serializedObject.Update();
-            EnsureStyles();
-
-            EditorGUILayout.Space(6f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            DrawPlaybackSection();
-            DrawSpatialSection();
-            DrawTriggerSection();
-            DrawGizmosSection();
-            EditorGUILayout.EndVertical();
-
-            serializedObject.ApplyModifiedProperties();
-        }
-
-        private void DrawPlaybackSection()
-        {
-            DrawSectionHeader("Playback");
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawField(_audioType);
-            DrawEnumField(_clipMode);
-            if (_clipMode.enumValueIndex == 1)
-            {
-                DrawField(_clip);
-                if (_clip.objectReferenceValue == null)
-                {
-                    EditorUtils.TrHelpIconText("Clip mode requires an AudioClip.", MessageType.Warning);
-                }
-            }
-            else
-            {
-                DrawField(_address);
-                DrawField(_async);
-                DrawField(_cacheClip);
-                if (string.IsNullOrEmpty(_address.stringValue))
-                {
-                    EditorUtils.TrHelpIconText("Address mode requires a resource address.", MessageType.Warning);
-                }
-            }
-
-            DrawField(_playOnEnable);
-            DrawField(_loop);
-            DrawField(_volume);
-            DrawField(_stopWithFadeout);
-            EditorGUILayout.EndVertical();
-        }
-
-        private void DrawSpatialSection()
-        {
-            DrawSectionHeader("Spatial");
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawField(_followSelf);
-            DrawField(_followOffset);
-            DrawField(_spatialBlend);
-            DrawEnumField(_rolloffMode);
-            DrawField(_minDistance);
-            DrawField(_maxDistance);
-            if (_maxDistance.floatValue < _minDistance.floatValue)
-            {
-                EditorUtils.TrHelpIconText("Max Distance will be clamped to Min Distance.", MessageType.Warning);
-            }
-            EditorGUILayout.EndVertical();
-        }
-
-        private void DrawTriggerSection()
-        {
-            DrawSectionHeader("Trigger");
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawField(_useTriggerRange);
-            if (_useTriggerRange.boolValue)
-            {
-                DrawField(_triggerRange);
-                DrawField(_triggerHysteresis);
-            }
-            EditorGUILayout.EndVertical();
-        }
-
-        private void DrawGizmosSection()
-        {
-            DrawSectionHeader("Gizmos");
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawField(_drawGizmos);
-            if (_drawGizmos.boolValue)
-            {
-                DrawField(_drawOnlyWhenSelected);
-                if (_useTriggerRange.boolValue)
-                {
-                    DrawField(_triggerColor);
-                }
-
-                DrawField(_minDistanceColor);
-                DrawField(_maxDistanceColor);
-            }
-            EditorGUILayout.EndVertical();
-        }
-
-        private void DrawSectionHeader(string title)
-        {
-            EditorGUILayout.Space(4f);
-            Rect rect = GUILayoutUtility.GetRect(1f, SectionHeaderHeight);
-            AlicizaEditorGUI.DrawToolbarBackground(rect);
-            GUI.Label(new Rect(rect.x + 8f, rect.y + 2f, rect.width - 16f, rect.height - 4f), title, _sectionTitleStyle);
-        }
-
-        private void DrawField(SerializedProperty property)
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-            EditorGUILayout.PropertyField(property, GUIContent.none, true);
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawEnumField(SerializedProperty property)
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(property.displayName, _fieldLabelStyle, GUILayout.Width(FieldLabelWidth));
-            Rect fieldRect = GUILayoutUtility.GetRect(90f, 20f, GUILayout.MinWidth(90f), GUILayout.ExpandWidth(true));
-            property.enumValueIndex = AlicizaEditorGUI.DrawStyledPopup(fieldRect, property.enumValueIndex, property.enumDisplayNames);
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void EnsureStyles()
-        {
-            if (_sectionTitleStyle != null)
-            {
-                return;
-            }
-
-            _panelStyle = AlicizaEditorGUI.Styles.Panel;
-            _entryBodyStyle = AlicizaEditorGUI.Styles.EntryBody;
-            _fieldRowStyle = AlicizaEditorGUI.Styles.FieldRow;
-            _sectionTitleStyle = new GUIStyle(AlicizaEditorGUI.Styles.RowLabel)
-            {
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleLeft
-            };
-            _fieldLabelStyle = AlicizaEditorGUI.Styles.FieldLabel;
-        }
+        private VisualElement _clipRow;
+        private VisualElement _addressRow;
+        private VisualElement _asyncRow;
+        private VisualElement _cacheClipRow;
+        private VisualElement _clipWarning;
+        private VisualElement _addressWarning;
+        private VisualElement _triggerDetails;
+        private VisualElement _gizmoDetails;
+        private VisualElement _maxDistanceWarning;
 
         private void OnEnable()
         {
@@ -207,6 +70,132 @@ namespace AlicizaX.Audio.Editor
             _triggerColor = serializedObject.FindProperty("m_TriggerColor");
             _minDistanceColor = serializedObject.FindProperty("m_MinDistanceColor");
             _maxDistanceColor = serializedObject.FindProperty("m_MaxDistanceColor");
+        }
+
+        protected override void BuildInspector(VisualElement root)
+        {
+            AlicizaPanel panel = AlicizaEditorUI.CreatePanel(null);
+            root.Add(panel);
+            BuildPlayback(panel.Body);
+            BuildSpatial(panel.Body);
+            BuildTrigger(panel.Body);
+            BuildGizmos(panel.Body);
+
+            RefreshVisibility();
+            AlicizaEditorUI.RefreshEvery(root, RefreshVisibility, 150);
+        }
+
+        private void BuildPlayback(VisualElement parent)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Playback");
+            parent.Add(section);
+
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Audio Type", _audioType);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Clip Mode", _clipMode);
+
+            _clipRow = AlicizaEditorUI.AddPropertyRow(
+                section.Body, "Clip", _clip, true, typeof(AudioClip), false);
+            _clipWarning = CreateWarning(section.Body, "Clip mode requires an AudioClip.");
+
+            _addressRow = AlicizaEditorUI.AddPropertyRow(section.Body, "Address", _address);
+            _asyncRow = AlicizaEditorUI.AddPropertyRow(section.Body, "Async", _async);
+            _cacheClipRow = AlicizaEditorUI.AddPropertyRow(section.Body, "Cache Clip", _cacheClip);
+            _addressWarning = CreateWarning(section.Body, "Address mode requires a resource address.");
+
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Play On Enable", _playOnEnable);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Loop", _loop);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Volume", _volume);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Stop With Fadeout", _stopWithFadeout);
+        }
+
+        private void BuildSpatial(VisualElement parent)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Spatial");
+            parent.Add(section);
+
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Follow Self", _followSelf);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Follow Offset", _followOffset);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Spatial Blend", _spatialBlend);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Rolloff Mode", _rolloffMode);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Min Distance", _minDistance);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Max Distance", _maxDistance);
+            _maxDistanceWarning = CreateWarning(
+                section.Body, "Max Distance will be clamped to Min Distance.");
+        }
+
+        private void BuildTrigger(VisualElement parent)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Trigger");
+            parent.Add(section);
+
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Use Trigger Range", _useTriggerRange);
+
+            _triggerDetails = new VisualElement();
+            section.Body.Add(_triggerDetails);
+            AlicizaEditorUI.AddPropertyRow(_triggerDetails, "Trigger Range", _triggerRange);
+            AlicizaEditorUI.AddPropertyRow(_triggerDetails, "Trigger Hysteresis", _triggerHysteresis);
+        }
+
+        private void BuildGizmos(VisualElement parent)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Gizmos");
+            parent.Add(section);
+
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Draw Gizmos", _drawGizmos);
+
+            _gizmoDetails = new VisualElement();
+            section.Body.Add(_gizmoDetails);
+            AlicizaEditorUI.AddPropertyRow(_gizmoDetails, "Only When Selected", _drawOnlyWhenSelected);
+            AlicizaEditorUI.AddPropertyRow(_gizmoDetails, "Trigger Color", _triggerColor);
+            AlicizaEditorUI.AddPropertyRow(_gizmoDetails, "Min Distance Color", _minDistanceColor);
+            AlicizaEditorUI.AddPropertyRow(_gizmoDetails, "Max Distance Color", _maxDistanceColor);
+        }
+
+        private static VisualElement CreateWarning(VisualElement parent, string message)
+        {
+            Label warning = AlicizaEditorUI.CreateValueLabel(message, AlicizaValueTone.Warning);
+            warning.style.marginLeft = 140f;
+            warning.style.marginTop = 2f;
+            warning.style.marginBottom = 4f;
+            warning.style.whiteSpace = WhiteSpace.Normal;
+            parent.Add(warning);
+            return warning;
+        }
+
+        private void RefreshVisibility()
+        {
+            if (_clipMode == null)
+            {
+                return;
+            }
+
+            bool clipMode = _clipMode.enumValueIndex == 1;
+            SetVisible(_clipRow, clipMode);
+            SetVisible(_clipWarning, clipMode && _clip != null && _clip.objectReferenceValue == null);
+
+            SetVisible(_addressRow, !clipMode);
+            SetVisible(_asyncRow, !clipMode);
+            SetVisible(_cacheClipRow, !clipMode);
+            SetVisible(_addressWarning, !clipMode && _address != null && string.IsNullOrEmpty(_address.stringValue));
+
+            bool useTrigger = _useTriggerRange != null && _useTriggerRange.boolValue;
+            SetVisible(_triggerDetails, useTrigger);
+
+            bool drawGizmos = _drawGizmos != null && _drawGizmos.boolValue;
+            SetVisible(_gizmoDetails, drawGizmos);
+            SetVisible(
+                _maxDistanceWarning,
+                _maxDistance != null &&
+                _minDistance != null &&
+                _maxDistance.floatValue < _minDistance.floatValue);
+        }
+
+        private static void SetVisible(VisualElement element, bool visible)
+        {
+            if (element != null)
+            {
+                element.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+            }
         }
     }
 }

@@ -3,10 +3,7 @@ using UnityEngine.UIElements;
 
 namespace AlicizaX.Editor.UIToolkit
 {
-    /// <summary>
-    /// A flat on/off pill that renders identically on every editor platform and supports
-    /// <see cref="UnityEditor.UIElements.BindingExtensions.BindProperty"/>.
-    /// </summary>
+
     public sealed class AlicizaPillToggle : BaseField<bool>
     {
         private sealed class PillSurface : VisualElement
@@ -25,16 +22,10 @@ namespace AlicizaX.Editor.UIToolkit
 
         private readonly PillSurface _surface;
 
-        /// <summary>
-        /// Creates a pill toggle with no visible label.
-        /// </summary>
         public AlicizaPillToggle() : this(null)
         {
         }
 
-        /// <summary>
-        /// Creates a pill toggle. The label is optional; inspectors normally use the row caption instead.
-        /// </summary>
         public AlicizaPillToggle(string label) : base(label, new PillSurface())
         {
             AddToClassList("alicia-pill");
@@ -49,7 +40,6 @@ namespace AlicizaX.Editor.UIToolkit
             UpdateVisual();
         }
 
-        /// <inheritdoc />
         public override void SetValueWithoutNotify(bool newValue)
         {
             base.SetValueWithoutNotify(newValue);

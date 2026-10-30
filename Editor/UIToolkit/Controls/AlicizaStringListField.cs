@@ -4,9 +4,7 @@ using UnityEngine.UIElements;
 
 namespace AlicizaX.Editor.UIToolkit
 {
-    /// <summary>
-    /// A compact editor for a string array. It supports add, remove, and undo through the owning SerializedObject.
-    /// </summary>
+
     public sealed class AlicizaStringListField : VisualElement
     {
         private readonly SerializedProperty _arrayProperty;
@@ -17,16 +15,10 @@ namespace AlicizaX.Editor.UIToolkit
         private int _itemCount;
         private int _focusIndex = -1;
 
-        /// <summary>
-        /// Creates a string list bound to <paramref name="arrayProperty"/>.
-        /// </summary>
         public AlicizaStringListField(SerializedProperty arrayProperty) : this(arrayProperty, null)
         {
         }
 
-        /// <summary>
-        /// Creates a string list with an overline header.
-        /// </summary>
         public AlicizaStringListField(SerializedProperty arrayProperty, string title)
         {
             _arrayProperty = arrayProperty;

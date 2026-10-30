@@ -1,48 +1,28 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using AlicizaX;
+using AlicizaX.Editor.UIToolkit;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.Editor
 {
+
     [CustomEditor(typeof(RootModule))]
-    internal sealed class RootModuleInspector : GameFrameworkInspector
+    internal sealed class RootModuleInspector : AlicizaUIEditor
     {
-        private const float ToolbarHeight = 28f;
-        private const float LabelWidth = 112f;
+        private const int MinFrameRate = 1;
+        private const int MaxFrameRate = 120;
+        private const int RuntimeRefreshIntervalMs = 250;
+        private const string UnavailableText = "Unavailable.";
+
         private const string EnableLogSymbol = "ENABLE_LOG";
         private const string EnableInfoLogSymbol = "ENABLE_INFO_LOG";
         private const string EnableWarningLogSymbol = "ENABLE_WARNING_LOG";
         private const string EnableErrorLogSymbol = "ENABLE_ERROR_LOG";
         private const string EnableAssertLogSymbol = "ENABLE_ASSERT_LOG";
         private const string EnableExceptionLogSymbol = "ENABLE_EXCEPTION_LOG";
-
-        private static readonly string[] ManagedLogSymbols =
-        {
-            EnableLogSymbol,
-            EnableInfoLogSymbol,
-            EnableWarningLogSymbol,
-            EnableErrorLogSymbol,
-            EnableAssertLogSymbol,
-            EnableExceptionLogSymbol,
-            "ENABLE_DEBUG_LOG",
-            "ENABLE_DEBUG_AND_ABOVE_LOG",
-            "ENABLE_INFO_AND_ABOVE_LOG",
-            "ENABLE_WARNING_AND_ABOVE_LOG",
-            "ENABLE_ERROR_AND_ABOVE_LOG",
-            "ENABLE_FATAL_LOG",
-            "ENABLE_FATAL_AND_ABOVE_LOG"
-        };
-
-        private SerializedProperty _frameRate = null;
-        private SerializedProperty _runInBackground = null;
-        private SerializedProperty _neverSleep = null;
-        private LogDefineSelection _logDefineSelection;
-        private GUIStyle _panelStyle;
-        private GUIStyle _fieldRowStyle;
-        private GUIStyle _labelStyle;
-        private GUIStyle _titleStyle;
 
         [Flags]
         private enum LogDefineSelection
@@ -61,28 +41,39 @@ namespace AlicizaX.Editor
                                                                  LogDefineSelection.Assert |
                                                                  LogDefineSelection.Exception;
 
-        public override void OnInspectorGUI()
+        private static readonly string[] ManagedLogSymbols =
         {
-            base.OnInspectorGUI();
+            EnableLogSymbol,
+            EnableInfoLogSymbol,
+            EnableWarningLogSymbol,
+            EnableErrorLogSymbol,
+            EnableAssertLogSymbol,
+            EnableExceptionLogSymbol,
+            "ENABLE_DEBUG_LOG",
+            "ENABLE_DEBUG_AND_ABOVE_LOG",
+            "ENABLE_INFO_AND_ABOVE_LOG",
+            "ENABLE_WARNING_AND_ABOVE_LOG",
+            "ENABLE_ERROR_AND_ABOVE_LOG",
+            "ENABLE_FATAL_LOG",
+            "ENABLE_FATAL_AND_ABOVE_LOG"
+        };
 
-            serializedObject.Update();
-            EnsureStyles();
+        private static readonly (string Label, LogDefineSelection Flag, string Symbol)[] LogDefineEntries =
+        {
+            ("Info", LogDefineSelection.Info, EnableInfoLogSymbol),
+            ("Warning", LogDefineSelection.Warning, EnableWarningLogSymbol),
+            ("Error", LogDefineSelection.Error, EnableErrorLogSymbol),
+            ("Assert", LogDefineSelection.Assert, EnableAssertLogSymbol),
+            ("Exception", LogDefineSelection.Exception, EnableExceptionLogSymbol)
+        };
 
-            RootModule t = (RootModule)target;
-
-            EditorGUILayout.Space(6f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            {
-                DrawToolbar();
-                DrawFrameRate(t);
-                DrawToggle(_runInBackground, "Run In Background", value => t.RunInBackground = value);
-                DrawToggle(_neverSleep, "Never Sleep", value => t.NeverSleep = value);
-                DrawLogDefines();
-            }
-            EditorGUILayout.EndVertical();
-
-            serializedObject.ApplyModifiedProperties();
-        }
+        private SerializedProperty _frameRate = null;
+        private SerializedProperty _runInBackground = null;
+        private SerializedProperty _neverSleep = null;
+        private AlicizaIntSliderField _frameRateField = null;
+        private AlicizaFilterChip[] _logDefineChips = Array.Empty<AlicizaFilterChip>();
+        private VisualElement _runtimeRoot = null;
+        private LogDefineSelection _logDefineSelection = LogDefineSelection.None;
 
         private void OnEnable()
         {
@@ -92,77 +83,250 @@ namespace AlicizaX.Editor
             _logDefineSelection = ReadLogDefineSelection();
         }
 
-        private void DrawToolbar()
+        protected override void BuildInspector(VisualElement root)
         {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
+            RootModule rootModule = target as RootModule;
 
-            Rect titleRect = new Rect(toolbarRect.x + 8f, toolbarRect.y + 4f, toolbarRect.width - 16f, 20f);
-            GUI.Label(titleRect, "Runtime Settings", _titleStyle);
+            AlicizaPanel panel = AlicizaEditorUI.CreatePanel(null);
+            root.Add(panel);
+
+            BuildRuntimeSettings(panel.Body, rootModule);
+
+            _runtimeRoot = new VisualElement { name = "alicia-root-module-runtime" };
+            panel.Body.Add(_runtimeRoot);
+
+            RefreshRuntimeStatus();
+            AlicizaEditorUI.RefreshEvery(root, RefreshRuntimeStatus, RuntimeRefreshIntervalMs);
         }
 
-        private void DrawFrameRate(RootModule rootModule)
+        private void BuildRuntimeSettings(VisualElement parent, RootModule rootModule)
         {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            {
-                EditorGUILayout.LabelField("Framerate", _labelStyle, GUILayout.Width(LabelWidth));
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Runtime Settings");
+            parent.Add(section);
 
-                EditorGUI.BeginChangeCheck();
-                int frameRate = EditorGUILayout.IntSlider(_frameRate.intValue, 1, 120);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        rootModule.FrameRate = frameRate;
-                    }
-                    else
-                    {
-                        _frameRate.intValue = frameRate;
-                    }
-                }
+            if (rootModule == null)
+            {
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("Root module is unavailable."));
+                return;
             }
-            EditorGUILayout.EndHorizontal();
+
+            if (_frameRate == null && _runInBackground == null && _neverSleep == null)
+            {
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("Root module settings are unavailable."));
+                return;
+            }
+
+            BuildFrameRateRow(section.Body);
+            AddToggleRow(section.Body, "Run In Background", _runInBackground, value =>
+            {
+                rootModule.RunInBackground = value;
+            });
+            AddToggleRow(section.Body, "Never Sleep", _neverSleep, value =>
+            {
+                rootModule.NeverSleep = value;
+            });
+            BuildLogDefines(section.Body);
         }
 
-        private void DrawToggle(SerializedProperty property, string label, Action<bool> applyRuntimeValue)
+        private void BuildFrameRateRow(VisualElement parent)
         {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
+            if (_frameRate == null)
             {
-                EditorGUILayout.LabelField(label, _labelStyle, GUILayout.Width(LabelWidth));
-
-                EditorGUI.BeginChangeCheck();
-                bool value = EditorGUILayout.Toggle(property.boolValue);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    if (EditorApplication.isPlaying)
-                    {
-                        applyRuntimeValue(value);
-                    }
-                    else
-                    {
-                        property.boolValue = value;
-                    }
-                }
+                AlicizaEditorUI.AddRow(parent, "Framerate", AlicizaEditorUI.CreateHint(UnavailableText));
+                return;
             }
-            EditorGUILayout.EndHorizontal();
+
+            var field = new AlicizaIntSliderField(MinFrameRate, MaxFrameRate);
+            field.SetValueWithoutNotify(Mathf.Clamp(_frameRate.intValue, MinFrameRate, MaxFrameRate));
+            field.RegisterValueChangedCallback(evt => ApplyFrameRate(evt.newValue));
+            _frameRateField = field;
+            AlicizaEditorUI.AddRow(parent, "Framerate", field);
         }
 
-        private void DrawLogDefines()
+        private void ApplyFrameRate(int value)
         {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            {
-                EditorGUILayout.LabelField("Log Defines", _labelStyle, GUILayout.Width(LabelWidth));
+            int clamped = Mathf.Clamp(value, MinFrameRate, MaxFrameRate);
+            RootModule rootModule = target as RootModule;
 
-                EditorGUI.BeginChangeCheck();
-                var nextSelection = (LogDefineSelection)EditorGUILayout.EnumFlagsField(_logDefineSelection);
-                nextSelection &= AllLogDefineSelection;
-                if (EditorGUI.EndChangeCheck())
+            if (EditorApplication.isPlaying && rootModule != null)
+            {
+                rootModule.FrameRate = clamped;
+            }
+            else if (_frameRate != null)
+            {
+                _frameRate.intValue = clamped;
+                _frameRate.serializedObject.ApplyModifiedProperties();
+            }
+
+            if (_frameRateField != null && _frameRateField.value != clamped)
+            {
+                _frameRateField.SetValueWithoutNotify(clamped);
+            }
+        }
+
+        private static void AddToggleRow(
+            VisualElement parent,
+            string caption,
+            SerializedProperty property,
+            Action<bool> applyRuntimeValue)
+        {
+            if (property == null)
+            {
+                AlicizaEditorUI.AddRow(parent, caption, AlicizaEditorUI.CreateHint(UnavailableText));
+                return;
+            }
+
+            var toggle = new AlicizaPillToggle();
+            toggle.SetValueWithoutNotify(property.boolValue);
+            toggle.RegisterValueChangedCallback(evt => ApplyToggle(property, evt.newValue, applyRuntimeValue));
+            AlicizaEditorUI.AddRow(parent, caption, toggle);
+        }
+
+        private static void ApplyToggle(
+            SerializedProperty property,
+            bool value,
+            Action<bool> applyRuntimeValue)
+        {
+            if (property == null)
+            {
+                return;
+            }
+
+            if (EditorApplication.isPlaying && applyRuntimeValue != null)
+            {
+                applyRuntimeValue(value);
+                return;
+            }
+
+            property.boolValue = value;
+            property.serializedObject.ApplyModifiedProperties();
+        }
+
+        private void BuildLogDefines(VisualElement parent)
+        {
+            var host = new VisualElement { name = "alicia-root-module-log-defines" };
+            host.style.flexDirection = FlexDirection.Row;
+            host.style.flexWrap = Wrap.Wrap;
+            host.style.alignItems = Align.Center;
+            host.style.flexGrow = 1f;
+            host.style.flexShrink = 1f;
+            host.style.minWidth = 0f;
+
+            _logDefineChips = new AlicizaFilterChip[LogDefineEntries.Length];
+            for (int i = 0; i < LogDefineEntries.Length; i++)
+            {
+                (string label, LogDefineSelection flag, string symbol) = LogDefineEntries[i];
+                var chip = new AlicizaFilterChip(label)
                 {
-                    _logDefineSelection = nextSelection;
-                    ApplyLogDefineSelection(_logDefineSelection);
+                    tooltip = "Toggle " + symbol + " on every build target."
+                };
+                chip.SetSelected((_logDefineSelection & flag) != 0);
+                LogDefineSelection capturedFlag = flag;
+                chip.clicked += () => ToggleLogDefine(capturedFlag);
+                _logDefineChips[i] = chip;
+                host.Add(chip);
+            }
+
+            AlicizaEditorUI.AddRow(parent, "Log Defines", host);
+
+            if (HasLogSymbol(EnableLogSymbol))
+            {
+                parent.Add(AlicizaEditorUI.CreateHint(
+                    "ENABLE_LOG currently enables every channel; changing a channel replaces it with per-channel defines."));
+            }
+
+            parent.Add(AlicizaEditorUI.CreateHint(
+                "Applies to Standalone, iOS, Android, WSA and WebGL, and triggers a script recompile."));
+        }
+
+        private void ToggleLogDefine(LogDefineSelection flag)
+        {
+            _logDefineSelection = (_logDefineSelection ^ flag) & AllLogDefineSelection;
+            ApplyLogDefineSelection(_logDefineSelection);
+            _logDefineSelection = ReadLogDefineSelection();
+            SyncLogDefineChips();
+        }
+
+        private void SyncLogDefineChips()
+        {
+            for (int i = 0; i < _logDefineChips.Length && i < LogDefineEntries.Length; i++)
+            {
+                AlicizaFilterChip chip = _logDefineChips[i];
+                if (chip != null)
+                {
+                    chip.SetSelected((_logDefineSelection & LogDefineEntries[i].Flag) != 0);
                 }
             }
-            EditorGUILayout.EndHorizontal();
+        }
+
+        private void RefreshRuntimeStatus()
+        {
+            if (_runtimeRoot == null)
+            {
+                return;
+            }
+
+            _runtimeRoot.Clear();
+
+            RootModule rootModule = target as RootModule;
+            if (rootModule == null)
+            {
+                _runtimeRoot.Add(AlicizaEditorUI.CreateEmptyState("Root module is unavailable."));
+                return;
+            }
+
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Runtime Status");
+            _runtimeRoot.Add(section);
+
+            bool playing = EditorApplication.isPlaying;
+            AlicizaEditorUI.AddRow(
+                section.Body,
+                "Play Mode",
+                AlicizaEditorUI.CreateBadge(
+                    playing ? "Playing" : "Edit Mode",
+                    playing ? AlicizaValueTone.Success : AlicizaValueTone.Muted));
+
+            if (!playing)
+            {
+                section.Body.Add(AlicizaEditorUI.CreateHint("Live runtime values are available in Play mode."));
+                return;
+            }
+
+            int targetFrameRate = Application.targetFrameRate;
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Target Frame Rate",
+                targetFrameRate.ToString(),
+                targetFrameRate == rootModule.FrameRate ? AlicizaValueTone.Default : AlicizaValueTone.Warning);
+
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Game Speed",
+                rootModule.GameSpeed.ToString("0.###"),
+                rootModule.IsGamePaused ? AlicizaValueTone.Warning : AlicizaValueTone.Default);
+
+            string gameState;
+            AlicizaValueTone gameStateTone;
+            if (rootModule.IsGamePaused)
+            {
+                gameState = "Paused";
+                gameStateTone = AlicizaValueTone.Warning;
+            }
+            else if (rootModule.IsNormalGameSpeed)
+            {
+                gameState = "Normal";
+                gameStateTone = AlicizaValueTone.Success;
+            }
+            else
+            {
+                gameState = "Custom";
+                gameStateTone = AlicizaValueTone.Accent;
+            }
+
+            AlicizaEditorUI.AddRow(
+                section.Body,
+                "Game State",
+                AlicizaEditorUI.CreateBadge(gameState, gameStateTone));
         }
 
         private static LogDefineSelection ReadLogDefineSelection()
@@ -257,22 +421,6 @@ namespace AlicizaX.Editor
                 BuildTargetGroup.Android,
                 BuildTargetGroup.WSA,
                 BuildTargetGroup.WebGL
-            };
-        }
-
-        private void EnsureStyles()
-        {
-            if (_panelStyle != null)
-            {
-                return;
-            }
-
-            _panelStyle = AlicizaEditorGUI.Styles.Panel;
-            _fieldRowStyle = AlicizaEditorGUI.Styles.FieldRow;
-            _labelStyle = AlicizaEditorGUI.Styles.FieldLabel;
-            _titleStyle = new GUIStyle(AlicizaEditorGUI.Styles.RowLabel)
-            {
-                fontStyle = FontStyle.Bold
             };
         }
     }

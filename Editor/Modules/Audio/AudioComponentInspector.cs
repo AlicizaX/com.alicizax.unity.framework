@@ -1,25 +1,40 @@
+using System.Collections.Generic;
 using AlicizaX.Audio.Runtime;
-using AlicizaX.Editor;
+using AlicizaX.Editor.UIToolkit;
 using UnityEditor;
+using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.Audio;
+using UnityEngine.UIElements;
 using AudioType = AlicizaX.Audio.Runtime.AudioType;
 
 namespace AlicizaX.Audio.Editor
 {
     [CustomEditor(typeof(AudioComponent))]
-    internal sealed class AudioComponentInspector : GameFrameworkInspector
+    internal sealed class AudioComponentInspector : AlicizaUIEditor
     {
-        private const float ToolbarHeight = 28f;
-        private const float RowLabelWidth = 132f;
-        private const float ConfigHeaderHeight = 24f;
-        private const float ConfigButtonSize = 20f;
         private const string DefaultAudioMixerPath = "Packages/com.alicizax.unity.framework/Runtime/Modules/Audio/Resources/AudioMixer.mixer";
+        private const int ClipCacheCapacityMin = 1;
+        private const int ClipCacheCapacityFallbackMax = 512;
+        private const int RuntimeStateNone = -1;
+        private const int RuntimeStateStopped = 0;
+        private const int RuntimeStateUnavailable = 1;
+        private const int RuntimeStateActive = 2;
+
+        private enum CachePreset
+        {
+            Default,
+            Mobile,
+            Desktop,
+        }
 
         private readonly AudioServiceDebugInfo _serviceInfo = new AudioServiceDebugInfo();
         private readonly AudioCategoryDebugInfo _categoryInfo = new AudioCategoryDebugInfo();
         private readonly AudioAgentDebugInfo _agentInfo = new AudioAgentDebugInfo();
         private readonly AudioClipCacheDebugInfo _clipCacheInfo = new AudioClipCacheDebugInfo();
+        private readonly bool[] _groupExpanded = new bool[(int)AudioType.Max];
+        private readonly bool[] _runtimeGroupExpanded = new bool[(int)AudioType.Max];
+        private readonly List<AlicizaFoldoutCard> _groupCards = new List<AlicizaFoldoutCard>();
 
         private SerializedProperty _audioListener;
         private SerializedProperty _audioMixer;
@@ -28,318 +43,480 @@ namespace AlicizaX.Audio.Editor
         private SerializedProperty _clipCacheCapacity;
         private SerializedProperty _clipCacheTtl;
         private SerializedProperty _defaultCachePolicy;
-        private bool[] _configFoldouts;
-        private bool _groupsExpanded = true;
-        private bool _debugExpanded = true;
-        private bool _categoryDebugExpanded = true;
-        private bool _agentDebugExpanded = true;
-        private bool _clipCacheDebugExpanded = true;
-        private GUIContent _expandAllContent;
-        private GUIContent _collapseAllContent;
 
-        public override void OnInspectorGUI()
-        {
-            base.OnInspectorGUI();
+        private AlicizaIntSliderField _clipCacheCapacityField;
+        private FloatField _clipCacheTtlField;
+        private AlicizaEnumField _defaultCachePolicyField;
 
-            AudioComponent component = (AudioComponent)target;
-            RepairGroupConfigsIfNeeded(component);
-
-            serializedObject.Update();
-            AutoBindDefaultMixer(component);
-            AutoBindMissingMixerGroups(component);
-            DrawComponentPanel(component);
-            serializedObject.ApplyModifiedProperties();
-
-            DrawRuntimeDebugInfo();
-            if (EditorApplication.isPlaying)
-            {
-                Repaint();
-            }
-        }
+        private VisualElement _groupCardsRoot;
+        private VisualElement _runtimeRoot;
+        private int _runtimeState = RuntimeStateNone;
 
         private void OnEnable()
         {
-            _audioListener = serializedObject.FindProperty("m_AudioListener");
-            _audioMixer = serializedObject.FindProperty("m_AudioMixer");
-            _audioGroupConfigs = serializedObject.FindProperty("m_AudioGroupConfigs");
-            _serviceConfig = serializedObject.FindProperty("m_ServiceConfig");
+            CacheProperties();
+        }
+
+        protected override void BuildInspector(VisualElement root)
+        {
+            CacheProperties();
+
+            RepairGroupConfigsIfNeeded();
+            AutoBindDefaultMixer();
+            AutoBindMissingMixerGroups();
+            serializedObject.ApplyModifiedProperties();
+            CacheProperties();
+
+            bool editable = !EditorApplication.isPlayingOrWillChangePlaymode;
+            if (!editable)
+            {
+                root.Add(AlicizaEditorUI.CreateHint("Audio settings are read-only during Play Mode."));
+            }
+
+            AlicizaPanel configPanel = AlicizaEditorUI.CreatePanel(null);
+            root.Add(configPanel);
+            BuildComponentSection(configPanel.Body);
+            BuildCacheSection(configPanel.Body);
+            BuildGroupsSection(configPanel.Body);
+            configPanel.SetEnabled(editable);
+
+            AlicizaPanel runtimePanel = AlicizaEditorUI.CreatePanel(null);
+            runtimePanel.Body.style.paddingBottom = 0f;
+            root.Add(runtimePanel);
+            _runtimeRoot = new VisualElement { name = "alicia-audio-runtime-root" };
+            runtimePanel.Body.Add(_runtimeRoot);
+            _runtimeState = RuntimeStateNone;
+            RefreshRuntime();
+            AlicizaEditorUI.RefreshEvery(root, RefreshRuntime, 250);
+        }
+
+        private void CacheProperties()
+        {
+            _audioListener = Find("m_AudioListener");
+            _audioMixer = Find("m_AudioMixer");
+            _audioGroupConfigs = Find("m_AudioGroupConfigs");
+            _serviceConfig = Find("m_ServiceConfig");
             _clipCacheCapacity = _serviceConfig != null ? _serviceConfig.FindPropertyRelative("ClipCacheCapacity") : null;
             _clipCacheTtl = _serviceConfig != null ? _serviceConfig.FindPropertyRelative("ClipCacheTtl") : null;
             _defaultCachePolicy = _serviceConfig != null ? _serviceConfig.FindPropertyRelative("DefaultClipCachePolicy") : null;
-            _configFoldouts = new bool[(int)AudioType.Max];
-            for (int i = 0; i < _configFoldouts.Length; i++)
-            {
-                _configFoldouts[i] = false;
-            }
-
-            _expandAllContent = EditorGUIUtility.IconContent("d_scrollup", "Expand all audio groups");
-            _collapseAllContent = EditorGUIUtility.IconContent("d_scrolldown", "Collapse all audio groups");
         }
 
-        private void DrawComponentPanel(AudioComponent component)
+        private void BuildComponentSection(VisualElement parent)
         {
-            EditorGUILayout.BeginVertical(AlicizaEditorGUI.Styles.Panel);
-            DrawToolbar("Audio Component", true, component);
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Audio Component");
+            parent.Add(section);
 
-            EditorGUI.BeginDisabledGroup(EditorApplication.isPlayingOrWillChangePlaymode);
-            DrawPropertyRow("Listener", _audioListener);
-            DrawPropertyRow("Audio Mixer", _audioMixer);
-            DrawCacheConfig(component);
-            DrawGroupConfigs();
-            EditorGUI.EndDisabledGroup();
-
-            EditorGUILayout.EndVertical();
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Listener", _audioListener, true, typeof(AudioListener), true);
+            AlicizaEditorUI.AddPropertyRow(section.Body, "Audio Mixer", _audioMixer, true, typeof(AudioMixer));
         }
 
-        private void DrawCacheConfig(AudioComponent component)
+        private void BuildCacheSection(VisualElement parent)
         {
-            EditorGUILayout.Space(2f);
-            Rect headerRect = GUILayoutUtility.GetRect(1f, ConfigHeaderHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(headerRect);
-            GUI.Label(new Rect(headerRect.x + 8f, headerRect.y + 2f, headerRect.width - 16f, 20f), "Clip Cache", AlicizaEditorGUI.Styles.RowLabel);
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Clip Cache");
+            parent.Add(section);
 
-            EditorGUILayout.BeginVertical(AlicizaEditorGUI.Styles.EntryBody);
-            DrawPropertyRow("Capacity", _clipCacheCapacity);
-            DrawPropertyRow("TTL Seconds", _clipCacheTtl);
-            DrawPropertyRow("Default Policy", _defaultCachePolicy);
-
-            EditorGUILayout.BeginHorizontal(AlicizaEditorGUI.Styles.FieldRow);
-            GUILayout.Space(RowLabelWidth);
-            if (GUILayout.Button("Reset", GUILayout.Width(72f)))
+            if (_serviceConfig == null || _clipCacheCapacity == null || _clipCacheTtl == null || _defaultCachePolicy == null)
             {
-                Undo.RecordObject(component, "Reset Audio Cache Settings");
-                component.ResetServiceConfigForEditor();
-                EditorUtility.SetDirty(component);
-                serializedObject.Update();
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("Clip cache settings are unavailable on this component."));
+                return;
             }
 
-            if (GUILayout.Button("Mobile", GUILayout.Width(72f)))
-            {
-                Undo.RecordObject(component, "Apply Mobile Audio Cache Settings");
-                component.ApplyMobileServiceConfigForEditor();
-                EditorUtility.SetDirty(component);
-                serializedObject.Update();
-            }
+            int capacityMax = Mathf.Max(ClipCacheCapacityFallbackMax, _clipCacheCapacity.intValue);
+            _clipCacheCapacityField = new AlicizaIntSliderField(ClipCacheCapacityMin, capacityMax);
+            _clipCacheCapacityField.BindProperty(_clipCacheCapacity);
+            AlicizaEditorUI.AddRow(section.Body, "Capacity", _clipCacheCapacityField);
 
-            if (GUILayout.Button("Desktop", GUILayout.Width(72f)))
-            {
-                Undo.RecordObject(component, "Apply Desktop Audio Cache Settings");
-                component.ApplyDesktopServiceConfigForEditor();
-                EditorUtility.SetDirty(component);
-                serializedObject.Update();
-            }
+            AlicizaRow ttlRow = AlicizaEditorUI.AddPropertyRow(section.Body, "TTL Seconds", _clipCacheTtl);
+            _clipCacheTtlField = ttlRow != null ? ttlRow.Content.Q<FloatField>() : null;
 
-            EditorGUILayout.EndHorizontal();
-            EditorGUILayout.EndVertical();
+            AlicizaRow policyRow = AlicizaEditorUI.AddPropertyRow(section.Body, "Default Policy", _defaultCachePolicy);
+            _defaultCachePolicyField = policyRow != null ? policyRow.Content.Q<AlicizaEnumField>() : null;
+
+            var actions = new VisualElement { name = "alicia-audio-cache-actions" };
+            actions.AddToClassList("alicia-actions");
+
+            Button resetButton = AlicizaEditorUI.CreateTextButton(
+                "Reset", "Restore the default clip cache settings.", AlicizaButtonTone.Warning);
+            resetButton.clicked += () => ApplyCachePreset(CachePreset.Default);
+            actions.Add(resetButton);
+
+            Button mobileButton = AlicizaEditorUI.CreateTextButton(
+                "Mobile", "Apply the mobile clip cache settings.", AlicizaButtonTone.Accent);
+            mobileButton.clicked += () => ApplyCachePreset(CachePreset.Mobile);
+            actions.Add(mobileButton);
+
+            Button desktopButton = AlicizaEditorUI.CreateTextButton(
+                "Desktop", "Apply the desktop clip cache settings.");
+            desktopButton.clicked += () => ApplyCachePreset(CachePreset.Desktop);
+            actions.Add(desktopButton);
+
+            section.Body.Add(actions);
         }
 
-        private void DrawToolbar(string title, bool drawResetButton, AudioComponent component)
+        private void ApplyCachePreset(CachePreset preset)
         {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-            Rect labelRect = new Rect(toolbarRect.x + 8f, toolbarRect.y + 4f, toolbarRect.width - 46f, 20f);
-            GUI.Label(labelRect, title, AlicizaEditorGUI.Styles.RowLabel);
-
-            if (!drawResetButton)
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 return;
             }
 
-            Rect buttonRect = new Rect(toolbarRect.xMax - 26f, toolbarRect.y + 4f, 20f, 20f);
-            if (AlicizaEditorGUI.DrawToolbarButton(buttonRect, EditorUtils.Styles.RefreshIcon))
-            {
-                Undo.RecordObject(component, "Reset Audio Group Configs");
-                component.ResetGroupConfigsForEditor();
-                EditorUtility.SetDirty(component);
-                serializedObject.Update();
-                AutoBindDefaultMixer(component);
-                AutoBindMissingMixerGroups(component);
-            }
-        }
-
-        private static void DrawPropertyRow(string label, SerializedProperty property)
-        {
-            EditorGUILayout.BeginHorizontal(AlicizaEditorGUI.Styles.FieldRow);
-            EditorGUILayout.LabelField(label, AlicizaEditorGUI.Styles.FieldLabel, GUILayout.Width(RowLabelWidth));
-            EditorGUILayout.PropertyField(property, GUIContent.none);
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawGroupConfigs()
-        {
-            EditorGUILayout.Space(2f);
-            DrawAudioGroupsHeader();
-            if (!_groupsExpanded)
+            AudioComponent component = target as AudioComponent;
+            if (component == null)
             {
                 return;
             }
+
+            string undoName;
+            switch (preset)
+            {
+                case CachePreset.Mobile:
+                    undoName = "Apply Mobile Audio Cache Settings";
+                    break;
+                case CachePreset.Desktop:
+                    undoName = "Apply Desktop Audio Cache Settings";
+                    break;
+                default:
+                    undoName = "Reset Audio Cache Settings";
+                    break;
+            }
+
+            Undo.RecordObject(component, undoName);
+            switch (preset)
+            {
+                case CachePreset.Mobile:
+                    component.ApplyMobileServiceConfigForEditor();
+                    break;
+                case CachePreset.Desktop:
+                    component.ApplyDesktopServiceConfigForEditor();
+                    break;
+                default:
+                    component.ResetServiceConfigForEditor();
+                    break;
+            }
+
+            EditorUtility.SetDirty(component);
+            RefreshCacheControls();
+        }
+
+        private void RefreshCacheControls()
+        {
+            serializedObject.Update();
+            if (_clipCacheCapacityField != null && _clipCacheCapacity != null)
+            {
+                _clipCacheCapacityField.SetValueWithoutNotify(_clipCacheCapacity.intValue);
+            }
+
+            if (_clipCacheTtlField != null && _clipCacheTtl != null)
+            {
+                _clipCacheTtlField.SetValueWithoutNotify(_clipCacheTtl.floatValue);
+            }
+
+            if (_defaultCachePolicyField != null && _defaultCachePolicy != null)
+            {
+                _defaultCachePolicyField.SetValueWithoutNotify(_defaultCachePolicy.enumValueIndex);
+            }
+        }
+
+        private void BuildGroupsSection(VisualElement parent)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Audio Groups");
+            parent.Add(section);
+
+            var actions = new VisualElement { name = "alicia-audio-group-actions" };
+            actions.AddToClassList("alicia-actions");
+
+            Button expandAll = AlicizaEditorUI.CreateTextButton("Expand All", "Expand every audio group card.");
+            expandAll.clicked += () => SetAllGroupCardsExpanded(true);
+            actions.Add(expandAll);
+
+            Button collapseAll = AlicizaEditorUI.CreateTextButton("Collapse All", "Collapse every audio group card.");
+            collapseAll.clicked += () => SetAllGroupCardsExpanded(false);
+            actions.Add(collapseAll);
+
+            Button resetAll = AlicizaEditorUI.CreateTextButton(
+                "Reset All",
+                "Reset every audio group config to defaults and rebind the mixer groups.",
+                AlicizaButtonTone.Danger);
+            resetAll.clicked += ResetAllGroupConfigs;
+            actions.Add(resetAll);
+
+            section.Body.Add(actions);
+
+            _groupCardsRoot = new VisualElement { name = "alicia-audio-group-cards" };
+            section.Body.Add(_groupCardsRoot);
+            RebuildGroupCards();
+        }
+
+        private void RebuildGroupCards()
+        {
+            if (_groupCardsRoot == null)
+            {
+                return;
+            }
+
+            _groupCardsRoot.Clear();
+            _groupCards.Clear();
 
             if (_audioGroupConfigs == null || !_audioGroupConfigs.isArray)
             {
-                EditorUtils.TrHelpIconText("Audio group config array is missing.", MessageType.Error);
+                _groupCardsRoot.Add(AlicizaEditorUI.CreateEmptyState("Audio group config array is missing."));
+                return;
+            }
+
+            if (_audioGroupConfigs.arraySize == 0)
+            {
+                _groupCardsRoot.Add(AlicizaEditorUI.CreateEmptyState("No audio groups are configured."));
                 return;
             }
 
             for (int i = 0; i < _audioGroupConfigs.arraySize; i++)
             {
                 SerializedProperty configProperty = _audioGroupConfigs.GetArrayElementAtIndex(i);
-                DrawConfig(configProperty, i);
+                if (configProperty == null)
+                {
+                    continue;
+                }
+
+                _groupCardsRoot.Add(CreateGroupCard(configProperty, i));
             }
         }
 
-        private void DrawAudioGroupsHeader()
+        private AlicizaFoldoutCard CreateGroupCard(SerializedProperty configProperty, int index)
         {
-            Rect headerRect = GUILayoutUtility.GetRect(1f, ConfigHeaderHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(headerRect);
+            SerializedProperty typeProperty = configProperty.FindPropertyRelative("AudioType");
+            bool expanded = (uint)index < (uint)_groupExpanded.Length && _groupExpanded[index];
+            AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard(GetGroupTitle(typeProperty, index), expanded);
+            card.name = "alicia-audio-group-" + index;
 
-            Rect foldRect = new Rect(headerRect.x + 7f, headerRect.y + 2f, 16f, 20f);
-            Rect expandAllRect = new Rect(headerRect.xMax - 47f, headerRect.y + 2f, ConfigButtonSize, ConfigButtonSize);
-            Rect collapseAllRect = new Rect(headerRect.xMax - 25f, headerRect.y + 2f, ConfigButtonSize, ConfigButtonSize);
-            Rect labelRect = new Rect(foldRect.xMax + 4f, headerRect.y + 2f, headerRect.width - 78f, 20f);
-            AlicizaEditorGUI.DrawFoldoutIcon(foldRect, _groupsExpanded);
-            GUI.Label(labelRect, "Audio Groups", AlicizaEditorGUI.Styles.RowLabel);
-
-            if (AlicizaEditorGUI.DrawToolbarButton(expandAllRect, _expandAllContent))
+            if ((uint)index < (uint)_groupExpanded.Length)
             {
-                SetAllConfigFoldouts(true);
-                _groupsExpanded = true;
+                int capturedIndex = index;
+                card.ExpandedChanged += value => _groupExpanded[capturedIndex] = value;
             }
 
-            if (AlicizaEditorGUI.DrawToolbarButton(collapseAllRect, _collapseAllContent))
+            Button resetButton = AlicizaEditorUI.CreateTextButton(
+                "Reset",
+                "Reset this audio group to defaults and rebind its mixer group.",
+                AlicizaButtonTone.Warning);
+            resetButton.clicked += () => ResetGroup(configProperty, index);
+            card.Actions.Add(resetButton);
+
+            UpdateGroupCardMeta(card, configProperty);
+            AlicizaEditorUI.RefreshEvery(card, () => UpdateGroupCardMeta(card, configProperty), 250);
+
+            BuildGroupCardBody(card.Body, configProperty, typeProperty);
+            _groupCards.Add(card);
+            return card;
+        }
+
+        private void BuildGroupCardBody(VisualElement body, SerializedProperty configProperty, SerializedProperty typeProperty)
+        {
+            AlicizaRow typeRow = AlicizaEditorUI.AddPropertyRow(body, "Type", typeProperty);
+            if (typeRow != null)
             {
-                SetAllConfigFoldouts(false);
-                _groupsExpanded = true;
+                typeRow.SetEnabled(false);
             }
 
-            Event currentEvent = Event.current;
-            if (currentEvent.type == EventType.MouseDown && currentEvent.button == 0 && headerRect.Contains(currentEvent.mousePosition) && !expandAllRect.Contains(currentEvent.mousePosition) && !collapseAllRect.Contains(currentEvent.mousePosition))
+            AlicizaEditorUI.AddPropertyRow(body, "Name", configProperty.FindPropertyRelative("m_Name"));
+            AlicizaEditorUI.AddPropertyRow(
+                body, "Mixer Group", configProperty.FindPropertyRelative("m_MixerGroup"), true, typeof(AudioMixerGroup));
+            AlicizaEditorUI.AddPropertyRow(body, "Mute", configProperty.FindPropertyRelative("m_Mute"));
+            AlicizaEditorUI.AddPropertyRow(body, "Volume", configProperty.FindPropertyRelative("m_Volume"));
+            AlicizaEditorUI.AddPropertyRow(body, "Initial Sources", configProperty.FindPropertyRelative("m_InitialSourceCount"));
+            AlicizaEditorUI.AddPropertyRow(body, "Max Sources", configProperty.FindPropertyRelative("m_MaxSourceCount"));
+            AlicizaEditorUI.AddPropertyRow(body, "Volume Param", configProperty.FindPropertyRelative("m_ExposedVolumeParameter"));
+            AlicizaEditorUI.AddPropertyRow(body, "Spatial Blend", configProperty.FindPropertyRelative("m_SpatialBlend"));
+            AlicizaEditorUI.AddPropertyRow(body, "Doppler", configProperty.FindPropertyRelative("m_DopplerLevel"));
+            AlicizaEditorUI.AddPropertyRow(body, "Spread", configProperty.FindPropertyRelative("m_Spread"));
+            AlicizaEditorUI.AddPropertyRow(body, "Priority", configProperty.FindPropertyRelative("m_SourcePriority"));
+            AlicizaEditorUI.AddPropertyRow(body, "Reverb Mix", configProperty.FindPropertyRelative("m_ReverbZoneMix"));
+            AlicizaEditorUI.AddPropertyRow(body, "Rolloff", configProperty.FindPropertyRelative("audioRolloffMode"));
+            AlicizaEditorUI.AddPropertyRow(body, "Min Distance", configProperty.FindPropertyRelative("minDistance"));
+            AlicizaEditorUI.AddPropertyRow(body, "Max Distance", configProperty.FindPropertyRelative("maxDistance"));
+
+            SerializedProperty occlusionEnabled = configProperty.FindPropertyRelative("m_OcclusionEnabled");
+            AlicizaRow occlusionRow = AlicizaEditorUI.AddPropertyRow(body, "Occlusion", occlusionEnabled);
+
+            var occlusionDetails = new VisualElement { name = "alicia-audio-occlusion-details" };
+            occlusionDetails.style.marginLeft = 8f;
+            body.Add(occlusionDetails);
+
+            AlicizaEditorUI.AddPropertyRow(occlusionDetails, "Occlusion Mask", configProperty.FindPropertyRelative("m_OcclusionMask"));
+            AlicizaEditorUI.AddPropertyRow(occlusionDetails, "Check Interval", configProperty.FindPropertyRelative("m_OcclusionCheckInterval"));
+            AlicizaEditorUI.AddPropertyRow(occlusionDetails, "Low Pass", configProperty.FindPropertyRelative("m_OcclusionLowPassCutoff"));
+            AlicizaEditorUI.AddPropertyRow(occlusionDetails, "Volume Scale", configProperty.FindPropertyRelative("m_OcclusionVolumeMultiplier"));
+
+            SetOcclusionDetailsVisible(occlusionDetails, occlusionEnabled != null && occlusionEnabled.boolValue);
+            AlicizaPillToggle occlusionToggle = occlusionRow != null ? occlusionRow.Content.Q<AlicizaPillToggle>() : null;
+            if (occlusionToggle != null)
             {
-                _groupsExpanded = !_groupsExpanded;
-                currentEvent.Use();
+                occlusionToggle.RegisterValueChangedCallback(evt => SetOcclusionDetailsVisible(occlusionDetails, evt.newValue));
             }
         }
 
-        private void SetAllConfigFoldouts(bool expanded)
+        private static void SetOcclusionDetailsVisible(VisualElement details, bool visible)
         {
-            if (_configFoldouts == null)
+            if (details != null)
             {
-                return;
-            }
-
-            for (int i = 0; i < _configFoldouts.Length; i++)
-            {
-                _configFoldouts[i] = expanded;
+                details.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
             }
         }
 
-        private void DrawConfig(SerializedProperty configProperty, int index)
+        private static void UpdateGroupCardMeta(AlicizaFoldoutCard card, SerializedProperty configProperty)
         {
-            if (configProperty == null)
-            {
-                return;
-            }
-
-            if ((uint)index >= (uint)_configFoldouts.Length)
+            if (card == null || configProperty == null)
             {
                 return;
             }
 
             SerializedProperty typeProperty = configProperty.FindPropertyRelative("AudioType");
-            string title = typeProperty != null ? typeProperty.enumDisplayNames[typeProperty.enumValueIndex] : "Audio Group";
+            SerializedProperty nameProperty = configProperty.FindPropertyRelative("m_Name");
+            SerializedProperty mixerGroupProperty = configProperty.FindPropertyRelative("m_MixerGroup");
+            SerializedProperty maxSourceProperty = configProperty.FindPropertyRelative("m_MaxSourceCount");
 
-            Rect headerRect = GUILayoutUtility.GetRect(1f, ConfigHeaderHeight, GUILayout.ExpandWidth(true));
-            bool hovered = headerRect.Contains(Event.current.mousePosition);
-            bool expanded = _configFoldouts[index];
-            AlicizaEditorGUI.DrawListItemBackground(headerRect, expanded, hovered);
+            string title = GetGroupTitle(typeProperty, -1);
+            card.Title.text = title;
+            card.Title.tooltip = title;
+            string groupName = nameProperty != null && !string.IsNullOrEmpty(nameProperty.stringValue)
+                ? nameProperty.stringValue
+                : "Unnamed";
+            string mixerName = mixerGroupProperty != null && mixerGroupProperty.objectReferenceValue != null
+                ? mixerGroupProperty.objectReferenceValue.name
+                : "No Mixer";
+            string maxSources = maxSourceProperty != null ? maxSourceProperty.intValue.ToString() : "?";
 
-            Rect foldRect = new Rect(headerRect.x + 6f, headerRect.y + 2f, 18f, 20f);
-            Rect labelRect = new Rect(headerRect.x + 26f, headerRect.y + 2f, headerRect.width - 58f, 20f);
-            Rect resetRect = new Rect(headerRect.xMax - 25f, headerRect.y + 2f, ConfigButtonSize, ConfigButtonSize);
-            AlicizaEditorGUI.DrawFoldoutIcon(foldRect, expanded);
-            GUI.Label(labelRect, title, AlicizaEditorGUI.Styles.RowLabel);
+            string namePart = groupName == title ? string.Empty : groupName + " | ";
+            card.Meta.text = namePart + "Mixer " + mixerName + " | Max " + maxSources;
+        }
 
-            if (AlicizaEditorGUI.DrawToolbarButton(resetRect, EditorUtils.Styles.RefreshIcon))
+        private void SetAllGroupCardsExpanded(bool expanded)
+        {
+            for (int i = 0; i < _groupCards.Count; i++)
             {
-                AudioComponent component = (AudioComponent)target;
-                Undo.RecordObject(component, "Reset Audio Group Config");
-                ResetConfig(configProperty, (AudioType)index);
-                AutoBindDefaultMixer(component);
-                BindMixerGroup(configProperty, (AudioType)index, true);
-                EditorUtility.SetDirty(component);
+                AlicizaFoldoutCard card = _groupCards[i];
+                if (card != null)
+                {
+                    card.SetExpanded(expanded);
+                }
             }
 
-            Event currentEvent = Event.current;
-            if (currentEvent.type == EventType.MouseDown && currentEvent.button == 0 && headerRect.Contains(currentEvent.mousePosition) && !resetRect.Contains(currentEvent.mousePosition))
+            for (int i = 0; i < _groupExpanded.Length; i++)
             {
-                _configFoldouts[index] = !expanded;
-                currentEvent.Use();
+                _groupExpanded[i] = expanded;
             }
+        }
 
-            if (!_configFoldouts[index])
+        private void ResetGroup(SerializedProperty configProperty, int index)
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 return;
             }
 
-            EditorGUILayout.BeginVertical(AlicizaEditorGUI.Styles.EntryBody);
-            EditorGUI.BeginDisabledGroup(true);
-            DrawPropertyRow("Type", typeProperty);
-            EditorGUI.EndDisabledGroup();
-
-            DrawPropertyRow("Name", configProperty.FindPropertyRelative("m_Name"));
-            DrawPropertyRow("Mixer Group", configProperty.FindPropertyRelative("m_MixerGroup"));
-            DrawPropertyRow("Mute", configProperty.FindPropertyRelative("m_Mute"));
-            DrawPropertyRow("Volume", configProperty.FindPropertyRelative("m_Volume"));
-            DrawPropertyRow("Initial Sources", configProperty.FindPropertyRelative("m_InitialSourceCount"));
-            DrawPropertyRow("Max Sources", configProperty.FindPropertyRelative("m_MaxSourceCount"));
-            DrawPropertyRow("Volume Param", configProperty.FindPropertyRelative("m_ExposedVolumeParameter"));
-            DrawPropertyRow("Spatial Blend", configProperty.FindPropertyRelative("m_SpatialBlend"));
-            DrawPropertyRow("Doppler", configProperty.FindPropertyRelative("m_DopplerLevel"));
-            DrawPropertyRow("Spread", configProperty.FindPropertyRelative("m_Spread"));
-            DrawPropertyRow("Priority", configProperty.FindPropertyRelative("m_SourcePriority"));
-            DrawPropertyRow("Reverb Mix", configProperty.FindPropertyRelative("m_ReverbZoneMix"));
-            DrawPropertyRow("Rolloff", configProperty.FindPropertyRelative("audioRolloffMode"));
-            DrawPropertyRow("Min Distance", configProperty.FindPropertyRelative("minDistance"));
-            DrawPropertyRow("Max Distance", configProperty.FindPropertyRelative("maxDistance"));
-
-            SerializedProperty occlusionEnabled = configProperty.FindPropertyRelative("m_OcclusionEnabled");
-            DrawPropertyRow("Occlusion", occlusionEnabled);
-            if (occlusionEnabled != null && occlusionEnabled.boolValue)
+            AudioComponent component = target as AudioComponent;
+            if (component == null || configProperty == null)
             {
-                DrawPropertyRow("Occlusion Mask", configProperty.FindPropertyRelative("m_OcclusionMask"));
-                DrawPropertyRow("Check Interval", configProperty.FindPropertyRelative("m_OcclusionCheckInterval"));
-                DrawPropertyRow("Low Pass", configProperty.FindPropertyRelative("m_OcclusionLowPassCutoff"));
-                DrawPropertyRow("Volume Scale", configProperty.FindPropertyRelative("m_OcclusionVolumeMultiplier"));
+                return;
             }
 
-            EditorGUILayout.EndVertical();
+            AudioType audioType = GetAudioType(configProperty, index);
+            serializedObject.Update();
+            Undo.RecordObject(component, "Reset Audio Group Config");
+            ResetGroupConfigValues(configProperty, audioType);
+            AutoBindDefaultMixer();
+            BindMixerGroup(configProperty, audioType, true);
+            EditorUtility.SetDirty(component);
+            serializedObject.ApplyModifiedProperties();
+            RebuildGroupCards();
         }
 
-        private static void ResetConfig(SerializedProperty configProperty, AudioType type)
+        private void ResetAllGroupConfigs()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            AudioComponent component = target as AudioComponent;
+            if (component == null)
+            {
+                return;
+            }
+
+            Undo.RecordObject(component, "Reset Audio Group Configs");
+            component.ResetGroupConfigsForEditor();
+            EditorUtility.SetDirty(component);
+            serializedObject.Update();
+            AutoBindDefaultMixer();
+            AutoBindMissingMixerGroups();
+            serializedObject.ApplyModifiedProperties();
+            CacheProperties();
+            RebuildGroupCards();
+        }
+
+        private static AudioType GetAudioType(SerializedProperty configProperty, int fallbackIndex)
+        {
+            SerializedProperty typeProperty = configProperty != null ? configProperty.FindPropertyRelative("AudioType") : null;
+            if (typeProperty != null &&
+                typeProperty.enumValueIndex >= 0 &&
+                typeProperty.enumValueIndex < (int)AudioType.Max)
+            {
+                return (AudioType)typeProperty.enumValueIndex;
+            }
+
+            return (uint)fallbackIndex < (uint)AudioType.Max ? (AudioType)fallbackIndex : AudioType.Sound;
+        }
+
+        private static string GetGroupTitle(SerializedProperty typeProperty, int index)
+        {
+            if (typeProperty != null &&
+                typeProperty.enumDisplayNames != null &&
+                typeProperty.enumValueIndex >= 0 &&
+                typeProperty.enumValueIndex < typeProperty.enumDisplayNames.Length)
+            {
+                return typeProperty.enumDisplayNames[typeProperty.enumValueIndex];
+            }
+
+            return (uint)index < (uint)AudioType.Max ? ((AudioType)index).ToString() : "Audio Group";
+        }
+
+        private static void ResetGroupConfigValues(SerializedProperty configProperty, AudioType type)
         {
             switch (type)
             {
                 case AudioType.Sound:
-                    ApplyDefaultConfig(configProperty, type, "Sound", "SoundVolume", 4, 24, 1f, false, 128, 2f, 80f);
+                    ApplyDefaultGroupConfig(configProperty, type, "Sound", "SoundVolume", 4, 24, 1f, false, 128, 2f, 80f);
                     break;
                 case AudioType.UISound:
-                    ApplyDefaultConfig(configProperty, type, "UISound", "UISoundVolume", 2, 12, 0f, false, 128, 1f, 25f);
+                    ApplyDefaultGroupConfig(configProperty, type, "UISound", "UISoundVolume", 2, 12, 0f, false, 128, 1f, 25f);
                     break;
                 case AudioType.Music:
-                    ApplyDefaultConfig(configProperty, type, "Music", "MusicVolume", 1, 2, 0f, false, 32, 1f, 25f);
+                    ApplyDefaultGroupConfig(configProperty, type, "Music", "MusicVolume", 1, 2, 0f, false, 32, 1f, 25f);
                     break;
                 case AudioType.Voice:
-                    ApplyDefaultConfig(configProperty, type, "Voice", "VoiceVolume", 2, 6, 1f, true, 128, 2f, 80f);
+                    ApplyDefaultGroupConfig(configProperty, type, "Voice", "VoiceVolume", 2, 6, 1f, true, 128, 2f, 80f);
                     break;
                 case AudioType.Ambient:
-                    ApplyDefaultConfig(configProperty, type, "Ambient", "AmbientVolume", 2, 6, 1f, true, 128, 2f, 80f);
+                    ApplyDefaultGroupConfig(configProperty, type, "Ambient", "AmbientVolume", 2, 6, 1f, true, 128, 2f, 80f);
                     break;
                 default:
-                    ApplyDefaultConfig(configProperty, AudioType.Sound, "Sound", "SoundVolume", 4, 24, 1f, false, 128, 2f, 80f);
+                    ApplyDefaultGroupConfig(configProperty, AudioType.Sound, "Sound", "SoundVolume", 4, 24, 1f, false, 128, 2f, 80f);
                     break;
             }
         }
 
-        private static void ApplyDefaultConfig(SerializedProperty configProperty, AudioType type, string name, string exposedParameter, int initialSourceCount, int maxSourceCount, float spatialBlend, bool occlusionEnabled, int priority, float minDistance, float maxDistance)
+        private static void ApplyDefaultGroupConfig(
+            SerializedProperty configProperty,
+            AudioType type,
+            string name,
+            string exposedParameter,
+            int initialSourceCount,
+            int maxSourceCount,
+            float spatialBlend,
+            bool occlusionEnabled,
+            int priority,
+            float minDistance,
+            float maxDistance)
         {
             configProperty.FindPropertyRelative("AudioType").enumValueIndex = (int)type;
             configProperty.FindPropertyRelative("m_Name").stringValue = name;
@@ -363,9 +540,15 @@ namespace AlicizaX.Audio.Editor
             configProperty.FindPropertyRelative("maxDistance").floatValue = maxDistance;
         }
 
-        private void RepairGroupConfigsIfNeeded(AudioComponent component)
+        private void RepairGroupConfigsIfNeeded()
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode || component == null)
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            AudioComponent component = target as AudioComponent;
+            if (component == null)
             {
                 return;
             }
@@ -381,14 +564,20 @@ namespace AlicizaX.Audio.Editor
             serializedObject.Update();
         }
 
-        private void AutoBindDefaultMixer(AudioComponent component)
+        private void AutoBindDefaultMixer()
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode || component == null || _audioMixer == null)
+            if (EditorApplication.isPlayingOrWillChangePlaymode || _audioMixer == null)
             {
                 return;
             }
 
             if (_audioMixer.objectReferenceValue != null)
+            {
+                return;
+            }
+
+            AudioComponent component = target as AudioComponent;
+            if (component == null)
             {
                 return;
             }
@@ -404,9 +593,15 @@ namespace AlicizaX.Audio.Editor
             EditorUtility.SetDirty(component);
         }
 
-        private void AutoBindMissingMixerGroups(AudioComponent component)
+        private void AutoBindMissingMixerGroups()
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode || component == null || _audioMixer == null || _audioGroupConfigs == null)
+            if (EditorApplication.isPlayingOrWillChangePlaymode || _audioMixer == null || _audioGroupConfigs == null)
+            {
+                return;
+            }
+
+            AudioComponent component = target as AudioComponent;
+            if (component == null)
             {
                 return;
             }
@@ -592,57 +787,115 @@ namespace AlicizaX.Audio.Editor
             return false;
         }
 
-        private void DrawRuntimeDebugInfo()
+        private void RefreshRuntime()
         {
+            if (_runtimeRoot == null)
+            {
+                return;
+            }
+
             if (!EditorApplication.isPlaying)
             {
+                if (_runtimeState != RuntimeStateStopped)
+                {
+                    _runtimeRoot.Clear();
+                    _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
+                        "Enter Play Mode to inspect runtime audio state."));
+                    _runtimeState = RuntimeStateStopped;
+                }
+
                 return;
             }
 
-            EditorGUILayout.Space(4f);
-            using (new EditorUtils.BoxGroupScope("Runtime Debug", 24f))
+            if (!AppServices.HasWorld ||
+                !AppServices.App.TryGet<IAudioService>(out IAudioService audioService) ||
+                audioService is not IAudioDebugService debugService)
             {
-                _debugExpanded = EditorUtils.DrawBoxFoldoutHeader("Service", _debugExpanded, 22f);
-                if (!_debugExpanded)
+                if (_runtimeState != RuntimeStateUnavailable)
                 {
-                    return;
+                    _runtimeRoot.Clear();
+                    _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
+                        "Audio service is not initialized."));
+                    _runtimeState = RuntimeStateUnavailable;
                 }
 
-                if (!AppServices.HasWorld || !AppServices.App.TryGet<IAudioService>(out IAudioService audioService) || audioService is not IAudioDebugService debugService)
-                {
-                    EditorUtils.TrHelpIconText("Audio service is not initialized.", MessageType.Info);
-                    return;
-                }
-
-                debugService.FillServiceDebugInfo(_serviceInfo);
-                DrawDebugRow("Initialized", _serviceInfo.Initialized.ToString());
-                DrawDebugRow("Enable", _serviceInfo.Enable.ToString());
-                DrawDebugRow("Volume", _serviceInfo.Volume.ToString("F3"));
-                DrawDebugObjectRow("Listener", _serviceInfo.Listener, typeof(AudioListener));
-                DrawDebugObjectRow("Instance Root", _serviceInfo.InstanceRoot, typeof(Transform));
-                DrawDebugRow("Sources", _serviceInfo.ActiveSourceCount + " / " + _serviceInfo.TotalSourceCount);
-                DrawDebugRow("Active Agents", _serviceInfo.ActiveAgentCount.ToString());
-                DrawDebugRow("Handle Capacity", _serviceInfo.HandleCapacity.ToString());
-                DrawDebugRow("Clip Cache", _serviceInfo.ClipCacheCount + " / " + _serviceInfo.ClipCacheCapacity);
-                DrawDebugRow("Cache TTL", _serviceInfo.ClipCacheTtl.ToString("F1") + "s");
-                DrawDebugRow("Default Cache Policy", _serviceInfo.DefaultCachePolicy.ToString());
-                DrawDebugRow("Cache Loading/Pinned", _serviceInfo.LoadingClipCount + " / " + _serviceInfo.PinnedClipCount);
-                DrawDebugRow("Cache Policies", "None " + _serviceInfo.CachePolicyNoneCount + " | Ttl " + _serviceInfo.CachePolicyTtlCount + " | Pin " + _serviceInfo.CachePolicyPinCount);
-
-                DrawCategoryDebugInfo(debugService);
-                DrawAgentDebugInfo(debugService);
-                DrawClipCacheDebugInfo(debugService);
+                return;
             }
+
+            _runtimeState = RuntimeStateActive;
+            _runtimeRoot.Clear();
+
+            debugService.FillServiceDebugInfo(_serviceInfo);
+            BuildRuntimeServiceSection();
+            BuildRuntimeGroupsSection(debugService);
+            BuildRuntimeAgentsSection(debugService);
+            BuildRuntimeClipCacheSection(debugService);
         }
 
-        private void DrawCategoryDebugInfo(IAudioDebugService debugService)
+        private void BuildRuntimeServiceSection()
         {
-            _categoryDebugExpanded = EditorUtils.DrawBoxFoldoutHeader("Categories", _categoryDebugExpanded, 22f);
-            if (!_categoryDebugExpanded)
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Runtime Service");
+            _runtimeRoot.Add(section);
+            AddHeaderBadge(
+                section,
+                _serviceInfo.Initialized ? "LIVE" : "IDLE",
+                _serviceInfo.Initialized ? AlicizaValueTone.Success : AlicizaValueTone.Muted);
+
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Initialized",
+                _serviceInfo.Initialized.ToString(),
+                _serviceInfo.Initialized ? AlicizaValueTone.Success : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Enable",
+                _serviceInfo.Enable.ToString(),
+                _serviceInfo.Enable ? AlicizaValueTone.Success : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(section.Body, "Volume", _serviceInfo.Volume.ToString("F3"));
+            AddObjectValueRow(section.Body, "Listener", _serviceInfo.Listener);
+            AddObjectValueRow(section.Body, "Instance Root", _serviceInfo.InstanceRoot);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Sources",
+                _serviceInfo.ActiveSourceCount + " / " + _serviceInfo.TotalSourceCount);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Active Agents",
+                _serviceInfo.ActiveAgentCount.ToString(),
+                _serviceInfo.ActiveAgentCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(section.Body, "Audio Groups", _serviceInfo.CategoryCount.ToString());
+            AlicizaEditorUI.AddValueRow(section.Body, "Handle Capacity", _serviceInfo.HandleCapacity.ToString());
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Clip Cache",
+                _serviceInfo.ClipCacheCount + " / " + _serviceInfo.ClipCacheCapacity);
+            AlicizaEditorUI.AddValueRow(section.Body, "Cache TTL", _serviceInfo.ClipCacheTtl.ToString("F1") + "s");
+            AlicizaEditorUI.AddValueRow(section.Body, "Default Cache Policy", _serviceInfo.DefaultCachePolicy.ToString());
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Cache Loading/Pinned",
+                _serviceInfo.LoadingClipCount + " / " + _serviceInfo.PinnedClipCount);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Cache Policies",
+                "None " + _serviceInfo.CachePolicyNoneCount +
+                " | Ttl " + _serviceInfo.CachePolicyTtlCount +
+                " | Pin " + _serviceInfo.CachePolicyPinCount);
+        }
+
+        private void BuildRuntimeGroupsSection(IAudioDebugService debugService)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Runtime Groups");
+            _runtimeRoot.Add(section);
+            AddHeaderBadge(section, debugService.CategoryCount.ToString(), AlicizaValueTone.Muted);
+
+            if (debugService.CategoryCount <= 0)
             {
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("No audio groups are registered."));
                 return;
             }
 
+            bool any = false;
             for (int i = 0; i < debugService.CategoryCount; i++)
             {
                 if (!debugService.FillCategoryDebugInfo(i, _categoryInfo))
@@ -650,26 +903,58 @@ namespace AlicizaX.Audio.Editor
                     continue;
                 }
 
-                DrawDebugRow(
-                    _categoryInfo.Type.ToString(),
-                    "Enabled " + _categoryInfo.Enabled
-                               + " | Volume " + _categoryInfo.Volume.ToString("F2")
-                               + " | Active " + _categoryInfo.ActiveCount
-                               + " | Free " + _categoryInfo.FreeCount
-                               + " | Created " + _categoryInfo.CreatedCount
-                               + " | Capacity " + _categoryInfo.Capacity);
+                any = true;
+                section.Body.Add(CreateRuntimeGroupCard());
+            }
+
+            if (!any)
+            {
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("No audio group runtime state is available."));
             }
         }
 
-        private void DrawAgentDebugInfo(IAudioDebugService debugService)
+        private AlicizaFoldoutCard CreateRuntimeGroupCard()
         {
-            _agentDebugExpanded = EditorUtils.DrawBoxFoldoutHeader("Active Agents", _agentDebugExpanded, 22f);
-            if (!_agentDebugExpanded)
+            int typeIndex = (int)_categoryInfo.Type;
+            bool expanded = (uint)typeIndex < (uint)_runtimeGroupExpanded.Length && _runtimeGroupExpanded[typeIndex];
+            AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard(_categoryInfo.Type.ToString(), expanded);
+            card.name = "alicia-audio-runtime-group-" + typeIndex;
+
+            if ((uint)typeIndex < (uint)_runtimeGroupExpanded.Length)
             {
-                return;
+                int capturedIndex = typeIndex;
+                card.ExpandedChanged += value => _runtimeGroupExpanded[capturedIndex] = value;
             }
 
-            bool hasActive = false;
+            card.Meta.text = "Active " + _categoryInfo.ActiveCount + "/" + _categoryInfo.Capacity +
+                             " | Free " + _categoryInfo.FreeCount;
+            card.Actions.Add(AlicizaEditorUI.CreateBadge(
+                _categoryInfo.Enabled ? "ON" : "OFF",
+                _categoryInfo.Enabled ? AlicizaValueTone.Success : AlicizaValueTone.Muted));
+
+            AlicizaEditorUI.AddValueRow(card.Body, "Volume", _categoryInfo.Volume.ToString("F2"));
+            AlicizaEditorUI.AddValueRow(card.Body, "Capacity", _categoryInfo.Capacity.ToString());
+            AlicizaEditorUI.AddValueRow(card.Body, "Created", _categoryInfo.CreatedCount.ToString());
+            AlicizaEditorUI.AddValueRow(
+                card.Body,
+                "Active",
+                _categoryInfo.ActiveCount.ToString(),
+                _categoryInfo.ActiveCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(card.Body, "Free", _categoryInfo.FreeCount.ToString(), AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(card.Body, "Heap", _categoryInfo.HeapCount.ToString(), AlicizaValueTone.Muted);
+            return card;
+        }
+
+        private void BuildRuntimeAgentsSection(IAudioDebugService debugService)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Active Agents");
+            _runtimeRoot.Add(section);
+            AddHeaderBadge(
+                section,
+                _serviceInfo.ActiveAgentCount.ToString(),
+                _serviceInfo.ActiveAgentCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+
+            int shown = 0;
             for (int typeIndex = 0; typeIndex < debugService.CategoryCount; typeIndex++)
             {
                 if (!debugService.FillCategoryDebugInfo(typeIndex, _categoryInfo))
@@ -679,82 +964,113 @@ namespace AlicizaX.Audio.Editor
 
                 for (int agentIndex = 0; agentIndex < _categoryInfo.Capacity; agentIndex++)
                 {
-                    if (!debugService.FillAgentDebugInfo(typeIndex, agentIndex, _agentInfo) || _agentInfo.State == AudioAgentRuntimeState.Free)
+                    if (!debugService.FillAgentDebugInfo(typeIndex, agentIndex, _agentInfo) ||
+                        _agentInfo.State == AudioAgentRuntimeState.Free)
                     {
                         continue;
                     }
 
-                    hasActive = true;
+                    shown++;
                     string clipName = _agentInfo.Clip != null ? _agentInfo.Clip.name : "<None>";
                     string address = string.IsNullOrEmpty(_agentInfo.Address) ? "<Direct Clip>" : _agentInfo.Address;
-                    DrawDebugRow(
+                    AlicizaValueTone tone = _agentInfo.State == AudioAgentRuntimeState.Playing
+                        ? AlicizaValueTone.Success
+                        : _agentInfo.State == AudioAgentRuntimeState.Loading
+                            ? AlicizaValueTone.Warning
+                            : AlicizaValueTone.Default;
+
+                    AlicizaEditorUI.AddValueRow(
+                        section.Body,
                         _agentInfo.Type + "[" + _agentInfo.Index + "]",
-                        _agentInfo.State
-                        + " | Handle " + _agentInfo.Handle
-                        + " | Clip " + clipName
-                        + " | Address " + address
-                        + " | Vol " + _agentInfo.Volume.ToString("F2")
-                        + " | 3D " + _agentInfo.Spatial);
+                        _agentInfo.State +
+                        " | Handle " + _agentInfo.Handle +
+                        " | Clip " + clipName +
+                        " | Address " + address +
+                        " | Vol " + _agentInfo.Volume.ToString("F2") +
+                        " | 3D " + _agentInfo.Spatial,
+                        tone);
                 }
             }
 
-            if (!hasActive)
+            if (shown == 0)
             {
-                DrawDebugRow("State", "No active agents.");
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("No active agents."));
             }
         }
 
-        private void DrawClipCacheDebugInfo(IAudioDebugService debugService)
+        private void BuildRuntimeClipCacheSection(IAudioDebugService debugService)
         {
-            _clipCacheDebugExpanded = EditorUtils.DrawBoxFoldoutHeader("Clip Cache", _clipCacheDebugExpanded, 22f);
-            if (!_clipCacheDebugExpanded)
-            {
-                return;
-            }
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Clip Cache");
+            _runtimeRoot.Add(section);
+            AddHeaderBadge(
+                section,
+                debugService.ClipCacheCount + " / " + debugService.ClipCacheCapacity,
+                AlicizaValueTone.Muted);
 
             AudioClipCacheEntry entry = debugService.FirstClipCacheEntry;
             if (entry == null)
             {
-                DrawDebugRow("State", "Empty.");
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("Clip cache is empty."));
                 return;
             }
 
+            int shown = 0;
             while (entry != null)
             {
                 AudioClipCacheEntry next = entry.AllNext;
                 if (debugService.FillClipCacheDebugInfo(entry, _clipCacheInfo))
                 {
-                    DrawDebugRow(
-                        _clipCacheInfo.Address,
-                        "Ref " + _clipCacheInfo.RefCount
-                               + " | Pending " + _clipCacheInfo.PendingCount
-                               + " | Loaded " + _clipCacheInfo.IsLoaded
-                               + " | Policy " + _clipCacheInfo.CachePolicy
-                               + " | Loading " + _clipCacheInfo.Loading
-                               + " | Pinned " + _clipCacheInfo.Pinned
-                               + " | LRU " + _clipCacheInfo.InLru);
+                    shown++;
+                    string address = string.IsNullOrEmpty(_clipCacheInfo.Address) ? "<No Address>" : _clipCacheInfo.Address;
+                    AlicizaValueTone tone = _clipCacheInfo.Loading
+                        ? AlicizaValueTone.Warning
+                        : _clipCacheInfo.IsLoaded
+                            ? AlicizaValueTone.Default
+                            : AlicizaValueTone.Muted;
+
+                    AlicizaEditorUI.AddValueRow(
+                        section.Body,
+                        address,
+                        "Ref " + _clipCacheInfo.RefCount +
+                        " | Pending " + _clipCacheInfo.PendingCount +
+                        " | Loaded " + _clipCacheInfo.IsLoaded +
+                        " | Policy " + _clipCacheInfo.CachePolicy +
+                        " | Loading " + _clipCacheInfo.Loading +
+                        " | Pinned " + _clipCacheInfo.Pinned +
+                        " | LRU " + _clipCacheInfo.InLru,
+                        tone);
                 }
 
                 entry = next;
             }
+
+            if (shown == 0)
+            {
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("Clip cache is empty."));
+            }
         }
 
-        private static void DrawDebugRow(string label, string value)
+        private static void AddHeaderBadge(AlicizaSection section, string text, AlicizaValueTone tone)
         {
-            EditorGUILayout.BeginHorizontal(AlicizaEditorGUI.Styles.FieldRow);
-            EditorGUILayout.LabelField(label, AlicizaEditorGUI.Styles.FieldLabel, GUILayout.Width(RowLabelWidth));
-            EditorGUILayout.LabelField(value, AlicizaEditorGUI.Styles.RowLabel);
-            EditorGUILayout.EndHorizontal();
+            if (section == null)
+            {
+                return;
+            }
+
+            var host = new VisualElement { name = "alicia-section-badge" };
+            host.AddToClassList("alicia-preview-header");
+            host.Add(AlicizaEditorUI.CreateBadge(text, tone));
+            section.Header.Add(host);
         }
 
-        private static void DrawDebugObjectRow(string label, Object value, System.Type objectType)
+        private static void AddObjectValueRow(VisualElement parent, string caption, Object value)
         {
-            EditorGUILayout.BeginHorizontal(AlicizaEditorGUI.Styles.FieldRow);
-            EditorGUILayout.LabelField(label, AlicizaEditorGUI.Styles.FieldLabel, GUILayout.Width(RowLabelWidth));
-            EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.ObjectField(value, objectType, true);
-            EditorGUI.EndDisabledGroup();
-            EditorGUILayout.EndHorizontal();
+            string text = value != null ? value.name : "<None>";
+            AlicizaEditorUI.AddValueRow(
+                parent,
+                caption,
+                text,
+                value != null ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
         }
     }
 }

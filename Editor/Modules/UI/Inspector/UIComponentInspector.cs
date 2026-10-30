@@ -1,35 +1,42 @@
-using AlicizaX.Editor;
+using System.Collections.Generic;
+using AlicizaX.Editor.UIToolkit;
 using AlicizaX.UI.Runtime;
 using UnityEditor;
+using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace AlicizaX.UI.Editor
 {
     [CustomEditor(typeof(UIComponent))]
-    internal sealed class UIComponentInspector : GameFrameworkInspector
+    internal sealed class UIComponentInspector : AlicizaUIEditor
     {
         private const int CacheDebugInfoCapacity = 64;
-        private const float ToolbarHeight = 30f;
-        private const float RuntimeToolbarHeight = 26f;
-        private const float RowHeight = 24f;
-        private const float RowLabelWidth = 118f;
-        private const float CounterMinWidth = 84f;
-        private const float DefaultButtonSize = 20f;
-        private const float RuntimeMinHeight = 260f;
-        private const float RuntimeMaxHeight = 720f;
-        private const double RuntimeDebugRepaintInterval = 0.1d;
         private const int CacheWindowWarningCount = 16;
+        private const long RuntimeRefreshIntervalMs = 250;
 
         private readonly UIServiceDebugInfo _serviceInfo = new UIServiceDebugInfo();
         private readonly UILayerDebugInfo _layerInfo = new UILayerDebugInfo();
         private readonly UIWindowDebugInfo _windowInfo = new UIWindowDebugInfo();
         private readonly UIRouteDebugInfo _routeInfo = new UIRouteDebugInfo();
         private readonly UIWindowDebugInfo[] _cacheInfos = new UIWindowDebugInfo[CacheDebugInfoCapacity];
-        private readonly System.Collections.Generic.List<string> _alerts = new System.Collections.Generic.List<string>(16);
-        private readonly System.Collections.Generic.Dictionary<int, int> _visibleDepths = new System.Collections.Generic.Dictionary<int, int>(32);
+        private readonly List<string> _alerts = new List<string>(16);
+        private readonly Dictionary<int, int> _visibleDepths = new Dictionary<int, int>(32);
 
-        private SerializedProperty uiRoot;
-        private SerializedProperty _isOrthographic;
+        private SerializedProperty _uiRootProperty;
+        private SerializedProperty _isOrthographicProperty;
+
+        private VisualElement _settingsBody;
+        private VisualElement _runtimeControls;
+        private VisualElement _runtimeContent;
+        private VisualElement _navigationControls;
+        private VisualElement _navigationContent;
+        private AlicizaFoldoutCard _runtimeCard;
+        private AlicizaFoldoutCard _navigationCard;
+        private ObjectField _uiRootField;
+        private Button _defaultRootButton;
+        private VisualElement _uiRootWarning;
+
         private bool _showRuntimeDebug;
         private bool _showNavigationRuntimeDebug;
         private bool _showReferences;
@@ -37,383 +44,321 @@ namespace AlicizaX.UI.Editor
         private bool _showCache = true;
         private bool _showEmptyLayers;
         private bool _showNavigationHistory = true;
-        private Vector2 _runtimeScroll;
-        private Vector2 _navigationRuntimeScroll;
-        private GUIStyle _panelStyle;
-        private GUIStyle _entryBodyStyle;
-        private GUIStyle _fieldRowStyle;
-        private GUIStyle _fieldLabelStyle;
-        private GUIStyle _rowLabelStyle;
-        private GUIStyle _mutedLabelStyle;
-        private GUIStyle _mutedMiniLabelStyle;
-        private GUIStyle _warningLabelStyle;
-        private GUIStyle _kindBadgeStyle;
-        private GUIStyle _emptyStateStyle;
-        private GUIContent _setDefaultContent;
-        private double _nextRuntimeDebugRepaintTime;
-
-        public override void OnInspectorGUI()
-        {
-            base.OnInspectorGUI();
-            serializedObject.Update();
-            EnsureStyles();
-
-            DrawComponentSettings();
-            serializedObject.ApplyModifiedProperties();
-
-            DrawRuntimeDebugInfo();
-            DrawNavigationRuntimeDebugInfo();
-        }
 
         private void OnEnable()
         {
-            EditorApplication.update -= OnEditorUpdate;
-            EditorApplication.update += OnEditorUpdate;
+            _uiRootProperty = serializedObject.FindProperty("uiRoot");
+            _isOrthographicProperty = serializedObject.FindProperty("_isOrthographic");
 
-            uiRoot = serializedObject.FindProperty("uiRoot");
-            _isOrthographic = serializedObject.FindProperty("_isOrthographic");
             for (int i = 0; i < _cacheInfos.Length; i++)
             {
                 _cacheInfos[i] = new UIWindowDebugInfo();
             }
-
-            InitializeContents();
         }
 
-        private void OnDisable()
+        protected override void BuildInspector(VisualElement root)
         {
-            EditorApplication.update -= OnEditorUpdate;
+            AlicizaPanel settingsPanel = AlicizaEditorUI.CreatePanel(null);
+            root.Add(settingsPanel);
+            BuildSettings(settingsPanel.Body);
+
+            _runtimeCard = AlicizaEditorUI.CreateFoldoutCard("UI RuntimeDebug", _showRuntimeDebug);
+            _runtimeCard.ExpandedChanged += OnRuntimeCardExpandedChanged;
+            root.Add(_runtimeCard);
+
+            _runtimeControls = BuildRuntimeFilterControls();
+            _runtimeCard.Body.Add(_runtimeControls);
+
+            _runtimeContent = new VisualElement();
+            _runtimeCard.Body.Add(_runtimeContent);
+
+            _navigationCard = AlicizaEditorUI.CreateFoldoutCard(
+                "Navigation RuntimeDebug", _showNavigationRuntimeDebug);
+            _navigationCard.ExpandedChanged += OnNavigationCardExpandedChanged;
+            root.Add(_navigationCard);
+
+            _navigationControls = BuildNavigationFilterControls();
+            _navigationCard.Body.Add(_navigationControls);
+
+            _navigationContent = new VisualElement();
+            _navigationCard.Body.Add(_navigationContent);
+
+            RefreshRuntime();
+            AlicizaEditorUI.RefreshEvery(root, RefreshRuntime, RuntimeRefreshIntervalMs);
         }
 
-        private void OnEditorUpdate()
+        private void OnRuntimeCardExpandedChanged(bool expanded)
         {
-            if (!EditorApplication.isPlaying || (!_showRuntimeDebug && !_showNavigationRuntimeDebug))
+            _showRuntimeDebug = expanded;
+            RefreshRuntime();
+        }
+
+        private void OnNavigationCardExpandedChanged(bool expanded)
+        {
+            _showNavigationRuntimeDebug = expanded;
+            RefreshRuntime();
+        }
+
+        private void BuildSettings(VisualElement parent)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("UI Component");
+            parent.Add(section);
+            _settingsBody = section.Body;
+
+            BuildUIRootWarning(section.Body);
+
+            AlicizaRow uiRootRow = AlicizaEditorUI.AddPropertyRow(
+                section.Body,
+                "UI Root Prefab",
+                _uiRootProperty,
+                true,
+                typeof(GameObject),
+                false);
+            if (uiRootRow != null)
             {
-                _nextRuntimeDebugRepaintTime = 0d;
-                return;
-            }
-
-            double time = EditorApplication.timeSinceStartup;
-            if (time < _nextRuntimeDebugRepaintTime)
-            {
-                return;
-            }
-
-            _nextRuntimeDebugRepaintTime = time + RuntimeDebugRepaintInterval;
-            Repaint();
-        }
-
-        private void InitializeContents()
-        {
-            _setDefaultContent = new GUIContent(EditorUtils.Styles.Database.image, "Set default UI Root Prefab");
-        }
-
-        private void EnsureStyles()
-        {
-            if (_panelStyle != null)
-            {
-                return;
-            }
-
-            _panelStyle = AlicizaEditorGUI.Styles.Panel;
-            _entryBodyStyle = AlicizaEditorGUI.Styles.EntryBody;
-            _fieldRowStyle = AlicizaEditorGUI.Styles.FieldRow;
-            _fieldLabelStyle = AlicizaEditorGUI.Styles.FieldLabel;
-            _rowLabelStyle = AlicizaEditorGUI.Styles.RowLabel;
-            _mutedLabelStyle = AlicizaEditorGUI.Styles.MutedLabel;
-            _mutedMiniLabelStyle = AlicizaEditorGUI.Styles.MutedMiniLabel;
-            _warningLabelStyle = AlicizaEditorGUI.Styles.WarningLabel;
-            _kindBadgeStyle = AlicizaEditorGUI.Styles.KindBadge;
-            _emptyStateStyle = AlicizaEditorGUI.Styles.EmptyState;
-        }
-
-        private void DrawComponentSettings()
-        {
-            EditorGUILayout.Space(6f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            DrawToolbar("UI Component");
-
-            EditorGUI.BeginDisabledGroup(EditorApplication.isPlayingOrWillChangePlaymode);
-            {
-                if (uiRoot.objectReferenceValue == null)
+                _uiRootField = uiRootRow.Q<ObjectField>();
+                if (_uiRootField != null)
                 {
-                    EditorUtils.TrHelpIconText("UI Root Prefab can not be null.", MessageType.Error);
+                    _uiRootField.RegisterValueChangedCallback(_ => RefreshSettingsState());
                 }
 
-                DrawUIRootRow();
-                DrawPropertyRow("Orthographic", _isOrthographic);
+                _defaultRootButton = AlicizaEditorUI.CreateTextButton(
+                    "Default", "Set default UI Root Prefab", AlicizaButtonTone.Accent);
+                _defaultRootButton.style.marginLeft = 6f;
+                _defaultRootButton.clicked += SetDefaultUIRoot;
+                uiRootRow.Content.Add(_defaultRootButton);
             }
-            EditorGUI.EndDisabledGroup();
-            EditorGUILayout.EndVertical();
-        }
 
-        private void DrawToolbar(string title)
-        {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-
-            Rect labelRect = new Rect(toolbarRect.x + 8f, toolbarRect.y + 5f, toolbarRect.width - 16f, 20f);
-            GUI.Label(labelRect, title, _rowLabelStyle);
-        }
-
-        private void DrawUIRootRow()
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField("UI Root Prefab", _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-
-            EditorGUI.BeginChangeCheck();
-            GameObject rootPrefab = (GameObject)EditorGUILayout.ObjectField(uiRoot.objectReferenceValue, typeof(GameObject), false);
-            if (EditorGUI.EndChangeCheck())
+            if (_isOrthographicProperty != null)
             {
-                uiRoot.objectReferenceValue = rootPrefab;
+                var orthographic = new AlicizaPillToggle();
+                orthographic.BindProperty(_isOrthographicProperty);
+                AlicizaEditorUI.AddRow(section.Body, "Orthographic", orthographic);
             }
 
-            if (uiRoot.objectReferenceValue == null)
+            RefreshSettingsState();
+        }
+
+        private void BuildUIRootWarning(VisualElement parent)
+        {
+            _uiRootWarning = new VisualElement();
+            _uiRootWarning.style.flexDirection = FlexDirection.Row;
+            _uiRootWarning.style.alignItems = Align.Center;
+            _uiRootWarning.style.marginTop = 2f;
+            _uiRootWarning.style.marginBottom = 6f;
+            _uiRootWarning.Add(AlicizaEditorUI.CreateBadge("REQUIRED", AlicizaValueTone.Danger));
+
+            Label message = AlicizaEditorUI.CreateValueLabel(
+                "UI Root Prefab can not be null.", AlicizaValueTone.Danger);
+            message.style.marginLeft = 8f;
+            _uiRootWarning.Add(message);
+
+            parent.Add(_uiRootWarning);
+        }
+
+        private void RefreshSettingsState()
+        {
+            bool locked = EditorApplication.isPlayingOrWillChangePlaymode;
+            if (_settingsBody != null)
             {
-                Rect buttonRect = GUILayoutUtility.GetRect(DefaultButtonSize, DefaultButtonSize, GUILayout.Width(DefaultButtonSize), GUILayout.Height(DefaultButtonSize));
-                if (AlicizaEditorGUI.DrawToolbarButton(buttonRect, _setDefaultContent))
-                {
-                    uiRoot.objectReferenceValue = AssetDatabase.LoadAssetAtPath<GameObject>(UIGlobalPath.UIPrefabPath);
-                }
+                _settingsBody.SetEnabled(!locked);
             }
 
-            EditorGUILayout.EndHorizontal();
+            bool missing = _uiRootProperty != null && _uiRootProperty.objectReferenceValue == null;
+            if (_uiRootWarning != null)
+            {
+                _uiRootWarning.style.display = missing ? DisplayStyle.Flex : DisplayStyle.None;
+            }
+
+            if (_defaultRootButton != null)
+            {
+                _defaultRootButton.style.display = missing ? DisplayStyle.Flex : DisplayStyle.None;
+            }
         }
 
-        private void DrawPropertyRow(string label, SerializedProperty property)
+        private void SetDefaultUIRoot()
         {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            EditorGUILayout.PropertyField(property, GUIContent.none);
-            EditorGUILayout.EndHorizontal();
+            if (_uiRootProperty == null)
+            {
+                return;
+            }
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(UIGlobalPath.UIPrefabPath);
+            if (prefab == null)
+            {
+                return;
+            }
+
+            _uiRootProperty.objectReferenceValue = prefab;
+            _uiRootProperty.serializedObject.ApplyModifiedProperties();
+
+            if (_uiRootField != null)
+            {
+                _uiRootField.SetValueWithoutNotify(prefab);
+            }
+
+            RefreshSettingsState();
         }
 
-        private void DrawRuntimeDebugInfo()
+        private void RefreshRuntime()
         {
-            EditorGUILayout.Space(4f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            _showRuntimeDebug = DrawFoldoutToolbar("UI RuntimeDebug", _showRuntimeDebug);
+            if (_runtimeContent == null || _navigationContent == null)
+            {
+                return;
+            }
+
+            RefreshSettingsState();
+            RefreshRuntimeDebug();
+            RefreshNavigationDebug();
+        }
+
+        private void RefreshRuntimeDebug()
+        {
+            _runtimeContent.Clear();
+            HideControls(_runtimeControls);
+            SetCardMeta(_runtimeCard, string.Empty);
+
             if (!_showRuntimeDebug)
             {
-                EditorGUILayout.EndVertical();
                 return;
             }
 
             if (!EditorApplication.isPlaying)
             {
-                EditorUtils.TrHelpIconText("Enter Play Mode to inspect runtime UI state.", MessageType.Info);
-                EditorGUILayout.EndVertical();
+                _runtimeContent.Add(AlicizaEditorUI.CreateHint(
+                    "Enter Play Mode to inspect runtime UI state."));
                 return;
             }
 
-            if (!AppServices.HasWorld || !AppServices.App.TryGet<IUIService>(out IUIService uiService) || uiService is not IUIDebugService debugService)
+            if (!TryGetUIDebugService(out IUIDebugService debugService))
             {
-                EditorUtils.TrHelpIconText("UI service is not initialized.", MessageType.Warning);
-                EditorGUILayout.EndVertical();
+                SetCardMeta(_runtimeCard, "No Service");
+                _runtimeContent.Add(CreateWarningLabel("UI service is not initialized."));
                 return;
             }
 
             debugService.FillServiceDebugInfo(_serviceInfo);
-            DrawServiceSummary();
-            DrawRuntimeOptions();
+            SetCardMeta(
+                _runtimeCard,
+                "Open " + _serviceInfo.OpenWindowCount + " | Cache " + _serviceInfo.CacheWindowCount);
+            ShowControls(_runtimeControls);
 
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            _runtimeScroll = GUILayout.BeginScrollView(_runtimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(RuntimeMinHeight), GUILayout.MaxHeight(RuntimeMaxHeight));
-            DrawRuntimeAlerts(debugService);
-            DrawReferences();
-            DrawLayerDebugInfo(debugService);
-            DrawCacheDebugInfo(debugService);
-            GUILayout.EndScrollView();
-            EditorGUILayout.EndVertical();
-            EditorGUILayout.EndVertical();
+            BuildServiceSummary();
+            BuildRuntimeAlerts(debugService);
+            BuildReferences();
+            BuildOpenWindows(debugService);
+            BuildCachedWindows(debugService);
         }
 
-        private void DrawNavigationRuntimeDebugInfo()
+        private void BuildServiceSummary()
         {
-            EditorGUILayout.Space(4f);
-            EditorGUILayout.BeginVertical(_panelStyle);
-            _showNavigationRuntimeDebug = DrawFoldoutToolbar("Navigation RuntimeDebug", _showNavigationRuntimeDebug);
-            if (!_showNavigationRuntimeDebug)
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Service Summary");
+            _runtimeContent.Add(section);
+
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Initialized",
+                _serviceInfo.Initialized ? "Yes" : "No",
+                _serviceInfo.Initialized ? AlicizaValueTone.Default : AlicizaValueTone.Warning);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Mode",
+                _serviceInfo.Orthographic ? "Orthographic" : "Perspective");
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Open",
+                _serviceInfo.OpenWindowCount.ToString(),
+                _serviceInfo.OpenWindowCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Cache",
+                _serviceInfo.CacheWindowCount.ToString(),
+                _serviceInfo.CacheWindowCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Update",
+                _serviceInfo.UpdateCount.ToString(),
+                _serviceInfo.UpdateCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Block",
+                GetBlockLine(_serviceInfo),
+                _serviceInfo.BlockActive ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+        }
+
+        private VisualElement BuildRuntimeFilterControls()
+        {
+            var controls = new VisualElement();
+            VisualElement filters = CreateFilterHost();
+            AddFilterChip(filters, "Layers", _showLayers, () => _showLayers = !_showLayers);
+            AddFilterChip(filters, "Cache", _showCache, () => _showCache = !_showCache);
+            AddFilterChip(filters, "References", _showReferences, () => _showReferences = !_showReferences);
+            AddFilterChip(filters, "Empty Layers", _showEmptyLayers, () => _showEmptyLayers = !_showEmptyLayers);
+            AlicizaEditorUI.AddRow(controls, "Show", filters);
+            return controls;
+        }
+
+        private static VisualElement CreateFilterHost()
+        {
+            var host = new VisualElement();
+            host.style.flexDirection = FlexDirection.Row;
+            host.style.flexWrap = Wrap.Wrap;
+            host.style.alignItems = Align.Center;
+            host.style.flexGrow = 1f;
+            host.style.flexShrink = 1f;
+            host.style.minWidth = 0f;
+            return host;
+        }
+
+        private void AddFilterChip(VisualElement parent, string text, bool selected, System.Action toggle)
+        {
+            var chip = new AlicizaFilterChip(text);
+            chip.SetSelected(selected);
+            chip.clicked += () =>
             {
-                EditorGUILayout.EndVertical();
-                return;
-            }
+                toggle();
+                chip.SetSelected(!chip.Selected);
+                RefreshRuntime();
+            };
+            parent.Add(chip);
+        }
 
-            if (!EditorApplication.isPlaying)
+        private static void ShowControls(VisualElement controls)
+        {
+            if (controls != null)
             {
-                EditorUtils.TrHelpIconText("Enter Play Mode to inspect runtime UI Navigation state.", MessageType.Info);
-                EditorGUILayout.EndVertical();
-                return;
+                controls.style.display = DisplayStyle.Flex;
             }
+        }
 
-            if (!AppServices.HasWorld || !AppServices.App.TryGet<IUIService>(out IUIService uiService) || uiService is not IUINavigationDebug debug)
+        private static void HideControls(VisualElement controls)
+        {
+            if (controls != null)
             {
-                EditorUtils.TrHelpIconText("UI Navigation is not initialized.", MessageType.Warning);
-                EditorGUILayout.EndVertical();
-                return;
+                controls.style.display = DisplayStyle.None;
             }
-
-            DrawNavigationSummary(debug);
-            DrawNavigationRuntimeOptions();
-
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            _navigationRuntimeScroll = GUILayout.BeginScrollView(_navigationRuntimeScroll, false, true, GUIStyle.none, GUI.skin.verticalScrollbar, GUILayout.MinHeight(220f), GUILayout.MaxHeight(560f));
-            DrawNavigationHistory(debug);
-            GUILayout.EndScrollView();
-            EditorGUILayout.EndVertical();
-            EditorGUILayout.EndVertical();
         }
 
-        private bool DrawFoldoutToolbar(string title, bool expanded)
+        private void BuildRuntimeAlerts(IUIDebugService debugService)
         {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, ToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-
-            Rect foldRect = new Rect(toolbarRect.x + 7f, toolbarRect.y + 5f, 16f, 20f);
-            Rect labelRect = new Rect(foldRect.xMax + 4f, toolbarRect.y + 5f, toolbarRect.width - 34f, 20f);
-            AlicizaEditorGUI.DrawFoldoutIcon(foldRect, expanded);
-            GUI.Label(labelRect, title, _rowLabelStyle);
-
-            Event currentEvent = Event.current;
-            if (currentEvent.type == EventType.MouseDown && currentEvent.button == 0 && toolbarRect.Contains(currentEvent.mousePosition))
-            {
-                expanded = !expanded;
-                GUI.FocusControl(string.Empty);
-                currentEvent.Use();
-            }
-
-            return expanded;
-        }
-
-        private void DrawRuntimeOptions()
-        {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, RuntimeToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-
-            float x = toolbarRect.x + 6f;
-            float y = toolbarRect.y + 3f;
-            _showLayers = DrawToolbarToggle(ref x, y, 58f, "Layers", _showLayers);
-            _showCache = DrawToolbarToggle(ref x, y, 58f, "Cache", _showCache);
-            _showReferences = DrawToolbarToggle(ref x, y, 86f, "References", _showReferences);
-            _showEmptyLayers = DrawToolbarToggle(ref x, y, 96f, "Empty Layers", _showEmptyLayers);
-        }
-
-        private static bool DrawToolbarToggle(ref float x, float y, float width, string label, bool value)
-        {
-            Rect rect = new Rect(x, y, width, 20f);
-            x += width + 4f;
-            return GUI.Toggle(rect, value, label, value ? AlicizaEditorGUI.Styles.PillOn : AlicizaEditorGUI.Styles.PillOff);
-        }
-
-        private void DrawServiceSummary()
-        {
-            DrawSectionBegin("Service Summary");
-            EditorGUILayout.BeginHorizontal();
-            DrawCounter("Initialized", _serviceInfo.Initialized ? "Yes" : "No", _serviceInfo.Initialized ? _rowLabelStyle : _warningLabelStyle);
-            DrawCounter("Mode", _serviceInfo.Orthographic ? "Orthographic" : "Perspective", _rowLabelStyle);
-            DrawCounter("Open", _serviceInfo.OpenWindowCount.ToString(), _serviceInfo.OpenWindowCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawCounter("Cache", _serviceInfo.CacheWindowCount.ToString(), _serviceInfo.CacheWindowCount > 0 ? _warningLabelStyle : _mutedLabelStyle);
-            EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.BeginHorizontal();
-            DrawCounter("Update", _serviceInfo.UpdateCount.ToString(), _serviceInfo.UpdateCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            DrawCounter("Block", GetBlockLine(_serviceInfo), _serviceInfo.BlockActive ? _warningLabelStyle : _mutedLabelStyle);
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.EndHorizontal();
-            DrawSectionEnd();
-        }
-
-        private void DrawNavigationSummary(IUINavigationDebug debug)
-        {
-            DrawSectionBegin("Navigation Summary");
-            EditorGUILayout.BeginHorizontal();
-            DrawCounter("Current", debug.Current?.Name ?? "None", debug.Current == null ? _mutedLabelStyle : _rowLabelStyle);
-            DrawCounter("Can Back", debug.CanBack ? "Yes" : "No", debug.CanBack ? _rowLabelStyle : _mutedLabelStyle);
-            DrawCounter("History", debug.HistoryCount.ToString(), debug.HistoryCount > 0 ? _rowLabelStyle : _mutedLabelStyle);
-            EditorGUILayout.EndHorizontal();
-            DrawSectionEnd();
-        }
-
-        private void DrawNavigationRuntimeOptions()
-        {
-            Rect toolbarRect = GUILayoutUtility.GetRect(1f, RuntimeToolbarHeight, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawToolbarBackground(toolbarRect);
-
-            float x = toolbarRect.x + 6f;
-            float y = toolbarRect.y + 3f;
-            _showNavigationHistory = DrawToolbarToggle(ref x, y, 64f, "History", _showNavigationHistory);
-        }
-
-        private void DrawNavigationHistory(IUINavigationDebug debug)
-        {
-            if (!_showNavigationHistory)
+            CollectRuntimeAlerts(debugService);
+            if (_alerts.Count == 0)
             {
                 return;
             }
 
-            DrawSectionBegin("History");
-            if (debug.HistoryCount == 0)
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Runtime Alerts");
+            section.Header.Add(AlicizaEditorUI.CreateBadge(
+                _alerts.Count.ToString(), AlicizaValueTone.Warning));
+            _runtimeContent.Add(section);
+
+            for (int i = 0; i < _alerts.Count; i++)
             {
-                DrawEmptyLabel("No route history.");
-            }
-
-            for (int i = 0; i < debug.HistoryCount; i++)
-            {
-                if (debug.FillHistoryInfo(i, _routeInfo))
-                {
-                    DrawRouteInfo(_routeInfo, "HIS");
-                }
-            }
-
-            DrawSectionEnd();
-        }
-
-        private void DrawRouteInfo(UIRouteDebugInfo info, string badge)
-        {
-            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = rowRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, info.IsRoot, hovered);
-
-            Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 48f, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.36f)), 18f);
-            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
-            GUI.Label(kindRect, badge, _kindBadgeStyle);
-            GUI.Label(titleRect, "#" + info.Index + " " + (info.UITypeName ?? "Unknown"), _rowLabelStyle);
-            GUI.Label(summaryRect, GetRouteSummary(info), _mutedMiniLabelStyle);
-
-            if (!string.IsNullOrEmpty(info.ArgsPreview))
-            {
-                EditorGUILayout.BeginVertical(_entryBodyStyle);
-                DrawDebugRow("Args", info.ArgsPreview ?? string.Empty);
-                EditorGUILayout.EndVertical();
+                section.Body.Add(CreateWarningLabel(_alerts[i]));
             }
         }
 
-        private static string GetRouteSummary(UIRouteDebugInfo info)
-        {
-            if (info.Sequence > 0)
-            {
-                return "Root " + info.IsRoot + " | Seq " + info.Sequence;
-            }
-
-            return string.Empty;
-        }
-
-        private void DrawReferences()
-        {
-            if (!_showReferences)
-            {
-                return;
-            }
-
-            DrawSectionBegin("References");
-            DrawDebugObjectRow("Root", _serviceInfo.Root, typeof(Transform));
-            DrawDebugObjectRow("Canvas", _serviceInfo.Canvas, typeof(Canvas));
-            DrawDebugObjectRow("Camera", _serviceInfo.Camera, typeof(Camera));
-            DrawSectionEnd();
-        }
-
-        private void DrawRuntimeAlerts(IUIDebugService debugService)
+        private void CollectRuntimeAlerts(IUIDebugService debugService)
         {
             _alerts.Clear();
 
@@ -450,18 +395,6 @@ namespace AlicizaX.UI.Editor
                     _alerts.Add(GetWindowName(info) + " is cached but still visible.");
                 }
             }
-
-            if (_alerts.Count == 0)
-            {
-                return;
-            }
-
-            DrawSectionBegin("Runtime Alerts");
-            for (int i = 0; i < _alerts.Count; i++)
-            {
-                EditorUtils.TrHelpIconText(_alerts[i], MessageType.Warning);
-            }
-            DrawSectionEnd();
         }
 
         private void AppendWindowAlerts(UIWindowDebugInfo info, int windowIndex)
@@ -478,7 +411,8 @@ namespace AlicizaX.UI.Editor
             {
                 if (_visibleDepths.TryGetValue(info.Depth, out int otherIndex))
                 {
-                    _alerts.Add(windowName + " has duplicate visible depth " + info.Depth + " with window index " + otherIndex + ".");
+                    _alerts.Add(windowName + " has duplicate visible depth " + info.Depth +
+                                " with window index " + otherIndex + ".");
                 }
                 else
                 {
@@ -487,15 +421,34 @@ namespace AlicizaX.UI.Editor
             }
         }
 
-        private void DrawLayerDebugInfo(IUIDebugService debugService)
+        private void BuildReferences()
+        {
+            if (!_showReferences)
+            {
+                return;
+            }
+
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("References");
+            _runtimeContent.Add(section);
+
+            AddObjectRow(section.Body, "Root", _serviceInfo.Root, typeof(Transform));
+            AddObjectRow(section.Body, "Canvas", _serviceInfo.Canvas, typeof(Canvas));
+            AddObjectRow(section.Body, "Camera", _serviceInfo.Camera, typeof(Camera));
+        }
+
+        private void BuildOpenWindows(IUIDebugService debugService)
         {
             if (!_showLayers)
             {
                 return;
             }
 
-            DrawSectionBegin("Open Windows");
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Open Windows");
+            _runtimeContent.Add(section);
+
             bool hasWindow = false;
+            int totalWindowCount = 0;
+
             for (int layerIndex = 0; layerIndex < debugService.LayerCount; layerIndex++)
             {
                 if (!debugService.FillLayerDebugInfo(layerIndex, _layerInfo))
@@ -509,100 +462,338 @@ namespace AlicizaX.UI.Editor
                 }
 
                 hasWindow |= _layerInfo.WindowCount > 0;
-                DrawLayerHeader(_layerInfo);
-                EditorGUI.indentLevel++;
+                totalWindowCount += _layerInfo.WindowCount;
+
+                AddLayerHeader(section.Body, _layerInfo);
+
+                var windows = new VisualElement();
+                windows.style.marginLeft = 8f;
+                section.Body.Add(windows);
+
                 for (int windowIndex = 0; windowIndex < _layerInfo.WindowCount; windowIndex++)
                 {
                     if (debugService.FillWindowDebugInfo(layerIndex, windowIndex, _windowInfo))
                     {
-                        DrawWindowDebugInfo(_windowInfo, false);
+                        BuildWindowDebugInfo(windows, _windowInfo, false);
                     }
                 }
+            }
 
-                EditorGUI.indentLevel--;
+            if (hasWindow)
+            {
+                section.Header.Add(AlicizaEditorUI.CreateBadge(
+                    totalWindowCount.ToString(), AlicizaValueTone.Accent));
             }
 
             if (!hasWindow && !_showEmptyLayers)
             {
-                DrawEmptyLabel("No open UI windows.");
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("No open UI windows."));
             }
-
-            DrawSectionEnd();
         }
 
-        private void DrawCacheDebugInfo(IUIDebugService debugService)
+        private void BuildCachedWindows(IUIDebugService debugService)
         {
             if (!_showCache)
             {
                 return;
             }
 
-            DrawSectionBegin("Cached Windows");
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Cached Windows");
+            _runtimeContent.Add(section);
+
             int count = debugService.FillCacheDebugInfo(_cacheInfos, _cacheInfos.Length);
+            section.Header.Add(AlicizaEditorUI.CreateBadge(
+                count.ToString(),
+                count > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted));
+
             if (count == 0)
             {
-                DrawEmptyLabel("No cached UI windows.");
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("No cached UI windows."));
             }
 
             for (int i = 0; i < count; i++)
             {
-                DrawWindowDebugInfo(_cacheInfos[i], true);
+                BuildWindowDebugInfo(section.Body, _cacheInfos[i], true);
             }
 
             if (debugService.CacheWindowCount > _cacheInfos.Length)
             {
-                EditorUtils.TrHelpIconText("Cache list is truncated by inspector buffer capacity.", MessageType.Warning);
+                section.Body.Add(CreateWarningLabel(
+                    "Cache list is truncated by inspector buffer capacity."));
+            }
+        }
+
+        private static void AddLayerHeader(VisualElement parent, UILayerDebugInfo info)
+        {
+            var header = new VisualElement();
+            header.style.flexDirection = FlexDirection.Row;
+            header.style.alignItems = Align.Center;
+            header.style.marginTop = 8f;
+            header.style.marginBottom = 2f;
+
+            header.Add(AlicizaEditorUI.CreateBadge("LAYER", AlicizaValueTone.Accent));
+
+            var name = new Label(info.Layer.ToString());
+            name.AddToClassList("alicia-value");
+            name.style.flexGrow = 0f;
+            name.style.marginLeft = 8f;
+            header.Add(name);
+
+            var count = new Label("Windows " + info.WindowCount);
+            count.AddToClassList("alicia-value");
+            count.AddToClassList("alicia-tone--muted");
+            count.style.flexGrow = 0f;
+            count.style.marginLeft = 8f;
+            header.Add(count);
+
+            parent.Add(header);
+        }
+
+        private void BuildWindowDebugInfo(VisualElement parent, UIWindowDebugInfo info, bool cached)
+        {
+            Label summary = AlicizaEditorUI.CreateValueLabel(
+                GetWindowSummary(info), AlicizaValueTone.Muted);
+            AlicizaRow row = AlicizaEditorUI.AddRow(
+                parent, GetWindowTitle(info, cached), summary, true);
+            if (row != null)
+            {
+                string captionTone = GetWindowCaptionTone(info, cached);
+                if (!string.IsNullOrEmpty(captionTone))
+                {
+                    row.Caption.AddToClassList(captionTone);
+                }
+
+                row.Content.Insert(0, AlicizaEditorUI.CreateBadge(
+                    GetWindowBadge(info, cached), GetWindowBadgeTone(info, cached)));
             }
 
-            DrawSectionEnd();
-        }
+            var details = new VisualElement();
+            details.style.marginLeft = 12f;
+            details.style.marginBottom = 4f;
+            parent.Add(details);
 
-        private void DrawLayerHeader(UILayerDebugInfo info)
-        {
-            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = rowRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, info.WindowCount > 0, hovered);
+            AddObjectRow(details, "Transform", info.HolderTransform, typeof(Transform));
 
-            Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 48f, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(160f, Mathf.Max(96f, rowRect.width * 0.30f)), 18f);
-            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
-
-            GUI.Label(kindRect, "LAYER", _kindBadgeStyle);
-            GUI.Label(titleRect, info.Layer.ToString(), _rowLabelStyle);
-            GUI.Label(summaryRect, "Windows " + info.WindowCount, _mutedMiniLabelStyle);
-        }
-
-        private void DrawWindowDebugInfo(UIWindowDebugInfo info, bool cached)
-        {
-            Rect rowRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = rowRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(rowRect, cached, hovered);
-
-            Rect kindRect = new Rect(rowRect.x + 8f, rowRect.y + 3f, 44f, 18f);
-            Rect titleRect = new Rect(kindRect.xMax + 6f, rowRect.y + 3f, Mathf.Min(220f, Mathf.Max(128f, rowRect.width * 0.38f)), 18f);
-            Rect summaryRect = new Rect(titleRect.xMax + 8f, rowRect.y + 3f, Mathf.Max(0f, rowRect.xMax - titleRect.xMax - 16f), 18f);
-            GUI.Label(kindRect, GetWindowBadge(info, cached), _kindBadgeStyle);
-            GUI.Label(titleRect, GetWindowTitle(info, cached), GetWindowTitleStyle(info, cached));
-            GUI.Label(summaryRect, GetWindowSummary(info), _mutedMiniLabelStyle);
-
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-            DrawDebugObjectRow("Transform", info.HolderTransform, typeof(Transform));
             if (cached || info.CacheTime != 0 || info.CacheRemaining > 0f)
             {
-                DrawDebugRow("Cache", GetCacheLine(info), cached ? _mutedLabelStyle : _warningLabelStyle);
+                AlicizaEditorUI.AddValueRow(
+                    details,
+                    "Cache",
+                    GetCacheLine(info),
+                    cached ? AlicizaValueTone.Muted : AlicizaValueTone.Warning);
             }
 
             if (!string.IsNullOrEmpty(info.HolderTypeName))
             {
-                DrawDebugRow("Holder", info.HolderTypeName, _rowLabelStyle);
+                AlicizaEditorUI.AddValueRow(details, "Holder", info.HolderTypeName);
             }
-            EditorGUILayout.EndVertical();
+        }
+
+        private void RefreshNavigationDebug()
+        {
+            _navigationContent.Clear();
+            HideControls(_navigationControls);
+            SetCardMeta(_navigationCard, string.Empty);
+
+            if (!_showNavigationRuntimeDebug)
+            {
+                return;
+            }
+
+            if (!EditorApplication.isPlaying)
+            {
+                _navigationContent.Add(AlicizaEditorUI.CreateHint(
+                    "Enter Play Mode to inspect runtime UI Navigation state."));
+                return;
+            }
+
+            if (!TryGetNavigationDebug(out IUINavigationDebug debug))
+            {
+                SetCardMeta(_navigationCard, "No Service");
+                _navigationContent.Add(CreateWarningLabel("UI Navigation is not initialized."));
+                return;
+            }
+
+            SetCardMeta(_navigationCard, "History " + debug.HistoryCount);
+            ShowControls(_navigationControls);
+
+            BuildNavigationSummary(debug);
+            BuildNavigationHistory(debug);
+        }
+
+        private void BuildNavigationSummary(IUINavigationDebug debug)
+        {
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Navigation Summary");
+            _navigationContent.Add(section);
+
+            System.Type current = debug.Current;
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Current",
+                current != null ? current.Name : "None",
+                current != null ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "Can Back",
+                debug.CanBack ? "Yes" : "No",
+                debug.CanBack ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+            AlicizaEditorUI.AddValueRow(
+                section.Body,
+                "History",
+                debug.HistoryCount.ToString(),
+                debug.HistoryCount > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+        }
+
+        private VisualElement BuildNavigationFilterControls()
+        {
+            var controls = new VisualElement();
+            VisualElement filters = CreateFilterHost();
+            AddFilterChip(
+                filters, "History", _showNavigationHistory,
+                () => _showNavigationHistory = !_showNavigationHistory);
+            AlicizaEditorUI.AddRow(controls, "Show", filters);
+            return controls;
+        }
+
+        private void BuildNavigationHistory(IUINavigationDebug debug)
+        {
+            if (!_showNavigationHistory)
+            {
+                return;
+            }
+
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("History");
+            section.Header.Add(AlicizaEditorUI.CreateBadge(
+                debug.HistoryCount.ToString(),
+                debug.HistoryCount > 0 ? AlicizaValueTone.Accent : AlicizaValueTone.Muted));
+            _navigationContent.Add(section);
+
+            if (debug.HistoryCount == 0)
+            {
+                section.Body.Add(AlicizaEditorUI.CreateEmptyState("No route history."));
+                return;
+            }
+
+            for (int i = 0; i < debug.HistoryCount; i++)
+            {
+                if (debug.FillHistoryInfo(i, _routeInfo))
+                {
+                    BuildRouteInfo(section.Body, _routeInfo, "HIS");
+                }
+            }
+        }
+
+        private static void BuildRouteInfo(VisualElement parent, UIRouteDebugInfo info, string badge)
+        {
+            var content = new VisualElement();
+            content.style.flexDirection = FlexDirection.Row;
+            content.style.alignItems = Align.Center;
+            content.style.flexGrow = 1f;
+
+            content.Add(AlicizaEditorUI.CreateBadge(
+                badge, info.IsRoot ? AlicizaValueTone.Accent : AlicizaValueTone.Muted));
+
+            var title = new Label(info.UITypeName ?? "Unknown");
+            title.AddToClassList("alicia-value");
+            title.style.marginLeft = 8f;
+            content.Add(title);
+
+            string summary = GetRouteSummary(info);
+            if (!string.IsNullOrEmpty(summary))
+            {
+                var summaryLabel = new Label(summary);
+                summaryLabel.AddToClassList("alicia-value");
+                summaryLabel.AddToClassList("alicia-tone--muted");
+                summaryLabel.style.flexGrow = 0f;
+                summaryLabel.style.marginLeft = 8f;
+                content.Add(summaryLabel);
+            }
+
+            AlicizaEditorUI.AddRow(parent, "#" + info.Index, content, true);
+
+            if (!string.IsNullOrEmpty(info.ArgsPreview))
+            {
+                var details = new VisualElement();
+                details.style.marginLeft = 12f;
+                details.style.marginBottom = 4f;
+                AlicizaEditorUI.AddValueRow(
+                    details, "Args", info.ArgsPreview, AlicizaValueTone.Muted);
+                parent.Add(details);
+            }
+        }
+
+        private static void AddObjectRow(
+            VisualElement parent, string caption, UnityEngine.Object value, System.Type objectType)
+        {
+            var field = new ObjectField(string.Empty)
+            {
+                objectType = objectType,
+                allowSceneObjects = true
+            };
+            field.AddToClassList("alicia-control");
+            field.AddToClassList("alicia-control--grow");
+            field.SetValueWithoutNotify(value);
+            field.SetEnabled(false);
+            field.tooltip = value != null ? value.name : "None";
+
+            AlicizaEditorUI.AddRow(parent, caption, field);
+        }
+
+        private static Label CreateWarningLabel(string text)
+        {
+            Label label = AlicizaEditorUI.CreateValueLabel(text, AlicizaValueTone.Warning);
+            label.style.whiteSpace = WhiteSpace.Normal;
+            label.style.marginTop = 2f;
+            label.style.marginBottom = 2f;
+            return label;
+        }
+
+        private static void SetCardMeta(AlicizaFoldoutCard card, string text)
+        {
+            if (card != null)
+            {
+                card.Meta.text = text ?? string.Empty;
+            }
+        }
+
+        private static bool TryGetUIDebugService(out IUIDebugService debugService)
+        {
+            debugService = null;
+            if (!AppServices.HasWorld)
+            {
+                return false;
+            }
+
+            if (!AppServices.App.TryGet<IUIService>(out IUIService uiService))
+            {
+                return false;
+            }
+
+            debugService = uiService as IUIDebugService;
+            return debugService != null;
+        }
+
+        private static bool TryGetNavigationDebug(out IUINavigationDebug debug)
+        {
+            debug = null;
+            if (!AppServices.HasWorld)
+            {
+                return false;
+            }
+
+            if (!AppServices.App.TryGet<IUIService>(out IUIService uiService))
+            {
+                return false;
+            }
+
+            debug = uiService as IUINavigationDebug;
+            return debug != null;
         }
 
         private static string GetWindowTitle(UIWindowDebugInfo info, bool cached)
         {
             string logicName = GetWindowName(info);
-            string prefix = cached ? "[Cache] " : "";
+            string prefix = cached ? "[Cache] " : string.Empty;
             return prefix + "#" + info.OrderIndex + " L" + info.LayerIndex + "  " + logicName;
         }
 
@@ -677,75 +868,39 @@ namespace AlicizaX.UI.Editor
             return "UI";
         }
 
-        private GUIStyle GetWindowTitleStyle(UIWindowDebugInfo info, bool cached)
+        private static AlicizaValueTone GetWindowBadgeTone(UIWindowDebugInfo info, bool cached)
         {
-            if (info.Processing || !info.Visible)
+            if (info.Processing)
             {
-                return _warningLabelStyle;
+                return AlicizaValueTone.Warning;
             }
 
             if (cached)
             {
-                return _mutedLabelStyle;
+                return AlicizaValueTone.Accent;
             }
 
-            return _rowLabelStyle;
+            return info.Visible ? AlicizaValueTone.Success : AlicizaValueTone.Muted;
         }
 
-        private void DrawCounter(string label, string value, GUIStyle valueStyle)
+        private static string GetWindowCaptionTone(UIWindowDebugInfo info, bool cached)
         {
-            EditorGUILayout.BeginVertical(_fieldRowStyle, GUILayout.MinWidth(CounterMinWidth));
-            EditorGUILayout.LabelField(label, _fieldLabelStyle);
-            EditorGUILayout.LabelField(value, valueStyle);
-            EditorGUILayout.EndVertical();
+            if (info.Processing || !info.Visible)
+            {
+                return "alicia-tone--warning";
+            }
+
+            return cached ? "alicia-tone--muted" : null;
         }
 
-        private void DrawSectionBegin(string title)
+        private static string GetRouteSummary(UIRouteDebugInfo info)
         {
-            EditorGUILayout.Space(2f);
-            Rect headerRect = GUILayoutUtility.GetRect(1f, RowHeight, GUILayout.ExpandWidth(true));
-            bool hovered = headerRect.Contains(Event.current.mousePosition);
-            AlicizaEditorGUI.DrawListItemBackground(headerRect, true, hovered);
+            if (info.Sequence > 0)
+            {
+                return "Root " + info.IsRoot + " | Seq " + info.Sequence;
+            }
 
-            Rect labelRect = new Rect(headerRect.x + 8f, headerRect.y + 3f, headerRect.width - 16f, 18f);
-            GUI.Label(labelRect, title, _rowLabelStyle);
-            EditorGUILayout.BeginVertical(_entryBodyStyle);
-        }
-
-        private static void DrawSectionEnd()
-        {
-            EditorGUILayout.EndVertical();
-        }
-
-        private void DrawDebugRow(string label, string value)
-        {
-            DrawDebugRow(label, value, _rowLabelStyle);
-        }
-
-        private void DrawDebugRow(string label, string value, GUIStyle valueStyle)
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            EditorGUILayout.LabelField(value, valueStyle);
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawDebugObjectRow(string label, Object value, System.Type objectType)
-        {
-            EditorGUILayout.BeginHorizontal(_fieldRowStyle);
-            EditorGUILayout.LabelField(label, _fieldLabelStyle, GUILayout.Width(RowLabelWidth));
-            EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.ObjectField(value, objectType, true);
-            EditorGUI.EndDisabledGroup();
-            EditorGUILayout.EndHorizontal();
-        }
-
-        private void DrawEmptyLabel(string text)
-        {
-            Rect rect = GUILayoutUtility.GetRect(1f, 36f, GUILayout.ExpandWidth(true));
-            AlicizaEditorGUI.DrawBodyBackground(rect);
-            GUI.Label(rect, text, _emptyStateStyle);
+            return string.Empty;
         }
     }
-
 }
