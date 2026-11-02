@@ -16,17 +16,17 @@ namespace AlicizaX.MemoryPoolTests
         {
             using var f = new ResourceFixture();
             f.Text("hit");
-            var key = ResourceKey.Asset<TextAsset>("hit");
-            ResourceAssetLease<TextAsset> lease = default;
-            yield return AllocationCapture.Measure("resource-cold-load", 1, () => lease = f.Service.LoadLease<TextAsset>(key), _ => { }, true);
+            var key = f.Service.Key<TextAsset>("hit");
+            AssetLease<TextAsset> lease = default;
+            yield return AllocationCapture.Measure("resource-cold-load", 1, () => lease = f.Service.LoadLease(key), _ => { }, true);
             lease.Dispose();
             Action sync = () =>
             {
-                for (int i = 0; i < 10000; i++) f.Service.LoadLease<TextAsset>(key).Dispose();
+                for (int i = 0; i < 10000; i++) f.Service.LoadLease(key).Dispose();
             };
             Action async = () =>
             {
-                for (int i = 0; i < 10000; i++) f.Service.LoadLeaseAsync<TextAsset>(key).GetAwaiter().GetResult().Dispose();
+                for (int i = 0; i < 10000; i++) f.Service.LoadLeaseAsync(key).GetAwaiter().GetResult().Dispose();
             };
             yield return AllocationCapture.Measure("resource-cache-sync-first", 10000, sync, _ => { });
             yield return AllocationCapture.Measure("resource-cache-sync", 10000, sync, sample => Assert.That(sample.Bytes, Is.Zero));
@@ -45,7 +45,7 @@ namespace AlicizaX.MemoryPoolTests
                 }
                 Action maintain = () =>
                 {
-                    for (int i = 0; i < 10000; i++) f.Service.ProcessResourceMaintenance(0, 16);
+                    for (int i = 0; i < 10000; i++) f.Service.ProcessFrame(0f);
                 };
                 yield return AllocationCapture.Measure("resource-maintenance-first-" + size, 10000, maintain, _ => { });
                 yield return AllocationCapture.Measure("resource-maintenance-" + size, 10000, maintain, sample => Assert.That(sample.Bytes, Is.Zero));

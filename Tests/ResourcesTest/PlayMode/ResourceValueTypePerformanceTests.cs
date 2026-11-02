@@ -1,5 +1,7 @@
 #if UNITY_EDITOR
+using System;
 using System.Collections;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
@@ -10,47 +12,85 @@ namespace AlicizaX.Resource.Tests
 {
     public sealed class ResourceValueTypePerformanceTests
     {
+        private const int Count = 2000000;
+
         [UnityTest]
-        public IEnumerator ValueCopyAndReadonlyAccessCosts()
+        public IEnumerator HandleReadsDoNotAllocate()
         {
             using var f = new ResourceFixture();
             f.Text("value-copy");
             var lease = f.Service.LoadLease<TextAsset>("value-copy");
-            var key = ResourceKey.Asset<TextAsset>("value-copy");
+            var scope = f.Service.CreateScope();
             const int count = 20000;
             long sum = 0;
-            for (int round = 0; round < 3; round++)
+            yield return AllocationCapture.Measure("lease-read-in", count, () =>
             {
-                yield return AllocationCapture.Measure("lease-read-in-round-" + round, count, () =>
-                {
-                    for (int i = 0; i < count; i++) sum += ReadLease(in lease);
-                }, sample => Assert.That(sample.Bytes, Is.Zero));
-                yield return AllocationCapture.Measure("key-value-round-" + round, count, () =>
-                {
-                    for (int i = 0; i < count; i++) sum += ReadKey(key);
-                }, sample => Assert.That(sample.Bytes, Is.Zero));
-                yield return AllocationCapture.Measure("key-in-round-" + round, count, () =>
-                {
-                    for (int i = 0; i < count; i++) sum += ReadKeyByReference(in key);
-                }, sample => Assert.That(sample.Bytes, Is.Zero));
-            }
+                for (int i = 0; i < count; i++) sum += ReadLease(in lease);
+            }, sample => Assert.That(sample.Bytes, Is.Zero));
+            yield return AllocationCapture.Measure("scope-read-value", count, () =>
+            {
+                for (int i = 0; i < count; i++) sum += ReadScope(scope);
+            }, sample => Assert.That(sample.Bytes, Is.Zero));
+            yield return AllocationCapture.Measure("scope-read-in", count, () =>
+            {
+                for (int i = 0; i < count; i++) sum += ReadScopeIn(in scope);
+            }, sample => Assert.That(sample.Bytes, Is.Zero));
             Assert.That(sum, Is.GreaterThan(0));
             lease.Dispose();
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            scope.Dispose();
+        }
+
+        [Test]
+        public void PassingTheScopeByReferenceIsNotSlowerThanByValue()
+        {
+            using var f = new ResourceFixture();
+            var scope = f.Service.CreateScope();
+            long sum = 0;
+            sum += ByValue(scope, 1000) + ByReference(in scope, 1000);
+            double value = double.MaxValue;
+            double reference = double.MaxValue;
+            for (int round = 0; round < 7; round++)
+            {
+                var clock = Stopwatch.StartNew();
+                sum += ByValue(scope, Count);
+                value = Math.Min(value, clock.Elapsed.TotalMilliseconds);
+                clock.Restart();
+                sum += ByReference(in scope, Count);
+                reference = Math.Min(reference, clock.Elapsed.TotalMilliseconds);
+            }
+            TestContext.WriteLine($"STRUCT-PASS,ResourceScope,value={value:F3}ms,in={reference:F3}ms,count={Count}");
+            Assert.That(sum, Is.Not.Zero);
+            Assert.That(reference, Is.LessThanOrEqualTo(value * 1.10 + 0.5), "Scope entry points take in because by-value passing measured slower.");
+            scope.Dispose();
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static int ReadLease(in ResourceAssetLease<TextAsset> lease)
-            => lease.Handle.Index + (lease.IsValid ? 1 : 0);
+        private static long ByValue(ResourceScope scope, int count)
+        {
+            long sum = 0;
+            for (int i = 0; i < count; i++) sum += ReadScope(scope);
+            return sum;
+        }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static int ReadKey(ResourceKey key)
-            => key.Location.Length + key.PackageName.Length + (int)key.AssetKind + key.LoadKeyId;
+        private static long ByReference(in ResourceScope scope, int count)
+        {
+            long sum = 0;
+            for (int i = 0; i < count; i++) sum += ReadScopeIn(in scope);
+            return sum;
+        }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static int ReadKeyByReference(in ResourceKey key)
-            => key.Location.Length + key.PackageName.Length + (int)key.AssetKind + key.LoadKeyId;
+        private static int ReadLease(in AssetLease<TextAsset> lease)
+            => lease.Asset == null ? 0 : 1;
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static int ReadScope(ResourceScope scope)
+            => scope.Index + (int)scope.Generation;
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static int ReadScopeIn(in ResourceScope scope)
+            => scope.Index + (int)scope.Generation;
     }
 }
 #endif

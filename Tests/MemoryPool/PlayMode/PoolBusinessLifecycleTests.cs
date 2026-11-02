@@ -39,22 +39,22 @@ namespace AlicizaX.MemoryPoolTests
         {
             using var f = new ResourceFixture();
             f.Text("a");
-            var owner = f.Owner();
-            f.Service.LoadAsset<TextAsset>(owner, "a");
+            var owner = f.GameObject("owner");
+            f.Service.OwnerScope(owner, ResourceScopeSource.Binding, null).Load<TextAsset>("a");
             f.Service.IdleAssetCapacity = 0;
-            UnityEngine.Object.Destroy(owner.gameObject);
+            UnityEngine.Object.Destroy(owner);
             yield return null;
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 16);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
+            AssertNoLeasedLoadContexts();
         }
 
         [UnityTest]
         public IEnumerator ConcurrentLoadsShareOneContextAndCancellationBalancesWaiters()
         {
-            using var f = new ResourceFixture();
+            using var f = new ResourceFixture(true);
             f.Text("a");
             f.Loader.CompleteImmediately = false;
-            var operations = new UniTask<ResourceAssetLease<TextAsset>>[64];
+            var operations = new UniTask<AssetLease<TextAsset>>[64];
             using var cancellation = new CancellationTokenSource();
             for (int i = 0; i < operations.Length; i++)
                 operations[i] = f.Service.LoadLeaseAsync<TextAsset>("a", (i & 1) == 0 ? cancellation.Token : default);
@@ -65,8 +65,8 @@ namespace AlicizaX.MemoryPoolTests
             int valid = 0;
             for (int i = 0; i < operations.Length; i++)
             {
-                ResourceAssetLease<TextAsset> lease = default;
-                yield return ResourceFixture.Wait(operations[i], value => lease = value);
+                AssetLease<TextAsset> lease = default;
+                yield return f.Wait(operations[i], value => lease = value);
                 if (lease.IsValid) { valid++; lease.Dispose(); }
             }
             Assert.That(valid, Is.EqualTo(32));
@@ -79,14 +79,14 @@ namespace AlicizaX.MemoryPoolTests
         [UnityTest]
         public IEnumerator LastCancelledWaiterDisposesHandleAndReturnsContext()
         {
-            using var f = new ResourceFixture();
+            using var f = new ResourceFixture(true);
             f.Text("a");
             f.Loader.CompleteImmediately = false;
             using var cancellation = new CancellationTokenSource();
             var operation = f.Service.LoadLeaseAsync<TextAsset>("a", cancellation.Token);
             cancellation.Cancel();
-            ResourceAssetLease<TextAsset> lease = default;
-            yield return ResourceFixture.Wait(operation, value => lease = value);
+            AssetLease<TextAsset> lease = default;
+            yield return f.Wait(operation, value => lease = value);
             Assert.That(lease.IsValid, Is.False);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             AssertNoLeasedLoadContexts();
@@ -95,13 +95,13 @@ namespace AlicizaX.MemoryPoolTests
         [UnityTest]
         public IEnumerator ServiceShutdownDuringPendingLoadReturnsContextAfterWaiterResumes()
         {
-            using var f = new ResourceFixture();
+            using var f = new ResourceFixture(true);
             f.Text("a");
             f.Loader.CompleteImmediately = false;
             var operation = f.Service.LoadLeaseAsync<TextAsset>("a");
             typeof(ResourceService).GetMethod("OnDestroyService", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(f.Service, null);
-            ResourceAssetLease<TextAsset> lease = default;
-            yield return ResourceFixture.Wait(operation, value => lease = value);
+            AssetLease<TextAsset> lease = default;
+            yield return f.Wait(operation, value => lease = value);
             Assert.That(lease.IsValid, Is.False);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             AssertNoLeasedLoadContexts();
@@ -148,7 +148,11 @@ namespace AlicizaX.MemoryPoolTests
             var infos = new MemoryPoolInfo[MemoryPool.Count];
             int count = MemoryPool.GetInfos(infos);
             for (int i = 0; i < count; i++)
-                if (infos[i].Type.Name == "LoadingOperationState") Assert.That(infos[i].LeasedCount, Is.Zero);
+            {
+                string name = infos[i].Type.Name;
+                if (name == "LeaseLoadPromise`1" || name == "ScopeLoadPromise`1" || name == "BindingLoadWaiter")
+                    Assert.That(infos[i].LeasedCount, Is.Zero, name);
+            }
         }
     }
 }

@@ -2,9 +2,9 @@ using System.Collections;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
 using UnityEngine;
-using UnityEngine.TestTools;
 using UnityEngine.SceneManagement;
-using UnityEngine.UI;
+using UnityEngine.TestTools;
+using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Tests
 {
@@ -15,101 +15,120 @@ namespace AlicizaX.Resource.Tests
         [TearDown] public void TearDown() => f.Dispose();
 
         [UnityTest]
-        public IEnumerator ReentrantReplacementOfNeverActivatedOwnerKeepsOneRegistration()
+        public IEnumerator DestroyingAnActiveOwnerDisposesItsScope()
         {
-            f.Material("old");
-            var expected = f.Material("new");
-            var previous = f.Owner(false);
-            var ownerObject = previous.gameObject;
-            var image = f.Keep(new GameObject("active-target")).AddComponent<Image>();
-            f.Bindings.BindImageMaterial(previous, image, new ResourceKey("old"));
-            Object.Destroy(previous);
+            f.Text("a");
+            f.Sprite("s");
+            var go = f.GameObject("owner");
+            var scope = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            scope.Load<TextAsset>("a");
+            go.AddComponent<SpriteRenderer>().SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            Object.Destroy(go);
             yield return null;
-            var replacement = ownerObject.AddComponent<ResourceOwner>();
-            bool reentered = false;
-            image.RegisterDirtyMaterialCallback(() =>
-            {
-                if (reentered) return;
-                reentered = true;
-                Assert.That(f.Bindings.BindImageMaterial(replacement, image, new ResourceKey("new")), Is.EqualTo(ResourceBindStatus.Success));
-            });
-            Assert.That(f.Bindings.RegisterOwner(replacement), Is.EqualTo(ResourceBindStatus.Success));
-            Assert.That(reentered, Is.True);
-            Assert.That(image.material, Is.SameAs(expected));
-            var infos = new ResourceOwnerInfo[f.Bindings.GetOwnerInfos(null, 0, 0)];
-            f.Bindings.GetOwnerInfos(infos, 0, infos.Length);
-            int active = 0;
-            foreach (var info in infos) if (info.Active) active++;
-            Assert.That(active, Is.EqualTo(1), "Reentrant registration must not duplicate the replacement owner.");
-            replacement.ReleaseBindings();
-            f.AssertNoReferences("new");
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-        }
-
-        [UnityTest]
-        public IEnumerator NeverActivatedOwnerIsReclaimed()
-        {
-            f.Sprite("a");
-            var owner = f.Owner(false);
-            var target = owner.gameObject.AddComponent<SpriteRenderer>();
-            f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
-            Object.Destroy(owner.gameObject);
-            yield return null;
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
+            Assert.That(scope.IsAlive, Is.False);
             f.AssertNoReferences("a");
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            f.AssertNoReferences("s");
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            f.AssertInvariants();
         }
 
         [UnityTest]
-        public IEnumerator DestroyedTargetReleasesWithoutDestroyingOwner()
+        public IEnumerator NeverActivatedOwnerIsReclaimedByTheSweep()
         {
-            f.Sprite("a");
-            var owner = f.Owner();
-            var target = owner.gameObject.AddComponent<SpriteRenderer>();
-            f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
-            Object.Destroy(target);
+            f.Text("a");
+            var go = f.GameObject("inactive-owner", false);
+            var scope = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            scope.Load<TextAsset>("a");
+            Object.Destroy(go);
             yield return null;
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
+            Assert.That(scope.IsAlive, Is.True, "OnDestroy never runs for an object that was never activated.");
+            f.Tick();
+            Assert.That(scope.IsAlive, Is.False);
             f.AssertNoReferences("a");
+            f.AssertInvariants();
         }
 
         [UnityTest]
-        public IEnumerator DisabledHierarchyRetainsUntilExplicitPoolReturn()
+        public IEnumerator DestroyedTargetReleasesItsBindingWhileTheOwnerSurvives()
         {
-            var sprite = f.Sprite("a");
-            var parent = f.Keep(new GameObject("parent"));
-            var owner = f.Owner();
-            owner.transform.SetParent(parent.transform);
-            var target = owner.gameObject.AddComponent<SpriteRenderer>();
-            f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
-            owner.enabled = false;
-            target.enabled = false;
+            f.Text("a");
+            f.Sprite("s");
+            var go = f.GameObject("owner");
+            var scope = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            scope.Load<TextAsset>("a");
+            var child = f.GameObject("child");
+            child.transform.SetParent(go.transform);
+            child.AddComponent<SpriteRenderer>().SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            Object.Destroy(child);
+            yield return null;
+            f.Tick();
+            Assert.That(scope.IsAlive, Is.True);
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
+            f.AssertNoReferences("s");
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [UnityTest]
+        public IEnumerator DisabledHierarchyRetainsResourcesUntilTheScopeIsDisposed()
+        {
+            var sprite = f.Sprite("s");
+            var parent = f.GameObject("parent");
+            var go = f.GameObject("owner");
+            go.transform.SetParent(parent.transform);
+            var scope = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            var target = go.AddComponent<SpriteRenderer>();
+            target.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
             parent.SetActive(false);
             yield return null;
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-            Assert.That(f.Info("a").BindingRefCount, Is.EqualTo(1));
+            f.Tick();
             Assert.That(target.sprite, Is.SameAs(sprite));
-            ResourceOwner.ReleaseBindingsInHierarchy(parent);
-            f.AssertNoReferences("a");
+            Assert.That(f.Info("s").RefCount, Is.EqualTo(1));
+            scope.Dispose();
+            Assert.That(target.sprite, Is.Null);
+            f.AssertNoReferences("s");
             parent.SetActive(true);
-            f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
-            Assert.That(f.Info("a").BindingRefCount, Is.EqualTo(1));
+            var next = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            target.SetSprite(next, "s");
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            Assert.That(f.Info("s").RefCount, Is.EqualTo(1));
         }
 
         [UnityTest]
-        public IEnumerator SceneUnloadReleasesInactiveOwner()
+        public IEnumerator SceneUnloadReleasesAnInactiveOwner()
         {
-            f.Sprite("a");
-            UnityEngine.SceneManagement.Scene scene = SceneManager.CreateScene("ResourceAuditScene");
-            var owner = f.Owner(false);
-            SceneManager.MoveGameObjectToScene(owner.gameObject, scene);
-            var target = owner.gameObject.AddComponent<SpriteRenderer>();
-            f.Bindings.BindSprite(owner, target, new ResourceKey("a"));
+            f.Sprite("s");
+            var scene = SceneManager.CreateScene("ResourceAuditScene");
+            var go = new GameObject("scene-owner");
+            go.SetActive(false);
+            SceneManager.MoveGameObjectToScene(go, scene);
+            var scope = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            go.AddComponent<SpriteRenderer>().SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
             yield return SceneManager.UnloadSceneAsync(scene);
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
+            f.Tick();
+            Assert.That(scope.IsAlive, Is.False);
+            f.AssertNoReferences("s");
+            f.AssertInvariants();
+        }
+
+        [UnityTest]
+        public IEnumerator OwnerFromAnotherServiceIsReboundToTheRequestingService()
+        {
+            f.Text("a");
+            using var other = new ResourceFixture();
+            other.Text("a");
+            var go = f.GameObject("shared-owner");
+            var first = f.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            first.Load<TextAsset>("a");
+            var second = other.Service.OwnerScope(go, ResourceScopeSource.Binding, null);
+            second.Load<TextAsset>("a");
+            Assert.That(go.GetComponents<ResourceOwner>().Length, Is.EqualTo(1));
+            Object.Destroy(go);
+            yield return null;
+            f.Tick();
+            other.Tick();
             f.AssertNoReferences("a");
+            other.AssertNoReferences("a");
         }
     }
 }

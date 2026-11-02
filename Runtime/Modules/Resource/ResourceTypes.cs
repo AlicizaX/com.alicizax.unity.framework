@@ -1,101 +1,87 @@
 using System;
+using System.Threading;
+using Cysharp.Threading.Tasks;
+using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Runtime
 {
-    public struct ResourceAssetLease<T> : IDisposable where T : UnityEngine.Object
+    public readonly struct AssetRef<T> where T : Object
     {
-        private IResourceService _resourceService;
-        private ResourceLeaseHandle _handle;
-        private T _asset;
+        internal readonly int Id;
 
-        public ResourceAssetLease(IResourceService resourceService, ResourceLeaseHandle handle, T asset)
+        internal AssetRef(int id)
         {
-            _resourceService = resourceService;
-            _handle = handle;
-            _asset = asset;
+            Id = id;
         }
 
-        public readonly T Asset => IsValid ? _asset : null;
+        public bool IsValid => Id != 0;
+    }
 
-        public readonly ResourceLeaseHandle Handle => _handle;
+    public readonly struct AssetLease<T> : IDisposable where T : Object
+    {
+        public readonly T Asset;
+        private readonly ResourceService _service;
+        private readonly int _entry;
+        private readonly uint _generation;
 
-        public readonly bool IsValid => _resourceService != null && _asset != null && _resourceService.TryGetLeaseAsset(_handle, out _);
+        internal AssetLease(ResourceService service, int entry, uint generation, T asset)
+        {
+            _service = service;
+            _entry = entry;
+            _generation = generation;
+            Asset = asset;
+        }
+
+        public bool IsValid => _service != null && _service.IsLeaseAlive(_entry, _generation);
 
         public void Dispose()
         {
-            if (!_handle.IsValid)
-            {
-                return;
-            }
-
-            _resourceService?.Release(_handle);
-            _resourceService = null;
-            _handle = ResourceLeaseHandle.Invalid;
-            _asset = null;
+            _service?.ReleaseLease(_entry, _generation);
         }
     }
 
-    public readonly struct ResourceLeaseHandle
+    public readonly struct ResourceScope : IDisposable
     {
-        public static readonly ResourceLeaseHandle Invalid = new ResourceLeaseHandle(-1, 0);
+        internal readonly ResourceService Service;
+        internal readonly int Index;
+        internal readonly uint Generation;
 
-        public readonly int Index;
-        public readonly uint Generation;
-
-        public ResourceLeaseHandle(int index, uint generation)
+        internal ResourceScope(ResourceService service, int index, uint generation)
         {
+            Service = service;
             Index = index;
             Generation = generation;
         }
 
-        public bool IsValid => Index >= 0 && Generation != 0;
-    }
+        public bool IsAlive => Service != null && Service.IsScopeAlive(Index, Generation);
 
-    public readonly struct ResourceKey
-    {
-        public readonly int LoadKeyId;
-        public readonly string PackageName;
-        public readonly string Location;
-        public readonly Type AssetType;
-        public readonly ResourceAssetKind AssetKind;
-
-        public ResourceKey(string location, string packageName = "", Type assetType = null, ResourceAssetKind assetKind = ResourceAssetKind.Unknown)
+        public T Load<T>(AssetRef<T> key) where T : Object
         {
-            LoadKeyId = 0;
-            PackageName = packageName ?? string.Empty;
-            Location = location ?? string.Empty;
-            AssetType = assetType;
-            AssetKind = assetKind;
+            return Service.LoadIntoScope<T>(this, key.Id);
         }
 
-        public ResourceKey(int loadKeyId)
+        public T Load<T>(string location, string packageName = null) where T : Object
         {
-            LoadKeyId = loadKeyId;
-            PackageName = string.Empty;
-            Location = string.Empty;
-            AssetType = null;
-            AssetKind = ResourceAssetKind.Unknown;
+            return Service.LoadIntoScope<T>(this, Service.KeyId<T>(location, packageName));
         }
 
-        public bool HasResolvedIds => LoadKeyId > 0;
-
-        public static ResourceKey Asset<T>(string location, string packageName = "") where T : UnityEngine.Object
+        public UniTask<T> LoadAsync<T>(AssetRef<T> key, CancellationToken cancellationToken = default) where T : Object
         {
-            return new ResourceKey(location, packageName, typeof(T), ResourceAssetKind.Asset);
+            return Service.LoadIntoScopeAsync<T>(this, key.Id, cancellationToken);
+        }
+
+        public UniTask<T> LoadAsync<T>(string location, CancellationToken cancellationToken = default, string packageName = null) where T : Object
+        {
+            return Service.LoadIntoScopeAsync<T>(this, Service.KeyId<T>(location, packageName), cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            Service?.DisposeScope(Index, Generation);
         }
     }
 
-    public enum ResourceAssetKind : byte
-    {
-        Unknown = 0,
-        Asset = 1,
-        Sprite = 2,
-        Material = 3,
-        Prefab = 4,
-        SubAssets = 5,
-    }
-
-    public enum ResourceAssetState : byte
+    internal enum ResourceAssetState : byte
     {
         Released = 0,
         Loading = 1,
@@ -103,77 +89,52 @@ namespace AlicizaX.Resource.Runtime
         Idle = 3,
     }
 
-    internal enum ResourceHandleKind : byte
+    internal struct ResourceAssetInfo
     {
-        None = 0,
-        AssetHandle = 1,
-        SubAssetsHandle = 2,
-    }
-
-    internal enum ResourceLeaseKind : byte
-    {
-        None = 0,
-        Direct = 1,
-        Binding = 2,
-        Legacy = 3,
-    }
-
-    internal enum ResourceLeaseState : byte
-    {
-        Free = 0,
-        Active = 1,
-    }
-
-    public struct ResourceAssetInfo
-    {
-        public int LoadKeyId;
+        public int AssetId;
         public string Package;
         public string Location;
         public string TypeName;
-        public ResourceAssetKind Kind;
+        public bool SubAssets;
         public ResourceAssetState State;
-        public int DirectRefCount;
-        public int LegacyDirectRefCount;
-        public int BindingRefCount;
-        public int PendingRefCount;
-        public float IdleExpireIn;
-        public int RefCountTotal;
-        public bool HandleValid;
-        public byte HandleKind;
+        public int RefCount;
+        public float IdleSeconds;
     }
 
-    public struct ResourceBindingInfo
+    internal enum ResourceScopeSource : byte
     {
-        public bool Active;
-        public int BindingIndex;
-        public int OwnerId;
-        public uint OwnerGeneration;
-        public ulong TargetGameObjectId;
-        public ulong TargetComponentId;
-        public ulong SlotKey;
-        public int AssetId;
-        public ResourceLeaseHandle Lease;
-        public uint Version;
-        public ResourceBindingSlotType SlotType;
-        public bool HasAppliedAsset;
-        public bool HasRuntimeObject;
-#if UNITY_EDITOR
-        public UnityEngine.Object TargetObject;
-#endif
+        Manual = 0,
+        Instance = 1,
+        Binding = 2,
     }
 
-    public struct ResourceOwnerInfo
+    internal struct ResourceScopeInfo
     {
-        public bool Active;
-        public int OwnerIndex;
-        public int OwnerId;
-        public ulong GameObjectId;
+        public int Index;
         public uint Generation;
+        public ResourceScopeSource Source;
+        public string Name;
+        public int EntryCount;
         public int BindingCount;
-        public int RegisteredTargetCount;
-        public bool HasOwnerObject;
-#if UNITY_EDITOR
+        public bool HasOwner;
         public UnityEngine.GameObject OwnerObject;
-#endif
+    }
+
+    internal struct ResourceStats
+    {
+        public int AssetCount;
+        public int LoadingCount;
+        public int IdleCount;
+        public int ReferenceCount;
+        public int ScopeCount;
+        public int ScopeEntryCount;
+        public int LeaseCount;
+        public int BindingCount;
+        public int BindingReferenceCount;
+        public int WaiterCount;
+        public long HitCount;
+        public long IdleHitCount;
+        public long JoinCount;
+        public long MissCount;
     }
 }

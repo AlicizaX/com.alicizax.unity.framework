@@ -15,9 +15,10 @@ using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Tests
 {
-    public sealed class ResourceBackendTests
+    public sealed partial class ResourceBackendTests
     {
         private ResourceService service;
+        private ResourceFrameDriver driver;
         private ResourcePackage package;
         private string folder;
         private string packageName;
@@ -68,10 +69,11 @@ namespace AlicizaX.Resource.Tests
 
             AppServices.EnsureWorld();
             service = new ResourceService { DefaultPackageName = packageName, PlayMode = EPlayMode.EditorSimulateMode };
-            AppServices.App.Register<IResourceService>(service);
+            AppServices.App.Register<IResourceService, IResourcePackageService>(service);
+            driver = ResourceFrameDriver.Start(service);
             initializedGlobal = !YooAssets.IsInitialized;
             service.Initialize();
-            yield return ResourceFixture.Wait(service.InitPackageAsync(), success => Assert.That(success, Is.True));
+            yield return ResourceFixture.WaitFor(service.InitPackageAsync(), success => Assert.That(success, Is.True));
             package = YooAssets.GetPackage(packageName);
             var version = package.RequestPackageVersionAsync();
             yield return version;
@@ -88,6 +90,7 @@ namespace AlicizaX.Resource.Tests
             try
             {
                 if (root != null) Object.Destroy(root);
+                driver?.Dispose();
                 AppServices.Shutdown();
                 if (package != null)
                 {
@@ -110,16 +113,16 @@ namespace AlicizaX.Resource.Tests
         }
 
         [UnityTest]
-        public IEnumerator SharedRealLoadCancellationAndCacheReleaseConverge()
+        public IEnumerator SharedRealLoadCancellationAndIdleCacheConverge()
         {
             string location = folder + "/text.txt";
             using var cts = new CancellationTokenSource();
             var canceled = service.LoadLeaseAsync<TextAsset>(location, cts.Token);
             var surviving = service.LoadLeaseAsync<TextAsset>(location);
             cts.Cancel();
-            yield return ResourceFixture.Wait(canceled, lease => Assert.That(lease.IsValid, Is.False));
-            ResourceAssetLease<TextAsset> held = default;
-            yield return ResourceFixture.Wait(surviving, lease => held = lease);
+            yield return ResourceFixture.WaitFor(canceled, lease => Assert.That(lease.IsValid, Is.False));
+            AssetLease<TextAsset> held = default;
+            yield return ResourceFixture.WaitFor(surviving, lease => held = lease);
             Assert.That(held.Asset.text, Is.EqualTo("resource-audit"));
             var cached = service.LoadLease<TextAsset>(location);
             Assert.That(cached.Asset, Is.SameAs(held.Asset));
@@ -128,20 +131,23 @@ namespace AlicizaX.Resource.Tests
             held.Dispose();
             cached.Dispose();
             Assert.That(References(), Is.Zero);
-            Assert.That(BackendCount("_providerDict"), Is.EqualTo(1));
+            Assert.That(BackendCount("_providerDict"), Is.EqualTo(1), "The idle cache keeps the provider.");
             service.UnloadUnusedAssets(true);
             yield return WaitForBackendRelease();
         }
 
         [UnityTest]
-        public IEnumerator SynchronousSubAssetLoadUsesTheSubAssetProvider()
+        public IEnumerator SynchronousSubSpriteBindingUsesTheSubAssetProvider()
         {
-            var key = new ResourceKey(folder + "/sprite.png", assetType: typeof(Sprite), assetKind: ResourceAssetKind.SubAssets);
-            var handle = service.AcquireDirect(key);
-            Assert.That(handle.IsValid, Is.True);
-            Assert.That(service.TryGetSubSpriteAsset(handle, "sprite", out var sprite), Is.True);
-            Assert.That(sprite, Is.Not.Null);
-            service.Release(handle);
+            var scope = service.CreateScope();
+            var target = new GameObject("sub-sprite");
+            target.transform.SetParent(root.transform);
+            var renderer = target.AddComponent<SpriteRenderer>();
+            renderer.SetSubSprite(scope, folder + "/sprite.png", "sprite", ResourceBindingOptions.Synchronous);
+            Assert.That(renderer.sprite, Is.Not.Null);
+            Assert.That(renderer.sprite.name, Is.EqualTo("sprite"));
+            scope.Dispose();
+            Assert.That(renderer.sprite, Is.Null);
             service.UnloadUnusedAssets(true);
             yield return WaitForBackendRelease();
         }
@@ -150,38 +156,39 @@ namespace AlicizaX.Resource.Tests
         public IEnumerator InactivePrefabAndMaterialInstanceReleaseOnDestroy()
         {
             root.SetActive(false);
-            var instance = service.LoadGameObject(folder + "/prefab.prefab", root.transform);
+            string material = folder + "/material.mat";
+            var instance = service.Instantiate(folder + "/prefab.prefab", root.transform);
             Assert.That(instance, Is.Not.Null);
             Assert.That(instance.activeInHierarchy, Is.False);
-            var owner = instance.GetComponent<ResourceOwner>();
+            var scope = instance.GetComponent<ResourceOwner>().Scope;
+            Assert.That(scope.IsAlive, Is.True);
             var renderer = instance.AddComponent<MeshRenderer>();
-            var bindings = service.BindingService;
-            Assert.That(bindings.BindMaterialInstance(owner, renderer, new ResourceKey(folder + "/material.mat")), Is.EqualTo(ResourceBindStatus.Success));
+            renderer.SetMaterialInstance(scope, material, ResourceBindingOptions.Synchronous);
             var runtime = renderer.sharedMaterial;
-            Assert.That(runtime, Is.Not.SameAs(AssetDatabase.LoadAssetAtPath<Material>(folder + "/material.mat")));
-            Assert.That(bindings.BindSharedMaterial(owner, renderer, new ResourceKey(folder + "/material.mat")), Is.EqualTo(ResourceBindStatus.Success));
+            Assert.That(runtime, Is.Not.SameAs(AssetDatabase.LoadAssetAtPath<Material>(material)));
+            renderer.SetSharedMaterial(scope, material);
             yield return null;
             Assert.That(runtime == null, Is.True);
             Assert.That(References(), Is.EqualTo(2));
             Object.Destroy(root);
             yield return null;
-            service.ProcessResourceMaintenance(Time.unscaledTime, 64);
+            yield return null;
             Assert.That(References(), Is.Zero);
             service.UnloadUnusedAssets(true);
             yield return WaitForBackendRelease();
         }
 
         [UnityTest]
-        public IEnumerator ForceResetRejectsLoadsUntilBackendFinishes()
+        public IEnumerator ForceResetRejectsLoadsUntilTheBackendFinishes()
         {
             string location = folder + "/text.txt";
             var pending = service.LoadLeaseAsync<TextAsset>(location);
             service.ForceUnloadAllAssets();
-            var duringReset = service.LoadLease<TextAsset>(location);
-            Assert.That(duringReset.IsValid, Is.False);
-            yield return ResourceFixture.Wait(pending, lease => Assert.That(lease.IsValid, Is.False));
+            Assert.That(service.CanLoadResources, Is.False);
+            Assert.That(service.LoadLease<TextAsset>(location).IsValid, Is.False);
+            yield return ResourceFixture.WaitFor(pending, lease => Assert.That(lease.IsValid, Is.False));
             yield return WaitForBackendRelease();
-            service.ProcessResourceMaintenance(Time.unscaledTime, 64);
+            yield return WaitUntilLoadable();
             var next = service.LoadLease<TextAsset>(location);
             Assert.That(next.IsValid, Is.True);
             next.Dispose();
@@ -192,9 +199,8 @@ namespace AlicizaX.Resource.Tests
         [UnityTest]
         public IEnumerator ResetCallbackExceptionStillStartsPhysicalUnload()
         {
-            var owner = root.AddComponent<ResourceOwner>();
             var image = root.AddComponent<Image>();
-            Assert.That(service.BindingService.BindImageMaterial(owner, image, new ResourceKey(folder + "/material.mat")), Is.EqualTo(ResourceBindStatus.Success));
+            image.SetMaterial(service.App, folder + "/material.mat", ResourceBindingOptions.Synchronous);
             UnityEngine.Events.UnityAction callback = () => throw new InvalidOperationException("reset clear failure");
             image.RegisterDirtyMaterialCallback(callback);
             try
@@ -202,11 +208,9 @@ namespace AlicizaX.Resource.Tests
                 var error = Assert.Throws<InvalidOperationException>(() => service.ForceUnloadAllAssets());
                 Assert.That(error.Message, Is.EqualTo("reset clear failure"));
                 Assert.That(References(), Is.Zero);
-                Assert.That(owner.IsRegistered, Is.False);
-                Assert.That(service.CanLoadResources, Is.False, "Reset must remain blocked until the backend unload completes, including after callback failure.");
+                Assert.That(service.CanLoadResources, Is.False, "Reset stays blocked until the backend unload completes.");
                 yield return WaitForBackendRelease();
-                service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-                Assert.That(service.CanLoadResources, Is.True);
+                yield return WaitUntilLoadable();
             }
             finally { image.UnregisterDirtyMaterialCallback(callback); }
         }
@@ -217,8 +221,8 @@ namespace AlicizaX.Resource.Tests
             var cachedPackage = package;
             AppServices.App.Unregister(service);
             bool result = true;
-            yield return ResourceFixture.Wait(service.InitPackageAsync(), success => result = success);
-            Assert.That(result, Is.False, "The destroyed resource service cannot accept package initialization.");
+            yield return ResourceFixture.WaitFor(service.InitPackageAsync(), success => result = success);
+            Assert.That(result, Is.False);
             Assert.That(service.CanLoadResources, Is.False);
             Assert.That(YooAssets.GetPackage(packageName), Is.SameAs(cachedPackage));
         }
@@ -233,30 +237,20 @@ namespace AlicizaX.Resource.Tests
             yield return WaitForBackendRelease();
         }
 
-        private int References()
-        {
-            var infos = new ResourceAssetInfo[service.GetAssetInfos(null, 0, 0)];
-            service.GetAssetInfos(infos, 0, infos.Length);
-            int result = 0;
-            foreach (var info in infos) result += info.RefCountTotal;
-            return result;
-        }
-
         [UnityTest]
         public IEnumerator RealPrefabAndRuntimeMaterialStressConverge()
         {
+            string prefab = folder + "/prefab.prefab";
+            string material = folder + "/material.mat";
             foreach (int count in new[] { 32, 256, 1024 })
             {
                 var instances = new GameObject[count];
                 var materials = new Material[count];
-                string prefab = folder + "/prefab.prefab";
-                var material = new ResourceKey(folder + "/material.mat");
                 for (int i = 0; i < count; i++)
                 {
-                    instances[i] = service.LoadGameObject(prefab, root.transform);
+                    instances[i] = service.Instantiate(prefab, root.transform);
                     var renderer = instances[i].AddComponent<MeshRenderer>();
-                    var owner = instances[i].GetComponent<ResourceOwner>();
-                    Assert.That(service.BindingService.BindMaterialInstance(owner, renderer, material), Is.EqualTo(ResourceBindStatus.Success));
+                    renderer.SetMaterialInstance(instances[i].GetComponent<ResourceOwner>().Scope, material, ResourceBindingOptions.Synchronous);
                     materials[i] = renderer.sharedMaterial;
                 }
                 Assert.That(References(), Is.EqualTo(count * 2));
@@ -264,7 +258,6 @@ namespace AlicizaX.Resource.Tests
                 for (int i = 0; i < count; i++) Object.Destroy(instances[i]);
                 yield return null;
                 yield return null;
-                service.ProcessResourceMaintenance(Time.unscaledTime, 64);
                 Assert.That(References(), Is.Zero);
                 for (int i = 0; i < count; i++) Assert.That(materials[i] == null, Is.True);
                 service.UnloadUnusedAssets(true);
@@ -274,10 +267,9 @@ namespace AlicizaX.Resource.Tests
         }
 
         [UnityTest]
-        public IEnumerator MetadataCacheUsesNoResourceReferencesAndInvalidatesOnManifestUpdate()
+        public IEnumerator MetadataCacheHoldsNoReferencesAndInvalidatesOnManifestUpdate()
         {
             string location = folder + "/text.txt";
-            string packageName = service.DefaultPackageName;
             var info = service.GetAssetInfo(location);
             Assert.That(info.IsValid, Is.True);
             yield return AllocationCapture.Measure("metadata-cache-hit", 10000, () =>
@@ -292,6 +284,8 @@ namespace AlicizaX.Resource.Tests
             Assert.That(service.GetAssetInfo(location), Is.Not.SameAs(info));
         }
 
+        private int References() => service.GetStats().ReferenceCount;
+
         private int BackendCount(string field)
         {
             object manager = typeof(ResourcePackage).GetField("_resourceManager", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(package);
@@ -304,6 +298,13 @@ namespace AlicizaX.Resource.Tests
                 yield return null;
             Assert.That(BackendCount("_providerDict"), Is.Zero);
             Assert.That(BackendCount("_bundleLoaderDict"), Is.Zero);
+        }
+
+        private IEnumerator WaitUntilLoadable()
+        {
+            for (int frame = 0; frame < 180 && !service.CanLoadResources; frame++)
+                yield return null;
+            Assert.That(service.CanLoadResources, Is.True);
         }
     }
 }

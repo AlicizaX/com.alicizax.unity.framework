@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -28,6 +29,7 @@ namespace AlicizaX.UI.Runtime
         private bool _pendingRefresh;
         private bool _pendingOpen;
         private Hook _activeHook;
+        private ResourceScope _resources;
 
         private enum Hook : byte
         {
@@ -43,6 +45,16 @@ namespace AlicizaX.UI.Runtime
         public virtual bool IsVisible => _visible;
         internal abstract Type UIHolderType { get; }
         internal abstract void BindUIHolder(UIHolderObjectBase holder);
+
+        protected ResourceScope Res
+        {
+            get
+            {
+                if (_resources.Service == null)
+                    _resources = AppServices.App.Require<IResourceService>().CreateScope(GetType().Name);
+                return _resources;
+            }
+        }
 
         protected object UserData => _userDatas != null && _userDatas.Length > 0 ? _userDatas[0] : null;
         protected ReadOnlyMemory<object> UserDatas => _userDatas;
@@ -387,6 +399,7 @@ namespace AlicizaX.UI.Runtime
             OnDestroyed();
             DestroyChildrenImmediate();
             DetachHolder();
+            _resources.Dispose();
             ReleaseEventListenerProxy();
             Metadata = null;
             _visible = false;

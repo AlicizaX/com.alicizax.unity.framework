@@ -1,8 +1,6 @@
 using System;
-using Cysharp.Text;
 using AlicizaX;
 using UnityEngine;
-using UnityEngine.Serialization;
 using YooAsset;
 
 namespace AlicizaX.Resource.Runtime
@@ -15,7 +13,7 @@ namespace AlicizaX.Resource.Runtime
     {
         #region Propreties
 
-        private IResourceService _resourceService;
+        private ResourceService _resourceService;
         private ServiceScope _resourceScope;
 
         private bool _forceUnloadUnusedAssets = false;
@@ -29,8 +27,6 @@ namespace AlicizaX.Resource.Runtime
         private float _lastUnloadUnusedAssetsOperationElapseSeconds = 0f;
 
         private float _lastGCCollectElapseSeconds = float.MaxValue;
-
-        [SerializeField] private float minUnloadUnusedAssetsInterval = 60f;
 
         [SerializeField] private float maxUnloadUnusedAssetsInterval = 300f;
 
@@ -80,13 +76,6 @@ namespace AlicizaX.Resource.Runtime
 
         public int InternalResourceVersion => _resourceService.InternalResourceVersion;
 
-        [Obsolete("This setting has no effect. Use MaxUnloadUnusedAssetsInterval or ForceUnloadUnusedAssets.")]
-        public float MinUnloadUnusedAssetsInterval
-        {
-            get => minUnloadUnusedAssetsInterval;
-            set => minUnloadUnusedAssetsInterval = value;
-        }
-
         public float MaxUnloadUnusedAssetsInterval
         {
             get => maxUnloadUnusedAssetsInterval;
@@ -107,8 +96,6 @@ namespace AlicizaX.Resource.Runtime
 
         [SerializeField] private int expireProcessCountPerFrame = 16;
 
-        [SerializeField] private int expireProcessCountWhenUnloading = 256;
-
         public float IdleAssetExpireTime
         {
             get => _resourceService.IdleAssetExpireTime;
@@ -123,21 +110,14 @@ namespace AlicizaX.Resource.Runtime
 
         public int ExpireProcessCountPerFrame
         {
-            get => expireProcessCountPerFrame;
-            set => expireProcessCountPerFrame = Mathf.Max(0, value);
-        }
-
-        public int ExpireProcessCountWhenUnloading
-        {
-            get => expireProcessCountWhenUnloading;
-            set => expireProcessCountWhenUnloading = Mathf.Max(expireProcessCountPerFrame, value);
+            get => _resourceService.IdleReleaseCountPerTick;
+            set => _resourceService.IdleReleaseCountPerTick = expireProcessCountPerFrame = Mathf.Max(0, value);
         }
         #endregion
 
         private void OnValidate()
         {
             expireProcessCountPerFrame = Mathf.Max(0, expireProcessCountPerFrame);
-            expireProcessCountWhenUnloading = Mathf.Max(expireProcessCountPerFrame, expireProcessCountWhenUnloading);
         }
 
 
@@ -148,7 +128,8 @@ namespace AlicizaX.Resource.Runtime
         private void Awake()
         {
             _resourceScope = AppServices.App;
-            _resourceService = _resourceScope.Register<IResourceService>(new ResourceService());
+            _resourceService = new ResourceService();
+            _resourceScope.Register<IResourceService, IResourcePackageService>(_resourceService);
 
             Application.lowMemory += OnLowMemory;
 #if UNITY_EDITOR
@@ -164,6 +145,7 @@ namespace AlicizaX.Resource.Runtime
             _resourceService.Initialize();
             _resourceService.IdleAssetExpireTime = idleAssetExpireTime;
             _resourceService.IdleAssetCapacity = idleAssetCapacity;
+            _resourceService.IdleReleaseCountPerTick = expireProcessCountPerFrame;
             _resourceService.SetForceUnloadUnusedAssetsAction(ForceUnloadUnusedAssets);
             Log.Info("ResourceModule Run Mode {0}", _playMode);
         }
@@ -191,28 +173,17 @@ namespace AlicizaX.Resource.Runtime
 
         private void Update()
         {
-            bool shouldUnloadUnusedAssets = _asyncOperation == null &&
-                                            (_forceUnloadUnusedAssets ||
-                                             _lastUnloadUnusedAssetsOperationElapseSeconds >= maxUnloadUnusedAssetsInterval);
-
-            if (_resourceService is ResourceService resourceService)
-            {
-                int expireProcessCount = shouldUnloadUnusedAssets
-                    ? Mathf.Max(expireProcessCountPerFrame, expireProcessCountWhenUnloading)
-                    : Mathf.Max(0, expireProcessCountPerFrame);
-                resourceService.ProcessResourceMaintenance(Time.unscaledTime, expireProcessCount);
-            }
-
             _lastUnloadUnusedAssetsOperationElapseSeconds += Time.unscaledDeltaTime;
             _lastGCCollectElapseSeconds += Time.unscaledDeltaTime;
-            if (shouldUnloadUnusedAssets)
+            if (_asyncOperation == null &&
+                (_forceUnloadUnusedAssets || _lastUnloadUnusedAssetsOperationElapseSeconds >= maxUnloadUnusedAssetsInterval))
             {
-                bool force = _forceUnloadUnusedAssets;
+                bool releaseIdleAssets = _forceUnloadUnusedAssets;
                 bool useSystemUnload = _forceSystemUnloadUnusedAssets && useSystemUnloadUnusedAssets;
                 _forceUnloadUnusedAssets = false;
                 _forceSystemUnloadUnusedAssets = false;
                 _lastUnloadUnusedAssetsOperationElapseSeconds = 0f;
-                _resourceService.UnloadUnusedAssets(force);
+                _resourceService.UnloadUnusedAssets(releaseIdleAssets);
                 _asyncOperation = useSystemUnload ? Resources.UnloadUnusedAssets() : null;
             }
 
@@ -220,6 +191,7 @@ namespace AlicizaX.Resource.Runtime
             {
                 _asyncOperation = null;
             }
+
             if (_asyncOperation == null && _performGCCollect && _lastGCCollectElapseSeconds >= minGCCollectInterval)
             {
                 Log.Info("GC.Collect...");
@@ -231,11 +203,7 @@ namespace AlicizaX.Resource.Runtime
 
         private void OnLowMemory()
         {
-            Log.Warning("Low memory reported...");
-            if (_resourceService != null)
-            {
-                _resourceService.OnLowMemory();
-            }
+            _resourceService.OnLowMemory();
         }
 
         #endregion

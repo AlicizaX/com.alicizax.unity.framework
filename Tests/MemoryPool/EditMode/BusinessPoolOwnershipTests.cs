@@ -9,7 +9,7 @@ namespace AlicizaX.MemoryPoolTests
     {
         public sealed class LeaseWrapper : MemoryObject
         {
-            public ResourceAssetLease<TextAsset> Lease;
+            public AssetLease<TextAsset> Lease;
 
             public override void Clear()
             {
@@ -20,7 +20,7 @@ namespace AlicizaX.MemoryPoolTests
 
         public sealed class CachedLeaseWrapper : MemoryObject, IPoolEvictable
         {
-            public ResourceAssetLease<TextAsset> Lease;
+            public AssetLease<TextAsset> Lease;
             public int Uses;
 
             public override void Clear()

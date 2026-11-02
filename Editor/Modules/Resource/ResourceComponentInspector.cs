@@ -36,7 +36,7 @@ namespace AlicizaX.Resource.Editor
         private readonly List<string> _decryptionServiceTypeNames = new List<string>();
         private readonly List<string> _packageNameBuffer = new List<string>();
         private readonly ResourceAssetInfo[] _assetInfos = new ResourceAssetInfo[DebugPageSize];
-        private readonly ResourceOwnerInfo[] _ownerInfos = new ResourceOwnerInfo[DebugPageSize];
+        private readonly ResourceScopeInfo[] _scopeInfos = new ResourceScopeInfo[DebugPageSize];
         private readonly ResourceBindingInfo[] _bindingInfos = new ResourceBindingInfo[DebugPageSize];
 
         private SerializedProperty _milliseconds = null;
@@ -45,7 +45,6 @@ namespace AlicizaX.Resource.Editor
         private SerializedProperty _idleAssetExpireTime = null;
         private SerializedProperty _idleAssetCapacity = null;
         private SerializedProperty _expireProcessCountPerFrame = null;
-        private SerializedProperty _expireProcessCountWhenUnloading = null;
         private SerializedProperty _downloadingMaxNum = null;
         private SerializedProperty _failedTryAgain = null;
         private SerializedProperty _packageName = null;
@@ -68,7 +67,7 @@ namespace AlicizaX.Resource.Editor
 
         private bool _showResourceDebug = true;
         private bool _showAssetDebug = true;
-        private bool _showOwnerDebug = true;
+        private bool _showScopeDebug = true;
         private bool _showBindingDebug = true;
         private bool _showReleasedAssetSlots;
 
@@ -87,7 +86,6 @@ namespace AlicizaX.Resource.Editor
             _idleAssetExpireTime = Find("idleAssetExpireTime");
             _idleAssetCapacity = Find("idleAssetCapacity");
             _expireProcessCountPerFrame = Find("expireProcessCountPerFrame");
-            _expireProcessCountWhenUnloading = Find("expireProcessCountWhenUnloading");
             _downloadingMaxNum = Find("downloadingMaxNum");
             _failedTryAgain = Find("failedTryAgain");
             _packageName = Find("packageName");
@@ -294,13 +292,6 @@ namespace AlicizaX.Resource.Editor
                 _expireProcessCountPerFrame);
             MakeIntegerRowDelayed(perFrameRow);
             SetCaptionTooltip(perFrameRow, "Expire Process Count Per Frame.");
-
-            AlicizaRow unloadingRow = AlicizaEditorUI.AddPropertyRow(
-                section.Body,
-                "Expire On Unload",
-                _expireProcessCountWhenUnloading);
-            MakeIntegerRowDelayed(unloadingRow);
-            SetCaptionTooltip(unloadingRow, "Expire Process Count When Unloading. Always at least Expire Per Frame.");
         }
 
         private void BuildCacheSection(VisualElement parent)
@@ -402,8 +393,8 @@ namespace AlicizaX.Resource.Editor
 
         private void BuildRuntimeContent(ResourceComponent component)
         {
-            IResourceService resourceService = null;
-            AppServices.TryGet<IResourceService>(out resourceService);
+            AppServices.TryGet(out IResourceService resourceService);
+            ResourceService service = resourceService as ResourceService;
 
             AlicizaSection status = AlicizaEditorUI.CreateStaticSection("Runtime Status");
             _runtimeRoot.Add(status);
@@ -413,7 +404,7 @@ namespace AlicizaX.Resource.Editor
                 "Unload Unused Assets",
                 $"{component.LastUnloadUnusedAssetsOperationElapseSeconds:F2} / {component.MaxUnloadUnusedAssetsInterval:F2}");
 
-            string gameVersion = resourceService != null ? resourceService.ApplicableGameVersion : null;
+            string gameVersion = service != null ? service.ApplicableGameVersion : null;
             bool hasGameVersion = !string.IsNullOrEmpty(gameVersion);
             AlicizaRow versionRow = AlicizaEditorUI.AddValueRow(
                 status.Body,
@@ -431,33 +422,25 @@ namespace AlicizaX.Resource.Editor
                 return;
             }
 
-            if (resourceService == null)
+            if (service == null)
             {
                 debugCard.Body.Add(AlicizaEditorUI.CreateEmptyState("Resource service is not initialized."));
                 return;
             }
 
-            BuildAssetDebug(debugCard.Body, resourceService);
-
-            IResourceBindingService bindingService = resourceService.BindingService;
-            if (bindingService == null)
-            {
-                debugCard.Body.Add(AlicizaEditorUI.CreateEmptyState("Resource binding service is not available."));
-                return;
-            }
-
-            BuildOwnerDebug(debugCard.Body, bindingService);
-            BuildBindingDebug(debugCard.Body, bindingService);
+            BuildAssetDebug(debugCard.Body, service);
+            BuildScopeDebug(debugCard.Body, service);
+            BuildBindingDebug(debugCard.Body, service.Bindings);
         }
 
-        private void BuildAssetDebug(VisualElement parent, IResourceService resourceService)
+        private void BuildAssetDebug(VisualElement parent, ResourceService service)
         {
             AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard("Assets", _showAssetDebug);
             card.ExpandedChanged += expanded => { _showAssetDebug = expanded; };
             parent.Add(card);
 
-            int total = resourceService.GetAssetInfos(_assetInfos, 0, 0);
-            card.Meta.text = total == 1 ? "1 slot" : $"{total} slots";
+            int total = service.AssetCount;
+            card.Meta.text = total == 1 ? "1 asset" : $"{total} assets";
 
             if (!card.Expanded)
             {
@@ -466,32 +449,36 @@ namespace AlicizaX.Resource.Editor
 
             if (total == 0)
             {
-                card.Body.Add(AlicizaEditorUI.CreateEmptyState("No asset slots are currently recorded."));
+                card.Body.Add(AlicizaEditorUI.CreateEmptyState("No assets are currently recorded."));
                 return;
             }
 
             GetAssetSummary(
-                resourceService,
+                service,
                 out int visibleCount,
                 out int activeCount,
                 out int idleCount,
-                out int releasedCount,
-                out int handleCount,
-                out int directRefTotal,
-                out int legacyRefTotal,
-                out int bindingRefTotal);
+                out int loadingCount,
+                out int releasedCount);
+            ResourceStats stats = service.GetStats();
 
             AddDenseValueRow(
                 card.Body,
                 "Visible Assets",
-                $"{visibleCount} | Active:{activeCount} Idle:{idleCount} Released:{releasedCount}");
+                $"{visibleCount} | Active:{activeCount} Idle:{idleCount} Loading:{loadingCount} Released:{releasedCount}");
             AddDenseValueRow(
                 card.Body,
-                "Handles / Refs",
-                $"Handle:{handleCount} | Direct:{directRefTotal} Legacy:{legacyRefTotal} Binding:{bindingRefTotal}");
+                "References",
+                $"Total:{stats.ReferenceCount} | Scope:{stats.ScopeEntryCount} Lease:{stats.LeaseCount} Binding:{stats.BindingReferenceCount} Waiter:{stats.WaiterCount}");
+            long requests = stats.HitCount + stats.IdleHitCount + stats.JoinCount + stats.MissCount;
+            AddDenseValueRow(
+                card.Body,
+                "Requests",
+                requests == 0
+                    ? "Total:0"
+                    : $"Total:{requests} | Hit:{stats.HitCount} IdleHit:{stats.IdleHitCount} Join:{stats.JoinCount} Miss:{stats.MissCount} | HitRate:{(stats.HitCount + stats.IdleHitCount) * 100.0 / requests:F1}%");
 
-            int count = resourceService.GetAssetInfos(_assetInfos, 0, _assetInfos.Length);
-            count = Mathf.Min(count, _assetInfos.Length);
+            int count = service.GetAssetInfos(_assetInfos, 1);
             int shownCount = 0;
             for (int i = 0; i < count; i++)
             {
@@ -504,18 +491,16 @@ namespace AlicizaX.Resource.Editor
                 shownCount++;
                 AddDenseValueRow(
                     card.Body,
-                    "#" + i,
+                    "#" + info.AssetId,
                     AlicizaX.Utility.Text.Format(
-                        "{0} | {1}/{2} | {3} | {4} | D:{5} L:{6} B:{7} | Idle:{8:F0}s",
+                        "{0} | {1}/{2} | {3}{4} | Ref:{5} | Idle:{6:F0}s",
                         info.State,
-                        string.IsNullOrEmpty(info.Package) ? "<None>" : info.Package,
+                        info.Package,
                         info.Location,
-                        string.IsNullOrEmpty(info.TypeName) ? "<Unknown>" : info.TypeName,
-                        GetHandleKindName(info.HandleKind),
-                        info.DirectRefCount,
-                        info.LegacyDirectRefCount,
-                        info.BindingRefCount,
-                        info.IdleExpireIn),
+                        info.TypeName,
+                        info.SubAssets ? " (SubAssets)" : string.Empty,
+                        info.RefCount,
+                        info.IdleSeconds),
                     GetAssetStateTone(info.State));
             }
 
@@ -523,80 +508,74 @@ namespace AlicizaX.Resource.Editor
             {
                 card.Body.Add(AlicizaEditorUI.CreateEmptyState(
                     _showReleasedAssetSlots
-                        ? "No asset slots are currently visible."
-                        : "Released slots are hidden. Enable Show Released Slots in the Editor section to inspect them."));
+                        ? "No assets are currently visible."
+                        : "Released assets are hidden. Enable Show Released Slots in the Editor section to inspect them."));
             }
             else if (total > count)
             {
-                card.Body.Add(AlicizaEditorUI.CreateHint($"Showing the first {count} of {total} asset slots."));
+                card.Body.Add(AlicizaEditorUI.CreateHint($"Showing the first {count} of {total} assets."));
             }
         }
 
-        private void BuildOwnerDebug(VisualElement parent, IResourceBindingService bindingService)
+        private void BuildScopeDebug(VisualElement parent, ResourceService service)
         {
-            AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard("Owners", _showOwnerDebug);
-            card.ExpandedChanged += expanded => { _showOwnerDebug = expanded; };
+            AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard("Scopes", _showScopeDebug);
+            card.ExpandedChanged += expanded => { _showScopeDebug = expanded; };
             parent.Add(card);
 
-            int total = bindingService.GetOwnerInfos(_ownerInfos, 0, 0);
-            card.Meta.text = total == 1 ? "1 owner" : $"{total} owners";
+            int total = service.GetStats().ScopeCount;
+            card.Meta.text = total == 1 ? "1 scope" : $"{total} scopes";
 
             if (!card.Expanded)
             {
                 return;
             }
 
-            if (total == 0)
-            {
-                card.Body.Add(AlicizaEditorUI.CreateEmptyState("No resource owners are registered."));
-                return;
-            }
-
-            int count = bindingService.GetOwnerInfos(_ownerInfos, 0, _ownerInfos.Length);
-            count = Mathf.Min(count, _ownerInfos.Length);
-            int activeCount = 0;
+            int count = service.GetScopeInfos(_scopeInfos, 0);
             for (int i = 0; i < count; i++)
             {
-                ResourceOwnerInfo info = _ownerInfos[i];
-                if (!info.Active)
-                {
-                    continue;
-                }
-
-                activeCount++;
+                ResourceScopeInfo info = _scopeInfos[i];
                 AddDenseValueRow(
                     card.Body,
-                    "Owner " + info.OwnerId,
+                    "Scope " + info.Index,
                     AlicizaX.Utility.Text.Format(
-                        "{0} | GO:{1} Gen:{2} Bind:{3} Target:{4}",
-                        GetOwnerDisplayName(info),
-                        info.GameObjectId,
+                        "{0} | Gen:{1} Entries:{2} Bindings:{3}",
+                        ScopeLabel(info),
                         info.Generation,
-                        info.BindingCount,
-                        info.RegisteredTargetCount));
-                AddObjectRow(card.Body, "Owner Object", info.OwnerObject);
+                        info.EntryCount,
+                        info.BindingCount));
+                if (info.HasOwner)
+                {
+                    AddObjectRow(card.Body, "Owner Object", info.OwnerObject);
+                }
             }
 
-            if (activeCount == 0)
+            if (total > count)
             {
-                card.Body.Add(AlicizaEditorUI.CreateEmptyState(
-                    total > count
-                        ? $"No active owners in the first {count} owner slots."
-                        : "No active owners are registered."));
-            }
-            else if (total > count)
-            {
-                card.Body.Add(AlicizaEditorUI.CreateHint($"Showing the first {count} of {total} owner slots."));
+                card.Body.Add(AlicizaEditorUI.CreateHint($"Showing the first {count} of {total} scopes."));
             }
         }
 
-        private void BuildBindingDebug(VisualElement parent, IResourceBindingService bindingService)
+        private static string ScopeLabel(in ResourceScopeInfo info)
+        {
+            switch (info.Source)
+            {
+                case ResourceScopeSource.Instance:
+                    return "Instance: " + info.Name;
+                case ResourceScopeSource.Binding:
+                    return "Binding Owner";
+                default:
+                    return string.IsNullOrEmpty(info.Name) ? "Manual: <Unnamed>" : "Manual: " + info.Name;
+            }
+        }
+
+        private void BuildBindingDebug(VisualElement parent, ResourceBindingService bindings)
         {
             AlicizaFoldoutCard card = AlicizaEditorUI.CreateFoldoutCard("Bindings", _showBindingDebug);
             card.ExpandedChanged += expanded => { _showBindingDebug = expanded; };
             parent.Add(card);
 
-            int total = bindingService.GetBindingInfos(_bindingInfos, 0, 0);
+            int total = bindings.Count;
             card.Meta.text = total == 1 ? "1 binding" : $"{total} bindings";
 
             if (!card.Expanded)
@@ -610,72 +589,49 @@ namespace AlicizaX.Resource.Editor
                 return;
             }
 
-            int count = bindingService.GetBindingInfos(_bindingInfos, 0, _bindingInfos.Length);
-            count = Mathf.Min(count, _bindingInfos.Length);
-            int activeCount = 0;
+            int count = bindings.GetInfos(_bindingInfos, 0);
             for (int i = 0; i < count; i++)
             {
                 ResourceBindingInfo info = _bindingInfos[i];
-                if (!info.Active)
-                {
-                    continue;
-                }
-
-                activeCount++;
                 AddDenseValueRow(
                     card.Body,
-                    info.SlotType.ToString(),
+                    info.Slot.ToString(),
                     AlicizaX.Utility.Text.Format(
-                        "Owner:{0} Target:{1} ({2}) Asset:{3} Ver:{4} Runtime:{5}",
-                        info.OwnerId,
-                        GetBindingTargetDisplayName(info),
-                        info.TargetComponentId,
+                        "Scope:{0} Target:{1} ({2}) Asset:{3} Ver:{4} Runtime:{5}",
+                        info.Scope,
+                        info.Target != null ? info.Target.name : "<Missing Target>",
+                        info.TargetId,
                         info.AssetId,
                         info.Version,
-                        info.HasRuntimeObject ? "Yes" : "No"));
-                AddObjectRow(card.Body, "Target Object", info.TargetObject);
+                        info.HasRuntimeInstance ? "Yes" : "No"));
+                AddObjectRow(card.Body, "Target Object", info.Target);
             }
 
-            if (activeCount == 0)
+            if (total > count)
             {
-                card.Body.Add(AlicizaEditorUI.CreateEmptyState(
-                    total > count
-                        ? $"No active bindings in the first {count} binding slots."
-                        : "No active bindings are registered."));
-            }
-            else if (total > count)
-            {
-                card.Body.Add(AlicizaEditorUI.CreateHint($"Showing the first {count} of {total} binding slots."));
+                card.Body.Add(AlicizaEditorUI.CreateHint($"Showing the first {count} of {total} bindings."));
             }
         }
 
-        private int GetAssetSummary(
-            IResourceService resourceService,
+        private void GetAssetSummary(
+            ResourceService service,
             out int visibleCount,
             out int activeCount,
             out int idleCount,
-            out int releasedCount,
-            out int handleCount,
-            out int directRefTotal,
-            out int legacyRefTotal,
-            out int bindingRefTotal)
+            out int loadingCount,
+            out int releasedCount)
         {
             visibleCount = 0;
             activeCount = 0;
             idleCount = 0;
+            loadingCount = 0;
             releasedCount = 0;
-            handleCount = 0;
-            directRefTotal = 0;
-            legacyRefTotal = 0;
-            bindingRefTotal = 0;
 
-            int total = resourceService.GetAssetInfos(_assetInfos, 0, _assetInfos.Length);
-            int startIndex = 0;
-            while (startIndex < total)
+            int startAssetId = 1;
+            int count;
+            while ((count = service.GetAssetInfos(_assetInfos, startAssetId)) > 0)
             {
-                int count = resourceService.GetAssetInfos(_assetInfos, startIndex, _assetInfos.Length);
-                int pageCount = Mathf.Min(_assetInfos.Length, Mathf.Max(0, count - startIndex));
-                for (int i = 0; i < pageCount; i++)
+                for (int i = 0; i < count; i++)
                 {
                     ResourceAssetInfo info = _assetInfos[i];
                     switch (info.State)
@@ -686,19 +642,13 @@ namespace AlicizaX.Resource.Editor
                         case ResourceAssetState.Idle:
                             idleCount++;
                             break;
-                        case ResourceAssetState.Released:
+                        case ResourceAssetState.Loading:
+                            loadingCount++;
+                            break;
+                        default:
                             releasedCount++;
                             break;
                     }
-
-                    if (info.HandleValid)
-                    {
-                        handleCount++;
-                    }
-
-                    directRefTotal += info.DirectRefCount;
-                    legacyRefTotal += info.LegacyDirectRefCount;
-                    bindingRefTotal += info.BindingRefCount;
 
                     if (!ShouldHideReleasedAssetSlot(info))
                     {
@@ -706,25 +656,13 @@ namespace AlicizaX.Resource.Editor
                     }
                 }
 
-                if (pageCount <= 0)
-                {
-                    break;
-                }
-
-                startIndex += pageCount;
+                startAssetId += count;
             }
-
-            return total;
         }
 
         private bool ShouldHideReleasedAssetSlot(ResourceAssetInfo info)
         {
-            return !_showReleasedAssetSlots &&
-                   info.State == ResourceAssetState.Released &&
-                   !info.HandleValid &&
-                   info.DirectRefCount == 0 &&
-                   info.LegacyDirectRefCount == 0 &&
-                   info.BindingRefCount == 0;
+            return !_showReleasedAssetSlots && info.State == ResourceAssetState.Released;
         }
 
         private void AddIntSliderRow(
@@ -991,16 +929,6 @@ namespace AlicizaX.Resource.Editor
                 PlayModeNames.Length - 1);
         }
 
-        private static string GetHandleKindName(byte handleKind)
-        {
-            return handleKind switch
-            {
-                1 => "AssetHandle",
-                2 => "SubAssetsHandle",
-                _ => "None"
-            };
-        }
-
         private static AlicizaValueTone GetAssetStateTone(ResourceAssetState state)
         {
             return state switch
@@ -1010,21 +938,6 @@ namespace AlicizaX.Resource.Editor
                 ResourceAssetState.Loading => AlicizaValueTone.Accent,
                 _ => AlicizaValueTone.Muted
             };
-        }
-
-        private static string GetOwnerDisplayName(ResourceOwnerInfo info)
-        {
-            return info.OwnerObject != null ? info.OwnerObject.name : "<Missing Owner>";
-        }
-
-        private static string GetBindingTargetDisplayName(ResourceBindingInfo info)
-        {
-            if (info.TargetObject != null)
-            {
-                return info.TargetObject.name;
-            }
-
-            return "<Missing Target>";
         }
 
         private static bool IsPrefabInHierarchy(UnityEngine.Object obj)

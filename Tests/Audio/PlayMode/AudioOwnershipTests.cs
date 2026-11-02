@@ -19,7 +19,7 @@ namespace AlicizaX.Audio.Tests
             var handles = new ulong[32];
             for (int i = 0; i < handles.Length; i++) handles[i] = f.Audio.Play(AudioType.Sound, "a", true);
             Assert.That(f.Entry("a").RefCount, Is.EqualTo(32));
-            Assert.That(f.Resources.Info("a").DirectRefCount, Is.EqualTo(1));
+            Assert.That(f.Resources.Info("a").RefCount, Is.EqualTo(1));
             Assert.That(f.Audio.Unload("a", true), Is.False);
             f.Audio.ClearCache(true);
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));

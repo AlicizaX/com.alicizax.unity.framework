@@ -1,233 +1,111 @@
-using System.Threading;
-using AlicizaX;
-using AlicizaX.Resource.Runtime;
-using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace AlicizaX.Resource.Runtime
 {
-public static class ResourceBindingExtensions
-{
-    private static bool TryGetBindingService(out IResourceBindingService bindingService)
+    public static class ResourceBindingExtensions
     {
-        bindingService = AppServices.TryGet(out IResourceService resourceService) && resourceService.CanLoadResources ? resourceService.BindingService : null;
-        return bindingService != null;
-    }
-
-    public static void SetSprite(this Image image, string location, bool setNativeSize = false, CancellationToken cancellationToken = default)
-    {
-        ResourceBindingOptions options = setNativeSize ? ResourceBindingOptions.SetNativeSize : ResourceBindingOptions.None;
-        SetSprite(image, location, options, cancellationToken);
-    }
-
-    public static void SetSprite(this Image image, string location, ResourceBindingOptions options, CancellationToken cancellationToken = default)
-    {
-        if (image == null || cancellationToken.IsCancellationRequested)
+        public static void SetSprite(this Image image, in ResourceScope scope, AssetRef<Sprite> key, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            scope.Service.Bindings.Bind(scope, image, ResourceBindingSlot.ImageSprite, key.Id, null, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetSprite(this Image image, in ResourceScope scope, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            Bind(scope, image, ResourceBindingSlot.ImageSprite, location, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(image);
-        bindingService.BindSprite(owner, image, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.Sprite), options);
-    }
-
-    public static void SetSprite(this SpriteRenderer spriteRenderer, string location, CancellationToken cancellationToken = default)
-    {
-        SetSprite(spriteRenderer, location, ResourceBindingOptions.None, cancellationToken);
-    }
-
-    public static void SetSprite(this SpriteRenderer spriteRenderer, string location, ResourceBindingOptions options, CancellationToken cancellationToken = default)
-    {
-        if (spriteRenderer == null || cancellationToken.IsCancellationRequested)
+        public static void SetSprite(this Image image, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            Bind(OwnerScope(image), image, ResourceBindingSlot.ImageSprite, location, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetSprite(this SpriteRenderer spriteRenderer, in ResourceScope scope, AssetRef<Sprite> key, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            scope.Service.Bindings.Bind(scope, spriteRenderer, ResourceBindingSlot.SpriteRendererSprite, key.Id, null, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(spriteRenderer);
-        bindingService.BindSprite(owner, spriteRenderer, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.Sprite), options);
-    }
-
-    public static void SetSubSprite(this Image image, string location, string spriteName, bool setNativeSize = false, CancellationToken cancellationToken = default)
-    {
-        ResourceBindingOptions options = setNativeSize ? ResourceBindingOptions.SetNativeSize : ResourceBindingOptions.None;
-        SetSubSprite(image, location, spriteName, options, cancellationToken);
-    }
-
-    public static void SetSubSprite(this Image image, string location, string spriteName, ResourceBindingOptions options, CancellationToken cancellationToken = default)
-    {
-        if (image == null || cancellationToken.IsCancellationRequested)
+        public static void SetSprite(this SpriteRenderer spriteRenderer, in ResourceScope scope, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            Bind(scope, spriteRenderer, ResourceBindingSlot.SpriteRendererSprite, location, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetSprite(this SpriteRenderer spriteRenderer, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            Bind(OwnerScope(spriteRenderer), spriteRenderer, ResourceBindingSlot.SpriteRendererSprite, location, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(image);
-        bindingService.BindSubSpriteAsync(owner, image, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.SubAssets), spriteName, options, cancellationToken).Forget();
-    }
-
-    public static void SetSubSprite(this SpriteRenderer spriteRenderer, string location, string spriteName, CancellationToken cancellationToken = default)
-    {
-        SetSubSprite(spriteRenderer, location, spriteName, ResourceBindingOptions.None, cancellationToken);
-    }
-
-    public static void SetSubSprite(this SpriteRenderer spriteRenderer, string location, string spriteName, ResourceBindingOptions options, CancellationToken cancellationToken = default)
-    {
-        if (spriteRenderer == null || cancellationToken.IsCancellationRequested)
+        public static void SetSubSprite(this Image image, in ResourceScope scope, string location, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            BindSubSprite(scope, image, ResourceBindingSlot.ImageSprite, location, spriteName, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetSubSprite(this Image image, string location, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            BindSubSprite(OwnerScope(image), image, ResourceBindingSlot.ImageSprite, location, spriteName, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(spriteRenderer);
-        bindingService.BindSubSpriteAsync(owner, spriteRenderer, new ResourceKey(location, string.Empty, typeof(Sprite), ResourceAssetKind.SubAssets), spriteName, options, cancellationToken).Forget();
-    }
-
-    public static void SetMaterial(this Image image, string location, bool isAsync = false, string packageName = "")
-    {
-        SetMaterial(image, location, ResourceBindingOptions.None, isAsync, packageName);
-    }
-
-    public static void SetMaterial(this Image image, string location, ResourceBindingOptions options, bool isAsync = false, string packageName = "")
-    {
-        if (image == null)
+        public static void SetSubSprite(this SpriteRenderer spriteRenderer, in ResourceScope scope, string location, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            throw new GameFrameworkException("SetMaterial failed. Because image is null.");
+            BindSubSprite(scope, spriteRenderer, ResourceBindingSlot.SpriteRendererSprite, location, spriteName, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetSubSprite(this SpriteRenderer spriteRenderer, string location, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            BindSubSprite(OwnerScope(spriteRenderer), spriteRenderer, ResourceBindingSlot.SpriteRendererSprite, location, spriteName, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(image);
-        if (isAsync)
+        public static void SetMaterial(this Image image, in ResourceScope scope, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            bindingService.BindImageMaterialAsync(owner, image, MaterialKey(location, packageName), options).Forget();
-            return;
+            Bind(scope, image, ResourceBindingSlot.ImageMaterial, location, options);
         }
 
-        bindingService.BindImageMaterial(owner, image, MaterialKey(location, packageName), options);
-    }
-
-    public static void SetMaterial(this SpriteRenderer spriteRenderer, string location, bool isAsync = false, string packageName = "")
-    {
-        SetMaterial(spriteRenderer, location, ResourceBindingOptions.None, isAsync, packageName);
-    }
-
-    public static void SetMaterial(this SpriteRenderer spriteRenderer, string location, ResourceBindingOptions options, bool isAsync = false, string packageName = "")
-    {
-        if (spriteRenderer == null)
+        public static void SetMaterial(this Image image, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            throw new GameFrameworkException("SetMaterial failed. Because spriteRenderer is null.");
+            Bind(OwnerScope(image), image, ResourceBindingSlot.ImageMaterial, location, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetSharedMaterial(this Renderer renderer, in ResourceScope scope, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            Bind(scope, renderer, ResourceBindingSlot.RendererSharedMaterial, location, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(spriteRenderer);
-        if (isAsync)
+        public static void SetSharedMaterial(this Renderer renderer, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            bindingService.BindSharedMaterialAsync(owner, spriteRenderer, MaterialKey(location, packageName), options).Forget();
-            return;
+            Bind(OwnerScope(renderer), renderer, ResourceBindingSlot.RendererSharedMaterial, location, options);
         }
 
-        bindingService.BindSharedMaterial(owner, spriteRenderer, MaterialKey(location, packageName), options);
-    }
-
-    public static void SetMaterial(this MeshRenderer meshRenderer, string location, bool needInstance = true, bool isAsync = false, string packageName = "")
-    {
-        SetMaterial(meshRenderer, location, ResourceBindingOptions.None, needInstance, isAsync, packageName);
-    }
-
-    public static void SetMaterial(this MeshRenderer meshRenderer, string location, ResourceBindingOptions options, bool needInstance = true, bool isAsync = false, string packageName = "")
-    {
-        if (meshRenderer == null)
+        public static void SetMaterialInstance(this Renderer renderer, in ResourceScope scope, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            throw new GameFrameworkException("SetMaterial failed. Because meshRenderer is null.");
+            Bind(scope, renderer, ResourceBindingSlot.RendererMaterialInstance, location, options);
         }
 
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
+        public static void SetMaterialInstance(this Renderer renderer, string location, ResourceBindingOptions options = ResourceBindingOptions.None)
         {
-            return;
+            Bind(OwnerScope(renderer), renderer, ResourceBindingSlot.RendererMaterialInstance, location, options);
         }
 
-        ResourceOwner owner = ResourceOwner.GetOrAdd(meshRenderer);
-        if (isAsync)
+        private static ResourceScope OwnerScope(Component target)
         {
-            if (needInstance)
-            {
-                bindingService.BindMaterialInstanceAsync(owner, meshRenderer, MaterialKey(location, packageName), options).Forget();
-            }
-            else
-            {
-                bindingService.BindSharedMaterialAsync(owner, meshRenderer, MaterialKey(location, packageName), options).Forget();
-            }
-
-            return;
+            return ((ResourceService)AppServices.App.Require<IResourceService>()).OwnerScope(target.gameObject, ResourceScopeSource.Binding, null);
         }
 
-        if (needInstance)
+        private static void Bind(in ResourceScope scope, Component target, ResourceBindingSlot slot, string location, ResourceBindingOptions options)
         {
-            bindingService.BindMaterialInstance(owner, meshRenderer, MaterialKey(location, packageName), options);
+            ResourceService service = scope.Service;
+            int assetId = string.IsNullOrEmpty(location)
+                ? 0
+                : slot == ResourceBindingSlot.ImageSprite || slot == ResourceBindingSlot.SpriteRendererSprite
+                    ? service.KeyId<Sprite>(location, string.Empty)
+                    : service.KeyId<Material>(location, string.Empty);
+            service.Bindings.Bind(scope, target, slot, assetId, null, options);
         }
-        else
+
+        private static void BindSubSprite(in ResourceScope scope, Component target, ResourceBindingSlot slot, string location, string spriteName, ResourceBindingOptions options)
         {
-            bindingService.BindSharedMaterial(owner, meshRenderer, MaterialKey(location, packageName), options);
+            ResourceService service = scope.Service;
+            int assetId = string.IsNullOrEmpty(location) ? 0 : service.SubAssetsKeyId(location, string.Empty);
+            service.Bindings.Bind(scope, target, slot, assetId, spriteName, options);
         }
     }
-
-    public static void SetSharedMaterial(this MeshRenderer meshRenderer, string location, bool isAsync = false, string packageName = "")
-    {
-        SetSharedMaterial(meshRenderer, location, ResourceBindingOptions.None, isAsync, packageName);
-    }
-
-    public static void SetSharedMaterial(this MeshRenderer meshRenderer, string location, ResourceBindingOptions options, bool isAsync = false, string packageName = "")
-    {
-        if (meshRenderer == null)
-        {
-            throw new GameFrameworkException("SetSharedMaterial failed. Because meshRenderer is null.");
-        }
-
-        if (!TryGetBindingService(out IResourceBindingService bindingService))
-        {
-            return;
-        }
-
-        ResourceOwner owner = ResourceOwner.GetOrAdd(meshRenderer);
-        if (isAsync)
-        {
-            bindingService.BindSharedMaterialAsync(owner, meshRenderer, MaterialKey(location, packageName), options).Forget();
-            return;
-        }
-
-        bindingService.BindSharedMaterial(owner, meshRenderer, MaterialKey(location, packageName), options);
-    }
-
-    private static ResourceKey MaterialKey(string location, string packageName)
-    {
-        return new ResourceKey(location, packageName, typeof(Material), ResourceAssetKind.Material);
-    }
-
-}
 }

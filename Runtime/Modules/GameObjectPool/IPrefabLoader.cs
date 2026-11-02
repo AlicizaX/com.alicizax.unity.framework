@@ -15,76 +15,65 @@ namespace AlicizaX
 
     internal sealed class YooAssetPrefabLoader : IPrefabLoader
     {
-        private readonly Dictionary<ulong, List<ResourceAssetLease<GameObject>>> _leases =
-            new Dictionary<ulong, List<ResourceAssetLease<GameObject>>>();
+        private struct PrefabLease
+        {
+            public AssetLease<GameObject> Lease;
+            public int Count;
+        }
+
+        private readonly Dictionary<ulong, PrefabLease> _leases = new Dictionary<ulong, PrefabLease>();
 
         private IResourceService _resourceService;
 
-        private IResourceService ResourceService
-        {
-            get
-            {
-                if (_resourceService == null)
-                {
-                    _resourceService = AppServices.App.Require<IResourceService>();
-                }
-
-                return _resourceService;
-            }
-        }
+        private IResourceService ResourceService => _resourceService ??= AppServices.App.Require<IResourceService>();
 
         public GameObject LoadPrefab(string location)
         {
-            ResourceAssetLease<GameObject> lease = ResourceService.LoadLease<GameObject>(location);
-            return RetainLease(lease);
+            return RetainLease(ResourceService.LoadLease<GameObject>(location));
         }
 
         public async UniTask<GameObject> LoadPrefabAsync(string location, CancellationToken cancellationToken = default)
         {
-            ResourceAssetLease<GameObject> lease = await ResourceService.LoadLeaseAsync<GameObject>(location, cancellationToken);
-            return RetainLease(lease);
+            return RetainLease(await ResourceService.LoadLeaseAsync<GameObject>(location, cancellationToken));
         }
 
         public void UnloadPrefab(GameObject prefab)
         {
-            if (prefab == null)
-            {
-                return;
-            }
-
             ulong instanceId = UnityObjectId.Get(prefab);
-            if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases) || leases.Count == 0)
+            if (!_leases.TryGetValue(instanceId, out PrefabLease entry))
             {
                 return;
             }
 
-            int last = leases.Count - 1;
-            ResourceAssetLease<GameObject> lease = leases[last];
-            leases.RemoveAt(last);
-            if (leases.Count == 0)
+            if (--entry.Count > 0)
             {
-                _leases.Remove(instanceId);
+                _leases[instanceId] = entry;
+                return;
             }
 
-            lease.Dispose();
+            _leases.Remove(instanceId);
+            entry.Lease.Dispose();
         }
 
-        private GameObject RetainLease(ResourceAssetLease<GameObject> lease)
+        private GameObject RetainLease(AssetLease<GameObject> lease)
         {
-            if (!lease.IsValid)
+            GameObject prefab = lease.Asset;
+            if (prefab == null)
             {
                 return null;
             }
 
-            ulong instanceId = UnityObjectId.Get(lease.Asset);
-            if (!_leases.TryGetValue(instanceId, out List<ResourceAssetLease<GameObject>> leases))
+            ulong instanceId = UnityObjectId.Get(prefab);
+            if (_leases.TryGetValue(instanceId, out PrefabLease entry))
             {
-                leases = new List<ResourceAssetLease<GameObject>>(1);
-                _leases.Add(instanceId, leases);
+                entry.Count++;
+                _leases[instanceId] = entry;
+                lease.Dispose();
+                return prefab;
             }
 
-            leases.Add(lease);
-            return lease.Asset;
+            _leases.Add(instanceId, new PrefabLease { Lease = lease, Count = 1 });
+            return prefab;
         }
     }
 }

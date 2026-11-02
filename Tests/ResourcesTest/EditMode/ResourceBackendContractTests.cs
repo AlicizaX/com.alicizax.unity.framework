@@ -1,7 +1,7 @@
-using System;
 using System.IO;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
+using UnityEngine;
 using YooAsset;
 
 namespace AlicizaX.Resource.Tests
@@ -40,6 +40,64 @@ namespace AlicizaX.Resource.Tests
                 Assert.That(reopened.Length, Is.EqualTo(3));
             }
             finally { File.Delete(path); }
+        }
+
+        [Test]
+        public void GenerationsWrapPastZero()
+        {
+            Assert.That(ResourceService.NextGeneration(1u), Is.EqualTo(2u));
+            Assert.That(ResourceService.NextGeneration(uint.MaxValue), Is.EqualTo(1u), "Zero is reserved for never-issued slots.");
+        }
+
+        [Test]
+        public void SynchronousRequestsAreCompleteWhenReturned()
+        {
+            using var f = new ResourceFixture();
+            f.Loader.CompleteImmediately = false;
+            var asset = f.Text("a");
+            var handle = f.Loader.LoadAsset(f.Service.DefaultPackageName, "a", typeof(TextAsset), true);
+            Assert.That(handle.IsDone, Is.True);
+            Assert.That(handle.AssetObject, Is.SameAs(asset));
+            Assert.That(f.Loader.SynchronousLoads, Is.EqualTo(1));
+            handle.Release();
+        }
+
+        [Test]
+        public void WaitForCompletionFinishesAPendingRequest()
+        {
+            using var f = new ResourceFixture();
+            f.Loader.CompleteImmediately = false;
+            var asset = f.Text("a");
+            var handle = f.Loader.LoadAsset(f.Service.DefaultPackageName, "a", typeof(TextAsset), false);
+            Assert.That(handle.IsDone, Is.False);
+            f.Loader.WaitForCompletion(handle);
+            Assert.That(handle.IsDone, Is.True);
+            Assert.That(handle.AssetObject, Is.SameAs(asset));
+            Assert.That(f.Loader.WaitCalls, Is.EqualTo(1));
+            handle.Release();
+        }
+
+        [Test]
+        public void ReleasedRequestIsRecreatedWithTheCurrentAsset()
+        {
+            using var f = new ResourceFixture();
+            f.Loader.CompleteImmediately = false;
+            var oldAsset = f.Text("a");
+            var oldHandle = f.Loader.LoadAsset(f.Service.DefaultPackageName, "a", typeof(TextAsset), false);
+            var oldRequest = f.Loader.RequestFor("a");
+            oldHandle.Release();
+            var newAsset = f.Keep(new TextAsset("new"));
+            f.Loader.Assets["a"] = newAsset;
+            var newHandle = f.Loader.LoadAsset(f.Service.DefaultPackageName, "a", typeof(TextAsset), false);
+            var newRequest = f.Loader.RequestFor("a");
+            Assert.That(newRequest, Is.Not.SameAs(oldRequest));
+            f.Loader.Complete(oldRequest);
+            Assert.That(oldRequest.Asset, Is.SameAs(oldAsset));
+            Assert.That(newHandle.IsDone, Is.False);
+            f.Loader.Complete(newRequest);
+            Assert.That(newHandle.AssetObject, Is.SameAs(newAsset));
+            Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
+            newHandle.Release();
         }
     }
 }

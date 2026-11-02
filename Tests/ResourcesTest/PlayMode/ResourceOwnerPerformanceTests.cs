@@ -1,124 +1,150 @@
 #if UNITY_EDITOR
-using System.Collections;
+using System;
+using System.Diagnostics;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
 using UnityEngine;
-using UnityEngine.TestTools;
 
 namespace AlicizaX.Resource.Tests
 {
     public sealed class ResourceOwnerPerformanceTests
     {
-        [UnityTest]
-        public IEnumerator ContinuousNewOwnersDoNotAllocatePerOwnerStorage()
+        private const int Operations = 20000;
+        private const int Samples = 7;
+        private const double MaxScaleRatio = 3.0;
+
+        private static double NanosecondsPerOperation(Action<int> workload)
         {
-            using var f = new ResourceFixture();
-            string location = "owned";
-            string package = f.Service.DefaultPackageName;
-            var expected = f.Text(location);
-            var held = f.Service.LoadLease<TextAsset>(location);
-            var first = f.Owner();
-            f.Service.LoadAsset<TextAsset>(first, location, package);
-            first.ReleaseBindings();
-            foreach (int count in new[] { 100, 1000 })
+            workload(Operations);
+            var results = new double[Samples];
+            var clock = new Stopwatch();
+            for (int sample = 0; sample < Samples; sample++)
             {
-                var owners = new ResourceOwner[count];
-                for (int i = 0; i < count; i++) owners[i] = f.Owner();
-                TextAsset result = null;
-                long allocated = 0;
-                yield return AllocationCapture.Measure("continuous-new-owner-load-release", count, () =>
-                {
-                    for (int i = 0; i < count; i++)
-                    {
-                        result = f.Service.LoadAsset<TextAsset>(owners[i], location, package);
-                        owners[i].ReleaseBindings();
-                    }
-                }, sample => allocated = sample.Bytes);
-                Assert.That(result, Is.SameAs(expected));
-                Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(1));
-                Assert.That(allocated, Is.Zero, "Existing shared storage has enough capacity; allocating another dictionary per new Owner is not a capacity-growth cost.");
+                clock.Restart();
+                workload(Operations);
+                clock.Stop();
+                results[sample] = clock.Elapsed.TotalMilliseconds * 1000000.0 / Operations;
             }
-            held.Dispose();
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            Array.Sort(results);
+            return results[Samples / 2];
         }
 
-        [UnityTest]
-        public IEnumerator ConcurrentOwnerCapacityGrowthAndFreshOwnerReuse()
+        private static void AssertConstant(string name, double small, double large)
         {
-            using var f = new ResourceFixture();
-            string location = "owned-capacity";
-            string package = f.Service.DefaultPackageName;
-            f.Text(location);
-            var held = f.Service.LoadLease<TextAsset>(location);
-            foreach (int count in new[] { 100, 1000 })
-            {
-                var owners = new ResourceOwner[count];
-                var replacements = new ResourceOwner[count];
-                for (int i = 0; i < count; i++)
-                {
-                    owners[i] = f.Owner();
-                    replacements[i] = f.Owner();
-                }
-                yield return AllocationCapture.Measure("owner-concurrent-growth", count, () =>
-                {
-                    for (int i = 0; i < count; i++) f.Service.LoadAsset<TextAsset>(owners[i], location, package);
-                }, _ => { });
-                Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(count + 1));
-                yield return AllocationCapture.Measure("owner-bulk-release", count, () =>
-                {
-                    for (int i = 0; i < count; i++) owners[i].ReleaseBindings();
-                }, sample => Assert.That(sample.Bytes, Is.Zero));
-                Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(1));
-                yield return AllocationCapture.Measure("owner-concurrent-fresh-reuse", count, () =>
-                {
-                    for (int i = 0; i < count; i++) f.Service.LoadAsset<TextAsset>(replacements[i], location, package);
-                }, sample => Assert.That(sample.Bytes, Is.Zero));
-                Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(count + 1));
-                for (int i = 0; i < count; i++) replacements[i].ReleaseBindings();
-            }
-            held.Dispose();
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            TestContext.WriteLine($"SCALE,{name},small={small:F1}ns,large={large:F1}ns,ratio={large / small:F2}");
+            Assert.That(large / small, Is.LessThan(MaxScaleRatio), name + " must not grow with resident population.");
         }
 
-        [UnityTest]
-        public IEnumerator AutomaticOwnershipMeasuresFirstUseDeduplicationAndReuse()
+        private static ResourceFixture Populate(int assets, int scopes, out AssetRef<TextAsset> key, out ResourceScope scope)
+        {
+            var f = new ResourceFixture();
+            var template = f.Text("hot");
+            for (int i = 0; i < assets; i++)
+            {
+                string location = "resident-" + i;
+                f.Loader.Assets.Add(location, template);
+                f.Service.App.Load<TextAsset>(location);
+            }
+            for (int i = 0; i < scopes; i++) f.Service.CreateScope().Load<TextAsset>("resident-" + (i % Math.Max(1, assets)));
+            key = f.Service.Key<TextAsset>("hot");
+            scope = f.Service.CreateScope();
+            scope.Load(key);
+            return f;
+        }
+
+        [Test]
+        public void HitPathsStayConstantAsResidentPopulationGrows()
+        {
+            using var small = Populate(16, 16, out var smallKey, out var smallScope);
+            using var large = Populate(16384, 4096, out var largeKey, out var largeScope);
+            AssertConstant("lease-hit",
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) small.Service.LoadLease(smallKey).Dispose(); }),
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) large.Service.LoadLease(largeKey).Dispose(); }));
+            AssertConstant("lease-hit-string",
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) small.Service.LoadLease<TextAsset>("hot").Dispose(); }),
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) large.Service.LoadLease<TextAsset>("hot").Dispose(); }));
+            AssertConstant("scope-dedupe-hit",
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) smallScope.Load(smallKey); }),
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) largeScope.Load(largeKey); }));
+            AssertConstant("scope-cycle",
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) { var s = small.Service.CreateScope(); s.Load(smallKey); s.Dispose(); } }),
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) { var s = large.Service.CreateScope(); s.Load(largeKey); s.Dispose(); } }));
+        }
+
+        [Test]
+        public void MaintenanceTickStaysConstantAsIdleAndOwnerPopulationGrows()
+        {
+            using var small = new ResourceFixture();
+            using var large = new ResourceFixture();
+            Fill(small, 16, 64);
+            Fill(large, 8192, 2048);
+            AssertConstant("maintenance-tick",
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) small.Tick(); }),
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) large.Tick(); }));
+        }
+
+        private static void Fill(ResourceFixture f, int count, int owners)
+        {
+            f.Service.IdleAssetCapacity = count;
+            f.Service.IdleAssetExpireTime = 1000f;
+            var template = f.Text("template");
+            for (int i = 0; i < count; i++)
+            {
+                string location = "idle-" + i;
+                f.Loader.Assets.Add(location, template);
+                f.Service.LoadLease<TextAsset>(location).Dispose();
+            }
+            for (int i = 0; i < owners; i++) f.Service.OwnerScope(f.GameObject("owner-" + i), ResourceScopeSource.Binding, null);
+        }
+
+        [Test]
+        public void BindingReplaceStaysConstantAsBoundTargetsGrow()
+        {
+            using var small = new ResourceFixture();
+            using var large = new ResourceFixture();
+            var smallTarget = Bindings(small, 16, out var smallScope, out var smallA, out var smallB);
+            var largeTarget = Bindings(large, 4096, out var largeScope, out var largeA, out var largeB);
+            AssertConstant("binding-replace",
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) smallTarget.SetSprite(smallScope, (i & 1) == 0 ? smallA : smallB); }),
+                NanosecondsPerOperation(n => { for (int i = 0; i < n; i++) largeTarget.SetSprite(largeScope, (i & 1) == 0 ? largeA : largeB); }));
+        }
+
+        private static SpriteRenderer Bindings(ResourceFixture f, int count, out ResourceScope scope, out AssetRef<Sprite> a, out AssetRef<Sprite> b)
+        {
+            f.Sprite("a");
+            f.Sprite("b");
+            a = f.Service.Key<Sprite>("a");
+            b = f.Service.Key<Sprite>("b");
+            f.Service.App.Load(a);
+            f.Service.App.Load(b);
+            scope = f.Service.CreateScope();
+            for (int i = 0; i < count; i++) f.GameObject("bound-" + i).AddComponent<SpriteRenderer>().SetSprite(scope, a);
+            var target = f.GameObject("hot").AddComponent<SpriteRenderer>();
+            target.SetSprite(scope, a);
+            return target;
+        }
+
+        [Test]
+        public void PendingLoadsPollAndCompleteInOneTick()
         {
             using var f = new ResourceFixture();
-            string location = "owned";
-            string package = f.Service.DefaultPackageName;
-            var expected = f.Text(location);
-            var owner = f.Owner();
-            TextAsset result = null;
-            yield return AllocationCapture.Measure("owner-load-first-use", 1,
-                () => result = f.Service.LoadAsset<TextAsset>(owner, location, package), _ => { });
-            Assert.That(result, Is.SameAs(expected));
-            var other = f.Owner();
-            yield return AllocationCapture.Measure("owner-load-new-owner", 1,
-                () => result = f.Service.LoadAsset<TextAsset>(other, location, package), _ => { });
-            Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(2));
-            yield return AllocationCapture.Measure("owner-first-release", 1, () => owner.ReleaseBindings(), _ => { }, true);
-            Assert.That(owner.IsRegistered, Is.False);
-            Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(1));
-            f.Service.LoadAsset<TextAsset>(owner, location, package);
-            yield return AllocationCapture.Measure("owner-load-deduplicate", 10000, () =>
+            f.Loader.CompleteImmediately = false;
+            var template = f.Text("template");
+            for (int i = 0; i < 4096; i++)
             {
-                for (int i = 0; i < 10000; i++) result = f.Service.LoadAsset<TextAsset>(owner, location, package);
-            }, sample => Assert.That(sample.Bytes, Is.Zero));
-            yield return AllocationCapture.Measure("owner-release-and-reuse", 10000, () =>
-            {
-                for (int i = 0; i < 10000; i++)
-                {
-                    owner.ReleaseBindings();
-                    result = f.Service.LoadAsset<TextAsset>(owner, location, package);
-                }
-            }, sample => Assert.That(sample.Bytes, Is.Zero));
-            Assert.That(f.Info(location).DirectRefCount, Is.EqualTo(2));
-            owner.ReleaseBindings();
-            other.ReleaseBindings();
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+                string location = "pending-" + i;
+                f.Loader.Assets.Add(location, template);
+                f.Service.LoadLeaseAsync<TextAsset>(location);
+            }
+            var clock = Stopwatch.StartNew();
+            for (int i = 0; i < 1000; i++) f.Tick();
+            clock.Stop();
+            double idleTick = clock.Elapsed.TotalMilliseconds * 1000.0;
+            TestContext.WriteLine($"PERF,pending-poll-tick,4096,{idleTick / 1000:F2}us");
+            foreach (var request in f.Loader.Requests) f.Loader.Complete(request);
+            f.Tick();
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
+            Assert.That(f.Service.GetStats().LeaseCount, Is.EqualTo(4096));
         }
     }
 }

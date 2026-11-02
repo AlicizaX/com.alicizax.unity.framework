@@ -1,11 +1,13 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using AlicizaX;
 using AlicizaX.Resource.Runtime;
 using AlicizaX.Resource.Tests;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace AlicizaX.GameObjectPool.Tests
 {
@@ -35,16 +37,16 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [Test]
-        public void MultipleLoadsStackLeasesByUnityInstanceIdAndUnloadPopsLast()
+        public void RepeatedLoadsShareOneLeaseCountedPerLoad()
         {
             GameObject first = _loader.LoadPrefab("fx/hit");
             GameObject second = _loader.LoadPrefab("fx/hit");
             Assert.That(first, Is.SameAs(_prefab));
             Assert.That(second, Is.SameAs(_prefab));
-            Assert.That(_resources.Info("fx/hit").DirectRefCount, Is.EqualTo(2));
+            Assert.That(_resources.Info("fx/hit").RefCount, Is.EqualTo(1));
             Assert.That(LeaseCount(_prefab), Is.EqualTo(2));
             _loader.UnloadPrefab(_prefab);
-            Assert.That(_resources.Info("fx/hit").DirectRefCount, Is.EqualTo(1));
+            Assert.That(_resources.Info("fx/hit").RefCount, Is.EqualTo(1));
             Assert.That(LeaseCount(_prefab), Is.EqualTo(1));
             _loader.UnloadPrefab(_prefab);
             _resources.AssertNoReferences("fx/hit");
@@ -65,10 +67,26 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [Test]
+        public void AsyncLoadRetainsTheSameLease()
+        {
+            var task = _loader.LoadPrefabAsync("fx/hit");
+            _resources.Tick();
+            Assert.That(task.GetAwaiter().IsCompleted, Is.True);
+            Assert.That(task.GetAwaiter().GetResult(), Is.SameAs(_prefab));
+            Assert.That(_loader.LoadPrefab("fx/hit"), Is.SameAs(_prefab));
+            Assert.That(LeaseCount(_prefab), Is.EqualTo(2));
+            Assert.That(_resources.Info("fx/hit").RefCount, Is.EqualTo(1));
+            _loader.UnloadPrefab(_prefab);
+            _loader.UnloadPrefab(_prefab);
+            _resources.AssertNoReferences("fx/hit");
+        }
+
+        [Test]
         public void InvalidLeaseIsNotRetained()
         {
             var texture = _resources.Keep(new Texture2D(1, 1));
             _resources.Loader.Assets["fx/wrong"] = texture;
+            LogAssert.Expect(LogType.Warning, new Regex("Resource load failed"));
             Assert.That(_loader.LoadPrefab("fx/wrong"), Is.Null);
             Assert.That(LeaseMapCount(), Is.Zero);
             _resources.AssertNoReferences("fx/wrong");
@@ -78,11 +96,11 @@ namespace AlicizaX.GameObjectPool.Tests
 
         private int LeaseCount(GameObject prefab)
         {
-            var leases = (Dictionary<ulong, List<ResourceAssetLease<GameObject>>>)typeof(YooAssetPrefabLoader)
+            var leases = (IDictionary)typeof(YooAssetPrefabLoader)
                 .GetField("_leases", BindingFlags.Instance | BindingFlags.NonPublic)
                 .GetValue(_loader);
-            ulong id = UnityObjectId.Get(prefab);
-            return leases.TryGetValue(id, out List<ResourceAssetLease<GameObject>> stack) ? stack.Count : 0;
+            object entry = leases[UnityObjectId.Get(prefab)];
+            return entry == null ? 0 : (int)entry.GetType().GetField("Count").GetValue(entry);
         }
 
         private int LeaseMapCount()

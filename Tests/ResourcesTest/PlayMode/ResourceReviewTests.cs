@@ -8,38 +8,10 @@ using UnityEngine;
 using UnityEngine.TestTools;
 using UnityEngine.UI;
 using YooAsset;
+using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Tests
 {
-    public sealed class ResourceColdStartTests
-    {
-        [UnityTest]
-        public IEnumerator ServiceConstructionAndFirstResourceStorage()
-        {
-            ResourceService service = null;
-            yield return AllocationCapture.Measure("service-construction-first", 1, () => service = new ResourceService(), _ => { }, true);
-            using var fixture = new ResourceFixture(service);
-            fixture.Text("cold");
-            ResourceAssetLease<TextAsset> lease = default;
-            yield return AllocationCapture.Measure("cold-sync-load", 1,
-                () => lease = service.LoadLease<TextAsset>("cold"), _ => { }, true);
-            Assert.That(lease.IsValid, Is.True);
-            yield return AllocationCapture.Measure("cold-async-cache-hit", 1,
-                () => service.LoadLeaseAsync<TextAsset>("cold").GetAwaiter().GetResult().Dispose(), _ => { }, true);
-            string location = "cold";
-            string packageName = service.DefaultPackageName;
-            yield return AllocationCapture.Measure("cold-stable-cache-hit", 10000, () =>
-            {
-                for (int i = 0; i < 10000; i++) service.LoadLease<TextAsset>(location, packageName).Dispose();
-            }, sample => Assert.That(sample.Bytes, Is.Zero));
-            Assert.That(fixture.Loader.Loads, Is.EqualTo(1));
-            Assert.That(fixture.Info(location).DirectRefCount, Is.EqualTo(1));
-            lease.Dispose();
-            service.UnloadUnusedAssets(true);
-            Assert.That(fixture.Loader.LiveHandles, Is.Zero);
-        }
-    }
-
     public sealed class ResourceReviewTests
     {
         private ResourceFixture f;
@@ -107,62 +79,160 @@ namespace AlicizaX.Resource.Tests
         }
 
         [UnityTest]
-        public IEnumerator SubSpriteReentryPreservesNewBindingAndLayout()
+        public IEnumerator ResetFromPrefabAwakeDestroysTheInstanceAndLeaksNothing()
         {
-            f.Sprite("atlas");
-            var expected = f.Sprite("new");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            var expectedSize = new Vector2(81, 62);
-            image.rectTransform.sizeDelta = expectedSize;
-            f.Loader.CompleteImmediately = false;
-            var previous = f.Bindings.BindSubSpriteAsync(owner, image, new ResourceKey("atlas"), "atlas", ResourceBindingOptions.SetNativeSize);
-            bool reentered = false;
-            image.RegisterDirtyMaterialCallback(() =>
+            var source = f.Prefab("prefab");
+            source.AddComponent<AwakeResourceProbe>();
+            AwakeResourceProbe.OnAwake = f.Service.ForceUnloadAllAssets;
+            try
             {
-                if (reentered) return;
-                reentered = true;
-                f.Bindings.BindSprite(owner, image, new ResourceKey("new"));
-            });
-            f.Loader.Complete("atlas");
-            yield return ResourceFixture.Wait(previous, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
-            Assert.That(image.sprite, Is.SameAs(expected));
-            Assert.That(image.rectTransform.sizeDelta, Is.EqualTo(expectedSize));
-            f.AssertNoReferences("atlas");
-            Assert.That(f.Info("new").RefCountTotal, Is.EqualTo(1));
-            UnityEngine.Object.Destroy(owner.gameObject);
-            yield return null;
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+                Assert.That(f.Service.Instantiate("prefab"), Is.Null);
+                yield return null;
+                Assert.That(f.Loader.LiveHandles, Is.Zero);
+                Assert.That(Object.FindObjectsOfType<AwakeResourceProbe>().Length, Is.EqualTo(1));
+                f.AssertInvariants();
+            }
+            finally { AwakeResourceProbe.OnAwake = null; }
         }
 
         [UnityTest]
-        public IEnumerator PooledPrefabSurvivesReentrantResetAndCanRegisterAgain()
+        public IEnumerator ThrowingPropertyCallbackDuringResetStillReleasesStorage()
         {
-            var prefab = f.Keep(new GameObject("source"));
-            f.Loader.Assets.Add("prefab", prefab);
-            f.Material("old");
-            var expected = f.Material("new");
-            var instance = f.Keep(f.Service.LoadGameObject("prefab"));
-            var owner = instance.GetComponent<ResourceOwner>();
-            var image = instance.AddComponent<Image>();
-            f.Bindings.BindImageMaterial(owner, image, new ResourceKey("old"));
-            image.RegisterDirtyMaterialCallback(f.Service.ForceUnloadAllAssets);
-            owner.ReleaseBindings();
-            image.UnregisterDirtyMaterialCallback(f.Service.ForceUnloadAllAssets);
-            Assert.That(owner.IsRegistered, Is.False);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            instance.SetActive(false);
+            f.Material("m");
+            f.Text("pending");
+            var scope = f.Service.CreateScope();
+            var image = f.GameObject().AddComponent<Image>();
+            image.SetMaterial(scope, "m", ResourceBindingOptions.Synchronous);
+            f.Loader.CompleteImmediately = false;
+            var pending = f.Service.LoadLeaseAsync<TextAsset>("pending");
+            UnityEngine.Events.UnityAction callback = () => throw new InvalidOperationException("reset clear failure");
+            image.RegisterDirtyMaterialCallback(callback);
+            try
+            {
+                var error = Assert.Throws<InvalidOperationException>(() => f.Service.ForceUnloadAllAssets());
+                Assert.That(error.Message, Is.EqualTo("reset clear failure"));
+                Assert.That(pending.GetAwaiter().IsCompleted, Is.True, "Pending loads still terminate.");
+                Assert.That(f.Result(pending).IsValid, Is.False);
+                Assert.That(f.Service.GetStats().ReferenceCount, Is.Zero);
+                Assert.That(f.Loader.LiveHandles, Is.Zero);
+                Assert.That(f.Service.Bindings.Count, Is.Zero);
+                f.Tick();
+                Assert.That(f.Service.CanLoadResources, Is.True);
+                f.AssertInvariants();
+            }
+            finally { image.UnregisterDirtyMaterialCallback(callback); }
             yield return null;
-            instance.SetActive(true);
-            Assert.That(f.Bindings.BindImageMaterial(owner, image, new ResourceKey("new")), Is.EqualTo(ResourceBindStatus.Success));
-            Assert.That(image.material, Is.SameAs(expected));
-            Assert.That(f.Info("new").BindingRefCount, Is.EqualTo(1));
-            UnityEngine.Object.Destroy(instance);
-            yield return null;
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
+
+        [UnityTest]
+        public IEnumerator ThrowingPropertyCallbackDuringScopeDisposeKeepsTheScopeConsistent()
+        {
+            f.Material("m");
+            f.Text("t");
+            var scope = f.Service.CreateScope();
+            scope.Load<TextAsset>("t");
+            var image = f.GameObject().AddComponent<Image>();
+            image.SetMaterial(scope, "m", ResourceBindingOptions.Synchronous);
+            UnityEngine.Events.UnityAction callback = () => throw new InvalidOperationException("dispose clear failure");
+            image.RegisterDirtyMaterialCallback(callback);
+            Assert.Throws<InvalidOperationException>(scope.Dispose);
+            image.UnregisterDirtyMaterialCallback(callback);
+            Assert.That(scope.IsAlive, Is.True, "The scope is not released until its bindings are.");
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            Assert.That(f.Info("m").RefCount, Is.Zero);
+            f.AssertInvariants();
+            scope.Dispose();
+            Assert.That(scope.IsAlive, Is.False);
+            Assert.That(f.Info("t").RefCount, Is.Zero);
+            f.AssertInvariants();
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator ReentrantDisposeFromAPropertyCallbackFreesTheScopeOnce()
+        {
+            f.Material("m");
+            f.Text("t");
+            var scope = f.Service.CreateScope();
+            scope.Load<TextAsset>("t");
+            var first = f.GameObject().AddComponent<Image>();
+            var second = f.GameObject().AddComponent<Image>();
+            first.SetMaterial(scope, "m", ResourceBindingOptions.Synchronous);
+            second.SetMaterial(scope, "m", ResourceBindingOptions.Synchronous);
+            int calls = 0;
+            UnityEngine.Events.UnityAction callback = () =>
+            {
+                calls++;
+                scope.Dispose();
+            };
+            first.RegisterDirtyMaterialCallback(callback);
+            second.RegisterDirtyMaterialCallback(callback);
+            scope.Dispose();
+            first.UnregisterDirtyMaterialCallback(callback);
+            second.UnregisterDirtyMaterialCallback(callback);
+            Assert.That(calls, Is.EqualTo(2));
+            Assert.That(scope.IsAlive, Is.False);
+            var a = f.Service.CreateScope();
+            var b = f.Service.CreateScope();
+            Assert.That(a.Index, Is.Not.EqualTo(b.Index), "A double free would hand out the same slot twice.");
+            Assert.That(f.Info("t").RefCount, Is.Zero);
+            Assert.That(f.Info("m").RefCount, Is.Zero);
+            f.AssertInvariants();
+            a.Dispose();
+            b.Dispose();
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator RebindFromAPropertyCallbackLeavesTheLatestBinding()
+        {
+            f.Sprite("a");
+            var b = f.Sprite("b");
+            using var heldA = f.Service.LoadLease<Sprite>("a");
+            using var heldB = f.Service.LoadLease<Sprite>("b");
+            var scope = f.Service.CreateScope();
+            var image = f.GameObject().AddComponent<Image>();
+            bool rebound = false;
+            UnityEngine.Events.UnityAction callback = () =>
+            {
+                if (rebound) return;
+                rebound = true;
+                image.SetSprite(scope, "b");
+            };
+            image.RegisterDirtyVerticesCallback(callback);
+            image.SetSprite(scope, "a");
+            image.UnregisterDirtyVerticesCallback(callback);
+            Assert.That(rebound, Is.True);
+            Assert.That(image.sprite, Is.SameAs(b));
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
+            Assert.That(f.Info("b").RefCount, Is.EqualTo(2));
+            f.AssertInvariants();
+            scope.Dispose();
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator PendingBindingForADestroyedTargetReleasesItsReference()
+        {
+            f.Material("m");
+            f.Loader.CompleteImmediately = false;
+            var scope = f.Service.CreateScope();
+            var image = f.GameObject().AddComponent<Image>();
+            image.SetMaterial(scope, "m");
+            Object.Destroy(image);
+            yield return null;
+            f.Loader.Complete("m");
+            f.Tick();
+            Assert.That(f.Info("m").RefCount, Is.Zero);
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            f.AssertInvariants();
+        }
+    }
+
+    public sealed class AwakeResourceProbe : MonoBehaviour
+    {
+        internal static Action OnAwake;
+        private void Awake() => OnAwake?.Invoke();
     }
 }
 #endif

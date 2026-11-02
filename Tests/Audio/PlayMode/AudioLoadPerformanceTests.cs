@@ -16,7 +16,7 @@ namespace AlicizaX.Audio.Tests
         public IEnumerator NewAudioAddressesReuseStorageWhenResourceLeasesAreAlreadyResident()
         {
             using var f = new AudioFixture(16);
-            var leases = new ResourceAssetLease<AudioClip>[1024];
+            var leases = new AssetLease<AudioClip>[1024];
             var names = new string[leases.Length];
             for (int i = 0; i < names.Length; i++)
             {

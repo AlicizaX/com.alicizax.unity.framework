@@ -48,12 +48,12 @@ namespace AlicizaX.UI.Runtime
         internal static async UniTask<GameObject> LoadUIResourcesAsync(UIResRegistry.UIResInfo resource,
             Transform parent, CancellationToken cancellationToken) =>
             resource.LoadType == EUIResLoadType.AssetBundle
-                ? await ResourceService.LoadGameObjectAsync(resource.Location, parent, cancellationToken)
+                ? await ResourceService.InstantiateAsync(resource.Location, parent, cancellationToken)
                 : await InstantiateResourceAsync(resource.Location, parent, cancellationToken);
 
         internal static GameObject LoadUIResourcesSync(UIResRegistry.UIResInfo resource, Transform parent) =>
             resource.LoadType == EUIResLoadType.AssetBundle
-                ? ResourceService.LoadGameObject(resource.Location, parent)
+                ? ResourceService.Instantiate(resource.Location, parent)
                 : InstantiateResourceSync(resource.Location, parent);
 
         internal static async UniTask<bool> CreateUIResourceAsync(UIBase view, Transform parent, CancellationToken token)

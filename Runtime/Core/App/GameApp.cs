@@ -50,6 +50,21 @@ public static partial class GameApp
 
     private static IResourceService _resource;
 
+    public static IResourcePackageService ResourcePackage
+    {
+        get
+        {
+            if (_resourcePackage == null)
+            {
+                _resourcePackage = AppServices.App.Require<IResourcePackageService>();
+            }
+
+            return _resourcePackage;
+        }
+    }
+
+    private static IResourcePackageService _resourcePackage;
+
     /// <summary>
     /// 获取场景组件。
     /// </summary>

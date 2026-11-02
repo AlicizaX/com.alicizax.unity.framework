@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using AlicizaX.Resource.Runtime;
 using AlicizaX.Resource.Tests;
 using NUnit.Framework;
 using UnityEngine;
@@ -64,11 +65,16 @@ namespace AlicizaX.MemoryPoolTests
             timer.Stop();
             largestReloadBatch = Math.Max(largestReloadBatch, batchReloads);
             Assert.That(trace.Length - f.Loader.Loads, Is.EqualTo(lruHits), "Immediate acquire/release workloads should match LRU order exactly.");
+            ResourceStats stats = f.Service.GetStats();
+            Assert.That(stats.HitCount, Is.Zero, "Immediate acquire/release never finds an active record.");
+            Assert.That(stats.IdleHitCount, Is.EqualTo(lruHits), "Runtime idle hit counter must agree with the replayed LRU.");
+            Assert.That(stats.MissCount, Is.EqualTo(f.Loader.Loads), "Every backend load is a counted miss.");
+            Assert.That(stats.JoinCount, Is.Zero);
             Assert.That(f.Loader.LiveHandles, Is.LessThanOrEqualTo(capacity));
             long coveredAssetBytes = 0;
             for (int i = 0; i < names.Length; i++)
-                if (f.TryFindInfo(names[i], out var info) && info.HandleValid) coveredAssetBytes += UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(f.Loader.Assets[names[i]]);
-            TestContext.WriteLine($"CACHE,{workload},{capacity},{trace.Length},{lruHits},{fifoHits},{slruHits},{f.Loader.LiveHandles},{coveredAssetBytes},{largestReloadBatch},{timer.Elapsed.TotalMilliseconds:F3}");
+                if (f.TryFindInfo(names[i], out var info) && info.State != ResourceAssetState.Released) coveredAssetBytes += UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(f.Loader.Assets[names[i]]);
+            TestContext.WriteLine($"CACHE,{workload},{capacity},{trace.Length},{lruHits},rate={stats.IdleHitCount * 100.0 / trace.Length:F1}%,{fifoHits},{slruHits},{f.Loader.LiveHandles},{coveredAssetBytes},{largestReloadBatch},{timer.Elapsed.TotalMilliseconds:F3}");
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }

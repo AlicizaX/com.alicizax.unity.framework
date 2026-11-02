@@ -25,7 +25,7 @@ namespace AlicizaX.Audio.Tests
     internal sealed class AudioFixture : IDisposable
     {
         internal static AudioFixture Active;
-        internal readonly ResourceFixture Resources = new ResourceFixture();
+        internal readonly ResourceFixture Resources = new ResourceFixture(true);
         internal readonly AudioService Audio = new AudioService();
         internal readonly AudioGroupConfig[] Groups = new AudioGroupConfig[(int)AudioType.Max];
         internal readonly AudioMixer Mixer;
@@ -94,7 +94,11 @@ namespace AlicizaX.Audio.Tests
             if (created >= 0) Assert.That(info.CreatedCount, Is.EqualTo(created));
             Assert.That(info.FreeCount + info.ActiveCount, Is.EqualTo(info.CreatedCount));
         }
-        internal void Tick(float delta = 0.02f) => ((IServiceTickable)Audio).Tick(delta);
+        internal void Tick(float delta = 0.02f)
+        {
+            Resources.Service.ProcessFrame(Time.unscaledTime);
+            ((IServiceTickable)Audio).Tick(delta);
+        }
         internal void CheckIdle()
         {
             var info = new AudioServiceDebugInfo();

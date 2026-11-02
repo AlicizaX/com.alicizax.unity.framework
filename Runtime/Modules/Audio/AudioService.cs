@@ -649,7 +649,7 @@ namespace AlicizaX.Audio.Runtime
                 return;
             }
 
-            if (!entry.CacheAfterUse || !entry.Lease.IsValid)
+            if (!entry.CacheAfterUse || !entry.IsLoaded)
             {
                 RemoveClipEntry(entry);
                 return;
@@ -662,7 +662,7 @@ namespace AlicizaX.Audio.Runtime
             }
         }
 
-        private bool OnClipLoadCompleted(AudioClipCacheEntry entry, ulong version, ResourceAssetLease<AudioClip> lease)
+        private bool OnClipLoadCompleted(AudioClipCacheEntry entry, ulong version, AssetLease<AudioClip> lease)
         {
             if (!ReferenceEquals(entry.Owner, this) || entry.Version != version)
             {
@@ -1006,7 +1006,7 @@ namespace AlicizaX.Audio.Runtime
                 return true;
             }
 
-            ResourceAssetLease<AudioClip> lease;
+            AssetLease<AudioClip> lease;
             try
             {
                 lease = _resourceService.LoadLease<AudioClip>(entry.Address);
@@ -1022,7 +1022,7 @@ namespace AlicizaX.Audio.Runtime
 
         private async UniTaskVoid BeginLoadAsync(AudioClipCacheEntry entry, ulong version, CancellationToken cancellationToken)
         {
-            ResourceAssetLease<AudioClip> lease;
+            AssetLease<AudioClip> lease;
             try
             {
                 lease = await _resourceService.LoadLeaseAsync<AudioClip>(entry.Address, cancellationToken);

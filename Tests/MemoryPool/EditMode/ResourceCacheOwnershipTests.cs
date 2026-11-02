@@ -19,7 +19,7 @@ namespace AlicizaX.MemoryPoolTests
             var replacement = f.Service.LoadLease<TextAsset>("a");
             copy.Dispose();
             Assert.That(replacement.IsValid, Is.True);
-            Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(1));
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
             replacement.Dispose();
             f.AssertNoReferences("a");
             f.Service.IdleAssetCapacity = 0;
@@ -27,38 +27,39 @@ namespace AlicizaX.MemoryPoolTests
         }
 
         [Test]
-        public void MixedDirectLegacyAndBindingReferencesReleaseIndependently()
+        public void LeaseScopeAndBindingReferencesReleaseIndependently()
         {
             using var f = new ResourceFixture();
             var sprite = f.Sprite("sprite");
-            var owner = f.Owner();
-            var target = owner.gameObject.AddComponent<SpriteRenderer>();
-            var direct = f.Service.LoadLease<Sprite>("sprite");
-            var legacy = f.Service.LoadAsset<Sprite>("sprite");
-            f.Bindings.BindSprite(owner, target, new ResourceKey("sprite", assetType: typeof(Sprite)));
-            Assert.That(f.Info("sprite").RefCountTotal, Is.EqualTo(3));
-            direct.Dispose();
-            f.Service.UnloadAsset(legacy);
+            var loads = f.Service.CreateScope();
+            var bindings = f.Service.CreateScope();
+            var target = f.GameObject().AddComponent<SpriteRenderer>();
+            var lease = f.Service.LoadLease<Sprite>("sprite");
+            loads.Load<Sprite>("sprite");
+            target.SetSprite(bindings, "sprite");
+            Assert.That(f.Info("sprite").RefCount, Is.EqualTo(3));
+            lease.Dispose();
+            loads.Dispose();
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
             Assert.That(target.sprite, Is.SameAs(sprite));
-            f.Bindings.ReleaseOwner(owner);
+            bindings.Dispose();
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
 
         [Test]
-        public void OwnerDeduplicatesRepeatedLoadsAndReleasesAllOwnedResources()
+        public void ScopeDeduplicatesRepeatedLoadsAndReleasesAllOwnedResources()
         {
             using var f = new ResourceFixture();
             f.Text("a");
             f.Text("b");
-            var owner = f.Owner();
-            for (int i = 0; i < 1000; i++) f.Service.LoadAsset<TextAsset>(owner, "a");
-            f.Service.LoadAsset<TextAsset>(owner, "b");
-            Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(1));
+            var scope = f.Service.CreateScope();
+            for (int i = 0; i < 1000; i++) scope.Load<TextAsset>("a");
+            scope.Load<TextAsset>("b");
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
             Assert.That(f.Loader.Loads, Is.EqualTo(2));
             f.Service.IdleAssetCapacity = 0;
-            f.Bindings.ReleaseOwner(owner);
+            scope.Dispose();
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
 
@@ -94,47 +95,51 @@ namespace AlicizaX.MemoryPoolTests
             f.Service.LoadLease<TextAsset>("b").Dispose();
             f.Service.LoadLease<TextAsset>("a").Dispose();
             f.Service.LoadLease<TextAsset>("c").Dispose();
-            f.AssertUnloaded("b");
-            Assert.That(f.Info("a").HandleValid, Is.True);
-            Assert.That(f.Info("c").HandleValid, Is.True);
+            f.AssertReleased("b");
+            Assert.That(f.Info("a").State, Is.EqualTo(ResourceAssetState.Idle));
+            Assert.That(f.Info("c").State, Is.EqualTo(ResourceAssetState.Idle));
             Assert.That(f.Loader.Loads, Is.EqualTo(3));
         }
 
         [Test]
-        public void ExpiryBudgetAndCursorEventuallyReleaseAllIdleHandles()
+        public void ExpiryBudgetEventuallyReleasesAllIdleHandles()
         {
             using var f = new ResourceFixture();
             f.Service.IdleAssetCapacity = 128;
             f.Service.IdleAssetExpireTime = 0;
+            f.Service.IdleReleaseCountPerTick = 16;
             for (int i = 0; i < 65; i++)
             {
                 string key = i.ToString();
                 f.Text(key);
                 f.Service.LoadLease<TextAsset>(key).Dispose();
             }
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime + 1, 16);
+            f.Tick(1f);
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(49));
-            for (int i = 0; i < 4; i++) f.Service.ProcessResourceMaintenance(Time.unscaledTime + 1, 16);
+            for (int i = 0; i < 4; i++) f.Tick(1f);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
 
         [Test]
-        public void ExpiryCursorHandlesDifferentDeadlinesAndReactivation()
+        public void ReactivatedAssetLeavesTheIdleListAndExpiryUsesTheCurrentTtl()
         {
             using var f = new ResourceFixture();
             f.Text("long"); f.Text("short"); f.Text("reactivated");
             f.Service.IdleAssetExpireTime = 100;
             f.Service.LoadLease<TextAsset>("long").Dispose();
-            f.Service.IdleAssetExpireTime = 0;
             f.Service.LoadLease<TextAsset>("short").Dispose();
             f.Service.LoadLease<TextAsset>("reactivated").Dispose();
             var held = f.Service.LoadLease<TextAsset>("reactivated");
-            for (int i = 0; i < 3; i++) f.Service.ProcessResourceMaintenance(Time.unscaledTime + 1, 1);
-            Assert.That(f.Info("long").HandleValid, Is.True);
-            f.AssertUnloaded("short");
+            f.Tick(50f);
+            Assert.That(f.Info("long").State, Is.EqualTo(ResourceAssetState.Idle));
+            f.Service.IdleAssetExpireTime = 10;
+            f.Tick(1f);
+            f.AssertReleased("long");
+            f.AssertReleased("short");
             Assert.That(held.IsValid, Is.True);
             held.Dispose();
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime + 200, 16);
+            Assert.That(f.Info("reactivated").State, Is.EqualTo(ResourceAssetState.Idle));
+            f.Tick(200f);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
 
@@ -147,11 +152,12 @@ namespace AlicizaX.MemoryPoolTests
             for (int i = 0; i < 20; i++)
                 Assert.That(Assert.Throws<InvalidOperationException>(() => f.Service.LoadLease<TextAsset>("a")).Message, Is.EqualTo("controlled load failure"));
             Assert.That(f.Loader.LiveHandles, Is.Zero);
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
             f.Loader.ThrowOnLoad = false;
             var lease = f.Service.LoadLease<TextAsset>("a");
             Assert.That(lease.IsValid, Is.True);
-            Assert.That(f.Info("a").PendingRefCount, Is.Zero);
-            Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(1));
+            Assert.That(f.Service.GetStats().WaiterCount, Is.Zero);
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
             lease.Dispose();
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);

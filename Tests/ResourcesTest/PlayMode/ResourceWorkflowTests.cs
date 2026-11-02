@@ -1,6 +1,4 @@
-using System;
 using System.Collections;
-using System.Threading;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
 using UnityEngine;
@@ -13,10 +11,11 @@ namespace AlicizaX.Resource.Tests
     public sealed class ResourceWorkflowTests
     {
         private ResourceFixture f;
+
         [SetUp]
         public void SetUp()
         {
-            f = new ResourceFixture();
+            f = new ResourceFixture(true);
             AppServices.EnsureWorld();
             AppServices.App.Register<IResourceService>(f.Service);
         }
@@ -26,178 +25,130 @@ namespace AlicizaX.Resource.Tests
         {
             AppServices.Shutdown();
             f.Dispose();
-            AwakeResourceProbe.OnAwake = null;
         }
 
         [UnityTest]
-        public IEnumerator EveryShortcutOverloadReplacesAndClearsItsPhysicalProperty()
+        public IEnumerator EveryImplicitOverloadAppliesThenClears()
         {
             var sprite = f.Sprite("s");
+            var atlas = f.Sprite("atlas");
             var material = f.Material("m");
-            var image = f.Owner().gameObject.AddComponent<Image>();
-            var sr = f.Owner().gameObject.AddComponent<SpriteRenderer>();
-            var mr = f.Owner().gameObject.AddComponent<MeshRenderer>();
-            image.SetSprite("s", true);
+            var image = f.GameObject("image").AddComponent<Image>();
+            var spriteRenderer = f.GameObject("sprite").AddComponent<SpriteRenderer>();
+            var meshRenderer = f.GameObject("mesh").AddComponent<MeshRenderer>();
+            var materialImage = f.GameObject("material-image").AddComponent<Image>();
+            image.SetSprite("s");
+            spriteRenderer.SetSubSprite("atlas", "atlas");
+            materialImage.SetMaterial("m");
+            meshRenderer.SetMaterialInstance("m");
+            yield return null;
+            yield return null;
+            Assert.That(image.sprite, Is.SameAs(sprite));
+            Assert.That(spriteRenderer.sprite, Is.SameAs(atlas));
+            Assert.That(materialImage.material, Is.SameAs(material));
+            var instance = meshRenderer.sharedMaterial;
+            Assert.That(instance, Is.Not.Null);
+            Assert.That(instance, Is.Not.SameAs(material));
+            foreach (var target in new Component[] { image, spriteRenderer, meshRenderer, materialImage })
+                Assert.That(target.GetComponent<ResourceOwner>(), Is.Not.Null);
             image.SetSprite("s", ResourceBindingOptions.SetNativeSize);
-            Assert.That(image.sprite, Is.SameAs(sprite));
-            sr.SetSprite("s");
-            sr.SetSprite("s", ResourceBindingOptions.None);
-            image.SetSubSprite("s", "s", true);
-            image.SetSubSprite("s", "s", ResourceBindingOptions.SetNativeSize);
-            sr.SetSubSprite("s", "s");
-            sr.SetSubSprite("s", "s", ResourceBindingOptions.None);
-            image.SetMaterial("m");
-            image.SetMaterial("m", ResourceBindingOptions.None, true);
-            sr.SetMaterial("m");
-            sr.SetMaterial("m", ResourceBindingOptions.None, true);
-            mr.SetMaterial("m");
-            var oldInstance = mr.sharedMaterial;
-            mr.SetMaterial("m", ResourceBindingOptions.None, true, true);
-            var nextInstance = mr.sharedMaterial;
-            Assert.That(nextInstance, Is.Not.SameAs(oldInstance));
-            mr.SetSharedMaterial("m");
-            mr.SetSharedMaterial("m", ResourceBindingOptions.None, true);
-            mr.SetMaterial("m", false, true);
-            mr.SetMaterial("m", ResourceBindingOptions.None, false, false);
+            Assert.That(image.rectTransform.sizeDelta, Is.EqualTo(new Vector2(4f, 4f)));
+            spriteRenderer.SetSprite("s");
+            Assert.That(spriteRenderer.sprite, Is.SameAs(sprite));
+            image.SetSubSprite("atlas", "atlas");
+            Assert.That(image.sprite, Is.SameAs(atlas));
+            meshRenderer.SetSharedMaterial("m");
+            Assert.That(meshRenderer.sharedMaterial, Is.SameAs(material));
             yield return null;
-            Assert.That(oldInstance == null, Is.True);
-            Assert.That(nextInstance == null, Is.True);
-            Assert.That(image.sprite, Is.SameAs(sprite));
-            Assert.That(sr.sprite, Is.SameAs(sprite));
-            Assert.That(image.material, Is.SameAs(material));
-            Assert.That(sr.sharedMaterial, Is.SameAs(material));
-            Assert.That(mr.sharedMaterial, Is.SameAs(material));
-            Assert.That(f.Info("m").BindingRefCount, Is.EqualTo(3));
-            using var canceled = new CancellationTokenSource();
-            canceled.Cancel();
-            image.SetSprite("", cancellationToken: canceled.Token);
-            Assert.That(image.sprite, Is.SameAs(sprite));
-            image.SetSprite("");
-            sr.SetSprite("");
-            image.SetMaterial("");
-            sr.SetMaterial("");
-            mr.SetSharedMaterial("");
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(image.sprite, Is.Null);
-            Assert.That(sr.sprite, Is.Null);
-            Assert.That(image.material, Is.Not.SameAs(material));
-            Assert.That(mr.sharedMaterial, Is.Null);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-        }
-
-        [UnityTest]
-        public IEnumerator PooledPrefabKeepsSourceAndReleasesAssignedResources()
-        {
-            var source = f.Keep(new GameObject("prefab-source"));
-            source.AddComponent<Image>();
-            f.Loader.Assets.Add("prefab", source);
-            f.Material("material");
-            f.Service.IdleAssetCapacity = 0;
-            var instance = f.Keep(f.Service.LoadGameObject("prefab"));
-            var owner = instance.GetComponent<ResourceOwner>();
-            MemoryPool<PooledResourceView>.Instance.Trim(0);
-            var entry = MemoryPool.Acquire<PooledResourceView>();
-            entry.Target = instance;
-            for (int i = 0; i < 64; i++)
-            {
-                Assert.That(i == 0 ? entry : MemoryPool.Acquire<PooledResourceView>(), Is.SameAs(entry));
-                instance.SetActive(true);
-                instance.GetComponent<Image>().SetMaterial("material");
-                MemoryPool.Release(entry);
-                Assert.That(instance.activeSelf, Is.False);
-                f.AssertNoReferences("material");
-                Assert.That(f.Info("prefab").DirectRefCount, Is.EqualTo(1));
-                Assert.That(owner.IsRegistered, Is.True);
-            }
-            MemoryPool<PooledResourceView>.Instance.Trim(0);
-            yield return null;
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
             Assert.That(instance == null, Is.True);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            image.SetSprite("");
+            spriteRenderer.SetSprite("");
+            materialImage.SetMaterial("");
+            meshRenderer.SetSharedMaterial("");
+            Assert.That(image.sprite, Is.Null);
+            Assert.That(spriteRenderer.sprite, Is.Null);
+            Assert.That(meshRenderer.sharedMaterial, Is.Null);
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            Assert.That(f.Service.GetStats().ReferenceCount, Is.Zero);
+            f.AssertInvariants();
         }
 
         [UnityTest]
-        public IEnumerator PrefabAwakeResetRollsBackInstanceAndSourceLease()
+        public IEnumerator ImplicitBindingsFollowTheGameObjectLifetime()
         {
-            var source = f.Keep(new GameObject("reentrant-prefab"));
-            source.AddComponent<AwakeResourceProbe>();
-            f.Loader.Assets.Add("prefab", source);
-            AwakeResourceProbe.OnAwake = f.Service.ForceUnloadAllAssets;
-            var instance = f.Service.LoadGameObject("prefab");
-            Assert.That(instance, Is.Null);
-            yield return null;
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(Object.FindObjectsOfType<AwakeResourceProbe>().Length, Is.EqualTo(1));
-        }
-
-        [UnityTest]
-        public IEnumerator TargetDestroyedWhileOwnerSurvivesCancelsPendingBinding()
-        {
+            f.Sprite("s");
             f.Material("m");
-            f.Loader.CompleteImmediately = false;
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            var pending = f.Bindings.BindImageMaterialAsync(owner, image, new ResourceKey("m"));
-            Object.Destroy(image);
+            var go = f.GameObject("item");
+            var image = go.AddComponent<Image>();
+            image.SetSprite("s", ResourceBindingOptions.Synchronous);
+            go.AddComponent<MeshRenderer>().SetMaterialInstance("m", ResourceBindingOptions.Synchronous);
+            var instance = go.GetComponent<MeshRenderer>().sharedMaterial;
+            Assert.That(f.Service.GetStats().ReferenceCount, Is.EqualTo(2));
+            Object.Destroy(go);
             yield return null;
-            f.Loader.Complete("m");
-            yield return ResourceFixture.Wait(pending, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
-            Assert.That(owner != null, Is.True);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            Assert.That(f.Service.GetStats().ReferenceCount, Is.Zero);
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            yield return null;
+            Assert.That(instance == null, Is.True);
+            f.AssertInvariants();
+        }
+
+        [UnityTest]
+        public IEnumerator ViewScopeOwnsLoadsAndBindingsUntilDisposed()
+        {
+            var icon = f.Sprite("icon");
+            var config = f.Text("config");
+            var view = f.Service.CreateScope("View");
+            var image = f.GameObject("icon").AddComponent<Image>();
+            image.SetSprite(view, f.Service.Key<Sprite>("icon"));
+            Assert.That(view.Load<TextAsset>("config"), Is.SameAs(config));
+            TextAsset loaded = null;
+            yield return f.Wait(view.LoadAsync<TextAsset>("config"), value => loaded = value);
+            Assert.That(loaded, Is.SameAs(config));
+            yield return null;
+            Assert.That(image.sprite, Is.SameAs(icon));
+            Assert.That(image.GetComponent<ResourceOwner>(), Is.Null, "An explicit scope never adds an owner component.");
+            view.Dispose();
+            Assert.That(image.sprite, Is.Null);
+            Assert.That(f.Service.GetStats().ReferenceCount, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [UnityTest]
+        public IEnumerator UnavailableBackendLeavesTheTargetUntouched()
+        {
+            f.Sprite("s");
+            var image = f.GameObject().AddComponent<Image>();
+            f.Loader.IsAvailable = false;
+            image.SetSprite("s");
+            image.SetSprite("s", ResourceBindingOptions.Synchronous);
+            yield return null;
+            Assert.That(image.sprite, Is.Null);
+            Assert.That(f.Loader.Loads, Is.Zero);
+            Assert.That(f.Service.GetStats().ReferenceCount, Is.Zero);
+            f.Loader.IsAvailable = true;
+            image.SetSprite("s", ResourceBindingOptions.Synchronous);
+            Assert.That(image.sprite, Is.Not.Null);
         }
 
 #if UNITY_EDITOR
         [UnityTest]
-        public IEnumerator ShortcutAvailabilityGateAllocations()
+        public IEnumerator ImplicitCachedShortcutDoesNotAllocate()
         {
-            f.Sprite("sprite");
-            string location = "sprite";
-            var target = f.Keep(new GameObject("availability-target")).AddComponent<Image>();
-            f.Loader.IsAvailable = false;
-            bool canLoad = true;
-            yield return AllocationCapture.Measure("availability-state-first-use", 1,
-                () => canLoad = f.Service.CanLoadResources, sample => Assert.That(sample.Bytes, Is.Zero));
-            Assert.That(canLoad, Is.False);
-            yield return AllocationCapture.Measure("shortcut-unavailable-first-use", 1,
-                () => target.SetSprite(location), _ => { }, true);
-            yield return AllocationCapture.Measure("shortcut-unavailable", 10000, () =>
+            string location = "s";
+            f.Sprite(location);
+            var target = f.GameObject().AddComponent<SpriteRenderer>();
+            target.SetSprite(location, ResourceBindingOptions.Synchronous);
+            foreach (int count in new[] { 100, 1000, 10000 })
             {
-                for (int i = 0; i < 10000; i++) target.SetSprite(location);
-            }, sample => Assert.That(sample.Bytes, Is.Zero));
-            Assert.That(target.GetComponent<ResourceOwner>(), Is.Null);
-            Assert.That(f.Loader.Loads, Is.Zero);
-            f.Loader.IsAvailable = true;
-            target.SetSprite(location);
-            yield return AllocationCapture.Measure("shortcut-cached", 10000, () =>
-            {
-                for (int i = 0; i < 10000; i++) target.SetSprite(location);
-            }, sample => Assert.That(sample.Bytes, Is.Zero));
-            Assert.That(f.Info(location).BindingRefCount, Is.EqualTo(1));
+                yield return AllocationCapture.Measure("implicit-shortcut-cached", count, () =>
+                {
+                    for (int i = 0; i < count; i++) target.SetSprite(location);
+                }, sample => Assert.That(sample.Bytes, Is.Zero));
+            }
+            Assert.That(f.Info("s").RefCount, Is.EqualTo(1));
             Assert.That(f.Loader.Loads, Is.EqualTo(1));
         }
 #endif
-
-        public sealed class PooledResourceView : MemoryObject, IPoolEvictable
-        {
-            public GameObject Target;
-
-            public override void Clear()
-            {
-                ResourceOwner.ReleaseBindingsInHierarchy(Target);
-                Target.SetActive(false);
-            }
-
-            public void OnEvict()
-            {
-                Object.Destroy(Target);
-                Target = null;
-            }
-        }
-    }
-
-    public sealed class AwakeResourceProbe : MonoBehaviour
-    {
-        internal static Action OnAwake;
-        private void Awake() => OnAwake?.Invoke();
     }
 }

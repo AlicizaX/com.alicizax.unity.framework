@@ -1,737 +1,347 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.ExceptionServices;
-using System.Threading;
-using Cysharp.Threading.Tasks;
+using Cysharp.Text;
 using UnityEngine;
 using UnityEngine.UI;
 using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Runtime
 {
-    internal sealed class ResourceBindingService : IResourceBindingService
+    internal sealed class ResourceBindingService
     {
-        private const int PageBits = 8;
-        private const int PageSize = 1 << PageBits;
-        private const int PageMask = PageSize - 1;
-        private readonly ResourceService _resourceService;
-        private OwnerSlot[][] _owners;
-        private BindingSlot[][] _bindings;
-        private TargetSlot[][] _targets;
-        private int _ownerNext;
-        private int _bindingNext;
-        private int _targetNext;
-        private int _ownerFree = -1;
-        private int _bindingFree = -1;
-        private int _targetFree = -1;
-        private int _ownerCursor;
-        private int _targetCursor;
-        private uint _nextOwnerGeneration;
-        private uint _nextRequestVersion;
-        private uint _world;
-        private bool _isShutdown;
-        private readonly Dictionary<ulong, int> _ownerByObject = new Dictionary<ulong, int>();
-        private readonly Dictionary<SlotKey, int> _bindingBySlot = new Dictionary<SlotKey, int>();
-        private readonly Dictionary<ulong, int> _targetByObject = new Dictionary<ulong, int>();
-
-        private struct OwnerSlot
-        {
-            public ResourceOwner Owner;
-            public ulong ObjectId;
-            public uint Generation;
-            public int BindingHead;
-            public int TargetHead;
-            public int AssetLeaseHead;
-            public int BindingCount;
-            public int TargetCount;
-            public int NextFree;
-            public byte State;
-        }
+        private const int SweepBudget = 32;
 
         private struct BindingSlot
         {
-            public SlotKey Key;
-            public Object Target;
-            public Object AppliedAsset;
-            public Object RuntimeObject;
-            public ResourceLeaseHandle Lease;
-            public int OwnerId;
-            public uint Version;
-            public int Previous;
-            public int Next;
-            public int NextFree;
-        }
-
-        private struct TargetSlot
-        {
             public Component Target;
-            public ulong ObjectId;
-            public int OwnerId;
+            public Object Applied;
+            public Object RuntimeInstance;
+            public ulong TargetId;
+            public int AssetId;
+            public int Scope;
             public int Previous;
             public int Next;
-            public int NextFree;
+            public uint Version;
+            public uint Generation;
+            public ResourceBindingSlot Slot;
         }
 
-        private readonly struct SlotKey : IEquatable<SlotKey>
+        private readonly struct BindingKey : IEquatable<BindingKey>
         {
-            public readonly ulong TargetId;
-            public readonly ResourceBindingSlotType Type;
+            private readonly ulong _targetId;
+            private readonly ResourceBindingSlot _slot;
 
-            public SlotKey(ulong targetId, ResourceBindingSlotType type)
+            public BindingKey(ulong targetId, ResourceBindingSlot slot)
             {
-                TargetId = targetId;
-                Type = type == ResourceBindingSlotType.SubSprite ? ResourceBindingSlotType.ImageSprite :
-                    type == ResourceBindingSlotType.RendererMaterialInstance ? ResourceBindingSlotType.RendererSharedMaterial : type;
+                _targetId = targetId;
+                _slot = slot == ResourceBindingSlot.RendererMaterialInstance ? ResourceBindingSlot.RendererSharedMaterial : slot;
             }
 
-            public bool Equals(SlotKey other) => TargetId == other.TargetId && Type == other.Type;
-            public override bool Equals(object obj) => obj is SlotKey other && Equals(other);
-            public override int GetHashCode() => (TargetId.GetHashCode() * 397) ^ (int)Type;
+            public bool Equals(BindingKey other) => _targetId == other._targetId && _slot == other._slot;
+
+            public override bool Equals(object obj) => obj is BindingKey other && Equals(other);
+
+            public override int GetHashCode() => (_targetId.GetHashCode() * 397) ^ (int)_slot;
         }
 
-        public ResourceBindingService(ResourceService resourceService)
+        private readonly ResourceService _service;
+        private readonly ResourceSlotTable<BindingSlot> _slots = new ResourceSlotTable<BindingSlot>();
+        private readonly Dictionary<BindingKey, int> _slotIds = new Dictionary<BindingKey, int>();
+        private int[] _scopeHeads = Array.Empty<int>();
+        private int _sweepCursor;
+
+        internal ResourceBindingService(ResourceService service)
         {
-            _resourceService = resourceService;
+            _service = service;
         }
 
-        public void Shutdown()
+        internal int Count => _slots.LiveCount;
+
+        internal int SlotCount => _slots.Count;
+
+        internal void Bind(in ResourceScope scope, Component target, ResourceBindingSlot slot, int assetId, string spriteName, ResourceBindingOptions options)
         {
-            _isShutdown = true;
-            unchecked { _world++; }
-            Exception error = null;
-            for (int i = 0; i < _ownerNext; i++)
+            if (!_service.IsRunning || !scope.IsAlive)
+                return;
+
+            ulong targetId = UnityObjectId.Get(target);
+            BindingKey key = new BindingKey(targetId, slot);
+            if (!_slotIds.TryGetValue(key, out int index))
             {
-                if (Owner(i).State != 1) continue;
-                try { ReleaseOwner(i + 1, Owner(i).Generation); }
-                catch (Exception exception) { error = Combine(error, exception); }
+                if (assetId == 0)
+                    return;
+                index = CreateSlot(scope.Index, target, targetId, key);
             }
-            for (int i = 0; i < _ownerNext; i++)
+            else if (_slots[index].Scope != scope.Index)
             {
-                if (Owner(i).State != 2) continue;
-                try { DrainOwnerBindings(i); }
-                catch (Exception exception) { error = Combine(error, exception); }
+                Unlink(index);
+                Link(index, scope.Index);
             }
-            if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
+
+            ref BindingSlot binding = ref _slots[index];
+            binding.Slot = slot;
+            uint version = ++binding.Version;
+            uint generation = binding.Generation;
+            if (assetId == 0)
+            {
+                Release(index, true);
+                return;
+            }
+
+            if (_service.AcquireLoaded(assetId))
+            {
+                Apply(index, assetId, spriteName, options);
+                return;
+            }
+
+            if ((options & ResourceBindingOptions.Synchronous) != 0)
+            {
+                if (_service.AcquireSync(assetId))
+                    ApplyLoaded(index, generation, version, assetId, spriteName, options);
+                return;
+            }
+
+            if (_service.StartLoading(assetId))
+                _service.AddWaiter(assetId, BindingLoadWaiter.Create(this, index, generation, version, spriteName, options));
         }
 
-        public void Reset()
+        internal void ApplyLoaded(int index, uint generation, uint version, int assetId, string spriteName, ResourceBindingOptions options)
         {
-            try
+            ref BindingSlot binding = ref _slots[index];
+            if (binding.Generation != generation || binding.Version != version || binding.Target == null)
             {
-                Shutdown();
+                _service.RemoveReference(assetId);
+                return;
             }
-            finally
-            {
-                _isShutdown = false;
-            }
+
+            Apply(index, assetId, spriteName, options);
         }
 
-        public ResourceBindStatus RegisterOwner(ResourceOwner owner)
+        private void Apply(int index, int assetId, string spriteName, ResourceBindingOptions options)
         {
-            if (_isShutdown) return ResourceBindStatus.ServiceShutdown;
-            if (owner == null) return ResourceBindStatus.MissingOwner;
-            if (owner.IsRegistered)
-                return ReferenceEquals(owner.BindingService, this) && IsOwnerCurrent(owner)
-                    ? ResourceBindStatus.Success : ResourceBindStatus.StaleOwner;
-            ulong objectId = UnityObjectId.Get(owner.gameObject);
-            if (_ownerByObject.TryGetValue(objectId, out int oldIndex))
+            Object asset = spriteName == null ? _service.AssetOf(assetId) : _service.SubSpriteOf(assetId, spriteName);
+            if (asset == null)
             {
-                ReleaseOwner(oldIndex + 1, Owner(oldIndex).Generation);
-                return RegisterOwner(owner);
+                Log.Warning(ZString.Format("Resource binding sprite '{0}' not found.", spriteName));
+                _service.RemoveReference(assetId);
+                return;
             }
-            int index = AllocateOwner();
-            ref OwnerSlot slot = ref Owner(index);
-            slot.Owner = owner;
-            slot.ObjectId = objectId;
-            slot.State = 1;
-            _ownerByObject[objectId] = index;
-            owner.SetRegistered(this, index + 1, objectId, slot.Generation);
-            return ResourceBindStatus.Success;
+
+            ref BindingSlot binding = ref _slots[index];
+            int previousAssetId = binding.AssetId;
+            Object previousInstance = binding.RuntimeInstance;
+            bool instance = binding.Slot == ResourceBindingSlot.RendererMaterialInstance;
+            Object applied = instance ? Object.Instantiate(asset) : asset;
+            Component target = binding.Target;
+            ResourceBindingSlot slot = binding.Slot;
+            binding.AssetId = assetId;
+            binding.Applied = applied;
+            binding.RuntimeInstance = instance ? applied : null;
+            if (previousAssetId != 0)
+                _service.RemoveReference(previousAssetId);
+
+            SetProperty(target, slot, applied, options);
+            ResourceService.DestroyRuntimeObject(previousInstance);
         }
 
-        public ResourceBindStatus ReleaseOwner(ResourceOwner owner)
+        internal void ReleaseScope(int scope)
         {
-            if (owner == null || !owner.IsRegistered) return ResourceBindStatus.MissingOwner;
-            if (!ReferenceEquals(owner.BindingService, this)) return ResourceBindStatus.StaleOwner;
-            return ReleaseOwner(owner.OwnerId, owner.Generation);
+            if (scope >= _scopeHeads.Length)
+                return;
+            while (_scopeHeads[scope] >= 0)
+                Release(_scopeHeads[scope], true);
         }
 
-        public ResourceBindStatus ReleaseOwner(int ownerId, uint generation)
-            => ReleaseOwner(ownerId, generation, false);
-
-        internal ResourceBindStatus ReleaseOwner(int ownerId, uint generation, bool keepPrefabSource)
+        internal void DropReferences()
         {
-            int index = ownerId - 1;
-            if (index < 0 || index >= _ownerNext) return ResourceBindStatus.MissingOwner;
-            ref OwnerSlot slot = ref Owner(index);
-            if (slot.State != 1 || slot.Generation != generation) return ResourceBindStatus.StaleOwner;
-            uint world = _world;
-            slot.State = 2;
-            _ownerByObject.Remove(slot.ObjectId);
-            _resourceService.ReleaseOwnerLeases(ownerId, ref slot.AssetLeaseHead);
-            Exception error = null;
-            while (slot.BindingHead >= 0)
-            {
-                int binding = slot.BindingHead;
-                if (keepPrefabSource && world == _world && !_isShutdown && slot.Owner != null &&
-                    Binding(binding).Key.Type == ResourceBindingSlotType.PrefabSource)
-                    binding = Binding(binding).Next;
-                if (binding < 0) break;
-                try { ReleaseBinding(binding); }
-                catch (Exception exception) { error = Combine(error, exception); }
-            }
-            while (slot.TargetHead >= 0) RemoveTarget(slot.TargetHead);
-            if (keepPrefabSource && world == _world && !_isShutdown && slot.BindingCount > 0)
-            {
-                slot.Generation = AllocateOwnerGeneration();
-                slot.State = 1;
-                _ownerByObject[slot.ObjectId] = index;
-                slot.Owner.SetRegistered(this, ownerId, slot.ObjectId, slot.Generation);
-                if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
-                return ResourceBindStatus.Success;
-            }
-            while (slot.BindingHead >= 0)
-            {
-                try { ReleaseBinding(slot.BindingHead); }
-                catch (Exception exception) { error = Combine(error, exception); }
-            }
-            while (slot.TargetHead >= 0) RemoveTarget(slot.TargetHead);
-            if (!ReferenceEquals(slot.Owner, null))
-                slot.Owner.ClearRegistered();
-            slot = default;
-            slot.NextFree = _ownerFree;
-            _ownerFree = index;
-            if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
-            return ResourceBindStatus.Success;
+            for (int index = 0; index < _slots.Count; index++)
+                _slots[index].AssetId = 0;
         }
 
-        private void DrainOwnerBindings(int index)
+        internal void ReleaseAll()
         {
-            ref OwnerSlot slot = ref Owner(index);
-            Exception error = null;
-            while (slot.BindingHead >= 0)
+            for (int index = 0; index < _slots.Count; index++)
             {
-                try { ReleaseBinding(slot.BindingHead); }
-                catch (Exception exception) { error = Combine(error, exception); }
-            }
-            while (slot.TargetHead >= 0) RemoveTarget(slot.TargetHead);
-            if (!ReferenceEquals(slot.Owner, null))
-                slot.Owner.ClearRegistered();
-            if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
-        }
-
-        public ResourceBindStatus RegisterTarget(ResourceOwner owner, Component target)
-        {
-            ResourceBindStatus status = RegisterOwner(owner);
-            if (status != ResourceBindStatus.Success) return status;
-            if (target == null) return ResourceBindStatus.MissingTarget;
-            ulong objectId = UnityObjectId.Get(target);
-            bool transferred = false;
-            if (_targetByObject.TryGetValue(objectId, out int existing))
-            {
-                if (Target(existing).OwnerId == owner.OwnerId) return ResourceBindStatus.Success;
-                RemoveTarget(existing);
-                transferred = true;
-            }
-            int index = AllocateTarget();
-            ref TargetSlot slot = ref Target(index);
-            ref OwnerSlot ownerSlot = ref Owner(owner.OwnerId - 1);
-            slot.Target = target;
-            slot.ObjectId = objectId;
-            slot.OwnerId = owner.OwnerId;
-            slot.Next = ownerSlot.TargetHead;
-            if (slot.Next >= 0) Target(slot.Next).Previous = index;
-            ownerSlot.TargetHead = index;
-            ownerSlot.TargetCount++;
-            _targetByObject[objectId] = index;
-            if (transferred) ReleaseTargetBindings(objectId);
-            return IsOwnerCurrent(owner) && _targetByObject.TryGetValue(objectId, out int current) && Target(current).OwnerId == owner.OwnerId
-                ? ResourceBindStatus.Success : ResourceBindStatus.StaleOwner;
-        }
-
-        public ResourceBindStatus UnregisterTarget(ResourceOwner owner, Component target)
-        {
-            if (!IsOwnerCurrent(owner)) return ResourceBindStatus.StaleOwner;
-            if (target == null) return ResourceBindStatus.MissingTarget;
-            if (!_targetByObject.TryGetValue(UnityObjectId.Get(target), out int index)) return ResourceBindStatus.Success;
-            if (Target(index).OwnerId != owner.OwnerId) return ResourceBindStatus.StaleOwner;
-            ulong objectId = Target(index).ObjectId;
-            RemoveTarget(index);
-            ReleaseTargetBindings(objectId);
-            return ResourceBindStatus.Success;
-        }
-
-        public ResourceBindStatus BindSprite(ResourceOwner owner, Image image, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
-            => Bind(owner, image, Typed(key, typeof(Sprite)), ResourceBindingSlotType.ImageSprite, options, false);
-
-        public ResourceBindStatus BindSprite(ResourceOwner owner, SpriteRenderer spriteRenderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
-            => Bind(owner, spriteRenderer, Typed(key, typeof(Sprite)), ResourceBindingSlotType.SpriteRendererSprite, options, false);
-
-        public UniTask<ResourceBindStatus> BindSubSpriteAsync(ResourceOwner owner, Image image, ResourceKey atlasKey, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
-            => BindAsync(owner, image, SubAssets(atlasKey), ResourceBindingSlotType.ImageSprite, options, false, spriteName, cancellationToken);
-
-        public UniTask<ResourceBindStatus> BindSubSpriteAsync(ResourceOwner owner, SpriteRenderer spriteRenderer, ResourceKey atlasKey, string spriteName, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
-            => BindAsync(owner, spriteRenderer, SubAssets(atlasKey), ResourceBindingSlotType.SpriteRendererSprite, options, false, spriteName, cancellationToken);
-
-        public ResourceBindStatus BindImageMaterial(ResourceOwner owner, Image image, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
-            => Bind(owner, image, Typed(key, typeof(Material)), ResourceBindingSlotType.ImageMaterial, options, false);
-
-        public UniTask<ResourceBindStatus> BindImageMaterialAsync(ResourceOwner owner, Image image, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
-            => BindAsync(owner, image, Typed(key, typeof(Material)), ResourceBindingSlotType.ImageMaterial, options, false, null, cancellationToken);
-
-        public ResourceBindStatus BindSharedMaterial(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
-            => Bind(owner, renderer, Typed(key, typeof(Material)), ResourceBindingSlotType.RendererSharedMaterial, options, false);
-
-        public UniTask<ResourceBindStatus> BindSharedMaterialAsync(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
-            => BindAsync(owner, renderer, Typed(key, typeof(Material)), ResourceBindingSlotType.RendererSharedMaterial, options, false, null, cancellationToken);
-
-        public ResourceBindStatus BindMaterialInstance(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None)
-            => Bind(owner, renderer, Typed(key, typeof(Material)), ResourceBindingSlotType.RendererSharedMaterial, options, true);
-
-        public UniTask<ResourceBindStatus> BindMaterialInstanceAsync(ResourceOwner owner, Renderer renderer, ResourceKey key, ResourceBindingOptions options = ResourceBindingOptions.None, CancellationToken cancellationToken = default)
-            => BindAsync(owner, renderer, Typed(key, typeof(Material)), ResourceBindingSlotType.RendererSharedMaterial, options, true, null, cancellationToken);
-
-        private ResourceBindStatus Bind(ResourceOwner owner, Component target, in ResourceKey key, ResourceBindingSlotType type, ResourceBindingOptions options, bool instance)
-        {
-            ResourceBindStatus status = Reserve(owner, target, type, out ResourceLoadLifetime request);
-            if (status != ResourceBindStatus.Success) return status;
-            if (!key.HasResolvedIds && string.IsNullOrEmpty(key.Location))
-            {
-                ReleaseBinding(request.BindingIndex);
-                return ResourceBindStatus.Success;
-            }
-            try
-            {
-                ResourceLeaseHandle lease = _resourceService.AcquireBinding(key);
-                return Commit(request, lease, options, instance, null);
-            }
-            finally
-            {
-                CancelReservation(request);
+                if (!ReferenceEquals(_slots[index].Target, null))
+                    Release(index, true);
             }
         }
 
-        private async UniTask<ResourceBindStatus> BindAsync(ResourceOwner owner, Component target, ResourceKey key, ResourceBindingSlotType type,
-            ResourceBindingOptions options, bool instance, string spriteName, CancellationToken cancellationToken)
+        internal void ReleaseDestroyedTargets()
         {
-            if (cancellationToken.IsCancellationRequested) return ResourceBindStatus.Canceled;
-            ResourceBindStatus status = Reserve(owner, target, type, out ResourceLoadLifetime request);
-            if (status != ResourceBindStatus.Success) return status;
-            if (!key.HasResolvedIds && string.IsNullOrEmpty(key.Location))
+            int checks = Math.Min(SweepBudget, _slots.Count);
+            for (int i = 0; i < checks; i++)
             {
-                ReleaseBinding(request.BindingIndex);
-                return ResourceBindStatus.Success;
-            }
-            try
-            {
-                ResourceLeaseHandle lease = await _resourceService.AcquireBindingAsync(key, cancellationToken, request);
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    _resourceService.Release(lease);
-                    return ResourceBindStatus.Canceled;
-                }
-                return Commit(request, lease, options, instance, spriteName);
-            }
-            finally
-            {
-                CancelReservation(request);
+                if (_sweepCursor >= _slots.Count)
+                    _sweepCursor = 0;
+                int index = _sweepCursor++;
+                Component target = _slots[index].Target;
+                if (!ReferenceEquals(target, null) && target == null)
+                    Release(index, false);
             }
         }
 
-        private ResourceBindStatus Reserve(ResourceOwner owner, Component target, ResourceBindingSlotType type, out ResourceLoadLifetime request)
+        private void Release(int index, bool clearTarget)
         {
-            request = default;
-            if (_nextRequestVersion == uint.MaxValue)
-                throw new InvalidOperationException("Resource binding version space exhausted.");
-            uint version = ++_nextRequestVersion;
-            ResourceBindStatus status = RegisterTarget(owner, target);
-            if (status != ResourceBindStatus.Success) return status;
-            SlotKey key = new SlotKey(UnityObjectId.Get(target), type);
-            if (!_bindingBySlot.TryGetValue(key, out int index))
-                index = CreateBinding(owner, target, key);
-            else if (Binding(index).Version > version)
-                return ResourceBindStatus.StaleOwner;
-            Binding(index).Version = version;
-            request = new ResourceLoadLifetime(this, owner, index, version);
-            return ResourceBindStatus.Success;
+            ref BindingSlot binding = ref _slots[index];
+            Component target = binding.Target;
+            Object applied = binding.Applied;
+            Object instance = binding.RuntimeInstance;
+            int assetId = binding.AssetId;
+            ResourceBindingSlot slot = binding.Slot;
+            Unlink(index);
+            _slotIds.Remove(new BindingKey(binding.TargetId, slot));
+            binding.Target = null;
+            binding.Applied = null;
+            binding.RuntimeInstance = null;
+            binding.AssetId = 0;
+            binding.Generation = ResourceService.NextGeneration(binding.Generation);
+            _slots.Free(index);
+            if (assetId != 0)
+                _service.RemoveReference(assetId);
+
+            if (clearTarget && target != null)
+                ClearProperty(target, slot, applied);
+            ResourceService.DestroyRuntimeObject(instance);
         }
 
-        private int CreateBinding(ResourceOwner owner, Object target, SlotKey key)
+        private int CreateSlot(int scope, Component target, ulong targetId, BindingKey key)
         {
-            int index = AllocateBinding();
-            ref BindingSlot binding = ref Binding(index);
-            ref OwnerSlot slot = ref Owner(owner.OwnerId - 1);
-            binding.OwnerId = owner.OwnerId;
+            int index = _slots.Allocate();
+            ref BindingSlot binding = ref _slots[index];
+            if (binding.Generation == 0)
+                binding.Generation = 1;
             binding.Target = target;
-            binding.Key = key;
-            binding.Next = slot.BindingHead;
-            if (binding.Next >= 0) Binding(binding.Next).Previous = index;
-            slot.BindingHead = index;
-            slot.BindingCount++;
-            _bindingBySlot[key] = index;
+            binding.TargetId = targetId;
+            _slotIds.Add(key, index);
+            Link(index, scope);
             return index;
         }
 
-        private ResourceBindStatus Commit(in ResourceLoadLifetime request, ResourceLeaseHandle lease, ResourceBindingOptions options, bool instance, string spriteName)
+        private void Link(int index, int scope)
         {
-            Object runtime = null;
-            bool transferred = false;
-            try
+            if (scope >= _scopeHeads.Length)
             {
-                if (!request.IsCurrent) return ResourceBindStatus.StaleOwner;
-                if (!lease.IsValid) return ResourceBindStatus.LoadFailed;
-                Object asset;
-                if (spriteName != null)
+                int oldLength = _scopeHeads.Length;
+                Array.Resize(ref _scopeHeads, Math.Max(Math.Max(16, oldLength << 1), scope + 1));
+                for (int i = oldLength; i < _scopeHeads.Length; i++)
+                    _scopeHeads[i] = -1;
+            }
+
+            ref BindingSlot binding = ref _slots[index];
+            int head = _scopeHeads[scope];
+            binding.Scope = scope;
+            binding.Previous = -1;
+            binding.Next = head;
+            if (head >= 0)
+                _slots[head].Previous = index;
+            _scopeHeads[scope] = index;
+        }
+
+        private void Unlink(int index)
+        {
+            ref BindingSlot binding = ref _slots[index];
+            if (binding.Previous >= 0)
+                _slots[binding.Previous].Next = binding.Next;
+            else
+                _scopeHeads[binding.Scope] = binding.Next;
+            if (binding.Next >= 0)
+                _slots[binding.Next].Previous = binding.Previous;
+        }
+
+        private static void SetProperty(Component target, ResourceBindingSlot slot, Object applied, ResourceBindingOptions options)
+        {
+            switch (slot)
+            {
+                case ResourceBindingSlot.ImageSprite:
+                    Image image = (Image)target;
+                    image.sprite = (Sprite)applied;
+                    if ((options & ResourceBindingOptions.SetNativeSize) != 0)
+                        image.SetNativeSize();
+                    break;
+                case ResourceBindingSlot.SpriteRendererSprite:
+                    ((SpriteRenderer)target).sprite = (Sprite)applied;
+                    break;
+                case ResourceBindingSlot.ImageMaterial:
+                    ((Image)target).material = (Material)applied;
+                    break;
+                default:
+                    ((Renderer)target).sharedMaterial = (Material)applied;
+                    break;
+            }
+        }
+
+        private static void ClearProperty(Component target, ResourceBindingSlot slot, Object applied)
+        {
+            switch (slot)
+            {
+                case ResourceBindingSlot.ImageSprite:
+                    Image image = (Image)target;
+                    if (image.sprite == applied)
+                        image.sprite = null;
+                    break;
+                case ResourceBindingSlot.SpriteRendererSprite:
+                    SpriteRenderer spriteRenderer = (SpriteRenderer)target;
+                    if (spriteRenderer.sprite == applied)
+                        spriteRenderer.sprite = null;
+                    break;
+                case ResourceBindingSlot.ImageMaterial:
+                    Image materialImage = (Image)target;
+                    if (materialImage.material == applied)
+                        materialImage.material = null;
+                    break;
+                default:
+                    Renderer renderer = (Renderer)target;
+                    if (renderer.sharedMaterial == applied)
+                        renderer.sharedMaterial = null;
+                    break;
+            }
+        }
+
+        internal int GetInfos(ResourceBindingInfo[] results, int startIndex)
+        {
+            int count = 0;
+            for (int index = startIndex; index < _slots.Count && count < results.Length; index++)
+            {
+                ref BindingSlot binding = ref _slots[index];
+                if (ReferenceEquals(binding.Target, null))
+                    continue;
+                results[count++] = new ResourceBindingInfo
                 {
-                    if (!_resourceService.TryGetSubSpriteAsset(lease, spriteName, out Sprite sprite))
-                        return ResourceBindStatus.LoadFailed;
-                    asset = sprite;
-                }
-                else if (!_resourceService.TryGetLeaseAsset(lease, out asset))
-                    return ResourceBindStatus.LoadFailed;
-                ref BindingSlot binding = ref Binding(request.BindingIndex);
-                bool materialSlot = binding.Key.Type == ResourceBindingSlotType.ImageMaterial || binding.Key.Type == ResourceBindingSlotType.RendererSharedMaterial;
-                if (materialSlot ? asset is not Material : asset is not Sprite)
-                    return ResourceBindStatus.LoadFailed;
-                if (instance)
-                    asset = runtime = Object.Instantiate(asset);
-                ResourceLeaseHandle previousLease = binding.Lease;
-                Object previousRuntimeObject = binding.RuntimeObject;
-                binding.AppliedAsset = asset;
-                binding.RuntimeObject = runtime;
-                binding.Lease = lease;
-                transferred = true;
-                try
-                {
-                    Apply(ref binding, options, request);
-                    return request.IsCurrent ? ResourceBindStatus.Success : ResourceBindStatus.StaleOwner;
-                }
-                catch (Exception exception)
-                {
-                    try
-                    {
-                        if (Matches(request)) ReleaseBinding(request.BindingIndex);
-                    }
-                    catch (Exception cleanup)
-                    {
-                        throw new AggregateException(exception, cleanup);
-                    }
-                    throw;
-                }
-                finally
-                {
-                    ReleaseContents(previousLease, previousRuntimeObject);
-                }
-            }
-            finally
-            {
-                if (!transferred)
-                {
-                    _resourceService.Release(lease);
-                    ResourceService.DestroyRuntimeObject(runtime);
-                }
-            }
-        }
-
-        private static void Apply(ref BindingSlot binding, ResourceBindingOptions options, in ResourceLoadLifetime request)
-        {
-            switch (binding.Key.Type)
-            {
-                case ResourceBindingSlotType.ImageSprite:
-                    var image = (Image)binding.Target;
-                    image.sprite = (Sprite)binding.AppliedAsset;
-                    if ((options & ResourceBindingOptions.SetNativeSize) != 0 && request.IsCurrent) image.SetNativeSize();
-                    break;
-                case ResourceBindingSlotType.SpriteRendererSprite:
-                    ((SpriteRenderer)binding.Target).sprite = (Sprite)binding.AppliedAsset;
-                    break;
-                case ResourceBindingSlotType.ImageMaterial:
-                    ((Image)binding.Target).material = (Material)binding.AppliedAsset;
-                    break;
-                case ResourceBindingSlotType.RendererSharedMaterial:
-                    ((Renderer)binding.Target).sharedMaterial = (Material)binding.AppliedAsset;
-                    break;
-            }
-        }
-
-        internal ResourceBindStatus RegisterPrefabSource(ResourceOwner owner, ResourceLeaseHandle lease, GameObject prefabSource)
-        {
-            ResourceBindStatus status = RegisterOwner(owner);
-            if (status != ResourceBindStatus.Success) return status;
-            if (!lease.IsValid || prefabSource == null) return ResourceBindStatus.InvalidKey;
-            SlotKey key = new SlotKey(owner.GameObjectId, ResourceBindingSlotType.PrefabSource);
-            if (!_bindingBySlot.TryGetValue(key, out int index)) index = CreateBinding(owner, owner, key);
-            ref BindingSlot binding = ref Binding(index);
-            ResourceLeaseHandle previous = binding.Lease;
-            binding.Lease = lease;
-            binding.AppliedAsset = prefabSource;
-            _resourceService.Release(previous);
-            return ResourceBindStatus.Success;
-        }
-
-        internal void RetainAsset(int ownerId, ResourceLeaseHandle lease)
-        {
-            _resourceService.RetainOwnerLease(ownerId, ref Owner(ownerId - 1).AssetLeaseHead, lease);
-        }
-
-        internal bool IsOwnerCurrent(ResourceOwner owner)
-        {
-            if (_isShutdown || owner == null || !ReferenceEquals(owner.BindingService, this))
-                return false;
-            int index = owner.OwnerId - 1;
-            return index >= 0 && index < _ownerNext && Owner(index).State == 1 &&
-                   Owner(index).Generation == owner.Generation && ReferenceEquals(Owner(index).Owner, owner);
-        }
-
-        internal bool IsLoadCurrent(in ResourceLoadLifetime request)
-        {
-            ResourceOwner owner = request.Owner;
-            if (_isShutdown || owner == null || !ReferenceEquals(owner.BindingService, this) ||
-                owner.OwnerId != request.OwnerId || owner.Generation != request.OwnerGeneration || Owner(request.OwnerId - 1).State != 1)
-                return false;
-            return request.BindingIndex < 0 || Matches(request) && Binding(request.BindingIndex).Target != null;
-        }
-
-        private bool Matches(in ResourceLoadLifetime request)
-        {
-            ref BindingSlot binding = ref Binding(request.BindingIndex);
-            return binding.OwnerId == request.OwnerId && binding.Version == request.Version;
-        }
-
-        private void CancelReservation(in ResourceLoadLifetime request)
-        {
-            if (Matches(request) && !Binding(request.BindingIndex).Lease.IsValid)
-                ReleaseBinding(request.BindingIndex);
-        }
-
-        private void ReleaseBinding(int index)
-        {
-            BindingSlot binding = DetachBinding(index);
-            ReleaseDetachedBinding(in binding);
-        }
-
-        private BindingSlot DetachBinding(int index)
-        {
-            BindingSlot binding = Binding(index);
-            ref OwnerSlot owner = ref Owner(binding.OwnerId - 1);
-            if (binding.Previous >= 0) Binding(binding.Previous).Next = binding.Next;
-            else owner.BindingHead = binding.Next;
-            if (binding.Next >= 0) Binding(binding.Next).Previous = binding.Previous;
-            owner.BindingCount--;
-            _bindingBySlot.Remove(binding.Key);
-            Binding(index) = default;
-            Binding(index).NextFree = _bindingFree;
-            _bindingFree = index;
-            return binding;
-        }
-
-        private void ReleaseDetachedBinding(in BindingSlot binding)
-        {
-            try
-            {
-                if (!_bindingBySlot.TryGetValue(binding.Key, out _)) ClearApplied(in binding);
-            }
-            finally
-            {
-                ReleaseContents(binding.Lease, binding.RuntimeObject);
-            }
-        }
-
-        private static void ClearApplied(in BindingSlot binding)
-        {
-            if (binding.Target == null || binding.AppliedAsset == null) return;
-            switch (binding.Key.Type)
-            {
-                case ResourceBindingSlotType.ImageSprite:
-                    var image = (Image)binding.Target;
-                    if (image.sprite == binding.AppliedAsset) image.sprite = null;
-                    break;
-                case ResourceBindingSlotType.SpriteRendererSprite:
-                    var spriteRenderer = (SpriteRenderer)binding.Target;
-                    if (spriteRenderer.sprite == binding.AppliedAsset) spriteRenderer.sprite = null;
-                    break;
-                case ResourceBindingSlotType.ImageMaterial:
-                    var materialImage = (Image)binding.Target;
-                    if (materialImage.material == binding.AppliedAsset) materialImage.material = null;
-                    break;
-                case ResourceBindingSlotType.RendererSharedMaterial:
-                    var renderer = (Renderer)binding.Target;
-                    if (renderer.sharedMaterial == binding.AppliedAsset) renderer.sharedMaterial = null;
-                    break;
-            }
-        }
-
-        private void ReleaseContents(ResourceLeaseHandle lease, Object runtimeObject)
-        {
-            _resourceService.Release(lease);
-            ResourceService.DestroyRuntimeObject(runtimeObject);
-        }
-
-        private void ReleaseTargetBindings(ulong id, ResourceBindingSlotType type = ResourceBindingSlotType.ImageSprite)
-        {
-            if (type > ResourceBindingSlotType.RendererSharedMaterial) return;
-            bool found = _bindingBySlot.TryGetValue(new SlotKey(id, type), out int index);
-            BindingSlot binding = found ? DetachBinding(index) : default;
-            Exception error = null;
-            try { ReleaseTargetBindings(id, type + 1); }
-            catch (Exception exception) { error = exception; }
-            if (found)
-            {
-                try { ReleaseDetachedBinding(in binding); }
-                catch (Exception exception) { error = Combine(error, exception); }
-            }
-            if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
-        }
-
-        private void RemoveTarget(int index)
-        {
-            TargetSlot target = Target(index);
-            ref OwnerSlot owner = ref Owner(target.OwnerId - 1);
-            if (target.Previous >= 0) Target(target.Previous).Next = target.Next;
-            else owner.TargetHead = target.Next;
-            if (target.Next >= 0) Target(target.Next).Previous = target.Previous;
-            owner.TargetCount--;
-            _targetByObject.Remove(target.ObjectId);
-            Target(index) = default;
-            Target(index).NextFree = _targetFree;
-            _targetFree = index;
-        }
-
-        internal void ProcessDestroyedObjects(int budget)
-        {
-            Exception error = null;
-            int ownerChecks = _ownerByObject.Count > 0 ? Math.Min(budget, _ownerNext) : 0;
-            for (int i = 0; i < ownerChecks; i++)
-            {
-                if (_ownerCursor >= _ownerNext) _ownerCursor = 0;
-                int index = _ownerCursor++;
-                if (Owner(index).State != 1 || Owner(index).Owner != null) continue;
-                try { ReleaseOwner(index + 1, Owner(index).Generation); }
-                catch (Exception exception) { error = Combine(error, exception); }
-            }
-            int targetChecks = _targetByObject.Count > 0 ? Math.Min(budget, _targetNext) : 0;
-            for (int i = 0; i < targetChecks; i++)
-            {
-                if (_targetCursor >= _targetNext) _targetCursor = 0;
-                int index = _targetCursor++;
-                if (Target(index).OwnerId == 0 || Target(index).Target != null) continue;
-                ulong objectId = Target(index).ObjectId;
-                RemoveTarget(index);
-                try { ReleaseTargetBindings(objectId); }
-                catch (Exception exception) { error = Combine(error, exception); }
-            }
-            if (error != null) ExceptionDispatchInfo.Capture(error).Throw();
-        }
-
-        public int GetOwnerInfos(ResourceOwnerInfo[] results, int startIndex, int maxCount)
-        {
-            int start = Math.Max(0, startIndex);
-            int count = results == null ? 0 : Math.Min(Math.Min(maxCount, results.Length), _ownerNext - start);
-            for (int i = 0; i < count; i++)
-            {
-                ref OwnerSlot slot = ref Owner(start + i);
-                results[i] = new ResourceOwnerInfo
-                {
-                    Active = slot.State == 1,
-                    OwnerIndex = start + i,
-                    OwnerId = slot.State == 1 ? start + i + 1 : 0,
-                    GameObjectId = slot.ObjectId,
-                    Generation = slot.Generation,
-                    BindingCount = slot.BindingCount,
-                    RegisteredTargetCount = slot.TargetCount,
-                    HasOwnerObject = slot.Owner != null,
-#if UNITY_EDITOR
-                    OwnerObject = slot.Owner != null ? slot.Owner.gameObject : null
-#endif
+                    Index = index,
+                    Scope = binding.Scope,
+                    Target = binding.Target,
+                    TargetId = binding.TargetId,
+                    Slot = binding.Slot,
+                    AssetId = binding.AssetId,
+                    Version = binding.Version,
+                    HasRuntimeInstance = binding.RuntimeInstance != null,
                 };
             }
-            return _ownerNext;
+
+            return count;
         }
 
-        public int GetBindingInfos(ResourceBindingInfo[] results, int startIndex, int maxCount)
+        internal int CountScopeBindings(int scope)
         {
-            int start = Math.Max(0, startIndex);
-            int count = results == null ? 0 : Math.Min(Math.Min(maxCount, results.Length), _bindingNext - start);
-            for (int i = 0; i < count; i++)
+            int count = 0;
+            if (scope >= _scopeHeads.Length)
+                return 0;
+            for (int index = _scopeHeads[scope]; index >= 0; index = _slots[index].Next)
+                count++;
+            return count;
+        }
+
+        internal int CountReferences()
+        {
+            int count = 0;
+            for (int index = 0; index < _slots.Count; index++)
             {
-                ref BindingSlot slot = ref Binding(start + i);
-                Component target = slot.Target as Component;
-                results[i] = new ResourceBindingInfo
-                {
-                    Active = slot.OwnerId > 0,
-                    BindingIndex = start + i,
-                    OwnerId = slot.OwnerId,
-                    OwnerGeneration = slot.OwnerId > 0 ? Owner(slot.OwnerId - 1).Generation : 0,
-                    TargetComponentId = slot.Key.TargetId,
-                    TargetGameObjectId = target != null ? UnityObjectId.Get(target.gameObject) : 0,
-                    SlotKey = slot.Key.TargetId,
-                    AssetId = _resourceService.TryGetLeaseAssetId(slot.Lease, out int assetId) ? assetId : -1,
-                    Lease = slot.Lease,
-                    Version = slot.Version,
-                    SlotType = slot.RuntimeObject != null ? ResourceBindingSlotType.RendererMaterialInstance : slot.Key.Type,
-                    HasAppliedAsset = slot.AppliedAsset != null,
-                    HasRuntimeObject = slot.RuntimeObject != null,
-#if UNITY_EDITOR
-                    TargetObject = slot.Target
-#endif
-                };
+                if (_slots[index].AssetId != 0)
+                    count++;
             }
-            return _bindingNext;
-        }
 
-        private static ResourceKey Typed(in ResourceKey key, Type type)
-            => key.AssetType == null && !key.HasResolvedIds ? new ResourceKey(key.Location, key.PackageName, type) : key;
-
-        private static ResourceKey SubAssets(in ResourceKey key)
-            => key.HasResolvedIds ? key : new ResourceKey(key.Location, key.PackageName, typeof(Sprite), ResourceAssetKind.SubAssets);
-
-        private static Exception Combine(Exception current, Exception next)
-            => current == null ? next : new AggregateException(current, next);
-
-        private int AllocateOwner()
-        {
-            int index;
-            if (_ownerFree >= 0) { index = _ownerFree; _ownerFree = Owner(index).NextFree; }
-            else { index = _ownerNext++; ReservePage(ref _owners, index); }
-            Owner(index) = new OwnerSlot { Generation = AllocateOwnerGeneration(), BindingHead = -1, TargetHead = -1, AssetLeaseHead = -1 };
-            return index;
-        }
-
-        private uint AllocateOwnerGeneration()
-        {
-            if (_nextOwnerGeneration == uint.MaxValue) throw new InvalidOperationException("Resource owner generation space exhausted.");
-            return ++_nextOwnerGeneration;
-        }
-
-        private int AllocateBinding()
-        {
-            int index;
-            if (_bindingFree >= 0) { index = _bindingFree; _bindingFree = Binding(index).NextFree; }
-            else { index = _bindingNext++; ReservePage(ref _bindings, index); }
-            Binding(index) = new BindingSlot { Previous = -1, Next = -1 };
-            return index;
-        }
-
-        private int AllocateTarget()
-        {
-            int index;
-            if (_targetFree >= 0) { index = _targetFree; _targetFree = Target(index).NextFree; }
-            else { index = _targetNext++; ReservePage(ref _targets, index); }
-            Target(index) = new TargetSlot { Previous = -1, Next = -1 };
-            return index;
-        }
-
-        private ref OwnerSlot Owner(int index) => ref _owners[index >> PageBits][index & PageMask];
-        private ref BindingSlot Binding(int index) => ref _bindings[index >> PageBits][index & PageMask];
-        private ref TargetSlot Target(int index) => ref _targets[index >> PageBits][index & PageMask];
-
-        private static void ReservePage<T>(ref T[][] pages, int index)
-        {
-            int page = index >> PageBits;
-            if (pages == null) pages = new T[Math.Max(4, page + 1)][];
-            else if (page >= pages.Length) Array.Resize(ref pages, Math.Max(page + 1, pages.Length << 1));
-            if (pages[page] == null) pages[page] = new T[PageSize];
+            return count;
         }
     }
 }
-

@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using NUnit.Framework;
+using Unity.Profiling;
 using UnityEngine;
 using YooAsset;
 using Object = UnityEngine.Object;
@@ -27,7 +28,9 @@ namespace AlicizaX.Resource.Tests
         private static readonly Type AssetProviderType = YooAssembly.GetType("YooAsset.AssetProvider", true);
         private static readonly Type ManagerType = YooAssembly.GetType("YooAsset.ResourceManager", true);
         private static readonly MethodInfo CreateHandle = ProviderType.GetMethod("CreateHandle");
+        internal static readonly ProfilerMarker BackendMarker = new ProfilerMarker("ResourceAudit.Backend");
         private readonly object manager = Activator.CreateInstance(ManagerType, new object[] { "ResourceAudit" });
+
         internal sealed class Request
         {
             internal readonly object Provider;
@@ -36,11 +39,20 @@ namespace AlicizaX.Resource.Tests
             internal readonly string Location;
             internal readonly Type AssetType;
             internal readonly bool SubAssets;
+
             internal Request(object provider, Object asset, string package, string location, Type assetType, bool subAssets)
-            { Provider = provider; Asset = asset; Package = package; Location = location; AssetType = assetType; SubAssets = subAssets; }
+            {
+                Provider = provider;
+                Asset = asset;
+                Package = package;
+                Location = location;
+                AssetType = assetType;
+                SubAssets = subAssets;
+            }
         }
 
         private readonly Dictionary<(string package, string location, Type type, bool subAssets), Request> providers = new Dictionary<(string, string, Type, bool), Request>();
+        private readonly Dictionary<HandleBase, Request> requestByHandle = new Dictionary<HandleBase, Request>();
         internal readonly Dictionary<(string package, string location, Type type, bool subAssets), Object> KeyedAssets = new Dictionary<(string, string, Type, bool), Object>();
         internal readonly List<Request> Requests = new List<Request>();
         internal readonly Dictionary<string, Object> Assets = new Dictionary<string, Object>();
@@ -48,10 +60,12 @@ namespace AlicizaX.Resource.Tests
         internal bool CompleteImmediately = true;
         internal bool ThrowOnLoad;
         internal int Loads;
+        internal int SynchronousLoads;
+        internal int WaitCalls;
         internal string DefaultPackageName = "DefaultPackage";
         public bool IsAvailable { get; set; } = true;
 
-        public AssetHandle LoadAsset(string packageName, string location, Type assetType, bool synchronous, uint priority)
+        public AssetHandle LoadAsset(string packageName, string location, Type assetType, bool synchronous)
         {
             return Load<AssetHandle>(packageName, location, assetType, synchronous, false);
         }
@@ -61,10 +75,17 @@ namespace AlicizaX.Resource.Tests
             return Load<SubAssetsHandle>(packageName, location, typeof(Sprite), synchronous, true);
         }
 
+        public void WaitForCompletion(HandleBase handle)
+        {
+            WaitCalls++;
+            Complete(requestByHandle[handle]);
+        }
+
         private T Load<T>(string packageName, string location, Type assetType, bool synchronous, bool subAssets) where T : HandleBase
         {
-            using var marker = new Unity.Profiling.ProfilerMarker("ResourceAudit.Backend").Auto();
+            using var marker = BackendMarker.Auto();
             Loads++;
+            if (synchronous) SynchronousLoads++;
             if (ThrowOnLoad) throw new InvalidOperationException("controlled load failure");
             var key = (packageName, location, assetType, subAssets);
             if (!providers.TryGetValue(key, out Request request) ||
@@ -77,8 +98,10 @@ namespace AlicizaX.Resource.Tests
                 providers[key] = request;
                 Requests.Add(request);
             }
+
             var handle = (T)CreateHandle.MakeGenericMethod(typeof(T)).Invoke(request.Provider, null);
             Handles.Add(handle);
+            requestByHandle[handle] = request;
             if (synchronous || CompleteImmediately) Complete(request);
             return handle;
         }
@@ -115,11 +138,18 @@ namespace AlicizaX.Resource.Tests
         {
             Assert.That(LiveHandles, Is.Zero);
             providers.Clear();
+            requestByHandle.Clear();
             Requests.Clear();
+        }
+
+        internal void CompleteLast()
+        {
+            Complete(Requests[Requests.Count - 1]);
         }
 
         internal void Complete(Request request, bool success = true)
         {
+            using var marker = BackendMarker.Auto();
             object provider = request.Provider;
             if (((AsyncOperationBase)provider).IsDone) return;
             if (success)
@@ -146,20 +176,53 @@ namespace AlicizaX.Resource.Tests
         }
     }
 
+    internal sealed class ResourceFrameDriver : IPlayerLoopItem, IDisposable
+    {
+        private readonly ResourceService service;
+        private bool stopped;
+
+        private ResourceFrameDriver(ResourceService service)
+        {
+            this.service = service;
+        }
+
+        internal static ResourceFrameDriver Start(ResourceService service)
+        {
+            var driver = new ResourceFrameDriver(service);
+            PlayerLoopHelper.AddAction(PlayerLoopTiming.Update, driver);
+            return driver;
+        }
+
+        public bool MoveNext()
+        {
+            if (stopped) return false;
+            service.ProcessFrame(Time.unscaledTime);
+            return true;
+        }
+
+        public void Dispose() => stopped = true;
+    }
+
     internal sealed class ResourceFixture : IDisposable
     {
         internal readonly ResourceService Service;
         internal readonly ControlledLoader Loader = new ControlledLoader();
         internal readonly List<Object> Objects = new List<Object>();
-        internal ResourceBindingService Bindings => (ResourceBindingService)Service.BindingService;
+        private readonly ResourceFrameDriver driver;
+        internal float Now;
 
-        internal ResourceFixture(ResourceService service = null)
+        internal ResourceFixture(bool drivePlayerLoop = false)
         {
-            Service = service ?? new ResourceService();
+            Service = new ResourceService();
             Loader.DefaultPackageName = Service.DefaultPackageName;
             Service.Loader = Loader;
-            typeof(ResourceService).GetMethod("InitializeAssetRecords", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Service, null);
-            typeof(ResourceService).GetField("_bindingService", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(Service, new ResourceBindingService(Service));
+            if (drivePlayerLoop) driver = ResourceFrameDriver.Start(Service);
+        }
+
+        internal void Tick(float seconds = 0f)
+        {
+            Now += seconds;
+            Service.ProcessFrame(Now);
         }
 
         internal T Keep<T>(T value) where T : Object
@@ -171,6 +234,7 @@ namespace AlicizaX.Resource.Tests
         internal TextAsset Text(string key)
         {
             var asset = Keep(new TextAsset(key));
+            asset.name = key;
             Loader.Assets.Add(key, asset);
             return asset;
         }
@@ -178,6 +242,7 @@ namespace AlicizaX.Resource.Tests
         internal Material Material(string key)
         {
             var asset = Keep(new Material(Shader.Find("UI/Default")));
+            asset.name = key;
             Loader.Assets.Add(key, asset);
             return asset;
         }
@@ -191,28 +256,35 @@ namespace AlicizaX.Resource.Tests
             return sprite;
         }
 
-        internal ResourceOwner Owner(bool active = true)
+        internal GameObject Prefab(string key, bool active = true)
         {
-            var go = Keep(new GameObject("resource-owner"));
-            go.SetActive(active);
-            return go.AddComponent<ResourceOwner>();
+            var prefab = Keep(new GameObject(key));
+            prefab.SetActive(active);
+            Loader.Assets.Add(key, prefab);
+            return prefab;
         }
 
-        internal ResourceAssetInfo Info(string location)
+        internal GameObject GameObject(string name = "resource-test", bool active = true)
         {
-            Assert.That(TryFindInfo(location, out ResourceAssetInfo info), Is.True, "Missing resource record: " + location);
+            var go = Keep(new GameObject(name));
+            go.SetActive(active);
+            return go;
+        }
+
+        internal ResourceAssetInfo Info(string location, Type assetType = null, bool subAssets = false)
+        {
+            Assert.That(TryFindInfo(location, out ResourceAssetInfo info, assetType, subAssets), Is.True, "Missing resource record: " + location);
             return info;
         }
 
-        internal bool TryFindInfo(string location, out ResourceAssetInfo result, string package = null, Type assetType = null, ResourceAssetKind? kind = null)
+        internal bool TryFindInfo(string location, out ResourceAssetInfo result, Type assetType = null, bool subAssets = false)
         {
             bool found = false;
             result = default;
-            foreach (var info in AssetInfos())
+            foreach (ResourceAssetInfo info in AssetInfos())
             {
-                if (info.Location != location || info.Package != (package ?? Service.DefaultPackageName) ||
-                    (assetType != null && info.TypeName != assetType.Name) || (kind.HasValue && info.Kind != kind.Value)) continue;
-                Assert.That(found, Is.False, "Specify package, type and kind for ambiguous records: " + location);
+                if (info.Location != location || info.SubAssets != subAssets || (assetType != null && info.TypeName != assetType.Name)) continue;
+                Assert.That(found, Is.False, "Specify type for ambiguous records: " + location);
                 found = true;
                 result = info;
             }
@@ -221,42 +293,78 @@ namespace AlicizaX.Resource.Tests
 
         internal ResourceAssetInfo[] AssetInfos()
         {
-            var infos = new ResourceAssetInfo[Service.GetAssetInfos(null, 0, 0)];
-            Assert.That(Service.GetAssetInfos(infos, 0, infos.Length), Is.EqualTo(infos.Length));
-            foreach (var info in infos)
+            var infos = new ResourceAssetInfo[Service.AssetCount];
+            int start = 1;
+            int offset = 0;
+            var page = new ResourceAssetInfo[32];
+            int count;
+            while ((count = Service.GetAssetInfos(page, start)) > 0)
             {
-                Assert.That(info.RefCountTotal, Is.EqualTo(info.DirectRefCount + info.LegacyDirectRefCount + info.BindingRefCount + info.PendingRefCount));
-                Assert.That(info.DirectRefCount, Is.GreaterThanOrEqualTo(0));
-                Assert.That(info.LegacyDirectRefCount, Is.GreaterThanOrEqualTo(0));
-                Assert.That(info.BindingRefCount, Is.GreaterThanOrEqualTo(0));
-                Assert.That(info.PendingRefCount, Is.GreaterThanOrEqualTo(0));
-                if (info.State != ResourceAssetState.Released) continue;
-                Assert.That(info.RefCountTotal, Is.Zero, "Released slot retained references.");
-                Assert.That(info.HandleValid, Is.False, "Released slot retained a backend handle.");
+                Array.Copy(page, 0, infos, offset, count);
+                offset += count;
+                start += count;
             }
+            Assert.That(offset, Is.EqualTo(infos.Length));
             return infos;
+        }
+
+        internal void AssertInvariants()
+        {
+            ResourceStats stats = Service.GetStats();
+            Assert.That(stats.ReferenceCount, Is.EqualTo(stats.ScopeEntryCount + stats.LeaseCount + stats.BindingReferenceCount),
+                "Record references must equal scope entries + leases + bindings.");
+            Assert.That(Service.CountIdleList(out bool ordered), Is.EqualTo(stats.IdleCount), "Idle list length mismatch.");
+            Assert.That(ordered, Is.True, "Idle list must hold unreferenced idle records in idle order.");
+            foreach (ResourceAssetInfo info in AssetInfos())
+            {
+                switch (info.State)
+                {
+                    case ResourceAssetState.Active:
+                        Assert.That(info.RefCount, Is.GreaterThan(0), info.Location);
+                        break;
+                    default:
+                        Assert.That(info.RefCount, Is.Zero, info.Location);
+                        break;
+                }
+            }
         }
 
         internal void AssertNoReferences(string location)
         {
-            foreach (var info in AssetInfos())
-                if (info.Location == location) Assert.That(info.RefCountTotal, Is.Zero, location);
+            foreach (ResourceAssetInfo info in AssetInfos())
+                if (info.Location == location) Assert.That(info.RefCount, Is.Zero, location);
         }
 
-        internal void AssertUnloaded(string location)
+        internal void AssertReleased(string location)
         {
-            foreach (var info in AssetInfos())
-            {
-                if (info.Location != location) continue;
-                Assert.That(info.RefCountTotal, Is.Zero, location);
-                Assert.That(info.HandleValid, Is.False, location);
-            }
+            foreach (ResourceAssetInfo info in AssetInfos())
+                if (info.Location == location) Assert.That(info.State, Is.EqualTo(ResourceAssetState.Released), location);
         }
 
-        internal static IEnumerator Wait<T>(UniTask<T> task, Action<T> result)
+        internal T Result<T>(UniTask<T> task)
         {
             var awaiter = task.GetAwaiter();
-            for (int frame = 0; !awaiter.IsCompleted && frame < 120; frame++) yield return null;
+            Assert.That(awaiter.IsCompleted, Is.True, "Task must be completed by the preceding tick.");
+            return awaiter.GetResult();
+        }
+
+        internal static IEnumerator WaitFor<T>(UniTask<T> task, Action<T> result)
+        {
+            var awaiter = task.GetAwaiter();
+            for (int frame = 0; !awaiter.IsCompleted && frame < 600; frame++)
+                yield return null;
+            Assert.That(awaiter.IsCompleted, Is.True, "Operation did not terminate within 600 player loop updates.");
+            result(awaiter.GetResult());
+        }
+
+        internal IEnumerator Wait<T>(UniTask<T> task, Action<T> result)
+        {
+            var awaiter = task.GetAwaiter();
+            for (int frame = 0; !awaiter.IsCompleted && frame < 120; frame++)
+            {
+                if (driver == null) Tick();
+                yield return null;
+            }
             Assert.That(awaiter.IsCompleted, Is.True, "Operation did not terminate within 120 player loop updates.");
             result(awaiter.GetResult());
         }
@@ -265,14 +373,15 @@ namespace AlicizaX.Resource.Tests
         {
             try
             {
-                typeof(ResourceService).GetMethod("OnDestroyService", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Service, null);
+                driver?.Dispose();
+                Service.Shutdown();
                 Assert.That(Loader.LiveHandles, Is.Zero, "Service shutdown left live backend handles.");
-                foreach (var info in AssetInfos()) Assert.That(info.RefCountTotal, Is.Zero, "Service shutdown left resource references.");
+                Assert.That(Service.GetStats().ReferenceCount, Is.Zero, "Service shutdown left resource references.");
             }
             finally
             {
                 foreach (Object value in Objects) if (value != null) Object.DestroyImmediate(value);
-                foreach (HandleBase handle in Loader.Handles) if (handle.IsValid) handle.Dispose();
+                foreach (HandleBase handle in Loader.Handles) if (handle.IsValid) handle.Release();
             }
         }
     }

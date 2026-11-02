@@ -449,7 +449,7 @@ namespace AlicizaX.Scene.Runtime
 
         private static ResourcePackage GetDefaultPackage()
         {
-            var resourceService = AppServices.Require<IResourceService>();
+            var resourceService = AppServices.Require<IResourcePackageService>();
             return YooAssets.GetPackage(resourceService.DefaultPackageName);
         }
 

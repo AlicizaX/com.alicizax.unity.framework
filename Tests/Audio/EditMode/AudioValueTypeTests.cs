@@ -12,7 +12,7 @@ namespace AlicizaX.Audio.Tests
         [Test]
         public void RecordManagedOptionAndLeaseSizes()
         {
-            foreach (var type in new[] { typeof(AudioPlayOptions), typeof(AudioSpatialOptions), typeof(Vector3), typeof(ResourceAssetLease<AudioClip>) })
+            foreach (var type in new[] { typeof(AudioPlayOptions), typeof(AudioSpatialOptions), typeof(Vector3), typeof(AssetLease<AudioClip>) })
             {
                 var method = new DynamicMethod("AudioStructSize", typeof(int), Type.EmptyTypes);
                 var il = method.GetILGenerator();

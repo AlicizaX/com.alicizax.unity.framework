@@ -72,7 +72,7 @@ namespace AlicizaX.Audio.Tests
             yield return AudioFixture.Frames();
             Assert.That(AppServices.App.Require<IResourceService>(), Is.SameAs(f.Resources.Service));
             Assert.That(external.IsValid && borrowed != null, Is.True);
-            Assert.That(f.Resources.Info("shared").DirectRefCount, Is.EqualTo(1));
+            Assert.That(f.Resources.Info("shared").RefCount, Is.EqualTo(1));
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
             AudioFixture.CheckAudioPoolsReleased();
             Assert.That(f.Root.GetComponentsInChildren<AudioSource>(true), Is.Empty);

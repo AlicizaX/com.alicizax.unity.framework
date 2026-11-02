@@ -1,6 +1,5 @@
 using System;
-using System.Collections;
-using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Threading;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
@@ -13,229 +12,374 @@ namespace AlicizaX.Resource.Tests
     public sealed class ResourceTerminationTests
     {
         private ResourceFixture f;
-        [SetUp] public void SetUp() => f = new ResourceFixture();
+
+        [SetUp]
+        public void SetUp()
+        {
+            f = new ResourceFixture();
+            f.Loader.CompleteImmediately = false;
+        }
+
         [TearDown] public void TearDown() => f.Dispose();
 
-        [TestCase(1)]
-        [TestCase(82319)]
-        [TestCase(938011)]
-        public void IndexMixedOperationsMatchDictionary(int seed)
+        [Test]
+        public void ConcurrentWaitersShareOneBackendLoad()
         {
-            var map = new ResourceUlongIntMap();
-            var expected = new Dictionary<ulong, int>();
-            var random = new System.Random(seed);
-            for (int i = 0; i < 50000; i++)
+            var asset = f.Text("a");
+            var first = f.Service.CreateScope();
+            var second = f.Service.CreateScope();
+            var leases = new UniTask<AssetLease<TextAsset>>[4];
+            for (int i = 0; i < leases.Length; i++) leases[i] = f.Service.LoadLeaseAsync<TextAsset>("a");
+            var scoped = new[]
             {
-                ulong key = ((ulong)random.Next(512) << 32) | 0x0101;
-                switch (random.Next(3))
-                {
-                    case 0: map.Set(key, i); expected[key] = i; break;
-                    case 1: Assert.That(map.Remove(key), Is.EqualTo(expected.Remove(key))); break;
-                    default:
-                        Assert.That(map.TryGetValue(key, out int value), Is.EqualTo(expected.TryGetValue(key, out int other)));
-                        Assert.That(value, Is.EqualTo(other));
-                        break;
-                }
-                Assert.That(map.Count, Is.EqualTo(expected.Count));
-            }
-            foreach (var pair in expected)
-            {
-                Assert.That(map.TryGetValue(pair.Key, out int value), Is.True);
-                Assert.That(value, Is.EqualTo(pair.Value));
-            }
-        }
-
-        [UnityTest]
-        public IEnumerator SyncJoinCompletesExistingAsyncWithoutDuplicatingStorage()
-        {
-            f.Text("a");
-            f.Loader.CompleteImmediately = false;
-            var task = f.Service.LoadLeaseAsync<TextAsset>("a");
-            var sync = f.Service.LoadLease<TextAsset>("a");
-            Assert.That(sync.IsValid, Is.True);
-            yield return ResourceFixture.Wait(task, lease =>
-            {
-                Assert.That(lease.Asset, Is.SameAs(sync.Asset));
-                Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(2));
-                lease.Dispose();
-            });
-            Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
-            sync.Dispose();
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-        }
-
-        [TestCase(false)]
-        [TestCase(true)]
-        public void ProgressExceptionTerminatesRequestAndReleasesHandle(bool complete)
-        {
-            f.Text("a");
-            f.Loader.CompleteImmediately = complete;
-            bool delivered = false;
-            var callbacks = new LoadAssetCallbacks((_, _, _, _) => delivered = true,
-                (_, _, _) => throw new InvalidOperationException("progress"));
-            var task = f.Service.LoadAssetAsync("a", typeof(TextAsset), 0, callbacks, null);
-            Assert.Throws<InvalidOperationException>(() => task.GetAwaiter().GetResult());
-            Assert.That(delivered, Is.False);
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            f.AssertNoReferences("a");
-        }
-
-        [UnityTest]
-        public IEnumerator CompletionCallbackResetCannotDeliverInvalidLease()
-        {
-            f.Text("a");
-            f.Loader.CompleteImmediately = false;
-            bool delivered = false;
-            var callbacks = new LoadAssetCallbacks((_, _, _, _) => delivered = true,
-                (_, progress, _) => { if (progress == 1) f.Service.ForceUnloadAllAssets(); });
-            var task = f.Service.LoadAssetAsync("a", typeof(TextAsset), 0, callbacks, null);
+                first.LoadAsync<TextAsset>("a"), first.LoadAsync<TextAsset>("a"),
+                second.LoadAsync<TextAsset>("a"), second.LoadAsync(f.Service.Key<TextAsset>("a")),
+            };
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            Assert.That(f.Service.GetStats().WaiterCount, Is.EqualTo(8));
+            f.Tick();
+            foreach (var task in leases) Assert.That(task.GetAwaiter().IsCompleted, Is.False);
             f.Loader.Complete("a");
-            yield return task.ToCoroutine();
-            Assert.That(delivered, Is.False);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            f.Tick();
+            foreach (var task in leases)
+            {
+                var lease = f.Result(task);
+                Assert.That(lease.IsValid, Is.True);
+                Assert.That(lease.Asset, Is.SameAs(asset));
+            }
+            foreach (var task in scoped) Assert.That(f.Result(task), Is.SameAs(asset));
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(6), "Four leases plus one entry per scope.");
+            Assert.That(f.Service.GetStats().WaiterCount, Is.Zero);
+            f.AssertInvariants();
         }
 
-        [UnityTest]
-        public IEnumerator OwnerDestroyedBeforeCompletionRejectsLateResult()
+        [Test]
+        public void PartialCancellationAbortsOnlyTheCanceledWaiter()
         {
             f.Text("a");
-            f.Loader.CompleteImmediately = false;
-            var owner = f.Owner(false);
-            var task = f.Service.LoadAssetAsync<TextAsset>(owner, "a");
-            UnityEngine.Object.DestroyImmediate(owner.gameObject);
+            using var cts = new CancellationTokenSource();
+            var canceled = f.Service.LoadLeaseAsync<TextAsset>("a", cts.Token);
+            var surviving = f.Service.LoadLeaseAsync<TextAsset>("a");
+            cts.Cancel();
+            f.Tick();
+            Assert.That(f.Result(canceled).IsValid, Is.False, "Cancellation returns an empty lease.");
+            Assert.That(surviving.GetAwaiter().IsCompleted, Is.False);
             f.Loader.Complete("a");
-            yield return ResourceFixture.Wait(task, asset => Assert.That(asset, Is.Null));
-            f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            f.Tick();
+            var lease = f.Result(surviving);
+            Assert.That(lease.IsValid, Is.True);
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
+            lease.Dispose();
+            f.AssertInvariants();
         }
 
-        [UnityTest]
-        public IEnumerator CancellationAfterBackendCompletionBeforeDeliveryWins()
+        [Test]
+        public void FullCancellationReleasesTheBackendLoad()
+        {
+            var asset = f.Text("a");
+            var scope = f.Service.CreateScope();
+            using var cts = new CancellationTokenSource();
+            var lease = f.Service.LoadLeaseAsync<TextAsset>("a", cts.Token);
+            var scoped = scope.LoadAsync<TextAsset>("a", cts.Token);
+            cts.Cancel();
+            f.Tick();
+            Assert.That(f.Result(lease).IsValid, Is.False);
+            Assert.That(f.Result(scoped), Is.Null);
+            f.AssertReleased("a");
+            Assert.That(f.Loader.LiveHandles, Is.Zero, "Nobody waits for the load, so the backend handle is released.");
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
+            f.Loader.Complete("a");
+            f.Tick();
+            f.AssertReleased("a");
+            f.Loader.CompleteImmediately = true;
+            Assert.That(scope.Load<TextAsset>("a"), Is.SameAs(asset));
+            Assert.That(f.Loader.Loads, Is.EqualTo(2));
+            scope.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void CancellationKeepsTheLoadWhileAnotherWaiterRemains()
         {
             f.Text("a");
-            f.Loader.CompleteImmediately = false;
+            using var cts = new CancellationTokenSource();
+            var canceled = f.Service.LoadLeaseAsync<TextAsset>("a", cts.Token);
+            var scope = f.Service.CreateScope();
+            var waiting = scope.LoadAsync<TextAsset>("a");
+            cts.Cancel();
+            f.Tick();
+            Assert.That(f.Result(canceled).IsValid, Is.False);
+            Assert.That(f.Info("a").State, Is.EqualTo(ResourceAssetState.Loading));
+            f.Loader.Complete("a");
+            f.Tick();
+            Assert.That(f.Result(waiting), Is.Not.Null);
+            scope.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void PreCanceledTokenNeverStartsALoad()
+        {
+            f.Text("a");
+            var scope = f.Service.CreateScope();
+            var token = new CancellationToken(true);
+            Assert.That(f.Service.LoadLeaseAsync<TextAsset>("a", token).GetAwaiter().GetResult().IsValid, Is.False);
+            Assert.That(scope.LoadAsync<TextAsset>("a", token).GetAwaiter().GetResult(), Is.Null);
+            Assert.That(f.Loader.Loads, Is.Zero);
+        }
+
+        [Test]
+        public void CancellationAfterCompletionKeepsTheResult()
+        {
+            f.Text("a");
             using var cts = new CancellationTokenSource();
             var task = f.Service.LoadLeaseAsync<TextAsset>("a", cts.Token);
             f.Loader.Complete("a");
+            f.Tick();
             cts.Cancel();
-            yield return ResourceFixture.Wait(task, lease => Assert.That(lease.IsValid, Is.False));
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-        }
-
-        [UnityTest]
-        public IEnumerator ShutdownTerminatesEveryWaitingKind()
-        {
-            f.Text("a");
-            f.Material("m");
-            f.Loader.CompleteImmediately = false;
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<UnityEngine.UI.Image>();
-            var direct = f.Service.LoadLeaseAsync<TextAsset>("a");
-            var owned = f.Service.LoadAssetAsync<TextAsset>(owner, "a");
-            var binding = f.Bindings.BindImageMaterialAsync(owner, image, new ResourceKey("m"));
-            typeof(ResourceService).GetMethod("OnDestroyService", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(f.Service, null);
-            f.Loader.Complete("a");
-            f.Loader.Complete("m");
-            yield return ResourceFixture.Wait(direct, lease => Assert.That(lease.IsValid, Is.False));
-            yield return ResourceFixture.Wait(owned, asset => Assert.That(asset, Is.Null));
-            yield return ResourceFixture.Wait(binding, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
-            Assert.That(owner.IsRegistered, Is.False);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-        }
-
-        [Test]
-        public void UnavailableBackendRejectsCacheHitsAndNewLoads()
-        {
-            f.Text("cached");
-            f.Text("new");
-            using var held = f.Service.LoadLease<TextAsset>("cached");
-            var owner = f.Owner();
-            int loads = f.Loader.Loads;
-            f.Loader.IsAvailable = false;
-            Assert.That(f.Service.LoadLease<TextAsset>("cached").IsValid, Is.False);
-            Assert.That(f.Service.LoadLease<TextAsset>("new").IsValid, Is.False);
-            Assert.That(f.Service.LoadLeaseAsync<TextAsset>("cached").GetAwaiter().GetResult().IsValid, Is.False);
-            Assert.That(f.Service.LoadLeaseAsync<TextAsset>("new").GetAwaiter().GetResult().IsValid, Is.False);
-            Assert.That(f.Service.LoadAsset<TextAsset>(owner, "cached"), Is.Null);
-            Assert.That(f.Service.LoadAssetAsync<TextAsset>(owner, "new").GetAwaiter().GetResult(), Is.Null);
-            Assert.That(owner.IsRegistered, Is.False);
-            Assert.That(f.Loader.Loads, Is.EqualTo(loads));
-            Assert.That(f.Info("cached").DirectRefCount, Is.EqualTo(1));
-        }
-
-        [UnityTest]
-        public IEnumerator BackendShutdownTerminatesPendingWaitersBeforeLateCompletion()
-        {
-            f.Text("a");
-            f.Loader.CompleteImmediately = false;
-            var first = f.Service.LoadLeaseAsync<TextAsset>("a");
-            var second = f.Service.LoadLeaseAsync<TextAsset>("a");
-            f.Loader.IsAvailable = false;
-            yield return ResourceFixture.Wait(first, lease => Assert.That(lease.IsValid, Is.False));
-            yield return ResourceFixture.Wait(second, lease => Assert.That(lease.IsValid, Is.False));
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            f.Loader.Complete("a");
-            f.Service.UnloadUnusedAssets(true);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            f.AssertNoReferences("a");
-        }
-
-        [Test]
-        public void UnavailableBackendStillAllowsForceCleanup()
-        {
-            f.Text("a");
-            var lease = f.Service.LoadLease<TextAsset>("a");
-            f.Loader.IsAvailable = false;
-            f.Service.ForceUnloadAllAssets();
-            Assert.That(lease.IsValid, Is.False);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            f.AssertNoReferences("a");
+            f.Tick();
+            var lease = f.Result(task);
+            Assert.That(lease.IsValid, Is.True);
             lease.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SyncLoadJoinsAnInFlightAsyncLoad()
+        {
+            var asset = f.Text("a");
+            var pending = f.Service.LoadLeaseAsync<TextAsset>("a");
+            var scope = f.Service.CreateScope();
+            var lease = f.Service.LoadLease<TextAsset>("a");
+            Assert.That(lease.Asset, Is.SameAs(asset));
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            Assert.That(f.Loader.SynchronousLoads, Is.Zero);
+            Assert.That(f.Loader.WaitCalls, Is.EqualTo(1));
+            Assert.That(pending.GetAwaiter().IsCompleted, Is.True, "Joining completes the async waiters immediately.");
+            var joined = f.Result(pending);
+            Assert.That(joined.Asset, Is.SameAs(asset));
+            Assert.That(scope.Load<TextAsset>("a"), Is.SameAs(asset));
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(3));
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
+            f.Tick();
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(3));
+            lease.Dispose();
+            joined.Dispose();
+            scope.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SyncScopeLoadJoinsAnInFlightScopeLoad()
+        {
+            var asset = f.Text("a");
+            var scope = f.Service.CreateScope();
+            var pending = scope.LoadAsync<TextAsset>("a");
+            Assert.That(scope.Load<TextAsset>("a"), Is.SameAs(asset));
+            Assert.That(f.Result(pending), Is.SameAs(asset));
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1), "Both loads share the scope entry.");
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            scope.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void FailedLoadReturnsEmptyAndRetryStartsANewLoad()
+        {
+            var asset = f.Text("a");
+            var scope = f.Service.CreateScope();
+            var lease = f.Service.LoadLeaseAsync<TextAsset>("a");
+            var scoped = scope.LoadAsync<TextAsset>("a");
+            f.Loader.Complete("a", false);
+            LogAssert.Expect(LogType.Warning, new Regex("Resource load failed"));
+            f.Tick();
+            Assert.That(f.Result(lease).IsValid, Is.False);
+            Assert.That(f.Result(scoped), Is.Null);
+            f.AssertReleased("a");
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            f.Loader.CompleteImmediately = true;
+            Assert.That(scope.Load<TextAsset>("a"), Is.SameAs(asset));
+            Assert.That(f.Loader.Loads, Is.EqualTo(2));
+            scope.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SynchronousFailureReturnsEmpty()
+        {
+            f.Text("a");
+            var lease = f.Service.LoadLeaseAsync<TextAsset>("a");
+            f.Loader.Complete("a", false);
+            LogAssert.Expect(LogType.Warning, new Regex("Resource load failed"));
+            Assert.That(f.Service.LoadLease<TextAsset>("a").IsValid, Is.False);
+            Assert.That(f.Result(lease).IsValid, Is.False);
+            f.AssertReleased("a");
             Assert.That(f.Loader.LiveHandles, Is.Zero);
         }
 
         [Test]
-        public void ResourceServiceLookupPreservesScopePriorityAndUnregistration()
-        {
-            using var scene = new ResourceFixture();
-            AppServices.EnsureWorld();
-            try
-            {
-                AppServices.App.Register<IResourceService>(f.Service);
-                AppServices.Scene.Register<IResourceService>(scene.Service);
-                Assert.That(AppServices.TryGet<IResourceService>(out var resolved), Is.True);
-                Assert.That(resolved, Is.SameAs(scene.Service));
-                Assert.That(AppServices.App.Require<IResourceService>(), Is.SameAs(f.Service));
-                Assert.That(AppServices.Scene.Unregister<IResourceService>(), Is.True);
-                Assert.That(AppServices.TryGet<IResourceService>(out resolved), Is.True);
-                Assert.That(resolved, Is.SameAs(f.Service));
-                Assert.That(AppServices.App.Unregister<IResourceService>(), Is.True);
-                Assert.That(AppServices.TryGet<IResourceService>(out _), Is.False);
-            }
-            finally
-            {
-                AppServices.Shutdown();
-            }
-        }
-
-        [UnityTest]
-        public IEnumerator BackendShutdownInCompletionCallbackPreventsDeliveryAndReleasesPendingReference()
+        public void TypeMismatchIsAFailedLoad()
         {
             f.Text("a");
-            f.Loader.CompleteImmediately = false;
-            f.Service.IdleAssetCapacity = 0;
-            bool delivered = false;
-            var callbacks = new LoadAssetCallbacks((_, _, _, _) => delivered = true,
-                (_, progress, _) => { if (progress == 1) f.Loader.IsAvailable = false; });
-            var task = f.Service.LoadAssetAsync("a", typeof(TextAsset), 0, callbacks, null);
-            f.Loader.Complete("a");
-            yield return task.ToCoroutine();
-            Assert.That(delivered, Is.False);
+            f.Loader.CompleteImmediately = true;
+            LogAssert.Expect(LogType.Warning, new Regex("Resource load failed.*Material"));
+            Assert.That(f.Service.LoadLease<Material>("a").IsValid, Is.False);
+            f.AssertReleased("a");
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            f.AssertNoReferences("a");
+        }
+
+        [Test]
+        public void LoaderExceptionPropagatesWithoutCorruptingState()
+        {
+            var asset = f.Text("a");
+            f.Loader.ThrowOnLoad = true;
+            Assert.Throws<InvalidOperationException>(() => f.Service.LoadLease<TextAsset>("a"));
+            Assert.Throws<InvalidOperationException>(() => f.Service.LoadLeaseAsync<TextAsset>("a"));
+            f.AssertReleased("a");
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
+            f.Loader.ThrowOnLoad = false;
+            f.Loader.CompleteImmediately = true;
+            using var lease = f.Service.LoadLease<TextAsset>("a");
+            Assert.That(lease.Asset, Is.SameAs(asset));
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ScopeDisposedDuringLoadReturnsNullAndKeepsNoReference()
+        {
+            f.Text("a");
+            var scope = f.Service.CreateScope();
+            var task = scope.LoadAsync<TextAsset>("a");
+            scope.Dispose();
+            f.Loader.Complete("a");
+            f.Tick();
+            Assert.That(f.Result(task), Is.Null);
+            Assert.That(f.Info("a").State, Is.EqualTo(ResourceAssetState.Idle));
+            Assert.That(f.Info("a").RefCount, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ForceUnloadAllDuringLoadAbortsWaitersAndReleasesTheHandle()
+        {
+            f.Text("a");
+            var scope = f.Service.CreateScope();
+            var lease = f.Service.LoadLeaseAsync<TextAsset>("a");
+            var scoped = scope.LoadAsync<TextAsset>("a");
+            f.Service.ForceUnloadAllAssets();
+            Assert.That(f.Result(lease).IsValid, Is.False);
+            Assert.That(f.Result(scoped), Is.Null);
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            f.AssertReleased("a");
+            f.Tick();
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ShutdownDuringLoadAbortsWaiters()
+        {
+            f.Text("a");
+            var scope = f.Service.CreateScope();
+            var lease = f.Service.LoadLeaseAsync<TextAsset>("a");
+            var scoped = scope.LoadAsync<TextAsset>("a");
+            f.Service.Shutdown();
+            Assert.That(f.Result(lease).IsValid, Is.False);
+            Assert.That(f.Result(scoped), Is.Null);
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+        }
+
+        [Test]
+        public void ResetInsideACompletionContinuationAbortsTheRemainingWaiters()
+        {
+            f.Text("a");
+            var scope = f.Service.CreateScope();
+            var aborted = f.Service.LoadLeaseAsync<TextAsset>("a");
+            var abortedScope = scope.LoadAsync<TextAsset>("a");
+            var reentrant = f.Service.LoadLeaseAsync<TextAsset>("a");
+            int calls = 0;
+            reentrant.GetAwaiter().OnCompleted(() =>
+            {
+                calls++;
+                f.Service.ForceUnloadAllAssets();
+            });
+            f.Loader.Complete("a");
+            f.Tick();
+            Assert.That(calls, Is.EqualTo(1));
+            Assert.That(f.Result(reentrant).IsValid, Is.False, "The reset invalidated the lease that triggered it.");
+            Assert.That(f.Result(aborted).IsValid, Is.False);
+            Assert.That(f.Result(abortedScope), Is.Null);
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            Assert.That(f.Service.GetStats().ReferenceCount, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ScopeDisposedInsideACompletionContinuationRejectsItsPendingWaiter()
+        {
+            var asset = f.Text("a");
+            var victim = f.Service.CreateScope();
+            var pending = victim.LoadAsync<TextAsset>("a");
+            var trigger = f.Service.LoadLeaseAsync<TextAsset>("a");
+            trigger.GetAwaiter().OnCompleted(victim.Dispose);
+            f.Loader.Complete("a");
+            f.Tick();
+            Assert.That(f.Result(pending), Is.Null);
+            var lease = f.Result(trigger);
+            Assert.That(lease.Asset, Is.SameAs(asset));
+            Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
+            lease.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ContinuationCanLoadTheSameAssetAgain()
+        {
+            var asset = f.Text("a");
+            var trigger = f.Service.LoadLeaseAsync<TextAsset>("a");
+            AssetLease<TextAsset> nested = default;
+            trigger.GetAwaiter().OnCompleted(() => nested = f.Service.LoadLease<TextAsset>("a"));
+            f.Loader.Complete("a");
+            f.Tick();
+            Assert.That(nested.Asset, Is.SameAs(asset));
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            f.Result(trigger).Dispose();
+            nested.Dispose();
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SeveralLoadsFinishingInOneTickAllComplete()
+        {
+            const int count = 40;
+            var tasks = new UniTask<AssetLease<TextAsset>>[count];
+            for (int i = 0; i < count; i++)
+            {
+                f.Text("k" + i);
+                tasks[i] = f.Service.LoadLeaseAsync<TextAsset>("k" + i);
+            }
+            for (int i = count - 1; i >= 0; i -= 2) f.Loader.Complete("k" + i);
+            f.Tick();
+            for (int i = 0; i < count; i++) Assert.That(tasks[i].GetAwaiter().IsCompleted, Is.EqualTo((i & 1) == 1));
+            for (int i = 0; i < count; i += 2) f.Loader.Complete("k" + i);
+            f.Tick();
+            for (int i = 0; i < count; i++) f.Result(tasks[i]).Dispose();
+            Assert.That(f.Service.GetStats().LoadingCount, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void AsyncHitOnIdleAssetCompletesWithoutBackendLoad()
+        {
+            f.Loader.CompleteImmediately = true;
+            var asset = f.Text("a");
+            f.Service.LoadLease<TextAsset>("a").Dispose();
+            var task = f.Service.LoadLeaseAsync<TextAsset>("a");
+            Assert.That(task.GetAwaiter().IsCompleted, Is.True);
+            var lease = f.Result(task);
+            Assert.That(lease.Asset, Is.SameAs(asset));
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            lease.Dispose();
         }
     }
 }

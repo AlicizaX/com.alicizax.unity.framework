@@ -1,11 +1,11 @@
 using System;
 using System.Collections;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
-using UnityEngine.UI;
 using YooAsset;
 using Object = UnityEngine.Object;
 
@@ -13,6 +13,11 @@ namespace AlicizaX.Resource.Tests
 {
     public sealed class ResourceModuleLifecycleTests
     {
+        private sealed class ProbeProcedure : ProcedureBase
+        {
+            internal ResourceScope Scope => Res;
+        }
+
         private GameObject root;
         private TextAsset asset;
 
@@ -32,21 +37,81 @@ namespace AlicizaX.Resource.Tests
             if (YooAssets.IsInitialized) YooAssets.Destroy();
         }
 
-        [UnityTest]
-        public IEnumerator DestroyComponentUnregistersServiceAndReleasesReferences()
+        private ResourceService AddComponent(out ControlledLoader loader)
         {
-            var component = root.AddComponent<ResourceComponent>();
+            root.AddComponent<ResourceComponent>();
             var service = (ResourceService)AppServices.Require<IResourceService>();
-            var loader = new ControlledLoader();
+            loader = new ControlledLoader { DefaultPackageName = service.DefaultPackageName };
             asset = new TextAsset("module");
             loader.Assets.Add("module", asset);
             service.Loader = loader;
+            return service;
+        }
+
+        [Test]
+        public void ComponentRegistersOneServiceUnderBothContracts()
+        {
+            var service = AddComponent(out _);
+            Assert.That(AppServices.Require<IResourcePackageService>(), Is.SameAs(service));
+            Assert.That(service.App.IsAlive, Is.True);
+        }
+
+        [UnityTest]
+        public IEnumerator DestroyingTheComponentUnregistersAndReleasesEverything()
+        {
+            var service = AddComponent(out var loader);
             var lease = service.LoadLease<TextAsset>("module");
-            Object.Destroy(component);
+            var scope = service.CreateScope();
+            scope.Load<TextAsset>("module");
+            Object.Destroy(root.GetComponent<ResourceComponent>());
             yield return null;
             Assert.That(AppServices.TryGet<IResourceService>(out _), Is.False);
+            Assert.That(AppServices.TryGet<IResourcePackageService>(out _), Is.False);
             Assert.That(lease.IsValid, Is.False);
+            Assert.That(scope.IsAlive, Is.False);
             Assert.That(loader.LiveHandles, Is.Zero);
+            Assert.That(service.CanLoadResources, Is.False);
+        }
+
+        [Test]
+        public void WorldTickCompletesPendingLoads()
+        {
+            var service = AddComponent(out var loader);
+            loader.CompleteImmediately = false;
+            var task = service.LoadLeaseAsync<TextAsset>("module");
+            loader.Complete("module");
+            Assert.That(task.GetAwaiter().IsCompleted, Is.False);
+            AppServices.EnsureWorld().Tick(0.016f);
+            Assert.That(task.GetAwaiter().IsCompleted, Is.True);
+            var lease = task.GetAwaiter().GetResult();
+            Assert.That(lease.Asset, Is.SameAs(asset));
+            lease.Dispose();
+        }
+
+        [Test]
+        public void ComponentSettingsForwardToTheService()
+        {
+            var service = AddComponent(out _);
+            var component = root.GetComponent<ResourceComponent>();
+            component.ExpireProcessCountPerFrame = 5;
+            component.IdleAssetCapacity = 7;
+            component.IdleAssetExpireTime = 9f;
+            Assert.That(service.IdleReleaseCountPerTick, Is.EqualTo(5));
+            Assert.That(service.IdleAssetCapacity, Is.EqualTo(7));
+            Assert.That(service.IdleAssetExpireTime, Is.EqualTo(9f));
+        }
+
+        [Test]
+        public void LowMemoryRequestsForcedUnloadAndCollection()
+        {
+            var service = AddComponent(out _);
+            var component = root.GetComponent<ResourceComponent>();
+            var force = typeof(ResourceComponent).GetField("_forceUnloadUnusedAssets", BindingFlags.Instance | BindingFlags.NonPublic);
+            var collect = typeof(ResourceComponent).GetField("_performGCCollect", BindingFlags.Instance | BindingFlags.NonPublic);
+            LogAssert.Expect(LogType.Warning, new Regex("Low memory"));
+            service.OnLowMemory();
+            Assert.That(force.GetValue(component), Is.True);
+            Assert.That(collect.GetValue(component), Is.True);
         }
 
         [Test]
@@ -72,90 +137,33 @@ namespace AlicizaX.Resource.Tests
         }
 
         [Test]
-        public void ServiceReplacementUsesExistingGlobalBackend()
+        public void ProcedureLeaveDisposesItsScope()
         {
-            root.AddComponent<ResourceComponent>();
-            AppServices.App.Unregister<IResourceService>();
-            var replacement = AppServices.App.Register<IResourceService>(new ResourceService());
-            Assert.DoesNotThrow(() => replacement.Initialize());
-            Assert.That(replacement.BindingService, Is.Not.Null);
+            var service = AddComponent(out var loader);
+            var procedure = new ProbeProcedure();
+            var first = procedure.Scope;
+            Assert.That(first.IsAlive, Is.True);
+            Assert.That(procedure.Scope.Generation, Is.EqualTo(first.Generation));
+            first.Load<TextAsset>("module");
+            procedure.Leave();
+            Assert.That(first.IsAlive, Is.False);
+            Assert.That(service.GetStats().ReferenceCount, Is.Zero);
+            var second = procedure.Scope;
+            Assert.That(second.IsAlive, Is.True, "Re-entering creates a fresh scope.");
+            procedure.Leave();
+            Assert.That(loader.Loads, Is.EqualTo(1));
         }
 
-#if UNITY_EDITOR
         [Test]
-        public void DisableCallbackAfterBackendQuitCannotLoadSprite()
+        public void ReplacementServiceInitializesAgainstTheExistingBackend()
         {
             root.AddComponent<ResourceComponent>();
-            var service = AppServices.Require<IResourceService>();
-            var image = root.AddComponent<Image>();
-            var probe = root.AddComponent<ResourceDisableLoadProbe>();
-            probe.Target = image;
-            QuitBackend();
-            Assert.That(AppServices.Require<IResourceService>(), Is.SameAs(service));
-            root.SetActive(false);
-            Assert.That(probe.Calls, Is.EqualTo(1));
-            Assert.That(probe.Error, Is.Null, probe.Error?.ToString());
-            Assert.That(root.GetComponent<ResourceOwner>(), Is.Null);
-            Assert.That(service.BindingService.GetOwnerInfos(null, 0, 0), Is.Zero);
-            Assert.That(service.GetAssetInfos(null, 0, 0), Is.Zero);
-        }
-
-        [UnityTest]
-        public IEnumerator ShortcutOverloadsAfterBackendQuitLeaveNoOwnerOrRecords()
-        {
-            root.AddComponent<ResourceComponent>();
-            var service = AppServices.Require<IResourceService>();
-            var image = root.AddComponent<Image>();
-            var spriteObject = new GameObject("sprite-target");
-            spriteObject.transform.SetParent(root.transform);
-            var sprite = spriteObject.AddComponent<SpriteRenderer>();
-            var meshObject = new GameObject("mesh-target");
-            meshObject.transform.SetParent(root.transform);
-            var mesh = meshObject.AddComponent<MeshRenderer>();
-            QuitBackend();
-            image.SetSprite("unavailable");
-            image.SetSprite("unavailable", ResourceBindingOptions.SetNativeSize);
-            sprite.SetSprite("unavailable");
-            sprite.SetSprite("unavailable", ResourceBindingOptions.None);
-            image.SetSubSprite("unavailable", "sprite");
-            image.SetSubSprite("unavailable", "sprite", ResourceBindingOptions.SetNativeSize);
-            sprite.SetSubSprite("unavailable", "sprite");
-            sprite.SetSubSprite("unavailable", "sprite", ResourceBindingOptions.None);
-            image.SetMaterial("unavailable");
-            image.SetMaterial("unavailable", ResourceBindingOptions.None, true);
-            sprite.SetMaterial("unavailable");
-            sprite.SetMaterial("unavailable", ResourceBindingOptions.None, true);
-            mesh.SetMaterial("unavailable");
-            mesh.SetMaterial("unavailable", ResourceBindingOptions.None, false, true);
-            mesh.SetSharedMaterial("unavailable");
-            mesh.SetSharedMaterial("unavailable", ResourceBindingOptions.None, true);
-            yield return null;
-            Assert.That(root.GetComponentsInChildren<ResourceOwner>(true), Is.Empty);
-            Assert.That(service.BindingService.GetOwnerInfos(null, 0, 0), Is.Zero);
-            Assert.That(service.BindingService.GetBindingInfos(null, 0, 0), Is.Zero);
-            Assert.That(service.GetAssetInfos(null, 0, 0), Is.Zero);
-        }
-
-        private static void QuitBackend()
-        {
-            var driver = (GameObject)typeof(YooAssets).GetField("s_driver", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
-            driver.SendMessage("OnApplicationQuit");
-            Assert.That(YooAssets.IsInitialized, Is.False);
-        }
-#endif
-    }
-
-    public sealed class ResourceDisableLoadProbe : MonoBehaviour
-    {
-        internal Image Target;
-        internal int Calls;
-        internal Exception Error;
-
-        private void OnDisable()
-        {
-            Calls++;
-            try { Target.SetSprite("unavailable"); }
-            catch (Exception exception) { Error = exception; }
+            var original = AppServices.Require<IResourceService>();
+            AppServices.App.Unregister(original);
+            var replacement = new ResourceService();
+            AppServices.App.Register<IResourceService, IResourcePackageService>(replacement);
+            Assert.DoesNotThrow(() => replacement.Initialize());
+            Assert.That(AppServices.Require<IResourcePackageService>(), Is.SameAs(replacement));
         }
     }
 }

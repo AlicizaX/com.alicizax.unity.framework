@@ -63,7 +63,7 @@ namespace AlicizaX.GameObjectPool.Tests
         {
             _service.LoadCatalog("pool-config");
             Assert.That(_service.LoadPrefab("fx/hit"), Is.Not.Null);
-            Assert.That(_resources.Info("fx/hit").DirectRefCount, Is.EqualTo(1));
+            Assert.That(_resources.Info("fx/hit").RefCount, Is.EqualTo(1));
             GameObject instance = _service.Spawn("fx/hit");
             Assert.That(instance, Is.Not.Null);
             Assert.That(instance.GetComponent<GameObjectPoolHandle>(), Is.Not.Null);

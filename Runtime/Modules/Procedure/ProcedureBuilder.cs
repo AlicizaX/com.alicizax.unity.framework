@@ -173,7 +173,7 @@ namespace AlicizaX
             {
                 if (_currentProcedure != null)
                 {
-                    _currentProcedure.OnLeave();
+                    _currentProcedure.Leave();
                     _currentProcedure = null;
                 }
 
@@ -232,7 +232,7 @@ namespace AlicizaX
 
                 var previousProcedure = _currentProcedure;
                 _currentProcedure = nextProcedure;
-                previousProcedure?.OnLeave();
+                previousProcedure?.Leave();
                 nextProcedure.OnEnter();
                 return true;
             }

@@ -13,7 +13,7 @@ namespace AlicizaX.Audio.Runtime
         // 其数量受 clip 缓存容量限制。
         public CancellationTokenSource Cancellation;
         public string Address;
-        public ResourceAssetLease<AudioClip> Lease;
+        public AssetLease<AudioClip> Lease;
         public AudioClip Clip;
         public AudioLoadRequest PendingHead;
         public AudioLoadRequest PendingTail;

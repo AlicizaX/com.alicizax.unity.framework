@@ -1,201 +1,324 @@
-using System;
-using System.Collections;
-using System.Threading;
+using System.Text.RegularExpressions;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
 using UnityEngine.UI;
+using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Tests
 {
     public sealed class ResourceBindingTests
     {
         private ResourceFixture f;
-        [SetUp] public void SetUp() => f = new ResourceFixture();
+        private ResourceScope scope;
+
+        [SetUp]
+        public void SetUp()
+        {
+            f = new ResourceFixture();
+            scope = f.Service.CreateScope("bindings");
+        }
+
         [TearDown] public void TearDown() => f.Dispose();
 
-        [UnityTest]
-        public IEnumerator OldMaterialRequestCannotOverrideNewSharedMaterial()
-        {
-            f.Material("old");
-            var asset = f.Material("new");
-            var owner = f.Owner();
-            var target = owner.gameObject.AddComponent<MeshRenderer>();
-            f.Loader.CompleteImmediately = false;
-            var old = f.Bindings.BindMaterialInstanceAsync(owner, target, new ResourceKey("old"));
-            Assert.That(f.Bindings.BindSharedMaterial(owner, target, new ResourceKey("new")), Is.EqualTo(ResourceBindStatus.Success));
-            f.Loader.Complete("old");
-            yield return ResourceFixture.Wait(old, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
-            Assert.That(target.sharedMaterial, Is.SameAs(asset));
-            f.AssertNoReferences("old");
-            Assert.That(f.Info("new").BindingRefCount, Is.EqualTo(1));
-        }
+        private SpriteRenderer SpriteTarget() => f.GameObject().AddComponent<SpriteRenderer>();
 
-        [UnityTest]
-        public IEnumerator OldSubSpriteCannotOverrideNewSprite()
+        [Test]
+        public void CachedAssetAppliesInTheSameCall()
         {
-            f.Sprite("atlas");
-            var asset = f.Sprite("new");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            f.Loader.CompleteImmediately = false;
-            var old = f.Bindings.BindSubSpriteAsync(owner, image, new ResourceKey("atlas"), "atlas");
-            f.Bindings.BindSprite(owner, image, new ResourceKey("new"));
-            f.Loader.Complete("atlas");
-            yield return ResourceFixture.Wait(old, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.StaleOwner)));
-            Assert.That(image.sprite, Is.SameAs(asset));
-            f.AssertNoReferences("atlas");
-        }
-
-        [UnityTest]
-        public IEnumerator CanceledSlotReuseDoesNotAcceptOldRequest()
-        {
-            f.Material("old");
-            var asset = f.Material("new");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            f.Loader.CompleteImmediately = false;
-            using var cts = new CancellationTokenSource();
-            var old = f.Bindings.BindImageMaterialAsync(owner, image, new ResourceKey("old"), cancellationToken: cts.Token);
-            cts.Cancel();
-            yield return ResourceFixture.Wait(old, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.Canceled)));
-            var current = f.Bindings.BindImageMaterialAsync(owner, image, new ResourceKey("new"));
-            f.Loader.Complete("old");
-            f.Loader.Complete("new");
-            yield return ResourceFixture.Wait(current, status => Assert.That(status, Is.EqualTo(ResourceBindStatus.Success)));
-            Assert.That(image.material, Is.SameAs(asset));
-            f.AssertNoReferences("old");
+            var sprite = f.Sprite("s");
+            using var held = f.Service.LoadLease<Sprite>("s");
+            var target = SpriteTarget();
+            target.SetSprite(scope, "s");
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            Assert.That(f.Info("s").RefCount, Is.EqualTo(2));
+            Assert.That(f.Service.GetStats().BindingReferenceCount, Is.EqualTo(1));
+            f.AssertInvariants();
         }
 
         [Test]
-        public void EmptyLocationClearsAndUnregisterReleasesOnlyItsTarget()
+        public void MissAppliesWhenTheLoadCompletes()
+        {
+            var sprite = f.Sprite("s");
+            var target = SpriteTarget();
+            target.SetSprite(scope, f.Service.Key<Sprite>("s"));
+            Assert.That(target.sprite, Is.Null);
+            Assert.That(f.Info("s").State, Is.EqualTo(ResourceAssetState.Loading));
+            f.Tick();
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            Assert.That(f.Info("s").RefCount, Is.EqualTo(1));
+            f.AssertInvariants();
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void LatestBindingWinsRegardlessOfCompletionOrder(bool latestFirst)
         {
             f.Sprite("a");
-            var owner = f.Owner();
-            var first = owner.gameObject.AddComponent<SpriteRenderer>();
-            var second = f.Keep(new GameObject("second")).AddComponent<SpriteRenderer>();
-            f.Bindings.BindSprite(owner, first, new ResourceKey("a"));
-            f.Bindings.BindSprite(owner, second, new ResourceKey("a"));
-            Assert.That(f.Bindings.BindSprite(owner, first, new ResourceKey("")), Is.EqualTo(ResourceBindStatus.Success));
+            var b = f.Sprite("b");
+            f.Loader.CompleteImmediately = false;
+            var target = SpriteTarget();
+            target.SetSprite(scope, "a");
+            target.SetSprite(scope, "b");
+            f.Loader.Complete(latestFirst ? "b" : "a");
+            f.Tick();
+            f.Loader.Complete(latestFirst ? "a" : "b");
+            f.Tick();
+            Assert.That(target.sprite, Is.SameAs(b));
+            Assert.That(f.Info("a").RefCount, Is.Zero);
+            Assert.That(f.Info("a").State, Is.EqualTo(ResourceAssetState.Idle));
+            Assert.That(f.Info("b").RefCount, Is.EqualTo(1));
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ReplacingReleasesThePreviousAsset()
+        {
+            f.Sprite("a");
+            var b = f.Sprite("b");
+            var target = SpriteTarget();
+            target.SetSprite(scope, "a", ResourceBindingOptions.Synchronous);
+            target.SetSprite(scope, "b", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.SameAs(b));
+            Assert.That(f.Info("a").RefCount, Is.Zero);
+            target.SetSprite(scope, "b");
+            Assert.That(f.Info("b").RefCount, Is.EqualTo(1), "Rebinding the same asset keeps one reference.");
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void EmptyLocationClearsOnlyThePropertyItApplied()
+        {
+            f.Sprite("a");
+            var foreign = f.Sprite("foreign");
+            var target = SpriteTarget();
+            var other = SpriteTarget();
+            target.SetSprite(scope, "a", ResourceBindingOptions.Synchronous);
+            other.SetSprite(scope, "a", ResourceBindingOptions.Synchronous);
+            other.sprite = foreign;
+            target.SetSprite(scope, "");
+            other.SetSprite(scope, (string)null);
+            Assert.That(target.sprite, Is.Null);
+            Assert.That(other.sprite, Is.SameAs(foreign));
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            Assert.That(f.Info("a").RefCount, Is.Zero);
+            target.SetSprite(scope, "");
+            Assert.That(f.Service.Bindings.Count, Is.Zero, "Clearing an unbound target creates nothing.");
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SynchronousOptionAppliesAMissImmediately()
+        {
+            var sprite = f.Sprite("s");
+            f.Loader.CompleteImmediately = false;
+            var target = SpriteTarget();
+            target.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            Assert.That(f.Loader.SynchronousLoads, Is.EqualTo(1));
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SynchronousBindingJoinsAPendingAsyncBinding()
+        {
+            var sprite = f.Sprite("s");
+            f.Loader.CompleteImmediately = false;
+            var first = SpriteTarget();
+            var second = SpriteTarget();
+            first.SetSprite(scope, "s");
+            second.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            Assert.That(first.sprite, Is.SameAs(sprite));
+            Assert.That(second.sprite, Is.SameAs(sprite));
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            Assert.That(f.Loader.WaitCalls, Is.EqualTo(1));
+            Assert.That(f.Info("s").RefCount, Is.EqualTo(2));
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void MaterialInstancesAreDestroyedOnReplaceSwitchAndClear()
+        {
+            var material = f.Material("m");
+            var renderer = f.GameObject().AddComponent<MeshRenderer>();
+            renderer.SetMaterialInstance(scope, "m", ResourceBindingOptions.Synchronous);
+            var first = renderer.sharedMaterial;
+            Assert.That(first, Is.Not.SameAs(material));
+            Assert.That(first.shader, Is.SameAs(material.shader));
+            renderer.SetMaterialInstance(scope, "m");
+            var second = renderer.sharedMaterial;
+            Assert.That(first == null, Is.True);
+            Assert.That(second, Is.Not.SameAs(material));
+            renderer.SetSharedMaterial(scope, "m");
+            Assert.That(renderer.sharedMaterial, Is.SameAs(material));
+            Assert.That(second == null, Is.True);
+            Assert.That(f.Service.Bindings.Count, Is.EqualTo(1), "Shared and instance material share one binding slot.");
+            renderer.SetMaterialInstance(scope, "m");
+            var third = renderer.sharedMaterial;
+            renderer.SetSharedMaterial(scope, "");
+            Assert.That(third == null, Is.True);
+            Assert.That(renderer.sharedMaterial, Is.Null);
+            Assert.That(f.Info("m").RefCount, Is.Zero);
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ImageSpriteAndMaterialUseIndependentSlots()
+        {
+            var sprite = f.Sprite("s");
+            var material = f.Material("m");
+            var image = f.GameObject().AddComponent<Image>();
+            image.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            image.SetMaterial(scope, "m", ResourceBindingOptions.Synchronous);
+            Assert.That(image.sprite, Is.SameAs(sprite));
+            Assert.That(image.material, Is.SameAs(material));
+            Assert.That(f.Service.Bindings.Count, Is.EqualTo(2));
+            image.SetMaterial(scope, "");
+            Assert.That(image.sprite, Is.SameAs(sprite));
+            Assert.That(f.Service.Bindings.Count, Is.EqualTo(1));
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void SetNativeSizeResizesTheImage()
+        {
+            f.Sprite("s");
+            var image = f.GameObject().AddComponent<Image>();
+            image.rectTransform.sizeDelta = new Vector2(100f, 100f);
+            image.SetSprite(scope, "s", ResourceBindingOptions.Synchronous | ResourceBindingOptions.SetNativeSize);
+            Assert.That(image.rectTransform.sizeDelta, Is.EqualTo(new Vector2(4f, 4f)));
+        }
+
+        [Test]
+        public void SubSpriteBindsByNameAndMissingNameKeepsThePreviousSprite()
+        {
+            var sprite = f.Sprite("atlas");
+            var target = SpriteTarget();
+            target.SetSubSprite(scope, "atlas", "atlas", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            Assert.That(f.Info("atlas", typeof(Sprite), true).RefCount, Is.EqualTo(1));
+            LogAssert.Expect(LogType.Warning, new Regex("Resource binding sprite 'missing' not found"));
+            target.SetSubSprite(scope, "atlas", "missing", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            Assert.That(f.Info("atlas", typeof(Sprite), true).RefCount, Is.EqualTo(1));
+            f.AssertInvariants();
+        }
+
+        [Test]
+        public void ScopeDisposeClearsPropertiesAndReleasesReferences()
+        {
+            f.Sprite("s");
+            var first = SpriteTarget();
+            var second = SpriteTarget();
+            first.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            second.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            scope.Dispose();
             Assert.That(first.sprite, Is.Null);
-            Assert.That(f.Info("a").BindingRefCount, Is.EqualTo(1));
-            f.Bindings.UnregisterTarget(owner, second);
             Assert.That(second.sprite, Is.Null);
-            f.AssertNoReferences("a");
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            Assert.That(f.Info("s").RefCount, Is.Zero);
+            first.SetSprite(scope, "s");
+            Assert.That(first.sprite, Is.Null, "A disposed scope cannot bind.");
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            f.AssertInvariants();
         }
 
         [Test]
-        public void ApplyCallbackExceptionReleasesLeaseAndPreservesError()
+        public void RebindingIntoAnotherScopeMovesOwnership()
         {
-            f.Material("a");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            image.RegisterDirtyMaterialCallback(() => throw new InvalidOperationException("dirty callback"));
-            Assert.Throws<AggregateException>(() => f.Bindings.BindImageMaterial(owner, image, new ResourceKey("a")));
-            f.AssertNoReferences("a");
+            var sprite = f.Sprite("s");
+            var target = SpriteTarget();
+            var other = f.Service.CreateScope("other");
+            target.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            target.SetSprite(other, "s");
+            Assert.That(f.Service.Bindings.CountScopeBindings(scope.Index), Is.Zero);
+            Assert.That(f.Service.Bindings.CountScopeBindings(other.Index), Is.EqualTo(1));
+            scope.Dispose();
+            Assert.That(target.sprite, Is.SameAs(sprite));
+            other.Dispose();
+            Assert.That(target.sprite, Is.Null);
+            f.AssertInvariants();
         }
 
         [Test]
-        public void OwnerReleaseContinuesAfterOneTargetCallbackThrows()
+        public void ScopeDisposedDuringLoadDropsThePendingBinding()
         {
-            f.Material("material");
-            f.Sprite("sprite");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            var sprite = f.Keep(new GameObject("sprite")).AddComponent<SpriteRenderer>();
-            f.Bindings.BindSprite(owner, sprite, new ResourceKey("sprite"));
-            f.Bindings.BindImageMaterial(owner, image, new ResourceKey("material"));
-            image.RegisterDirtyMaterialCallback(() => throw new InvalidOperationException("clear callback"));
-            Assert.Throws<InvalidOperationException>(() => owner.ReleaseBindings());
-            Assert.That(owner.IsRegistered, Is.False);
-            Assert.That(sprite.sprite, Is.Null);
-            f.AssertNoReferences("material");
-            f.AssertNoReferences("sprite");
+            f.Sprite("s");
+            f.Loader.CompleteImmediately = false;
+            var target = SpriteTarget();
+            target.SetSprite(scope, "s");
+            scope.Dispose();
+            f.Loader.Complete("s");
+            f.Tick();
+            Assert.That(target.sprite, Is.Null);
+            Assert.That(f.Info("s").RefCount, Is.Zero);
+            f.AssertInvariants();
         }
 
         [Test]
-        public void OwnerReleaseDuringApplyCannotLeaveTransferredLease()
+        public void DestroyedTargetsAreReleasedIncludingPendingLoads()
         {
-            f.Material("a");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            image.RegisterDirtyMaterialCallback(() => owner.ReleaseBindings());
-            Assert.That(f.Bindings.BindImageMaterial(owner, image, new ResourceKey("a")), Is.EqualTo(ResourceBindStatus.StaleOwner));
-            Assert.That(owner.IsRegistered, Is.False);
-            f.AssertNoReferences("a");
+            f.Sprite("s");
+            var bound = SpriteTarget();
+            bound.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            f.Loader.CompleteImmediately = false;
+            f.Sprite("p");
+            var pending = SpriteTarget();
+            pending.SetSprite(scope, "p");
+            Object.DestroyImmediate(bound.gameObject);
+            Object.DestroyImmediate(pending.gameObject);
+            f.Loader.Complete("p");
+            f.Tick();
+            Assert.That(f.Info("s").RefCount, Is.Zero);
+            Assert.That(f.Info("p").RefCount, Is.Zero);
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            f.AssertInvariants();
         }
 
         [Test]
-        public void PoolReleaseResetInCallbackCannotRestoreShutdownRegistration()
+        public void ForceUnloadAllClearsBoundProperties()
         {
-            var prefab = f.Keep(new GameObject("source"));
-            f.Loader.Assets.Add("prefab", prefab);
-            var instance = f.Keep(f.Service.LoadGameObject("prefab"));
-            var owner = instance.GetComponent<ResourceOwner>();
-            var image = instance.AddComponent<Image>();
-            f.Material("a");
-            f.Bindings.BindImageMaterial(owner, image, new ResourceKey("a"));
-            image.RegisterDirtyMaterialCallback(f.Service.ForceUnloadAllAssets);
-
-            Assert.That(owner.ReleaseBindings(), Is.EqualTo(ResourceBindStatus.Success));
-            Assert.That(owner.IsRegistered, Is.False, "Reset must not leave the owner registered with the retired binding service.");
+            f.Sprite("s");
+            var target = SpriteTarget();
+            target.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            f.Service.ForceUnloadAllAssets();
+            Assert.That(target.sprite, Is.Null);
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(f.Service.LoadAsset<Material>(owner, "a"), Is.SameAs(f.Loader.Assets["a"]));
-            Assert.That(f.Info("a").DirectRefCount, Is.EqualTo(1));
+            target.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.Not.Null, "Scopes stay usable after a reset.");
+            f.AssertInvariants();
         }
 
         [Test]
-        public void ReentrantSpriteReplacementDoesNotApplyOldNativeSize()
+        public void ShutdownRejectsBindings()
         {
-            f.Sprite("old");
-            var expected = f.Sprite("new");
-            var owner = f.Owner();
-            var image = owner.gameObject.AddComponent<Image>();
-            var expectedSize = new Vector2(91, 73);
-            image.rectTransform.sizeDelta = expectedSize;
-            bool reentered = false;
-            image.RegisterDirtyMaterialCallback(() =>
-            {
-                if (reentered) return;
-                reentered = true;
-                Assert.That(f.Bindings.BindSprite(owner, image, new ResourceKey("new")), Is.EqualTo(ResourceBindStatus.Success));
-            });
-
-            Assert.That(f.Bindings.BindSprite(owner, image, new ResourceKey("old"), ResourceBindingOptions.SetNativeSize), Is.EqualTo(ResourceBindStatus.StaleOwner));
-            Assert.That(reentered, Is.True);
-            Assert.That(image.sprite, Is.SameAs(expected));
-            Assert.That(image.rectTransform.sizeDelta, Is.EqualTo(expectedSize));
-            f.AssertNoReferences("old");
-            Assert.That(f.Info("new").BindingRefCount, Is.EqualTo(1));
+            f.Sprite("s");
+            var target = SpriteTarget();
+            f.Service.Shutdown();
+            target.SetSprite(f.Service.App, "s", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.Null);
+            Assert.That(f.Service.Bindings.Count, Is.Zero);
+            Assert.That(f.Loader.Loads, Is.Zero);
         }
 
         [Test]
-        public void ReentrantTargetTransferKeepsTheNewestOwner()
+        public void FailedLoadLeavesTheBindingUnapplied()
         {
-            f.Material("a");
-            f.Material("b");
-            var latest = f.Material("c");
-            var first = f.Owner();
-            var second = f.Owner();
-            var third = f.Owner();
-            var image = first.gameObject.AddComponent<Image>();
-            f.Bindings.BindImageMaterial(first, image, new ResourceKey("a"));
-            bool invoked = false;
-            image.RegisterDirtyMaterialCallback(() =>
-            {
-                if (invoked) return;
-                invoked = true;
-                f.Bindings.BindImageMaterial(third, image, new ResourceKey("c"));
-            });
-            Assert.That(f.Bindings.BindImageMaterial(second, image, new ResourceKey("b")), Is.EqualTo(ResourceBindStatus.StaleOwner));
-            Assert.That(image.material, Is.SameAs(latest));
-            f.AssertNoReferences("a");
-            f.AssertNoReferences("b");
-            Assert.That(f.Info("c").BindingRefCount, Is.EqualTo(1));
-            Assert.That(f.Bindings.UnregisterTarget(third, image), Is.EqualTo(ResourceBindStatus.Success));
-            Assert.That(image.material, Is.Not.SameAs(latest));
-            f.AssertNoReferences("c");
+            f.Sprite("s");
+            f.Loader.CompleteImmediately = false;
+            var target = SpriteTarget();
+            target.SetSprite(scope, "s");
+            f.Loader.Complete("s", false);
+            LogAssert.Expect(LogType.Warning, new Regex("Resource load failed"));
+            f.Tick();
+            Assert.That(target.sprite, Is.Null);
+            Assert.That(f.Service.GetStats().BindingReferenceCount, Is.Zero);
+            f.Loader.CompleteImmediately = true;
+            target.SetSprite(scope, "s", ResourceBindingOptions.Synchronous);
+            Assert.That(target.sprite, Is.Not.Null);
+            f.AssertInvariants();
         }
     }
 }

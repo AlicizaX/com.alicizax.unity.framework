@@ -171,7 +171,7 @@ namespace AlicizaX
         {
             // 先让服务作用域按依赖顺序销毁资源服务（释放记录/租约），再清空 YooAsset 后端；
             // 若反过来先销毁后端，资源服务的 OnDestroy 会在失效的包上做清理。
-            IResourceService resources = null;
+            IResourcePackageService resources = null;
             if (AppServices.HasWorld)
             {
                 AppServices.TryGet(out resources);

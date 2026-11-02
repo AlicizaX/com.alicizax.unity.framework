@@ -1,3 +1,5 @@
+using AlicizaX.Resource.Runtime;
+
 namespace AlicizaX
 {
     // public interface IProcedure
@@ -14,6 +16,25 @@ namespace AlicizaX
     /// </summary>
     public abstract class ProcedureBase
     {
+        private ResourceScope _resources;
+
+        protected ResourceScope Res
+        {
+            get
+            {
+                if (_resources.Service == null)
+                    _resources = AppServices.App.Require<IResourceService>().CreateScope(GetType().Name);
+                return _resources;
+            }
+        }
+
+        internal void Leave()
+        {
+            OnLeave();
+            _resources.Dispose();
+            _resources = default;
+        }
+
         protected internal virtual void OnInit()
         {
         }

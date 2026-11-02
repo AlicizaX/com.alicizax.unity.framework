@@ -191,7 +191,7 @@ namespace AlicizaX
         public void LoadCatalog(string poolConfigPath)
         {
             IResourceService resourceService = AppServices.App.Require<IResourceService>();
-            using ResourceAssetLease<PoolConfigScriptableObject> lease =
+            using AssetLease<PoolConfigScriptableObject> lease =
                 resourceService.LoadLease<PoolConfigScriptableObject>(poolConfigPath);
             LoadCatalog(lease.Asset);
         }

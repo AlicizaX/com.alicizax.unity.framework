@@ -1,19 +1,312 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections;
-using System.Reflection;
+using System.Collections.Generic;
 using System.Threading;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using NUnit.Framework;
 using UnityEngine;
-using UnityEngine.Profiling;
 using UnityEngine.TestTools;
+using Object = UnityEngine.Object;
 
 namespace AlicizaX.Resource.Tests
 {
     public sealed class ResourceStressTests
     {
+        private const int TextCount = 8;
+        private const int SpriteCount = 4;
+        private const int TargetCount = 6;
+        private const int MaxPending = 64;
+
+        private sealed class ModelScope
+        {
+            internal ResourceScope Scope;
+            internal readonly HashSet<int> Assets = new HashSet<int>();
+        }
+
+        private struct PendingLease
+        {
+            internal UniTask<AssetLease<TextAsset>> Task;
+            internal CancellationTokenSource Source;
+            internal int Epoch;
+        }
+
+        private struct PendingScopeLoad
+        {
+            internal UniTask<TextAsset> Task;
+            internal ModelScope Owner;
+            internal int Text;
+            internal int Epoch;
+        }
+
+        private sealed class Model
+        {
+            internal readonly ResourceFixture F;
+            internal readonly System.Random Random;
+            internal readonly string[] Texts = new string[TextCount];
+            internal readonly string[] Sprites = new string[SpriteCount];
+            internal readonly List<AssetLease<TextAsset>> Leases = new List<AssetLease<TextAsset>>();
+            internal readonly List<AssetLease<TextAsset>> Disposed = new List<AssetLease<TextAsset>>();
+            internal readonly List<ModelScope> Scopes = new List<ModelScope>();
+            internal readonly List<PendingLease> PendingLeases = new List<PendingLease>();
+            internal readonly List<PendingScopeLoad> PendingScopes = new List<PendingScopeLoad>();
+            internal readonly SpriteRenderer[] Targets = new SpriteRenderer[TargetCount];
+            internal int Epoch;
+            internal int Completed;
+            internal int Canceled;
+
+            internal Model(ResourceFixture f, int seed)
+            {
+                F = f;
+                Random = new System.Random(seed);
+                f.Loader.CompleteImmediately = false;
+                for (int i = 0; i < TextCount; i++) f.Text(Texts[i] = "text-" + i);
+                for (int i = 0; i < SpriteCount; i++) f.Sprite(Sprites[i] = "sprite-" + i);
+                for (int i = 0; i < TargetCount; i++) Targets[i] = f.GameObject("target-" + i).AddComponent<SpriteRenderer>();
+            }
+
+            internal void Step()
+            {
+                switch (Random.Next(20))
+                {
+                    case 0:
+                    case 1:
+                        var lease = F.Service.LoadLease<TextAsset>(Texts[Random.Next(TextCount)]);
+                        if (lease.IsValid) Leases.Add(lease);
+                        else Assert.That(lease.Asset, Is.Null);
+                        break;
+                    case 2:
+                    case 3:
+                        DisposeLease();
+                        break;
+                    case 4:
+                        if (PendingLeases.Count >= MaxPending) break;
+                        var source = Random.Next(3) == 0 ? new CancellationTokenSource() : null;
+                        PendingLeases.Add(new PendingLease
+                        {
+                            Task = F.Service.LoadLeaseAsync<TextAsset>(Texts[Random.Next(TextCount)], source?.Token ?? default),
+                            Source = source,
+                            Epoch = Epoch,
+                        });
+                        break;
+                    case 5:
+                        CancelOne();
+                        break;
+                    case 6:
+                        if (Scopes.Count < 16) Scopes.Add(new ModelScope { Scope = F.Service.CreateScope() });
+                        break;
+                    case 7:
+                        DisposeScope();
+                        break;
+                    case 8:
+                        ScopeLoad();
+                        break;
+                    case 9:
+                        ScopeLoadAsync();
+                        break;
+                    case 10:
+                    case 11:
+                        Bind();
+                        break;
+                    case 12:
+                    case 13:
+                    case 14:
+                        CompleteRequest();
+                        break;
+                    case 15:
+                    case 16:
+                        F.Tick(Random.Next(4) == 0 ? 30f : 0.1f);
+                        break;
+                    case 17:
+                        F.Service.UnloadUnusedAssets(Random.Next(2) == 0);
+                        break;
+                    case 18:
+                        if (Random.Next(50) == 0) ForceUnloadAll();
+                        break;
+                    default:
+                        F.Service.IdleAssetCapacity = Random.Next(5);
+                        break;
+                }
+
+                Harvest();
+            }
+
+            private void DisposeLease()
+            {
+                if (Random.Next(4) == 0 && Disposed.Count > 0)
+                {
+                    var stale = Disposed[Random.Next(Disposed.Count)];
+                    stale.Dispose();
+                    Assert.That(stale.IsValid, Is.False);
+                    return;
+                }
+
+                if (Leases.Count == 0) return;
+                int index = Random.Next(Leases.Count);
+                var lease = Leases[index];
+                Leases[index] = Leases[Leases.Count - 1];
+                Leases.RemoveAt(Leases.Count - 1);
+                Assert.That(lease.IsValid, Is.True);
+                lease.Dispose();
+                if (Disposed.Count < 64) Disposed.Add(lease);
+            }
+
+            private void CancelOne()
+            {
+                foreach (var pending in PendingLeases)
+                {
+                    if (pending.Source == null || pending.Source.IsCancellationRequested) continue;
+                    pending.Source.Cancel();
+                    Canceled++;
+                    return;
+                }
+            }
+
+            private void DisposeScope()
+            {
+                if (Scopes.Count == 0) return;
+                int index = Random.Next(Scopes.Count);
+                var scope = Scopes[index];
+                Scopes.RemoveAt(index);
+                scope.Scope.Dispose();
+                Assert.That(scope.Scope.IsAlive, Is.False);
+            }
+
+            private void ScopeLoad()
+            {
+                if (Scopes.Count == 0) return;
+                var scope = Scopes[Random.Next(Scopes.Count)];
+                int text = Random.Next(TextCount);
+                var asset = scope.Scope.Load<TextAsset>(Texts[text]);
+                if (asset != null) scope.Assets.Add(text);
+            }
+
+            private void ScopeLoadAsync()
+            {
+                if (Scopes.Count == 0 || PendingScopes.Count >= MaxPending) return;
+                var scope = Scopes[Random.Next(Scopes.Count)];
+                int text = Random.Next(TextCount);
+                PendingScopes.Add(new PendingScopeLoad { Task = scope.Scope.LoadAsync<TextAsset>(Texts[text]), Owner = scope, Text = text, Epoch = Epoch });
+            }
+
+            private void Bind()
+            {
+                var target = Targets[Random.Next(TargetCount)];
+                var scope = Scopes.Count == 0 || Random.Next(4) == 0 ? F.Service.App : Scopes[Random.Next(Scopes.Count)].Scope;
+                int choice = Random.Next(SpriteCount + 1);
+                var options = Random.Next(5) == 0 ? ResourceBindingOptions.Synchronous : ResourceBindingOptions.None;
+                target.SetSprite(scope, choice == SpriteCount ? "" : Sprites[choice], options);
+            }
+
+            private void CompleteRequest()
+            {
+                bool sprite = Random.Next(3) == 0;
+                string location = sprite ? Sprites[Random.Next(SpriteCount)] : Texts[Random.Next(TextCount)];
+                if (!F.Loader.HasRequest(location)) return;
+                F.Loader.Complete(F.Loader.RequestFor(location), Random.Next(200) != 0);
+            }
+
+            private void ForceUnloadAll()
+            {
+                F.Service.ForceUnloadAllAssets();
+                Epoch++;
+                foreach (var lease in Leases) Assert.That(lease.IsValid, Is.False);
+                Leases.Clear();
+                foreach (var scope in Scopes) scope.Assets.Clear();
+                foreach (var target in Targets) Assert.That(target.sprite, Is.Null);
+                Assert.That(F.Loader.LiveHandles, Is.Zero);
+            }
+
+            internal void Harvest()
+            {
+                for (int i = PendingLeases.Count - 1; i >= 0; i--)
+                {
+                    var pending = PendingLeases[i];
+                    if (!pending.Task.GetAwaiter().IsCompleted) continue;
+                    PendingLeases.RemoveAt(i);
+                    var lease = pending.Task.GetAwaiter().GetResult();
+                    pending.Source?.Dispose();
+                    Completed++;
+                    if (!lease.IsValid) continue;
+                    Assert.That(pending.Epoch, Is.EqualTo(Epoch), "A lease from before a reset cannot survive it.");
+                    Leases.Add(lease);
+                }
+
+                for (int i = PendingScopes.Count - 1; i >= 0; i--)
+                {
+                    var pending = PendingScopes[i];
+                    if (!pending.Task.GetAwaiter().IsCompleted) continue;
+                    PendingScopes.RemoveAt(i);
+                    var asset = pending.Task.GetAwaiter().GetResult();
+                    Completed++;
+                    if (asset == null) continue;
+                    Assert.That(asset.name, Is.EqualTo(Texts[pending.Text]));
+                    if (pending.Owner.Scope.IsAlive && pending.Epoch == Epoch) pending.Owner.Assets.Add(pending.Text);
+                }
+            }
+
+            internal void Verify()
+            {
+                F.AssertInvariants();
+                var stats = F.Service.GetStats();
+                Assert.That(stats.LeaseCount, Is.EqualTo(Leases.Count));
+                int entries = 0;
+                foreach (var scope in Scopes) entries += scope.Assets.Count;
+                Assert.That(stats.ScopeEntryCount, Is.EqualTo(entries));
+                foreach (var lease in Leases) Assert.That(lease.IsValid && lease.Asset != null, Is.True);
+            }
+
+            internal void Drain()
+            {
+                for (int round = 0; round < 8 && (PendingLeases.Count > 0 || PendingScopes.Count > 0 || F.Service.GetStats().LoadingCount > 0); round++)
+                {
+                    foreach (var request in F.Loader.Requests) F.Loader.Complete(request);
+                    F.Tick();
+                    Harvest();
+                }
+                Assert.That(PendingLeases.Count + PendingScopes.Count, Is.Zero, "Every async load must terminate.");
+                Assert.That(F.Service.GetStats().LoadingCount, Is.Zero);
+                Assert.That(F.Service.GetStats().WaiterCount, Is.Zero);
+                Verify();
+                foreach (var lease in Leases) lease.Dispose();
+                Leases.Clear();
+                foreach (var scope in Scopes) scope.Scope.Dispose();
+                Scopes.Clear();
+                foreach (var target in Targets) target.SetSprite(F.Service.App, "");
+                F.Service.UnloadUnusedAssets(true);
+                var stats = F.Service.GetStats();
+                Assert.That(stats.ReferenceCount, Is.Zero);
+                Assert.That(stats.IdleCount, Is.Zero);
+                Assert.That(F.Loader.LiveHandles, Is.Zero);
+                F.AssertInvariants();
+            }
+        }
+
+        [Test]
+        public void ModelBasedFuzzConverges([NUnit.Framework.Range(0, 15)] int seed)
+        {
+            const int steps = 100000;
+            UnityEngine.Debug.unityLogger.logEnabled = false;
+            try
+            {
+                using var f = new ResourceFixture();
+                var model = new Model(f, seed);
+                for (int step = 0; step < steps; step++)
+                {
+                    model.Step();
+                    if (step % 5000 == 4999) model.Verify();
+                }
+                model.Drain();
+                TestContext.WriteLine($"FUZZ,{seed},{steps},completed={model.Completed},canceled={model.Canceled},loads={f.Loader.Loads},assets={f.Service.AssetCount}");
+                Assert.That(model.Completed, Is.GreaterThan(0));
+            }
+            finally
+            {
+                UnityEngine.Debug.unityLogger.logEnabled = true;
+            }
+        }
+
         [UnityTest]
         public IEnumerator UniqueKeysAndContinuousEvictionConverge()
         {
@@ -21,210 +314,64 @@ namespace AlicizaX.Resource.Tests
             {
                 using var f = new ResourceFixture();
                 f.Service.IdleAssetCapacity = 64;
-                var keys = new ResourceKey[count];
+                var keys = new AssetRef<TextAsset>[count];
                 var asset = f.Text("template");
                 for (int i = 0; i < count; i++)
                 {
                     string location = "key-" + i;
                     f.Loader.Assets.Add(location, asset);
-                    keys[i] = ResourceKey.Asset<TextAsset>(location);
+                    keys[i] = f.Service.Key<TextAsset>(location);
                 }
+                f.Service.LoadLease<TextAsset>("template").Dispose();
                 for (int cycle = 0; cycle < 3; cycle++)
                 {
-                    int currentCycle = cycle;
                     yield return AllocationCapture.Measure("unique-key-churn-cycle-" + cycle, count, () =>
                     {
-                        for (int i = 0; i < count; i++) f.Service.LoadLease<TextAsset>(keys[i]).Dispose();
-                    }, sample => TestContext.WriteLine($"FRAMEWORK,unique-key-churn,{count},{currentCycle},{sample.Bytes - sample.BackendBytes}"));
-                    Snapshot(f, "idle", count);
+                        for (int i = 0; i < count; i++) f.Service.LoadLease(keys[i]).Dispose();
+                    }, sample => Assert.That(sample.Bytes - sample.BackendBytes, Is.Zero));
                     Assert.That(f.Loader.LiveHandles, Is.EqualTo(Math.Min(count, 64)));
-                    Assert.That(CountReferences(f), Is.Zero);
-                    Assert.That(ReadInt(f.Service, "_assetSlotNextIndex"), Is.LessThanOrEqualTo(65));
+                    Assert.That(f.Service.GetStats().IdleCount, Is.EqualTo(Math.Min(count, 64)));
                     f.Service.UnloadUnusedAssets(true);
                     Assert.That(f.Loader.LiveHandles, Is.Zero);
-                    Assert.That(ReadCount(f.Service, "_assetLoadingOperationByKey"), Is.Zero);
-                    Assert.That(f.Service.KeyRegistry.LocationIdCount, Is.Zero);
-                    Snapshot(f, "released", count);
+                    Assert.That(f.Service.AssetCount, Is.EqualTo(count + 1), "Keys are interned once and never grow on reuse.");
+                    f.AssertInvariants();
                 }
             }
         }
 
         [UnityTest]
-        public IEnumerator SharedConcurrencyAndMassCancellationConverge()
+        public IEnumerator MassConcurrentWaitersAndCancellationConverge()
         {
-            foreach (int count in new[] { 100, 1000 })
+            foreach (int count in new[] { 100, 1000, 10000 })
             {
                 using var f = new ResourceFixture();
                 f.Text("a");
                 f.Loader.CompleteImmediately = false;
-                f.Service.IdleAssetCapacity = 0;
-                var tasks = new UniTask<ResourceAssetLease<TextAsset>>[count];
-                using var canceled = new CancellationTokenSource();
-                var key = ResourceKey.Asset<TextAsset>("a");
-                yield return AllocationCapture.Measure("shared-async-start", count, () =>
-                {
-                    for (int i = 0; i < count; i++) tasks[i] = f.Service.LoadLeaseAsync<TextAsset>(key, i % 2 == 0 ? canceled.Token : default);
-                }, sample => TestContext.WriteLine($"FRAMEWORK,shared-async-start,{count},{sample.Bytes - sample.BackendBytes}"));
-                Assert.That(f.Loader.Loads, Is.EqualTo(1));
-                Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
-                canceled.Cancel();
-                f.Loader.Complete("a");
+                var scope = f.Service.CreateScope();
+                using var source = new CancellationTokenSource();
+                var leases = new UniTask<AssetLease<TextAsset>>[count];
+                var scoped = new UniTask<TextAsset>[count];
                 for (int i = 0; i < count; i++)
                 {
-                    int index = i;
-                    yield return ResourceFixture.Wait(tasks[i], lease =>
-                    {
-                        Assert.That(lease.IsValid, Is.EqualTo(index % 2 != 0));
-                        lease.Dispose();
-                    });
+                    leases[i] = f.Service.LoadLeaseAsync<TextAsset>("a", (i & 1) == 0 ? source.Token : default);
+                    scoped[i] = scope.LoadAsync<TextAsset>("a");
                 }
-                Assert.That(f.Loader.LiveHandles, Is.Zero);
-                Assert.That(CountReferences(f), Is.Zero);
-                Assert.That(ReadCount(f.Service, "_assetLoadingOperationByKey"), Is.Zero);
-                Snapshot(f, "canceled-and-released", count);
-            }
-        }
-
-        [UnityTest]
-        public IEnumerator RepeatedSharedAsyncBurstsMeasureRequestReuse()
-        {
-            using var f = new ResourceFixture();
-            f.Text("burst");
-            f.Loader.CompleteImmediately = false;
-            f.Service.IdleAssetCapacity = 0;
-            var key = ResourceKey.Asset<TextAsset>("burst");
-            foreach (int count in new[] { 100, 1000 })
-            {
-                var tasks = new UniTask<ResourceAssetLease<TextAsset>>[count];
-                for (int round = 0; round < 3; round++)
-                {
-                    yield return AllocationCapture.Measure("shared-burst-round-" + round, count, () =>
-                    {
-                        for (int i = 0; i < count; i++) tasks[i] = f.Service.LoadLeaseAsync<TextAsset>(key);
-                    }, _ => { });
-                    Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
-                    f.Loader.Complete("burst");
-                    yield return null;
-                    for (int i = 0; i < count; i++)
-                    {
-                        Assert.That(tasks[i].Status, Is.EqualTo(UniTaskStatus.Succeeded));
-                        var lease = tasks[i].GetAwaiter().GetResult();
-                        Assert.That(lease.IsValid, Is.True);
-                        lease.Dispose();
-                    }
-                    Assert.That(f.Loader.LiveHandles, Is.Zero);
-                    Assert.That(CountReferences(f), Is.Zero);
-                    Assert.That(ReadCount(f.Service, "_assetLoadingOperationByKey"), Is.Zero);
-                }
-            }
-        }
-
-        [UnityTest]
-        public IEnumerator OwnerCreationDestructionAndSparseMaintenanceConverge()
-        {
-            foreach (int count in new[] { 100, 1000 })
-            {
-                using var f = new ResourceFixture();
-                f.Sprite("sprite");
-                f.Service.IdleAssetCapacity = 0;
-                var owners = new ResourceOwner[count];
-                var targets = new SpriteRenderer[count];
-                var key = new ResourceKey("sprite", assetType: typeof(Sprite));
-                yield return AllocationCapture.Measure("unity-owner-and-target-create", count, () =>
-                {
-                    for (int i = 0; i < count; i++)
-                    {
-                        owners[i] = f.Owner(i % 2 == 0);
-                        targets[i] = owners[i].gameObject.AddComponent<SpriteRenderer>();
-                    }
-                }, _ => { });
-                yield return AllocationCapture.Measure("many-owner-binding", count, () =>
-                {
-                    for (int i = 0; i < count; i++) f.Bindings.BindSprite(owners[i], targets[i], key);
-                }, sample => TestContext.WriteLine($"FRAMEWORK,many-owner-binding,{count},{sample.Bytes - sample.BackendBytes}"));
-                Assert.That(CountReferences(f), Is.EqualTo(count));
-                yield return AllocationCapture.Measure("one-target-among-many-owners", 1000, () =>
-                {
-                    for (int i = 0; i < 1000; i++)
-                    {
-                        f.Bindings.UnregisterTarget(owners[count - 1], targets[count - 1]);
-                        f.Bindings.BindSprite(owners[count - 1], targets[count - 1], key);
-                    }
-                }, sample => Assert.That(sample.Bytes, Is.Zero));
-                for (int i = 0; i < count; i++) UnityEngine.Object.Destroy(owners[i].gameObject);
+                Assert.That(f.Loader.Loads, Is.EqualTo(1));
+                source.Cancel();
+                f.Tick();
+                for (int i = 0; i < count; i += 2) Assert.That(f.Result(leases[i]).IsValid, Is.False);
+                f.Loader.Complete("a");
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                f.Tick();
+                clock.Stop();
+                TestContext.WriteLine($"PERF,complete-waiters,{count + count / 2},{clock.Elapsed.TotalMilliseconds:F4}");
+                for (int i = 1; i < count; i += 2) f.Result(leases[i]).Dispose();
+                for (int i = 0; i < count; i++) Assert.That(f.Result(scoped[i]), Is.Not.Null);
+                Assert.That(f.Info("a").RefCount, Is.EqualTo(1));
+                scope.Dispose();
+                f.AssertInvariants();
                 yield return null;
-                int sweeps = (count + 63) / 64 + 1;
-                yield return AllocationCapture.Measure("destroyed-owner-maintenance", sweeps, () =>
-                {
-                    for (int i = 0; i < sweeps; i++) f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
-                }, sample => Assert.That(sample.Bytes - sample.BackendBytes, Is.Zero), true);
-                Assert.That(CountReferences(f), Is.Zero);
-                Assert.That(f.Loader.LiveHandles, Is.Zero);
-                Assert.That(ReadCount(f.Bindings, "_ownerByObject"), Is.Zero);
-                Assert.That(ReadCount(f.Bindings, "_targetByObject"), Is.Zero);
-                Snapshot(f, "owners-destroyed", count);
             }
-        }
-
-        [UnityTest]
-        public IEnumerator CacheWorkingSetCapacityTradeoff()
-        {
-            foreach (int capacity in new[] { 0, 16, 64, 256 })
-            foreach (int workingSet in new[] { 16, 64, 256, 512 })
-            {
-                using var f = new ResourceFixture();
-                f.Service.IdleAssetCapacity = capacity;
-                var asset = f.Text("template");
-                var keys = new ResourceKey[workingSet];
-                for (int i = 0; i < workingSet; i++)
-                {
-                    string location = "icon-" + i;
-                    f.Loader.Assets.Add(location, asset);
-                    keys[i] = ResourceKey.Asset<TextAsset>(location);
-                }
-                for (int i = 0; i < workingSet; i++) f.Service.LoadLease<TextAsset>(keys[i]).Dispose();
-                int firstPassLoads = f.Loader.Loads;
-                yield return AllocationCapture.Measure($"cache-capacity-{capacity}-working-set-{workingSet}", workingSet * 3, () =>
-                {
-                    for (int round = 0; round < 3; round++)
-                    for (int i = 0; i < workingSet; i++) f.Service.LoadLease<TextAsset>(keys[i]).Dispose();
-                }, _ => { });
-                int misses = f.Loader.Loads - firstPassLoads;
-                Assert.That(misses, Is.EqualTo(capacity >= workingSet ? 0 : workingSet * 3));
-                Assert.That(f.Loader.LiveHandles, Is.LessThanOrEqualTo(capacity));
-                TestContext.WriteLine($"CACHE,{capacity},{workingSet},{workingSet * 3 - misses},{misses},{f.Loader.LiveHandles}");
-                f.Service.UnloadUnusedAssets(true);
-                Assert.That(f.Loader.LiveHandles, Is.Zero);
-            }
-        }
-
-        private static int CountReferences(ResourceFixture f)
-        {
-            var infos = new ResourceAssetInfo[f.Service.GetAssetInfos(null, 0, 0)];
-            f.Service.GetAssetInfos(infos, 0, infos.Length);
-            int count = 0;
-            foreach (var info in infos)
-            {
-                Assert.That(info.DirectRefCount, Is.GreaterThanOrEqualTo(0));
-                Assert.That(info.BindingRefCount, Is.GreaterThanOrEqualTo(0));
-                Assert.That(info.PendingRefCount, Is.GreaterThanOrEqualTo(0));
-                count += info.RefCountTotal;
-            }
-            return count;
-        }
-
-        private static int ReadInt(object value, string name)
-            => (int)value.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(value);
-
-        private static int ReadCount(object value, string name)
-        {
-            object field = value.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(value);
-            return (int)field.GetType().GetProperty("Count").GetValue(field);
-        }
-
-        private static void Snapshot(ResourceFixture f, string phase, int scale)
-        {
-            TestContext.WriteLine($"STATE,{phase},{scale},handles={f.Loader.LiveHandles},refs={CountReferences(f)},idle={ReadInt(f.Service, "_idleCount")},slots={ReadInt(f.Service, "_assetSlotNextIndex")},managed={GC.GetTotalMemory(false)},unity={Profiler.GetTotalAllocatedMemoryLong()}");
         }
     }
 }
