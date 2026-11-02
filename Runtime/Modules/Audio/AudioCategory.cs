@@ -222,9 +222,7 @@ namespace AlicizaX.Audio.Runtime
                 AudioAgent agent = _agents[i];
                 if (agent != null)
                 {
-                    AudioSourceObject sourceObject = agent.SourceObject;
                     agent.Shutdown();
-                    _service.ReleaseSourceObject(sourceObject);
                     MemoryPool.Release(agent);
                     _agents[i] = null;
                 }
@@ -280,12 +278,8 @@ namespace AlicizaX.Audio.Runtime
         private AudioAgent CreateAgent()
         {
             int index = _createdCount;
-            AudioSourceObject sourceObject = _service.AcquireSourceObject(this);
-            if (sourceObject == null)
-                throw new GameFrameworkException($"Audio category '{Type}' could not create an AudioSource.");
-
             AudioAgent agent = MemoryPool.Acquire<AudioAgent>();
-            agent.Initialize(_service, this, index, _globalIndexOffset + index, sourceObject);
+            agent.Initialize(_service, this, index, _globalIndexOffset + index);
             _agents[index] = agent;
             _createdCount++;
             return agent;

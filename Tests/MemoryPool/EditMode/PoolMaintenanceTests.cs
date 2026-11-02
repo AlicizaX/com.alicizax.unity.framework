@@ -7,316 +7,189 @@ namespace AlicizaX.MemoryPoolTests
 {
     public sealed class PoolMaintenanceTests : PoolFixture
     {
-        [Test]
-        public void DestroyReleasesStorageRejectsLeasesAndCanBeReactivated()
+        private struct DecayTag { }
+        private struct SoftTag { }
+        private struct RetainTag { }
+        private struct SequentialTag { }
+        private struct HardTag { }
+
+        private static void Burst<T>(int count) where T : MemoryObject, new()
         {
-            var item = MemoryPool<PoolItem>.Acquire();
-            Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.Destroy());
-
-            MemoryPool.Release(item);
-            Assert.That(MemoryPool<PoolItem>.Destroy(), Is.True);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<PoolItem>().PageCapacity, Is.Zero);
-            Assert.That(MemoryPool<PoolItem>.Destroy(), Is.False);
-
-            MemoryPool.Release(MemoryPool<PoolItem>.Acquire());
-            Assert.That(MemoryPool.Count, Is.GreaterThan(0));
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(1));
-            MemoryPool<PoolItem>.ClearAll();
+            var items = new T[count];
+            for (int i = 0; i < count; i++) items[i] = MemoryPool.Acquire<T>();
+            for (int i = 0; i < count; i++) MemoryPool.Release(items[i]);
         }
 
         [Test]
-        public void RepeatedConstructorFailuresDoNotConsumeSlots()
+        public void RecentPeakProtectsFreeObjectsForTheWholeWindowThenTrimsAtTheTickBudget()
         {
-            var cause = new InvalidOperationException("constructor");
-            ConstructorItem.Construct = () => throw cause;
-            for (int i = 0; i < 100; i++)
-                Assert.That(Assert.Throws<TargetInvocationException>(() => MemoryPool<ConstructorItem>.Acquire()).InnerException, Is.SameAs(cause));
-            Assert.That(Info<ConstructorItem>().UsingCount, Is.Zero);
-            Assert.That(Info<ConstructorItem>().CreateCount, Is.Zero);
-            Assert.That(Info<ConstructorItem>().PageCapacity, Is.Zero);
-            ConstructorItem.Construct = null;
-            var items = new ConstructorItem[257];
-            for (int i = 0; i < items.Length; i++) items[i] = MemoryPool<ConstructorItem>.Acquire();
-            foreach (var item in items) MemoryPool.Release(item);
-            Assert.That(Info<ConstructorItem>().UsingCount, Is.Zero);
-        }
-
-        [Test]
-        public void ConstructorReentryCannotMutateItsPool()
-        {
-            ConstructorItem.Construct = () => Assert.Throws<InvalidOperationException>(() => MemoryPool<ConstructorItem>.Add(1));
-            MemoryPool.Release(MemoryPool<ConstructorItem>.Acquire());
-            ConstructorItem.Construct = null;
-            Assert.That(Info<ConstructorItem>().UnusedCount, Is.EqualTo(1));
-        }
-
-        [TestCase(false)]
-        [TestCase(true)]
-        public void GlobalMaintenanceFromCallbackIsRejectedBeforePartialCleanup(bool evict)
-        {
-            var other = MemoryPool<OtherItem>.Acquire();
-            MemoryPool.Release(other);
-            var item = MemoryPool<PoolItem>.Acquire();
-            Action callback = () =>
-            {
-                Assert.Throws<InvalidOperationException>(() => MemoryPool.ClearAll());
-                Assert.Throws<InvalidOperationException>(() => MemoryPool.TrimAllNativeMetadata());
-                Assert.Throws<InvalidOperationException>(() => MemoryPoolRegistry.TickAll(++Frame));
-                int softCapacity = MemoryPool.DefaultSoftFreeReserveLimit;
-                int hardCapacity = MemoryPool.DefaultHardFreeReserveLimit;
-                Assert.Throws<InvalidOperationException>(() => MemoryPool.SetDefaultCapacity(4, 4));
-                Assert.That(MemoryPool.DefaultSoftFreeReserveLimit, Is.EqualTo(softCapacity));
-                Assert.That(MemoryPool.DefaultHardFreeReserveLimit, Is.EqualTo(hardCapacity));
-                Assert.That(other.Evictions, Is.Zero);
-            };
-            if (evict) item.OnEviction = callback;
-            else item.OnClear = callback;
-            MemoryPool.Release(item);
-            MemoryPool<PoolItem>.ClearAll();
-            Assert.That(other.Evictions, Is.Zero);
-        }
-
-        [Test]
-        public void ShrinkCompletesRequestedCleanupWhenAnEvictionThrows()
-        {
-            var items = new PoolItem[12];
-            for (int i = 0; i < items.Length; i++) items[i] = MemoryPool<PoolItem>.Acquire();
-            var cause = new InvalidOperationException("evict");
-            foreach (var item in items)
-            {
-                item.OnEviction = () => throw cause;
-                MemoryPool.Release(item);
-            }
-            var error = Assert.Throws<AggregateException>(() => MemoryPool<PoolItem>.Shrink(0));
-            Assert.That(error.Flatten().InnerExceptions.Count, Is.EqualTo(items.Length));
-            foreach (var failure in error.Flatten().InnerExceptions)
-            {
-                Assert.That(failure, Is.TypeOf<InvalidOperationException>());
-                Assert.That(failure.Message, Does.Contain("OnEvict() failed"));
-                Assert.That(failure.InnerException, Is.SameAs(cause));
-            }
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
-        }
-
-        [Test]
-        public void ExplicitAddCreatesUpToTheBudgetAndTickCompletesTheRequest()
-        {
-            MemoryPool<PoolItem>.Add(100);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(64));
+            Use<FreshItem<DecayTag>>();
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 128, 512, 4, 8f));
+            Burst<FreshItem<DecayTag>>(20);
             Tick();
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(100));
+            Assert.That(Info<FreshItem<DecayTag>>().FreeCount, Is.EqualTo(20));
+            Assert.That(Info<FreshItem<DecayTag>>().TargetFreeCount, Is.EqualTo(20));
+            Assert.That(Info<FreshItem<DecayTag>>().PeakLeasedCount, Is.EqualTo(20));
+            for (int i = 0; i < 7; i++)
+            {
+                Tick(1f);
+                Assert.That(Info<FreshItem<DecayTag>>().FreeCount, Is.EqualTo(20), "tick " + i);
+            }
+
+            for (int expected = 16; expected >= 0; expected -= 4)
+            {
+                Tick(1f);
+                Assert.That(Info<FreshItem<DecayTag>>().FreeCount, Is.EqualTo(expected));
+            }
+
+            Assert.That(Info<FreshItem<DecayTag>>().TargetFreeCount, Is.Zero);
+        }
+
+        [Test]
+        public void SoftLimitBoundsTheTargetEvenWhenThePeakIsHigher()
+        {
+            Use<FreshItem<SoftTag>>();
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 8, 512, 64, 8f));
+            Burst<FreshItem<SoftTag>>(100);
+            Assert.That(Info<FreshItem<SoftTag>>().FreeCount, Is.EqualTo(100));
             Tick();
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(100), "the requested reserve is kept while the pool is active");
+            Assert.That(Info<FreshItem<SoftTag>>().FreeCount, Is.EqualTo(36));
+            Tick();
+            Assert.That(Info<FreshItem<SoftTag>>().FreeCount, Is.EqualTo(8));
+            Assert.That(Info<FreshItem<SoftTag>>().TargetFreeCount, Is.EqualTo(8));
         }
 
         [Test]
-        public void AddIntMaxValueClampsWithoutOverflow()
+        public void RetainFloorSurvivesIdleDecay()
         {
-            MemoryPool<PoolItem>.SetCapacity(64, 64);
-            MemoryPool<PoolItem>.Add(int.MaxValue);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(64));
-            Tick(3);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(64));
+            Use<FreshItem<RetainTag>>();
+            MemoryPool.SetBudget(new MemoryPoolBudget(5, 128, 512, 64, 8f));
+            Burst<FreshItem<RetainTag>>(20);
+            Tick();
+            for (int i = 0; i < 20; i++) Tick(1f);
+            Assert.That(Info<FreshItem<RetainTag>>().FreeCount, Is.EqualTo(5));
+            Assert.That(Info<FreshItem<RetainTag>>().TargetFreeCount, Is.EqualTo(5));
         }
 
         [Test]
-        public void ExplicitRemoveCancelsQueuedGrowth()
+        public void SequentialDemandCreatesASingleObject()
         {
-            MemoryPool<PoolItem>.Add(100);
-            MemoryPool<PoolItem>.Shrink(0);
-            Tick(100);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
+            Use<FreshItem<SequentialTag>>();
+            int created = Info<FreshItem<SequentialTag>>().CreatedCount;
+            for (int frame = 0; frame < 120; frame++)
+            {
+                for (int i = 0; i < 100; i++) MemoryPool.Release(MemoryPool.Acquire<FreshItem<SequentialTag>>());
+                Tick(1f / 60f);
+            }
+
+            Assert.That(Info<FreshItem<SequentialTag>>().CreatedCount - created, Is.EqualTo(1));
+            Assert.That(Info<FreshItem<SequentialTag>>().FreeCount, Is.LessThanOrEqualTo(1));
         }
 
         [Test]
-        public void ShrinkEvictsImmediatelyAndPreservesLeases()
+        public void LoweringTheHardLimitTrimsImmediately()
         {
-            var items = new PoolItem[81];
-            for (int i = 0; i < items.Length; i++) items[i] = MemoryPool<PoolItem>.Acquire();
-            for (int i = 0; i < 80; i++) MemoryPool.Release(items[i]);
-
-            MemoryPool<PoolItem>.Shrink(0);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<PoolItem>().UsingCount, Is.EqualTo(1));
-            Assert.That(items[80].Evictions, Is.Zero);
-
-            MemoryPool.Release(items[80]);
-            MemoryPool<PoolItem>.Shrink(0);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
-            MemoryPool<PoolItem>.ClearAll();
+            Use<FreshItem<HardTag>>();
+            Burst<FreshItem<HardTag>>(50);
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 10, 10, 16, 30f));
+            Assert.That(Info<FreshItem<HardTag>>().FreeCount, Is.EqualTo(10));
         }
 
         [Test]
-        public void IdleExpiryReleasesNativeStorageAndStopsScheduling()
+        public void TrimAllEvictsEveryPoolAndLowMemoryKeepsTheRetainFloor()
         {
-            MemoryPool.ShortDecayStartFrames = 1;
-            MemoryPool.ZeroFreeReserveStartFrames = 2;
-            MemoryPool.UnscheduleIdleFrames = 3;
-            MemoryPool.AutoTrimNativeMetadataFrames = 4;
-            MemoryPool.Release(MemoryPool<PoolItem>.Acquire());
-            Tick(200);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<PoolItem>().PageCapacity, Is.Zero);
-            Assert.That(MemoryPool.GetHandle(typeof(PoolItem)).Inner.ActiveIndex, Is.EqualTo(-1));
-            Assert.That(typeof(MemoryPool<PoolItem>).GetField("s_PageCapacity", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null), Is.EqualTo(0));
-            MemoryPool.Release(MemoryPool<PoolItem>.Acquire());
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(1));
+            Burst<PoolItem>(6);
+            Burst<OtherItem>(6);
+            MemoryPoolRegistry.TrimAll(3);
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(3));
+            Assert.That(Info<OtherItem>().FreeCount, Is.EqualTo(3));
+            MemoryPool.TrimAll();
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
+            Assert.That(Info<OtherItem>().FreeCount, Is.Zero);
         }
 
         [Test]
-        public void TrimPreservesActiveLeaseAndThenReclaimsMetadata()
+        public void EvictionThatReleasesIntoAnotherPoolSchedulesThatPool()
         {
-            var item = MemoryPool<PoolItem>.Acquire();
-            var payload = new object();
-            item.Payload = payload;
-            MemoryPool<PoolItem>.TrimNativeMetadata();
-            Assert.That(item.Payload, Is.SameAs(payload));
-            Assert.That(Info<PoolItem>().UsingCount, Is.EqualTo(1));
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 0, 512, 16, 8f));
+            var other = MemoryPool.Acquire<OtherItem>();
+            var item = MemoryPool.Acquire<PoolItem>();
+            item.OnEviction = () => MemoryPool.Release(other);
             MemoryPool.Release(item);
-            MemoryPool<PoolItem>.TrimNativeMetadata();
-            Assert.That(Info<PoolItem>().PageCapacity, Is.Zero);
+            Tick();
+            item.OnEviction = null;
             Assert.That(item.Evictions, Is.EqualTo(1));
+            Assert.That(Info<OtherItem>().LeasedCount, Is.Zero);
+            Tick();
+            Assert.That(other.Evictions, Is.EqualTo(1));
+            Assert.That(Info<OtherItem>().FreeCount, Is.Zero);
+            Assert.That(Info<OtherItem>().LeasedCount, Is.Zero);
         }
 
         [Test]
-        public void ClearReleasesEveryEmptyPageWhileOtherPagesAreLeased()
+        public void EvictionFailureDuringTickPropagatesAndTheNextTickContinues()
         {
-            var items = new PoolItem[1000];
-            for (int i = 0; i < items.Length; i++) items[i] = MemoryPool<PoolItem>.Acquire();
-            for (int i = 1; i < items.Length; i++) MemoryPool.Release(items[i]);
-            MemoryPool<PoolItem>.ClearAll();
-            Assert.That(Info<PoolItem>().PageCapacity, Is.EqualTo(32));
-            MemoryPool.Release(items[0]);
-            Assert.That(Info<PoolItem>().PageCapacity, Is.Zero);
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 0, 512, 16, 8f));
+            var a = MemoryPool.Acquire<PoolItem>();
+            var b = MemoryPool.Acquire<PoolItem>();
+            var cause = new InvalidOperationException("evict");
+            a.OnEviction = () => throw cause;
+            MemoryPool.Release(a);
+            MemoryPool.Release(b);
+            Assert.That(Assert.Throws<InvalidOperationException>(() => Tick()), Is.SameAs(cause));
+            a.OnEviction = null;
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(1));
+            Tick();
+            Assert.That(b.Evictions, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
         }
 
         [Test]
-        public void PageRetirementAndReuseCannotStrandFreeSlots()
+        public void RegistryGrowthRegistersAndSchedulesEveryType()
         {
-            var held = new PoolItem[129];
-            MemoryPool<PoolItem>.SetCapacity(160, 160);
-            for (int round = 0; round < 300; round++)
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 0, 512, 16, 8f));
+            MethodInfo acquire = typeof(MemoryPool).GetMethod(nameof(MemoryPool.Acquire));
+            var pools = new List<MemoryPoolBase>();
+            foreach (Type tag in typeof(int).Assembly.GetExportedTypes())
             {
-                for (int i = 0; i < held.Length; i++) held[i] = MemoryPool<PoolItem>.Acquire();
-                for (int i = 0; i < held.Length; i++) MemoryPool.Release(held[i]);
-                MemoryPool<PoolItem>.Shrink(round % 33);
-                int available = Info<PoolItem>().UnusedCount;
-                int created = Info<PoolItem>().CreateCount;
-                for (int i = 0; i < available; i++) held[i] = MemoryPool<PoolItem>.Acquire();
-                Assert.That(Info<PoolItem>().CreateCount, Is.EqualTo(created));
-                for (int i = 0; i < available; i++) MemoryPool.Release(held[i]);
+                if (!tag.IsEnum || tag.ContainsGenericParameters) continue;
+                Type itemType = typeof(ColdItem<>).MakeGenericType(tag);
+                var item = (MemoryObject)acquire.MakeGenericMethod(itemType).Invoke(null, null);
+                MemoryPool.Release(item);
+                pools.Add(item.Pool);
+                if (pools.Count == 130) break;
             }
+
+            Assert.That(pools.Count, Is.EqualTo(130));
+            Assert.That(MemoryPool.Count, Is.GreaterThanOrEqualTo(130));
+            Tick();
+            foreach (MemoryPoolBase pool in pools) Assert.That(pool.GetInfo().FreeCount, Is.Zero, pool.GetInfo().Type.Name);
         }
 
         [Test]
-        public void RegistryGrowthSchedulesEveryTypeWithoutARepairScan()
+        public void GetInfosWritesAtMostTheDestinationLength()
         {
-            var handles = new List<MemoryPoolHandle>();
-            Type[] arguments = { typeof(int), typeof(long), typeof(string), typeof(byte), typeof(short), typeof(float), typeof(double), typeof(decimal), typeof(DateTime), typeof(Guid) };
-            foreach (Type a in arguments)
-            foreach (Type b in arguments)
-            {
-                Type pair = typeof(KeyValuePair<,>).MakeGenericType(a, b);
-                var handle = MemoryPool.GetHandle(typeof(ColdItem<>).MakeGenericType(pair));
-                handles.Add(handle);
-                handle.Release(handle.Acquire());
-            }
-            try
-            {
-                Tick(2);
-                foreach (var handle in handles)
-                {
-                    MemoryPoolInfo info = default;
-                    handle.Inner.GetInfo(ref info);
-                    Assert.That(info.IdleFrames, Is.EqualTo(1));
-                    Assert.That(handle.Inner.ActiveIndex, Is.GreaterThanOrEqualTo(0));
-                }
-            }
-            finally { foreach (var handle in handles) handle.Inner.Clear(); }
+            MemoryPool.Release(MemoryPool.Acquire<PoolItem>());
+            var infos = new MemoryPoolInfo[MemoryPool.Count + 4];
+            int count = MemoryPool.GetInfos(infos);
+            Assert.That(count, Is.EqualTo(MemoryPool.Count));
+            bool found = false;
+            for (int i = 0; i < count; i++)
+                if (infos[i].Type == typeof(PoolItem)) found = infos[i].FreeCount == 1;
+            Assert.That(found, Is.True);
+            Assert.That(MemoryPool.GetInfos(new MemoryPoolInfo[2]), Is.EqualTo(2));
+            Assert.That(MemoryPool.GetInfos(Span<MemoryPoolInfo>.Empty), Is.Zero);
         }
 
-        [Test]
-        public void InfoBufferIsCallerOwnedAndValidated()
+        [TestCase(-1, 0, 0, 1, 1f, "retainFreeCount")]
+        [TestCase(2, 1, 4, 1, 1f, "softFreeCount")]
+        [TestCase(0, 4, 3, 1, 1f, "hardFreeCount")]
+        [TestCase(0, 1, 1, 0, 1f, "trimPerTick")]
+        [TestCase(0, 1, 1, 1, 0f, "peakWindowSeconds")]
+        public void InvalidBudgetIsRejected(int retain, int soft, int hard, int trim, float window, string parameter)
         {
-            Assert.Throws<ArgumentNullException>(() => MemoryPool.GetAllMemoryPoolInfos(null));
-            Assert.Throws<ArgumentException>(() => MemoryPool.GetAllMemoryPoolInfos(Array.Empty<MemoryPoolInfo>()));
-            var buffer = new MemoryPoolInfo[MemoryPool.Count];
-            Assert.That(MemoryPool.GetAllMemoryPoolInfos(buffer), Is.EqualTo(buffer.Length));
-            foreach (var info in buffer) Assert.That(info.Type, Is.Not.Null);
-        }
-
-        [TestCase(0)]
-        [TestCase(-1)]
-        [TestCase(int.MinValue)]
-        public void NonPositiveRemovalDoesNotOverflowOrEvict(int count)
-        {
-            MemoryPool.Release(MemoryPool<PoolItem>.Acquire());
-            MemoryPool.Remove<PoolItem>(count);
-            MemoryPool.Remove(typeof(PoolItem), count);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(1));
-            MemoryPool.Remove<PoolItem>(int.MaxValue);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-        }
-
-        [Test]
-        public void GlobalClearPreservesSchedulingOfObjectsCreatedByAnotherPoolsEviction()
-        {
-            // 注册顺序是全局的且会跨测试保留；按已知顺序重新注册两个池，使 PoolItem 先被清理，
-            // 从而回调在 ClearAll 已经越过它时触发。回调重新填充的池必须继续安排到下一 tick。
-            MemoryPool<PoolItem>.Destroy();
-            MemoryPool<OtherItem>.Destroy();
-            MemoryPool<PoolItem>.SetCapacity(128, 512);
-            MemoryPool<OtherItem>.SetCapacity(128, 512);
-
-            var earlier = MemoryPool.GetHandle(typeof(PoolItem));
-            var later = MemoryPool.GetHandle(typeof(OtherItem));
-            earlier.Release(earlier.Acquire());
-            var trigger = (PoolItem)later.Acquire();
-            trigger.OnEviction = () => earlier.Release(earlier.Acquire());
-            later.Release(trigger);
-
-            MemoryPool.ClearAll();
-
-            MemoryPoolInfo info = default;
-            earlier.Inner.GetInfo(ref info);
-            Assert.That(info.UnusedCount, Is.EqualTo(1));
-            Assert.That(earlier.Inner.ActiveIndex, Is.GreaterThanOrEqualTo(0));
-        }
-
-        [Test]
-        public void BatchCleanupReportsEveryCallbackFailure()
-        {
-            var first = MemoryPool<PoolItem>.Acquire();
-            var second = MemoryPool<OtherItem>.Acquire();
-            first.OnEviction = () => throw new InvalidOperationException("first");
-            second.OnEviction = () => throw new InvalidOperationException("second");
-            MemoryPool.Release(first);
-            MemoryPool.Release(second);
-            var error = Assert.Throws<AggregateException>(() => MemoryPool.ClearAll());
-            Assert.That(error.Flatten().InnerExceptions.Count, Is.EqualTo(2));
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<OtherItem>().UnusedCount, Is.Zero);
-        }
-
-        [Test]
-        public void GlobalMaintenanceContinuesWhenOtherPoolsEvictionCallbacksFail()
-        {
-            Use<ColdItem<PoolMaintenanceTests>>();
-            var first = MemoryPool<PoolItem>.Acquire();
-            var second = MemoryPool<OtherItem>.Acquire();
-            first.OnEviction = () => throw new InvalidOperationException("first");
-            second.OnEviction = () => throw new InvalidOperationException("second");
-            MemoryPool.Release(first);
-            MemoryPool.Release(second);
-            MemoryPool.Release(MemoryPool<ColdItem<PoolMaintenanceTests>>.Acquire());
-            var error = Assert.Throws<AggregateException>(() => MemoryPool.ClearAll());
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<OtherItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<ColdItem<PoolMaintenanceTests>>().UnusedCount, Is.Zero);
-            Assert.That(error.Flatten().InnerExceptions.Count, Is.EqualTo(2));
+            var error = Assert.Throws<ArgumentOutOfRangeException>(() => new MemoryPoolBudget(retain, soft, hard, trim, window));
+            Assert.That(error.ParamName, Is.EqualTo(parameter));
         }
     }
 }

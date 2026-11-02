@@ -26,7 +26,7 @@ namespace AlicizaX.Audio.Tests
             }
             try
             {
-                MemoryPool.RemoveAll<AudioClipCacheEntry>();
+                MemoryPool<AudioClipCacheEntry>.Instance.Trim(0);
                 int loaded = 0;
                 yield return AllocationCapture.Measure("audio-cold-cache-entry", 1,
                     () => { if (f.Audio.Preload(names[0], AudioCachePolicy.Ttl)) loaded++; },

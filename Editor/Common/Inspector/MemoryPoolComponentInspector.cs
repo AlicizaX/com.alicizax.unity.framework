@@ -22,28 +22,24 @@ namespace AlicizaX.Editor
         private readonly HashSet<string> _openedItems = new HashSet<string>();
         private MemoryPoolInfo[] _infoBuffer = Array.Empty<MemoryPoolInfo>();
 
-        private SerializedProperty _shortDecayStartFrames;
-        private SerializedProperty _unscheduleIdleFrames;
-        private SerializedProperty _zeroFreeReserveStartFrames;
-        private SerializedProperty _autoTrimNativeMetadataFrames;
-        private SerializedProperty _softFreeReserveLimit;
-        private SerializedProperty _hardFreeReserveLimit;
+        private SerializedProperty _retainFreeCount;
+        private SerializedProperty _softFreeCount;
+        private SerializedProperty _hardFreeCount;
+        private SerializedProperty _trimPerTick;
+        private SerializedProperty _peakWindowSeconds;
 
-        private IntegerField[] _configurationFields;
         private AlicizaSection _configurationSection;
         private VisualElement _runtimeRoot;
         private bool _showFullClassName;
         private bool _showEmptyPools;
-        private bool _syncingConfiguration;
 
         private void OnEnable()
         {
-            _shortDecayStartFrames = serializedObject.FindProperty("m_ShortDecayStartFrames");
-            _unscheduleIdleFrames = serializedObject.FindProperty("m_UnscheduleIdleFrames");
-            _zeroFreeReserveStartFrames = serializedObject.FindProperty("m_ZeroFreeReserveStartFrames");
-            _autoTrimNativeMetadataFrames = serializedObject.FindProperty("m_AutoTrimNativeMetadataFrames");
-            _softFreeReserveLimit = serializedObject.FindProperty("m_SoftFreeReserveLimit");
-            _hardFreeReserveLimit = serializedObject.FindProperty("m_HardFreeReserveLimit");
+            _retainFreeCount = serializedObject.FindProperty("m_RetainFreeCount");
+            _softFreeCount = serializedObject.FindProperty("m_SoftFreeCount");
+            _hardFreeCount = serializedObject.FindProperty("m_HardFreeCount");
+            _trimPerTick = serializedObject.FindProperty("m_TrimPerTick");
+            _peakWindowSeconds = serializedObject.FindProperty("m_PeakWindowSeconds");
         }
 
         protected override void BuildInspector(VisualElement root)
@@ -65,142 +61,35 @@ namespace AlicizaX.Editor
             _configurationSection = AlicizaEditorUI.CreateStaticSection("Configuration");
             parent.Add(_configurationSection);
 
-            if (!HasConfigurationProperties())
-            {
-                _configurationSection.Body.Add(
-                    AlicizaEditorUI.CreateHint("Memory pool configuration properties are unavailable."));
-                return;
-            }
-
-            if (!EditorApplication.isPlaying)
-            {
-                NormalizeSerializedConfiguration();
-                serializedObject.ApplyModifiedProperties();
-            }
-
-            _configurationFields = new IntegerField[6];
-            AddConfigurationRow(_configurationSection.Body, "Short Decay Start", _shortDecayStartFrames, 0);
-            AddConfigurationRow(_configurationSection.Body, "Zero Free Start", _zeroFreeReserveStartFrames, 1);
-            AddConfigurationRow(_configurationSection.Body, "Unschedule Idle", _unscheduleIdleFrames, 2);
-            AddConfigurationRow(_configurationSection.Body, "Auto Trim Native", _autoTrimNativeMetadataFrames, 3);
-            AddConfigurationRow(_configurationSection.Body, "Soft Free Limit", _softFreeReserveLimit, 4);
-            AddConfigurationRow(_configurationSection.Body, "Hard Free Limit", _hardFreeReserveLimit, 5);
-            SyncConfigurationFields();
+            VisualElement body = _configurationSection.Body;
+            MakeIntegerRowDelayed(AlicizaEditorUI.AddPropertyRow(body, "Retain Free", _retainFreeCount));
+            MakeIntegerRowDelayed(AlicizaEditorUI.AddPropertyRow(body, "Soft Free", _softFreeCount));
+            MakeIntegerRowDelayed(AlicizaEditorUI.AddPropertyRow(body, "Hard Free", _hardFreeCount));
+            MakeIntegerRowDelayed(AlicizaEditorUI.AddPropertyRow(body, "Trim Per Tick", _trimPerTick));
+            MakeFloatRowDelayed(AlicizaEditorUI.AddPropertyRow(body, "Peak Window (s)", _peakWindowSeconds));
         }
 
-        private bool HasConfigurationProperties()
+        private static void MakeIntegerRowDelayed(AlicizaRow row)
         {
-            return _shortDecayStartFrames != null &&
-                   _zeroFreeReserveStartFrames != null &&
-                   _unscheduleIdleFrames != null &&
-                   _autoTrimNativeMetadataFrames != null &&
-                   _softFreeReserveLimit != null &&
-                   _hardFreeReserveLimit != null;
+            row.Content.Q<IntegerField>().isDelayed = true;
         }
 
-        private void AddConfigurationRow(
-            VisualElement parent,
-            string caption,
-            SerializedProperty property,
-            int index)
+        private static void MakeFloatRowDelayed(AlicizaRow row)
         {
-            AlicizaRow row = AlicizaEditorUI.AddPropertyRow(parent, caption, property);
-            if (row == null || _configurationFields == null || index >= _configurationFields.Length)
-            {
-                return;
-            }
-
-            IntegerField field = row.Content.Q<IntegerField>();
-            if (field == null)
-            {
-                return;
-            }
-
-            field.isDelayed = true;
-            _configurationFields[index] = field;
-            field.RegisterValueChangedCallback(evt =>
-            {
-                if (_syncingConfiguration)
-                {
-                    return;
-                }
-
-                property.intValue = evt.newValue;
-                ApplyConfigurationChanges();
-            });
-        }
-
-        private void ApplyConfigurationChanges()
-        {
-            _syncingConfiguration = true;
-            try
-            {
-                NormalizeSerializedConfiguration();
-                serializedObject.ApplyModifiedProperties();
-                SyncConfigurationFields();
-            }
-            finally
-            {
-                _syncingConfiguration = false;
-            }
-        }
-
-        private void SyncConfigurationFields()
-        {
-            if (_configurationFields == null)
-            {
-                return;
-            }
-
-            SyncConfigurationField(0, _shortDecayStartFrames);
-            SyncConfigurationField(1, _zeroFreeReserveStartFrames);
-            SyncConfigurationField(2, _unscheduleIdleFrames);
-            SyncConfigurationField(3, _autoTrimNativeMetadataFrames);
-            SyncConfigurationField(4, _softFreeReserveLimit);
-            SyncConfigurationField(5, _hardFreeReserveLimit);
-        }
-
-        private void SyncConfigurationField(int index, SerializedProperty property)
-        {
-            if (_configurationFields == null ||
-                index < 0 ||
-                index >= _configurationFields.Length ||
-                property == null)
-            {
-                return;
-            }
-
-            IntegerField field = _configurationFields[index];
-            if (field != null)
-            {
-                field.SetValueWithoutNotify(property.intValue);
-            }
+            row.Content.Q<FloatField>().isDelayed = true;
         }
 
         private void RefreshRuntime()
         {
-            if (_runtimeRoot == null)
-            {
-                return;
-            }
-
-            bool playing = EditorApplication.isPlaying;
-            if (playing && IsRuntimeTextInputFocused())
-            {
-                return;
-            }
-
             _runtimeRoot.Clear();
 
-            MemoryPoolSetting setting = target as MemoryPoolSetting;
-            bool sceneInstance = setting != null && IsPrefabInHierarchy(setting.gameObject);
+            bool playing = EditorApplication.isPlaying;
+            MemoryPoolSetting setting = (MemoryPoolSetting)target;
+            bool sceneInstance = IsPrefabInHierarchy(setting.gameObject);
 
-            if (_configurationSection != null)
-            {
-                _configurationSection.style.display = playing && sceneInstance
-                    ? DisplayStyle.None
-                    : DisplayStyle.Flex;
-            }
+            _configurationSection.style.display = playing && sceneInstance
+                ? DisplayStyle.None
+                : DisplayStyle.Flex;
 
             if (!playing)
             {
@@ -215,8 +104,7 @@ namespace AlicizaX.Editor
             }
 
             BuildRuntimeStatus(_runtimeRoot);
-            BuildIdleTrim(_runtimeRoot);
-            BuildCapacity(_runtimeRoot);
+            BuildBudget(_runtimeRoot);
 
             int infoCount = FetchInfos();
             BuildOverview(_runtimeRoot, infoCount);
@@ -256,190 +144,34 @@ namespace AlicizaX.Editor
         {
             var toggle = new AlicizaPillToggle();
             toggle.SetValueWithoutNotify(value);
-            toggle.RegisterValueChangedCallback(evt => onValueChanged?.Invoke(evt.newValue));
+            toggle.RegisterValueChangedCallback(evt => onValueChanged(evt.newValue));
             return toggle;
         }
 
-        private void BuildIdleTrim(VisualElement parent)
+        private static void BuildBudget(VisualElement parent)
         {
-            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Idle Trim");
+            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Budget");
             parent.Add(section);
 
-            var fields = new IntegerField[4];
-            Action syncFields = () =>
-            {
-                SyncRuntimeField(fields[0], MemoryPool.ShortDecayStartFrames);
-                SyncRuntimeField(fields[1], MemoryPool.ZeroFreeReserveStartFrames);
-                SyncRuntimeField(fields[2], MemoryPool.UnscheduleIdleFrames);
-                SyncRuntimeField(fields[3], MemoryPool.AutoTrimNativeMetadataFrames);
-            };
-
-            fields[0] = AddRuntimeIntRow(
-                section.Body,
-                "Short Decay Start",
-                MemoryPool.ShortDecayStartFrames,
-                ApplyShortDecayStart,
-                syncFields);
-            fields[1] = AddRuntimeIntRow(
-                section.Body,
-                "Zero Free Start",
-                MemoryPool.ZeroFreeReserveStartFrames,
-                ApplyZeroFreeStart,
-                syncFields);
-            fields[2] = AddRuntimeIntRow(
-                section.Body,
-                "Unschedule Idle",
-                MemoryPool.UnscheduleIdleFrames,
-                ApplyUnscheduleIdle,
-                syncFields);
-            fields[3] = AddRuntimeIntRow(
-                section.Body,
-                "Auto Trim Native",
-                MemoryPool.AutoTrimNativeMetadataFrames,
-                ApplyAutoTrimNative,
-                syncFields);
-        }
-
-        private void BuildCapacity(VisualElement parent)
-        {
-            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Capacity");
-            parent.Add(section);
-
-            var fields = new IntegerField[2];
-            Action syncFields = () =>
-            {
-                SyncRuntimeField(fields[0], MemoryPool.DefaultSoftFreeReserveLimit);
-                SyncRuntimeField(fields[1], MemoryPool.DefaultHardFreeReserveLimit);
-            };
-
-            fields[0] = AddRuntimeIntRow(
-                section.Body,
-                "Soft Free Limit",
-                MemoryPool.DefaultSoftFreeReserveLimit,
-                ApplySoftFreeLimit,
-                syncFields);
-            fields[1] = AddRuntimeIntRow(
-                section.Body,
-                "Hard Free Limit",
-                MemoryPool.DefaultHardFreeReserveLimit,
-                ApplyHardFreeLimit,
-                syncFields);
-        }
-
-        private static IntegerField AddRuntimeIntRow(
-            VisualElement parent,
-            string caption,
-            int value,
-            Func<int, int> apply,
-            Action afterApply)
-        {
-            var field = new IntegerField { label = string.Empty, value = value, isDelayed = true };
-            field.AddToClassList("alicia-control");
-            field.AddToClassList("alicia-control--narrow");
-            field.RegisterValueChangedCallback(evt =>
-            {
-                int applied = apply(evt.newValue);
-                if (applied != evt.newValue)
-                {
-                    field.SetValueWithoutNotify(applied);
-                }
-
-                afterApply?.Invoke();
-            });
-
-            AlicizaEditorUI.AddRow(parent, caption, field);
-            return field;
-        }
-
-        private static void SyncRuntimeField(IntegerField field, int value)
-        {
-            if (field != null && field.value != value)
-            {
-                field.SetValueWithoutNotify(value);
-            }
-        }
-
-        private static int ApplyShortDecayStart(int value)
-        {
-            MemoryPool.ShortDecayStartFrames = Math.Max(0, value);
-            NormalizeRuntimeIdleTrim();
-            return MemoryPool.ShortDecayStartFrames;
-        }
-
-        private static int ApplyZeroFreeStart(int value)
-        {
-            MemoryPool.ZeroFreeReserveStartFrames = value;
-            NormalizeRuntimeIdleTrim();
-            return MemoryPool.ZeroFreeReserveStartFrames;
-        }
-
-        private static int ApplyUnscheduleIdle(int value)
-        {
-            MemoryPool.UnscheduleIdleFrames = value;
-            NormalizeRuntimeIdleTrim();
-            return MemoryPool.UnscheduleIdleFrames;
-        }
-
-        private static int ApplyAutoTrimNative(int value)
-        {
-            MemoryPool.AutoTrimNativeMetadataFrames = value;
-            NormalizeRuntimeIdleTrim();
-            return MemoryPool.AutoTrimNativeMetadataFrames;
-        }
-
-        private static void NormalizeRuntimeIdleTrim()
-        {
-            MemoryPool.ShortDecayStartFrames = Math.Max(0, MemoryPool.ShortDecayStartFrames);
-            MemoryPool.ZeroFreeReserveStartFrames = Math.Max(
-                MemoryPool.ShortDecayStartFrames,
-                MemoryPool.ZeroFreeReserveStartFrames);
-            MemoryPool.UnscheduleIdleFrames = Math.Max(
-                MemoryPool.ZeroFreeReserveStartFrames,
-                MemoryPool.UnscheduleIdleFrames);
-            MemoryPool.AutoTrimNativeMetadataFrames =
-                MemoryPool.AutoTrimNativeMetadataFrames < 0
-                    ? -1
-                    : Math.Max(
-                        MemoryPool.ZeroFreeReserveStartFrames,
-                        MemoryPool.AutoTrimNativeMetadataFrames);
-        }
-
-        private static int ApplySoftFreeLimit(int value)
-        {
-            int soft = Math.Max(MemoryPool.MinimumFreeReserveLimit, value);
-            int hard = Math.Max(soft, MemoryPool.DefaultHardFreeReserveLimit);
-            if (soft != MemoryPool.DefaultSoftFreeReserveLimit ||
-                hard != MemoryPool.DefaultHardFreeReserveLimit)
-            {
-                MemoryPool.SetDefaultCapacity(soft, hard);
-            }
-
-            return soft;
-        }
-
-        private static int ApplyHardFreeLimit(int value)
-        {
-            int soft = MemoryPool.DefaultSoftFreeReserveLimit;
-            int hard = Math.Max(soft, value);
-            if (hard != MemoryPool.DefaultHardFreeReserveLimit)
-            {
-                MemoryPool.SetDefaultCapacity(soft, hard);
-            }
-
-            return hard;
+            MemoryPoolBudget budget = MemoryPoolRegistry.Budget;
+            AlicizaEditorUI.AddValueRow(section.Body, "Retain Free", budget.RetainFreeCount.ToString(), AlicizaValueTone.Default);
+            AlicizaEditorUI.AddValueRow(section.Body, "Soft Free", budget.SoftFreeCount.ToString(), AlicizaValueTone.Default);
+            AlicizaEditorUI.AddValueRow(section.Body, "Hard Free", budget.HardFreeCount.ToString(), AlicizaValueTone.Default);
+            AlicizaEditorUI.AddValueRow(section.Body, "Trim Per Tick", budget.TrimPerTick.ToString(), AlicizaValueTone.Default);
+            AlicizaEditorUI.AddValueRow(section.Body, "Peak Window (s)", budget.PeakWindowSeconds.ToString("0.##"), AlicizaValueTone.Default);
         }
 
         private void BuildOverview(VisualElement parent, int infoCount)
         {
-            int totalUnused = 0;
-            int totalUsing = 0;
-            int totalPageCapacity = 0;
+            int totalFree = 0;
+            int totalLeased = 0;
+            int totalCreated = 0;
             for (int i = 0; i < infoCount; i++)
             {
                 ref MemoryPoolInfo info = ref _infoBuffer[i];
-                totalUnused += info.UnusedCount;
-                totalUsing += info.UsingCount;
-                totalPageCapacity += info.PageCapacity;
+                totalFree += info.FreeCount;
+                totalLeased += info.LeasedCount;
+                totalCreated += info.CreatedCount;
             }
 
             AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Overview");
@@ -448,18 +180,18 @@ namespace AlicizaX.Editor
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Total Cached",
-                totalUnused.ToString(),
-                totalUnused > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+                totalFree.ToString(),
+                totalFree > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Total In Use",
-                totalUsing.ToString(),
-                totalUsing > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
+                totalLeased.ToString(),
+                totalLeased > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
             AlicizaEditorUI.AddValueRow(
                 section.Body,
-                "Total Page Capacity",
-                totalPageCapacity.ToString(),
-                totalPageCapacity > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+                "Total Created",
+                totalCreated.ToString(),
+                totalCreated > 0 ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
         }
 
         private static void BuildActions(VisualElement parent)
@@ -470,26 +202,12 @@ namespace AlicizaX.Editor
             var actions = new VisualElement();
             actions.AddToClassList("alicia-actions");
 
-            Button clearCached = AlicizaEditorUI.CreateTextButton(
-                "Clear Cached",
-                "Release every cached object and its pages.",
+            Button trimAll = AlicizaEditorUI.CreateTextButton(
+                "Trim All",
+                "Evict every cached free object.",
                 AlicizaButtonTone.Warning);
-            clearCached.clicked += MemoryPoolRegistry.ClearAll;
-            actions.Add(clearCached);
-
-            Button trimNative = AlicizaEditorUI.CreateTextButton(
-                "Trim Native",
-                "Release native metadata held by every memory pool.",
-                AlicizaButtonTone.Accent);
-            trimNative.clicked += MemoryPool.TrimAllNativeMetadata;
-            actions.Add(trimNative);
-
-            Button resetStats = AlicizaEditorUI.CreateTextButton(
-                "Reset Stats",
-                "Reset acquire, release and create counters.",
-                AlicizaButtonTone.Danger);
-            resetStats.clicked += MemoryPool.ResetAllStats;
-            actions.Add(resetStats);
+            trimAll.clicked += MemoryPool.TrimAll;
+            actions.Add(trimAll);
 
             section.Body.Add(actions);
         }
@@ -581,21 +299,17 @@ namespace AlicizaX.Editor
 
             Label counters = AlicizaEditorUI.CreateValueLabel(
                 Utility.Text.Format(
-                    "Unused {0}  ·  Using {1}  ·  Acquire {2}  ·  Release {3}",
-                    info.UnusedCount,
-                    info.UsingCount,
-                    info.AcquireCount,
-                    info.ReleaseCount),
-                info.UsingCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Default);
+                    "Free {0}  ·  Leased {1}  ·  Created {2}",
+                    info.FreeCount,
+                    info.LeasedCount,
+                    info.CreatedCount),
+                info.LeasedCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Default);
 
             Label capacity = AlicizaEditorUI.CreateHint(
                 Utility.Text.Format(
-                    "Created {0}  ·  Target {1}  ·  MaxCap {2}  ·  Idle {3}  ·  PageCap {4}",
-                    info.CreateCount,
-                    info.TargetFreeReserve,
-                    info.MaxCapacity,
-                    info.IdleFrames,
-                    info.PageCapacity));
+                    "Target {0}  ·  Peak {1}",
+                    info.TargetFreeCount,
+                    info.PeakLeasedCount));
 
             details.Add(counters);
             details.Add(capacity);
@@ -611,7 +325,7 @@ namespace AlicizaX.Editor
                 _infoBuffer = new MemoryPoolInfo[GetBufferCapacity(poolCount)];
             }
 
-            return MemoryPool.GetAllMemoryPoolInfos(_infoBuffer);
+            return MemoryPool.GetInfos(_infoBuffer);
         }
 
         private void RebuildGroups(int infoCount)
@@ -625,7 +339,7 @@ namespace AlicizaX.Editor
             for (int i = 0; i < infoCount; i++)
             {
                 ref MemoryPoolInfo info = ref _infoBuffer[i];
-                if (!_showEmptyPools && IsEmptyPool(info))
+                if (!_showEmptyPools && IsEmptyPool(in info))
                 {
                     continue;
                 }
@@ -648,37 +362,9 @@ namespace AlicizaX.Editor
             _activeAssemblyKeys.Sort(StringComparer.Ordinal);
         }
 
-        private void NormalizeSerializedConfiguration()
+        private static bool IsEmptyPool(in MemoryPoolInfo info)
         {
-            _shortDecayStartFrames.intValue = Math.Max(0, _shortDecayStartFrames.intValue);
-            _zeroFreeReserveStartFrames.intValue = Math.Max(
-                _shortDecayStartFrames.intValue,
-                _zeroFreeReserveStartFrames.intValue);
-            _unscheduleIdleFrames.intValue = Math.Max(
-                _zeroFreeReserveStartFrames.intValue,
-                _unscheduleIdleFrames.intValue);
-            if (_autoTrimNativeMetadataFrames.intValue < 0)
-            {
-                _autoTrimNativeMetadataFrames.intValue = -1;
-            }
-            else
-            {
-                _autoTrimNativeMetadataFrames.intValue = Math.Max(
-                    _zeroFreeReserveStartFrames.intValue,
-                    _autoTrimNativeMetadataFrames.intValue);
-            }
-
-            _softFreeReserveLimit.intValue = Math.Max(
-                MemoryPool.MinimumFreeReserveLimit,
-                _softFreeReserveLimit.intValue);
-            _hardFreeReserveLimit.intValue = Math.Max(
-                _softFreeReserveLimit.intValue,
-                _hardFreeReserveLimit.intValue);
-        }
-
-        private static bool IsEmptyPool(MemoryPoolInfo info)
-        {
-            return info.UnusedCount == 0 && info.UsingCount == 0 && info.PageCapacity == 0;
+            return info.FreeCount == 0 && info.LeasedCount == 0;
         }
 
         private void ExportCsv(string assemblyName)
@@ -698,16 +384,15 @@ namespace AlicizaX.Editor
                 List<MemoryPoolInfo> poolInfos = CollectAssemblyInfos(assemblyName);
                 int index = 0;
                 string[] data = new string[poolInfos.Count + 1];
-                data[index++] = "Class Name,Full Class Name,Unused,Using,Acquire,Release,Created,TargetFreeReserve,MaxCapacity,IdleFrames,PageCapacity";
+                data[index++] = "Class Name,Full Class Name,Free,Leased,Created,TargetFree,PeakLeased";
                 for (int i = 0; i < poolInfos.Count; i++)
                 {
                     MemoryPoolInfo info = poolInfos[i];
-                    data[index++] = Utility.Text.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}",
+                    data[index++] = Utility.Text.Format("{0},{1},{2},{3},{4},{5},{6}",
                         info.Type.Name, info.Type.FullName,
-                        info.UnusedCount, info.UsingCount,
-                        info.AcquireCount, info.ReleaseCount,
-                        info.CreateCount, info.TargetFreeReserve,
-                        info.MaxCapacity, info.IdleFrames, info.PageCapacity);
+                        info.FreeCount, info.LeasedCount,
+                        info.CreatedCount, info.TargetFreeCount,
+                        info.PeakLeasedCount);
                 }
 
                 File.WriteAllLines(exportFileName, data, Encoding.UTF8);
@@ -726,7 +411,7 @@ namespace AlicizaX.Editor
             for (int i = 0; i < infoCount; i++)
             {
                 ref MemoryPoolInfo info = ref _infoBuffer[i];
-                if (!_showEmptyPools && IsEmptyPool(info))
+                if (!_showEmptyPools && IsEmptyPool(in info))
                 {
                     continue;
                 }
@@ -765,53 +450,9 @@ namespace AlicizaX.Editor
             return left.Type.FullName.CompareTo(right.Type.FullName);
         }
 
-        private bool IsRuntimeTextInputFocused()
-        {
-            if (_runtimeRoot == null || _runtimeRoot.panel == null)
-            {
-                return false;
-            }
-
-            VisualElement focused =
-                _runtimeRoot.panel.focusController?.focusedElement as VisualElement;
-            if (focused == null || !IsDescendantOf(focused, _runtimeRoot))
-            {
-                return false;
-            }
-
-            return IsRuntimeTextInput(focused);
-        }
-
-        private static bool IsRuntimeTextInput(VisualElement element)
-        {
-            for (VisualElement current = element; current != null; current = current.parent)
-            {
-                if (current is IntegerField || current is FloatField || current is TextField)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsDescendantOf(VisualElement element, VisualElement ancestor)
-        {
-            for (VisualElement current = element; current != null; current = current.parent)
-            {
-                if (current == ancestor)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         private static bool IsPrefabInHierarchy(UnityEngine.Object obj)
         {
-            return obj != null &&
-                   PrefabUtility.GetPrefabAssetType(obj) != PrefabAssetType.Regular;
+            return PrefabUtility.GetPrefabAssetType(obj) != PrefabAssetType.Regular;
         }
 
         private static int GetBufferCapacity(int count)

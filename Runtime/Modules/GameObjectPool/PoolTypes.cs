@@ -155,35 +155,36 @@ namespace AlicizaX
     {
         private RuntimeGameObjectPool _owner;
         private int _slotIndex = -1;
-        private uint _generation;
 
         internal int SlotIndex => _slotIndex;
-        internal uint Generation => _generation;
 
-        internal void Bind(RuntimeGameObjectPool owner, int slotIndex, uint generation)
+        internal void Bind(RuntimeGameObjectPool owner, int slotIndex)
         {
             _owner = owner;
             _slotIndex = slotIndex;
-            _generation = generation;
         }
 
         internal void Detach()
         {
             _owner = null;
             _slotIndex = -1;
-            _generation = 0;
         }
 
-        internal bool TryRelease()
+        internal void Despawn()
         {
-            return _owner != null && _owner.ReleaseFromHandle(this);
+            if (_owner == null)
+            {
+                throw new InvalidOperationException("[GameObjectPool] Instance no longer belongs to a pool.");
+            }
+
+            _owner.Despawn(_slotIndex);
         }
 
         private void OnDestroy()
         {
             if (_owner != null)
             {
-                _owner.NotifyHandleDestroyed(_slotIndex, _generation);
+                _owner.RemoveDestroyedSlot(_slotIndex);
             }
         }
     }

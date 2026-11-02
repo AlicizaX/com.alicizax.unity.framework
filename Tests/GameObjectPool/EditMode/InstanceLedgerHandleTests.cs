@@ -48,7 +48,7 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [Test]
-        public void StaleHandleReleaseFailsAndUnhandledDespawnDestroys()
+        public void InvalidDespawnThrowsWithoutChangingTheLedger()
         {
             Prefab("fx/hit");
             Catalog(Entry("fx/hit"));
@@ -56,13 +56,25 @@ namespace AlicizaX.GameObjectPool.Tests
             GameObject instance = MustSpawn("fx/hit");
             var handle = instance.GetComponent<GameObjectPoolHandle>();
             Service.Despawn(instance);
-            Assert.That(handle.TryRelease(), Is.False);
-            Ledger("fx/hit", 1, 0, 1, true);
+            Assert.That(Assert.Throws<InvalidOperationException>(() => Service.Despawn(instance)).Message, Does.Contain("not spawned"));
+            Assert.Throws<InvalidOperationException>(() => Service.Despawn(handle));
             var foreign = Keep(new GameObject("foreign"));
-            LogAssert.Expect(LogType.Warning, new Regex("not a pooled instance"));
-            Service.Despawn(foreign);
-            Service.Despawn((GameObject)null);
-            Service.Despawn((GameObjectPoolHandle)null);
+            Assert.That(Assert.Throws<InvalidOperationException>(() => Service.Despawn(foreign)).Message, Does.Contain("not a pooled instance"));
+            Ledger("fx/hit", 1, 0, 1, true);
+            Assert.That(DespawnStat("fx/hit"), Is.EqualTo(1));
+            Assert.That(instance.activeSelf, Is.False);
+        }
+
+        [Test]
+        public void DespawnAfterServiceShutdownThrows()
+        {
+            Prefab("fx/hit");
+            Catalog(Entry("fx/hit"));
+            Service.LoadPrefab("fx/hit");
+            GameObject instance = MustSpawn("fx/hit");
+            var handle = instance.GetComponent<GameObjectPoolHandle>();
+            Catalog(Entry("fx/hit"));
+            Assert.That(Assert.Throws<InvalidOperationException>(() => handle.Despawn()).Message, Does.Contain("no longer belongs to a pool"));
         }
 
         [Test]
@@ -85,7 +97,7 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [Test]
-        public void OnDespawnExceptionStillParksInactive()
+        public void OnDespawnExceptionKeepsTheInstanceSpawnedForRetry()
         {
             Prefab("fx/hit", poolable: true);
             Catalog(Entry("fx/hit"));
@@ -94,9 +106,11 @@ namespace AlicizaX.GameObjectPool.Tests
             var probe = instance.GetComponent<PoolableProbe>();
             probe.ThrowDespawn = true;
             Assert.Throws<InvalidOperationException>(() => Service.Despawn(instance));
-            Ledger("fx/hit", 1, 0, 1, true);
-            Assert.That(instance.activeSelf, Is.False);
+            Ledger("fx/hit", 1, 1, 0, true);
+            Assert.That(instance.activeSelf, Is.True);
             probe.ThrowDespawn = false;
+            Service.Despawn(instance);
+            Ledger("fx/hit", 1, 0, 1, true);
             Assert.That(MustSpawn("fx/hit"), Is.SameAs(instance));
         }
 
@@ -130,13 +144,13 @@ namespace AlicizaX.GameObjectPool.Tests
             instance.GetComponent<PoolableProbe>().ThrowDestroy = true;
             LogAssert.Expect(LogType.Exception, new Regex("destroy failure"));
             ((IServiceLifecycle)Service).Destroy();
+            Assert.That(PoolCount(), Is.Zero);
             Service = null;
-            Assert.That(Using<RuntimeGameObjectPool>(), Is.Zero);
             Assert.That(Loader.LiveLeases, Is.Zero);
         }
 
         [Test]
-        public void ThousandInstancesKeepPagedIdleLinksAndLedger()
+        public void ThousandInstancesKeepIdleLinksAndLedger()
         {
             Prefab("fx/hit");
             Catalog(Entry("fx/hit", minIdle: 0, soft: 1024, hard: 1024));
@@ -153,25 +167,26 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [Test]
-        public void GenerationIncrementsPerCreateAndBindMatchesSlot()
+        public void DestroyedSlotIsReusedByTheNextInstance()
         {
             Prefab("fx/hit");
             Catalog(Entry("fx/hit", PoolPolicy.Fixed, minIdle: 0, soft: 8, hard: 16));
             Service.LoadPrefab("fx/hit");
             GameObject first = MustSpawn("fx/hit");
-            uint generation = first.GetComponent<GameObjectPoolHandle>().Generation;
-            Assert.That(generation, Is.EqualTo(1u));
+            int slotIndex = first.GetComponent<GameObjectPoolHandle>().SlotIndex;
             Service.Despawn(first);
             Service.Flush("fx/hit");
+            Ledger("fx/hit", 0, 0, 0, false);
             Assert.That(Service.LoadPrefab("fx/hit"), Is.Not.Null);
             GameObject second = MustSpawn("fx/hit");
-            Assert.That(second.GetComponent<GameObjectPoolHandle>().Generation, Is.EqualTo(2u));
-            Assert.That(second.GetComponent<GameObjectPoolHandle>().SlotIndex, Is.GreaterThanOrEqualTo(0));
+            Assert.That(second, Is.Not.SameAs(first));
+            Assert.That(second.GetComponent<GameObjectPoolHandle>().SlotIndex, Is.EqualTo(slotIndex));
             Service.Despawn(second);
+            Ledger("fx/hit", 1, 0, 1, true);
         }
 
         [Test]
-        public void PagedSlotsSurvivePastOnePageWithoutLosingIdleLinks()
+        public void SlotStorageGrowsWithoutLosingIdleLinks()
         {
             Prefab("fx/hit");
             Catalog(Entry("fx/hit", minIdle: 0, soft: 256, hard: 256));
@@ -229,7 +244,7 @@ namespace AlicizaX.GameObjectPool.Tests
             DebugService.FillDebugInstances(snapshots[0]);
             Assert.That(snapshots[0].InstanceCount, Is.EqualTo(1));
             DebugService.GetDebugSnapshots(snapshots);
-            Assert.That(Using<GameObjectPoolSnapshot>(), Is.EqualTo(1));
+            Assert.That(Leased<GameObjectPoolSnapshot>(), Is.EqualTo(1));
         }
     }
 }

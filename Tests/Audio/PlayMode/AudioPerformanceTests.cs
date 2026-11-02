@@ -115,7 +115,7 @@ namespace AlicizaX.Audio.Tests
         {
             using var f = new AudioFixture(capacity: 64, voices: 64);
             var clip = f.Clip("a");
-            MemoryPool.RemoveAll<AudioPlayRequest>();
+            MemoryPool<AudioPlayRequest>.Instance.Trim(0);
             ulong first = 0;
             yield return AllocationCapture.Measure("audio-first-request-first-source", 1,
                 () => first = f.Audio.Play(AudioType.Sound, clip, true), sample => Assert.That(sample.Bytes, Is.LessThanOrEqualTo(16384)));

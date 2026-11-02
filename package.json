@@ -18,7 +18,7 @@
     "email": "yuliuren00@gmail.com"
   },
   "dependencies": {
-    "com.tuyoogame.yooasset": "3.0.6",
+    "com.tuyoogame.yooasset": "3.0.7",
     "com.cysharp.zstring": "2.6.0",
     "com.alicizax.unity.cysharp.unitask": "2.5.13"
   }

@@ -5,7 +5,6 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AlicizaX.Audio.Runtime;
 using AudioType = AlicizaX.Audio.Runtime.AudioType;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using AlicizaX.Resource.Tests;
 using NUnit.Framework;
@@ -28,7 +27,6 @@ namespace AlicizaX.Audio.Tests
         internal static AudioFixture Active;
         internal readonly ResourceFixture Resources = new ResourceFixture();
         internal readonly AudioService Audio = new AudioService();
-        internal readonly ObjectPoolService Pools = new ObjectPoolService();
         internal readonly AudioGroupConfig[] Groups = new AudioGroupConfig[(int)AudioType.Max];
         internal readonly AudioMixer Mixer;
         internal readonly GameObject Root;
@@ -65,7 +63,6 @@ namespace AlicizaX.Audio.Tests
             Resources.Service.IdleAssetCapacity = 0;
             var world = AppServices.EnsureWorld();
             world.App.Register<IResourceService>(Resources.Service);
-            world.App.Register<IObjectPoolService>(Pools);
             world.App.Register<IAudioService>(Audio);
             if (initialize) Reinitialize();
         }
@@ -253,10 +250,10 @@ namespace AlicizaX.Audio.Tests
         internal static void CheckAudioPoolsReleased()
         {
             var infos = new MemoryPoolInfo[MemoryPool.Count];
-            int count = MemoryPool.GetAllMemoryPoolInfos(infos);
+            int count = MemoryPool.GetInfos(infos);
             for (int i = 0; i < count; i++)
                 if (infos[i].Type.Namespace == typeof(AudioService).Namespace)
-                    Assert.That(infos[i].UsingCount, Is.Zero, infos[i].Type.Name);
+                    Assert.That(infos[i].LeasedCount, Is.Zero, infos[i].Type.Name);
         }
         internal static T Read<T>(object instance, string name) =>
             (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(instance);

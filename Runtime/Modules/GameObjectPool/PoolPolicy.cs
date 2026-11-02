@@ -22,7 +22,7 @@ namespace AlicizaX
     {
         private const int TrimBudgetCap = 16;
 
-        public static PoolRecyclePlan Plan(in PoolCompiledRule rule, int totalCount, bool lowMemory)
+        public static PoolRecyclePlan Plan(in PoolCompiledRule rule, int inactiveCount, bool lowMemory)
         {
             int retain = rule.MinIdle;
             if (!lowMemory)
@@ -36,7 +36,7 @@ namespace AlicizaX
                         retain = Mathf.Clamp(rule.MinIdle, 0, rule.SoftCapacity);
                         break;
                     case PoolPolicy.Sticky:
-                        retain = Mathf.Max(rule.MinIdle, totalCount);
+                        retain = Mathf.Max(rule.MinIdle, inactiveCount);
                         break;
                 }
             }

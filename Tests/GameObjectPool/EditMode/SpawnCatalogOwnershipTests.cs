@@ -85,15 +85,14 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [Test]
-        public void TrySpawnWritesFalseWhenNull()
+        public void SpawnReturnsNullUntilThePrefabIsLoaded()
         {
             Catalog(Entry("fx/hit"));
-            Assert.That(Service.TrySpawn("fx/hit", null, out GameObject instance), Is.False);
-            Assert.That(instance, Is.Null);
             Prefab("fx/hit");
+            Assert.That(Service.Spawn("fx/hit"), Is.Null);
+            Ledger("fx/hit", 0, 0, 0, false);
             Service.LoadPrefab("fx/hit");
-            Assert.That(Service.TrySpawn("fx/hit", null, out instance), Is.True);
-            Assert.That(instance, Is.Not.Null);
+            GameObject instance = MustSpawn("fx/hit");
             Service.Despawn(instance);
         }
 
@@ -137,7 +136,7 @@ namespace AlicizaX.GameObjectPool.Tests
             Catalog(Entry("fx/b", group: "B"));
             Assert.That(RuntimePool("fx/a"), Is.Null);
             Assert.That(Summary().PoolCount, Is.Zero);
-            Assert.That(Using<RuntimeGameObjectPool>(), Is.Zero);
+            Assert.That(PoolCount(), Is.Zero);
             yield return null;
             Assert.That(GroupRoot("A"), Is.Null);
         }

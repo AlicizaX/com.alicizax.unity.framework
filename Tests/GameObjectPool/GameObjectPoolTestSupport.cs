@@ -116,11 +116,18 @@ namespace AlicizaX.GameObjectPool.Tests
         public bool ThrowDestroy;
         public readonly List<string> Calls = new List<string>();
         public PoolSpawnContext LastContext;
+        public GameObject Owner;
+        public bool OwnerActiveAtSpawn;
+        public Transform OwnerParentAtSpawn;
+        public bool OwnerActiveAtDespawn;
+        public Transform OwnerParentAtDespawn;
 
         public void OnSpawn(in PoolSpawnContext context)
         {
             Spawns++;
             LastContext = context;
+            OwnerActiveAtSpawn = Owner.activeSelf;
+            OwnerParentAtSpawn = Owner.transform.parent;
             Calls.Add("spawn");
             if (ThrowSpawn)
                 throw new InvalidOperationException("spawn failure");
@@ -129,6 +136,8 @@ namespace AlicizaX.GameObjectPool.Tests
         public void OnDespawn()
         {
             Despawns++;
+            OwnerActiveAtDespawn = Owner.activeSelf;
+            OwnerParentAtDespawn = Owner.transform.parent;
             Calls.Add("despawn");
             if (ThrowDespawn)
                 throw new InvalidOperationException("despawn failure");
@@ -141,6 +150,18 @@ namespace AlicizaX.GameObjectPool.Tests
             if (ThrowDestroy)
                 throw new InvalidOperationException("destroy failure");
         }
+    }
+
+    internal sealed class CountingPoolable : MonoBehaviour, IGameObjectPoolable
+    {
+        public int Spawns;
+        public int Despawns;
+
+        public void OnSpawn(in PoolSpawnContext context) => Spawns++;
+
+        public void OnDespawn() => Despawns++;
+
+        public void OnPooledDestroy() { }
     }
 
     internal sealed class ChildOnlyMarker : MonoBehaviour
@@ -163,9 +184,6 @@ namespace AlicizaX.GameObjectPool.Tests
         public void SetUpPool()
         {
             MemoryPoolRegistry.InitializeMainThread();
-            MemoryPool<RuntimeGameObjectPool>.ClearAll();
-            MemoryPool<GameObjectPoolSnapshot>.ClearAll();
-            MemoryPool<GameObjectPoolInstanceSnapshot>.ClearAll();
             Loader = new ControlledPrefabLoader();
             var containerObject = Keep(new GameObject("gop-container"));
             Container = containerObject.transform;
@@ -191,9 +209,12 @@ namespace AlicizaX.GameObjectPool.Tests
             try
             {
                 if (Service != null)
+                {
                     ((IServiceLifecycle)Service).Destroy();
-                Assert.That(Using<RuntimeGameObjectPool>(), Is.Zero, "RuntimeGameObjectPool leases must converge.");
-                Assert.That(Using<GameObjectPoolSnapshot>() + Using<GameObjectPoolInstanceSnapshot>(), Is.Zero, "Debug snapshots must be released.");
+                    Assert.That(PoolCount(), Is.Zero, "Service shutdown must release every pool.");
+                }
+
+                Assert.That(Leased<GameObjectPoolSnapshot>() + Leased<GameObjectPoolInstanceSnapshot>(), Is.Zero, "Debug snapshots must be released.");
                 Assert.That(Loader.LiveLeases, Is.Zero, "Service shutdown left prefab leases.");
                 Assert.That(Loader.HasPending, Is.False, "The test left an undelivered backend request.");
             }
@@ -210,9 +231,6 @@ namespace AlicizaX.GameObjectPool.Tests
                 }
 
                 Owned.Clear();
-                MemoryPool<RuntimeGameObjectPool>.ClearAll();
-                MemoryPool<GameObjectPoolSnapshot>.ClearAll();
-                MemoryPool<GameObjectPoolInstanceSnapshot>.ClearAll();
             }
         }
 
@@ -222,11 +240,22 @@ namespace AlicizaX.GameObjectPool.Tests
             return value;
         }
 
-        internal GameObject Prefab(string location, bool poolable = false, bool childMarker = false, bool rootMarker = false)
+        internal GameObject Prefab(string location, bool poolable = false, bool childMarker = false, bool rootMarker = false, bool childPoolables = false)
         {
             var go = Keep(new GameObject(location.Replace('/', '_')));
             if (poolable)
-                go.AddComponent<PoolableProbe>();
+                go.AddComponent<PoolableProbe>().Owner = go;
+            if (childPoolables)
+            {
+                foreach (bool active in new[] { true, false })
+                {
+                    var child = new GameObject(active ? "active-poolable" : "inactive-poolable");
+                    child.transform.SetParent(go.transform, false);
+                    child.AddComponent<PoolableProbe>().Owner = go;
+                    child.SetActive(active);
+                }
+            }
+
             if (rootMarker)
                 go.AddComponent<RootMarker>();
             if (childMarker)
@@ -343,12 +372,12 @@ namespace AlicizaX.GameObjectPool.Tests
         internal static void Write(object instance, string field, object value)
             => instance.GetType().GetField(field, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).SetValue(instance, value);
 
-        internal static int Using<T>() where T : MemoryObject, new()
+        internal static int Leased<T>() where T : MemoryObject, new()
         {
-            var info = default(MemoryPoolInfo);
-            MemoryPool<T>.GetInfo(ref info);
-            return info.UsingCount;
+            return MemoryPool<T>.Instance.GetInfo().LeasedCount;
         }
+
+        internal int PoolCount() => Read<int>(Service, "_poolCount");
 
         internal static IEnumerator Wait(UniTask task)
         {
@@ -391,7 +420,6 @@ namespace AlicizaX.GameObjectPool.Tests
         internal int MaintenanceCount() => Read<int>(Service, "_maintenanceCount");
         internal int InactiveHead(string location) => Read<int>(RuntimePool(location), "_inactiveHead");
         internal int InactiveTail(string location) => Read<int>(RuntimePool(location), "_inactiveTail");
-        internal uint Generation(string location) => Read<uint>(RuntimePool(location), "_generationCounter");
         internal bool PrefabLoading(string location) => Read<UniTaskCompletionSource<GameObject>>(RuntimePool(location), "_prefabLoadCompletionSource") != null;
         internal int LoadVersion(string location) => Read<int>(RuntimePool(location), "_loadVersion");
         internal int RetainTarget(string location) => Read<int>(RuntimePool(location), "_retainTarget");

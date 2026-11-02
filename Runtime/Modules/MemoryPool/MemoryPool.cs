@@ -3,177 +3,35 @@ using System.Runtime.CompilerServices;
 
 namespace AlicizaX
 {
-    public static partial class MemoryPool
+    public static class MemoryPool
     {
-        public const int MinimumFreeReserveLimit = 4;
-
-        /// <summary>
-        /// 池空闲多少帧后开始衰减目标空闲水位。实际每 tick 驱逐数量由 Phase 预算决定（Gameplay=2）。默认 1800 帧（@60fps ≈ 30秒）。
-        /// </summary>
-        public static int ShortDecayStartFrames = 1800;
-
-        /// <summary>
-        /// 池空闲多少帧后停止调度 Tick（省 CPU）。默认 18000 帧（@60fps ≈ 5分钟）。
-        /// </summary>
-        public static int UnscheduleIdleFrames = 18000;
-
-        public static int ZeroFreeReserveStartFrames = 7200;
-
-        public static int AutoTrimNativeMetadataFrames = 18000;
-
-        public static int DefaultSoftFreeReserveLimit = 128;
-
-        public static int DefaultHardFreeReserveLimit = 512;
-
-
         public static int Count => MemoryPoolRegistry.Count;
-
-        /// <summary>
-        /// 释放对象已全部归还的池的存储，并将该池从全局维护中移除。若仍有租出对象则抛异常；
-        /// 之后该类型下一次 Acquire/Release 会自动重新注册。
-        /// </summary>
-        public static bool Destroy<T>() where T : MemoryObject, new()
-        {
-            return MemoryPoolRegistry.Unregister(typeof(T));
-        }
-
-        public static bool Destroy(Type memoryType)
-        {
-            return MemoryPoolRegistry.Unregister(memoryType);
-        }
-        
-
-        public static int GetAllMemoryPoolInfos(MemoryPoolInfo[] infos)
-        {
-            return MemoryPoolRegistry.GetAllInfos(infos);
-        }
-
-
-        public static void ClearAll()
-        {
-            MemoryPoolRegistry.ClearAll();
-        }
-
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static T Acquire<T>() where T : MemoryObject, new()
         {
-            return MemoryPool<T>.Acquire();
-        }
-
-        /// <summary>
-        /// 获取动态内存类型的缓存句柄。运行时热路径应提前缓存该句柄，避免反复使用 Type 查找。
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static MemoryPoolHandle GetHandle(Type memoryType)
-        {
-            return MemoryPoolRegistry.GetHandle(memoryType);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static MemoryObject Acquire(Type memoryType)
-        {
-            return MemoryPoolRegistry.Acquire(memoryType);
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Release<T>(T memory) where T : MemoryObject, new()
-        {
-            MemoryPool<T>.Release(memory);
+            return MemoryPool<T>.Instance.Acquire();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Release(MemoryObject memory)
         {
-            MemoryPoolRegistry.Release(memory);
+            memory.Pool.Return(memory);
         }
 
-        public static void Add<T>(int count) where T : MemoryObject, new()
+        public static void SetBudget(in MemoryPoolBudget budget)
         {
-            MemoryPool<T>.Add(count);
+            MemoryPoolRegistry.SetBudget(budget);
         }
 
-        public static void Add(Type memoryType, int count)
+        public static void TrimAll()
         {
-            MemoryPoolRegistry.Add(memoryType, count);
+            MemoryPoolRegistry.TrimAll(0);
         }
 
-        public static void SetCapacity(Type memoryType, int softCapacity, int hardCapacity)
+        public static int GetInfos(Span<MemoryPoolInfo> destination)
         {
-            MemoryPoolRegistry.SetCapacity(memoryType, softCapacity, hardCapacity);
-        }
-
-        public static void SetDefaultCapacity(int softCapacity, int hardCapacity)
-        {
-            softCapacity = Math.Max(softCapacity, MinimumFreeReserveLimit);
-            hardCapacity = Math.Max(hardCapacity, softCapacity);
-            MemoryPoolRegistry.SetCapacityAll(softCapacity, hardCapacity);
-            DefaultSoftFreeReserveLimit = softCapacity;
-            DefaultHardFreeReserveLimit = hardCapacity;
-        }
-
-        public static void Remove<T>(int count) where T : MemoryObject, new()
-        {
-            if (count <= 0)
-                return;
-            int target = MemoryPool<T>.UnusedCount - count;
-            MemoryPool<T>.Shrink(target);
-        }
-
-        public static void Remove(Type memoryType, int count)
-        {
-            MemoryPoolRegistry.RemoveFromType(memoryType, count);
-        }
-
-        public static void RemoveAll<T>() where T : MemoryObject, new()
-        {
-            MemoryPool<T>.ClearAll();
-        }
-
-        public static void SetCapacity<T>(int softCapacity, int hardCapacity) where T : MemoryObject, new()
-        {
-            MemoryPool<T>.SetCapacity(softCapacity, hardCapacity);
-        }
-
-        public static void Compact<T>() where T : MemoryObject, new()
-        {
-            MemoryPool<T>.Compact();
-        }
-
-        public static void Compact(Type memoryType)
-        {
-            MemoryPoolRegistry.CompactType(memoryType);
-        }
-
-        public static void CompactAll()
-        {
-            MemoryPoolRegistry.CompactAll();
-        }
-
-        public static void TrimNativeMetadata<T>() where T : MemoryObject, new()
-        {
-            MemoryPool<T>.TrimNativeMetadata();
-        }
-
-        public static void TrimNativeMetadata(Type memoryType)
-        {
-            MemoryPoolRegistry.TrimNativeMetadata(memoryType);
-        }
-
-        public static void TrimAllNativeMetadata()
-        {
-            MemoryPoolRegistry.TrimAllNativeMetadata();
-        }
-
-        public static void ResetAllStats()
-        {
-            MemoryPoolRegistry.ResetAllStats();
-        }
-
-        public static void RemoveAll(Type memoryType)
-        {
-            MemoryPoolRegistry.ClearType(memoryType);
+            return MemoryPoolRegistry.GetInfos(destination);
         }
     }
 }

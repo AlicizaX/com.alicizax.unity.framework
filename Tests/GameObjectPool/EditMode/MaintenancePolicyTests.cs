@@ -15,10 +15,10 @@ namespace AlicizaX.GameObjectPool.Tests
             FillIdle("a", 1);
             var pool = RuntimePool("a");
             int index = Read<int>(pool, "_inactiveHead");
-            var page = (System.Array)Read<System.Array>(pool, "_pages").GetValue(index >> 7);
-            object slot = page.GetValue(index & 127);
+            var slots = Read<System.Array>(pool, "_slots");
+            object slot = slots.GetValue(index);
             slot.GetType().GetField("lastReleaseTime").SetValue(slot, releasedAt);
-            page.SetValue(slot, index & 127);
+            slots.SetValue(slot, index);
             pool.ExecuteMaintenance(releasedAt, false);
             float deadline = pool.NextMaintenanceAt;
             Assert.That(deadline, Is.EqualTo(releasedAt + 1f));
@@ -160,10 +160,11 @@ namespace AlicizaX.GameObjectPool.Tests
             Prefab("fx/hit");
             Catalog(Entry("fx/hit", PoolPolicy.Fixed, minIdle: 0, soft: 8, hard: 16));
             FillIdle("fx/hit", 3);
-            Assert.That(Using<RuntimeGameObjectPool>(), Is.EqualTo(1));
+            Assert.That(PoolCount(), Is.EqualTo(1));
             ((IServiceLifecycle)Service).Destroy();
+            Assert.That(PoolCount(), Is.Zero);
+            Assert.That(MaintenanceCount(), Is.Zero);
             Service = null;
-            Assert.That(Using<RuntimeGameObjectPool>(), Is.Zero);
             Assert.That(Loader.LiveLeases, Is.Zero);
         }
     }

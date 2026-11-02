@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -11,9 +10,7 @@ namespace AlicizaX.Audio.Runtime
 {
     internal sealed class AudioService : ServiceBase, IAudioService, IAudioDebugService, IServiceTickable
     {
-        private const string SourcePoolName = "Audio Source Pool";
         private const string InstanceRootName = "[AudioService Instances]";
-        private const string SourceObjectName = "AudioSource";
         private const int DefaultCacheCapacity = AudioServiceConfig.DefaultClipCacheCapacity;
         private const float DefaultClipTtl = AudioServiceConfig.DefaultClipCacheTtl;
 
@@ -41,8 +38,6 @@ namespace AlicizaX.Audio.Runtime
         private readonly AudioGroupConfig[] _configByType = new AudioGroupConfig[(int)AudioType.Max];
 
         private IResourceService _resourceService;
-        private IObjectPoolService _objectPoolService;
-        private IObjectPool<AudioSourceObject> _sourcePool;
         private AudioMixer _audioMixer;
         private Transform _instanceRoot;
         private readonly AudioHandleTable _handleTable = new AudioHandleTable();
@@ -127,7 +122,7 @@ namespace AlicizaX.Audio.Runtime
                 _listenerCache = audioListener;
                 BuildConfigMap(audioGroupConfigs);
                 InitializeAudioMixer(audioMixer);
-                InitializeObjectPools();
+                _resourceService = AppServices.App.Require<IResourceService>();
                 InitializeInstanceRoot(instanceRoot);
                 InitializeHandleSystem();
                 InitializeCategories();
@@ -139,14 +134,6 @@ namespace AlicizaX.Audio.Runtime
                 Shutdown();
                 throw;
             }
-        }
-
-        private void InitializeObjectPools()
-        {
-            _resourceService = AppServices.App.Require<IResourceService>();
-            _objectPoolService = AppServices.App.Require<IObjectPoolService>();
-            _sourcePool = _objectPoolService.GetOrCreatePool<AudioSourceObject>(
-                new ObjectPoolCreateOptions(SourcePoolName));
         }
 
         private void ApplyServiceConfig(AudioServiceConfig config)
@@ -573,41 +560,6 @@ namespace AlicizaX.Audio.Runtime
             }
 
             TrimClipCache();
-        }
-
-        internal AudioSourceObject AcquireSourceObject(AudioCategory category)
-        {
-            AudioSourceObject sourceObject = _sourcePool.Spawn();
-            if (sourceObject == null)
-            {
-                sourceObject = CreateSourceObject(category);
-                if (sourceObject == null || !_sourcePool.Register(sourceObject, true))
-                    return null;
-            }
-
-            if (!PrepareSourceObject(sourceObject, category))
-            {
-                _sourcePool.Unspawn(sourceObject);
-                return null;
-            }
-
-            return sourceObject;
-        }
-
-        internal void ReleaseSourceObject(AudioSourceObject sourceObject)
-        {
-            if (sourceObject != null)
-                _sourcePool.Unspawn(sourceObject);
-        }
-
-        internal AudioSourceObject ReplaceSourceObject(AudioCategory category, AudioSourceObject previous)
-        {
-            ReleaseSourceObject(previous);
-
-            // Unity 目标被外部销毁的包装对象无法再次 Spawn；它的 Unspawn 是空操作，
-            // 因此先回收空闲包装对象，再创建替代对象。
-            _sourcePool.ReleaseAllUnused();
-            return AcquireSourceObject(category);
         }
 
         internal ulong AllocateHandle(AudioAgent agent)
@@ -1145,50 +1097,6 @@ namespace AlicizaX.Audio.Runtime
 
         private void RemoveFromAllList(AudioClipCacheEntry entry) => _clipTable.RemoveFromAllList(entry);
 
-        private AudioSourceObject CreateSourceObject(AudioCategory category)
-        {
-            GameObject host = new GameObject(SourceObjectName);
-            host.transform.SetParent(category.InstanceRoot, false);
-            AudioSource source = host.AddComponent<AudioSource>();
-            source.playOnAwake = false;
-            source.outputAudioMixerGroup = category.MixerGroup;
-            source.rolloffMode = category.Config.RolloffMode;
-            source.minDistance = category.Config.MinDistance;
-            source.maxDistance = category.Config.MaxDistance;
-            AudioLowPassFilter lowPassFilter = null;
-            if (category.Config.OcclusionEnabled)
-            {
-                lowPassFilter = host.AddComponent<AudioLowPassFilter>();
-                lowPassFilter.enabled = false;
-            }
-            host.SetActive(true);
-            return AudioSourceObject.Create(string.Empty, source, lowPassFilter);
-        }
-
-        private static bool PrepareSourceObject(AudioSourceObject sourceObject, AudioCategory category)
-        {
-            AudioSource source = sourceObject.Source;
-            if (source == null)
-                return false;
-
-            Transform transform = source.transform;
-            transform.SetParent(category.InstanceRoot, false);
-            transform.localPosition = Vector3.zero;
-            transform.localRotation = Quaternion.identity;
-            transform.localScale = Vector3.one;
-            source.outputAudioMixerGroup = category.MixerGroup;
-            source.rolloffMode = category.Config.RolloffMode;
-            source.minDistance = category.Config.MinDistance;
-            source.maxDistance = category.Config.MaxDistance;
-
-            if (category.Config.OcclusionEnabled && sourceObject.LowPassFilter == null)
-            {
-                sourceObject.AttachLowPassFilter();
-            }
-
-            return true;
-        }
-
         private void BuildConfigMap(AudioGroupConfig[] configs)
         {
             Array.Clear(_configByType, 0, _configByType.Length);
@@ -1336,15 +1244,6 @@ namespace AlicizaX.Audio.Runtime
                         break;
                     }
                 }
-
-                if (_sourcePool != null)
-                {
-                    try { _sourcePool.ReleaseAllUnused(); }
-                    catch (Exception exception) { (errors ??= new List<Exception>()).Add(exception); }
-
-                    try { _objectPoolService?.DestroyObjectPool<AudioSourceObject>(SourcePoolName); }
-                    catch (Exception exception) { (errors ??= new List<Exception>()).Add(exception); }
-                }
             }
             finally
             {
@@ -1357,8 +1256,6 @@ namespace AlicizaX.Audio.Runtime
                 _defaultCachePolicy = AudioCachePolicy.Ttl;
                 Array.Clear(_configByType, 0, _configByType.Length);
                 _resourceService = null;
-                _sourcePool = null;
-                _objectPoolService = null;
                 _audioMixer = null;
                 _listenerCache = null;
 

@@ -10,8 +10,6 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Audio.Editor.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Timer.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Timer.Editor.Tests")]
-[assembly: InternalsVisibleTo("AlicizaX.Framework.ObjectPool.Tests")]
-[assembly: InternalsVisibleTo("AlicizaX.Framework.ObjectPool.Editor.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.GameObjectPool.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.GameObjectPool.Editor.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.UI.Tests")]

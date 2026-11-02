@@ -216,16 +216,16 @@ namespace AlicizaX.Audio.Tests
         }
 
         [UnityTest]
-        public IEnumerator ServiceShutdownReturnsDestroyedSourcesToPool()
+        public IEnumerator ServiceShutdownAfterExternalSourceDestroyReleasesEverySource()
         {
             using var f = new AudioFixture();
             var clip = f.Clip("a");
             ulong handle = f.Audio.Play(AudioType.Sound, clip, true);
-            var pool = f.Pools.GetObjectPool<AudioSourceObject>("Audio Source Pool");
             Object.Destroy(f.Source(handle).gameObject);
             yield return null;
             AppServices.App.Unregister(f.Audio);
-            Assert.That(pool.Count, Is.Zero);
+            yield return null;
+            Assert.That(f.Root.GetComponentsInChildren<AudioSource>(true), Is.Empty);
             Assert.That(f.Root, Is.Not.Null, "A borrowed root must survive service shutdown.");
         }
     }

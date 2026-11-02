@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
+using UnityEngine;
 
 [assembly: InternalsVisibleTo("AlicizaX.Framework.MemoryPool.Editor.Tests")]
 
@@ -30,6 +31,9 @@ namespace AlicizaX.MemoryPoolTests
     }
 
     public sealed class OtherItem : PoolItem { }
+
+    public sealed class FreshItem<TTag> : PoolItem { }
+
     public sealed class ColdItem<T> : MemoryObject
     {
         public override void Clear() { }
@@ -44,19 +48,20 @@ namespace AlicizaX.MemoryPoolTests
 
     public abstract class PoolFixture
     {
-        private readonly HashSet<Type> types = new HashSet<Type>();
-        private int shortDecay, zeroReserve, unschedule, autoTrim;
-        protected int Frame;
+        private static float s_Clock;
+
+        private readonly Dictionary<Type, MemoryPoolBase> pools = new Dictionary<Type, MemoryPoolBase>();
+        private MemoryPoolBudget savedBudget;
+        protected float Now;
 
         [SetUp]
         public void SetUpPool()
         {
             MemoryPoolRegistry.InitializeMainThread();
-            shortDecay = MemoryPool.ShortDecayStartFrames;
-            zeroReserve = MemoryPool.ZeroFreeReserveStartFrames;
-            unschedule = MemoryPool.UnscheduleIdleFrames;
-            autoTrim = MemoryPool.AutoTrimNativeMetadataFrames;
-            Frame = MemoryPoolRegistry.CurrentFrame + 100;
+            savedBudget = MemoryPoolRegistry.Budget;
+            MemoryPool.SetBudget(MemoryPoolBudget.Default);
+            Now = Mathf.Max(s_Clock + 100f, Time.realtimeSinceStartup);
+            s_Clock = Now;
             Use<PoolItem>();
             Use<OtherItem>();
             Use<ConstructorItem>();
@@ -64,23 +69,22 @@ namespace AlicizaX.MemoryPoolTests
 
         protected void Use<T>() where T : MemoryObject, new()
         {
-            types.Add(typeof(T));
-            Assert.That(Info<T>().UsingCount, Is.Zero, typeof(T).Name + " has leases from an earlier test.");
-            MemoryPool<T>.ClearAll();
-            MemoryPool<T>.SetCapacity(128, 512);
-            MemoryPool<T>.ResetStats();
+            MemoryPool<T> pool = MemoryPool<T>.Instance;
+            pools[typeof(T)] = pool;
+            Assert.That(pool.GetInfo().LeasedCount, Is.Zero, typeof(T).Name + " has leases from an earlier test.");
+            pool.Trim(0);
         }
 
-        protected void Tick(int count = 1)
+        protected void Tick(float seconds = 0f)
         {
-            for (int i = 0; i < count; i++) MemoryPoolRegistry.TickAll(++Frame);
+            Now += seconds;
+            s_Clock = Now;
+            MemoryPoolRegistry.TickAll(Now);
         }
 
         protected static MemoryPoolInfo Info<T>() where T : MemoryObject, new()
         {
-            MemoryPoolInfo info = default;
-            MemoryPool<T>.GetInfo(ref info);
-            return info;
+            return MemoryPool<T>.Instance.GetInfo();
         }
 
         [TearDown]
@@ -90,27 +94,20 @@ namespace AlicizaX.MemoryPoolTests
             List<Exception> errors = null;
             try
             {
-                foreach (Type type in types)
+                foreach (KeyValuePair<Type, MemoryPoolBase> pair in pools)
                 {
-                    try
-                    {
-                        MemoryPoolInfo info = default;
-                        MemoryPool.GetHandle(type).Inner.GetInfo(ref info);
-                        Assert.That(info.UsingCount, Is.Zero, type.Name + " has unreturned leases.");
-                    }
+                    try { Assert.That(pair.Value.GetInfo().LeasedCount, Is.Zero, pair.Key.Name + " has unreturned leases."); }
                     catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
-                    try { MemoryPool.RemoveAll(type); }
+                    try { pair.Value.Trim(0); }
                     catch (Exception error) { (errors ??= new List<Exception>()).Add(error); }
                 }
             }
             finally
             {
-                types.Clear();
-                MemoryPool.ShortDecayStartFrames = shortDecay;
-                MemoryPool.ZeroFreeReserveStartFrames = zeroReserve;
-                MemoryPool.UnscheduleIdleFrames = unschedule;
-                MemoryPool.AutoTrimNativeMetadataFrames = autoTrim;
+                pools.Clear();
+                MemoryPool.SetBudget(savedBudget);
             }
+
             if (errors != null) throw new AggregateException(errors);
         }
     }

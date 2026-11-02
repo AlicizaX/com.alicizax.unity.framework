@@ -8,10 +8,11 @@ namespace AlicizaX.Audio.Runtime
         private const float DefaultFadeOutSeconds = 0.15f;
         private const float MinFadeOutSeconds = 0.0001f;
         private const float MaxCutoffFrequency = 22000f;
+        private const string SourceObjectName = "AudioSource";
 
         private AudioService _service;
         private AudioCategory _category;
-        private AudioSourceObject _sourceObject;
+        private GameObject _host;
         private AudioSource _source;
         private AudioLowPassFilter _lowPassFilter;
         private AudioClip _playingClip;
@@ -47,12 +48,11 @@ namespace AlicizaX.Audio.Runtime
         internal ulong Handle => _handle;
         internal bool IsPlayingState => _state == AudioAgentRuntimeState.Playing || _state == AudioAgentRuntimeState.Loading || _state == AudioAgentRuntimeState.FadingIn || _state == AudioAgentRuntimeState.FadingOut;
         internal int PlaybackPriority => _playbackPriority;
-        internal AudioSourceObject SourceObject => _sourceObject;
         internal bool IsFreeListed;
 
         public AudioAgent() { }
 
-        internal void Initialize(AudioService service, AudioCategory category, int index, int globalIndex, AudioSourceObject sourceObject)
+        internal void Initialize(AudioService service, AudioCategory category, int index, int globalIndex)
         {
             _service = service;
             _category = category;
@@ -61,7 +61,7 @@ namespace AlicizaX.Audio.Runtime
             PriorityPrev = null;
             PriorityNext = null;
             ActiveIndex = -1;
-            BindSource(sourceObject);
+            CreateSource();
             ResetState();
         }
 
@@ -81,7 +81,8 @@ namespace AlicizaX.Audio.Runtime
             // 走正常 Stop/MarkFree 路径清理。
             if (_source == null)
             {
-                BindSource(_service.ReplaceSourceObject(_category, _sourceObject));
+                _host.SafeDestroySelf();
+                CreateSource();
             }
 
             _startedAt = Time.realtimeSinceStartup;
@@ -280,7 +281,7 @@ namespace AlicizaX.Audio.Runtime
         internal void Shutdown()
         {
             StopImmediate(true);
-            _sourceObject = null;
+            _host = null;
             _source = null;
             _lowPassFilter = null;
             _transform = null;
@@ -293,7 +294,7 @@ namespace AlicizaX.Audio.Runtime
         {
             _service = null;
             _category = null;
-            _sourceObject = null;
+            _host = null;
             _source = null;
             _lowPassFilter = null;
             _playingClip = null;
@@ -357,15 +358,18 @@ namespace AlicizaX.Audio.Runtime
             info.Priority = _playbackPriority;
         }
 
-        private void BindSource(AudioSourceObject sourceObject)
+        private void CreateSource()
         {
-            if (sourceObject == null || sourceObject.Source == null)
-                throw new GameFrameworkException("Audio source object is invalid; its AudioSource was destroyed.");
-
-            _sourceObject = sourceObject;
-            _source = sourceObject.Source;
-            _lowPassFilter = sourceObject.LowPassFilter;
-            _transform = _source.transform;
+            _host = new GameObject(SourceObjectName);
+            _transform = _host.transform;
+            _transform.SetParent(_category.InstanceRoot, false);
+            _source = _host.AddComponent<AudioSource>();
+            _source.playOnAwake = false;
+            if (_category.Config.OcclusionEnabled)
+            {
+                _lowPassFilter = _host.AddComponent<AudioLowPassFilter>();
+                _lowPassFilter.enabled = false;
+            }
         }
 
         private void StartClip(AudioClip clip)

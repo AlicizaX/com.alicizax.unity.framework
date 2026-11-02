@@ -72,7 +72,7 @@ namespace AlicizaX.Audio.Tests
             var reusable = entry.Cancellation;
             MemoryPool.Release(entry);
             Assert.That(entry.Cancellation, Is.SameAs(reusable));
-            MemoryPool.RemoveAll<AudioClipCacheEntry>();
+            MemoryPool<AudioClipCacheEntry>.Instance.Trim(0);
             Assert.That(entry.Cancellation, Is.Null);
             Assert.Throws<ObjectDisposedException>(() => { var ignored = reusable.Token; });
         }

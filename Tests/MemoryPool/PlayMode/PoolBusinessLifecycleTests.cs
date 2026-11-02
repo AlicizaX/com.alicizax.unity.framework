@@ -15,18 +15,23 @@ namespace AlicizaX.MemoryPoolTests
     public sealed class PoolBusinessLifecycleTests : PoolFixture
     {
         [UnityTest]
-        public IEnumerator SettingDestructionRetiresLeasesThatReturnLater()
+        public IEnumerator SettingDestructionTrimsFreeObjectsAndLaterReturnsAreReused()
         {
             var go = new GameObject("pool-setting-test");
             go.AddComponent<MemoryPoolSetting>();
-            var item = MemoryPool<PoolItem>.Acquire();
-            item.Payload = new object();
+            var free = MemoryPool.Acquire<PoolItem>();
+            var leased = MemoryPool.Acquire<PoolItem>();
+            leased.Payload = new object();
+            MemoryPool.Release(free);
             UnityEngine.Object.Destroy(go);
             yield return null;
-            Assert.That(item.Payload, Is.Not.Null);
-            MemoryPool.Release(item);
-            Assert.That(item.Evictions, Is.EqualTo(1));
-            Assert.That(Info<PoolItem>().PageCapacity, Is.Zero);
+            Assert.That(free.Evictions, Is.EqualTo(1));
+            Assert.That(leased.Payload, Is.Not.Null);
+            MemoryPool.Release(leased);
+            Assert.That(leased.Evictions, Is.Zero);
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(1));
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(leased));
+            MemoryPool.Release(leased);
         }
 
         [UnityTest]
@@ -105,15 +110,14 @@ namespace AlicizaX.MemoryPoolTests
         [UnityTest]
         public IEnumerator SnapshotOwnershipReleasesNestedMemoryObjects()
         {
-            var snapshot = MemoryPool<GameObjectPoolSnapshot>.Acquire();
-            for (int i = 0; i < 65; i++) snapshot.instances.Add(MemoryPool<GameObjectPoolInstanceSnapshot>.Acquire());
+            Use<GameObjectPoolSnapshot>();
+            Use<GameObjectPoolInstanceSnapshot>();
+            var snapshot = MemoryPool.Acquire<GameObjectPoolSnapshot>();
+            for (int i = 0; i < 65; i++) snapshot.instances.Add(MemoryPool.Acquire<GameObjectPoolInstanceSnapshot>());
             MemoryPool.Release(snapshot);
             Assert.That(snapshot.InstanceCount, Is.Zero);
-            MemoryPoolInfo info = default;
-            MemoryPool<GameObjectPoolInstanceSnapshot>.GetInfo(ref info);
-            Assert.That(info.UsingCount, Is.Zero);
-            MemoryPool<GameObjectPoolSnapshot>.ClearAll();
-            MemoryPool<GameObjectPoolInstanceSnapshot>.ClearAll();
+            Assert.That(Info<GameObjectPoolInstanceSnapshot>().LeasedCount, Is.Zero);
+            Assert.That(Info<GameObjectPoolInstanceSnapshot>().FreeCount, Is.EqualTo(65));
             yield return null;
         }
 
@@ -126,13 +130,13 @@ namespace AlicizaX.MemoryPoolTests
             GC.WaitForPendingFinalizers();
             GC.Collect();
             Assert.That(payload.IsAlive, Is.False);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(1));
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static WeakReference ReturnPayload()
         {
-            var item = MemoryPool<PoolItem>.Acquire();
+            var item = MemoryPool.Acquire<PoolItem>();
             item.Payload = new byte[1024 * 1024];
             var weak = new WeakReference(item.Payload);
             MemoryPool.Release(item);
@@ -142,9 +146,9 @@ namespace AlicizaX.MemoryPoolTests
         private static void AssertNoLeasedLoadContexts()
         {
             var infos = new MemoryPoolInfo[MemoryPool.Count];
-            MemoryPool.GetAllMemoryPoolInfos(infos);
-            foreach (var info in infos)
-                if (info.Type.Name == "LoadingOperationState") Assert.That(info.UsingCount, Is.Zero);
+            int count = MemoryPool.GetInfos(infos);
+            for (int i = 0; i < count; i++)
+                if (infos[i].Type.Name == "LoadingOperationState") Assert.That(infos[i].LeasedCount, Is.Zero);
         }
     }
 }

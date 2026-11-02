@@ -20,20 +20,20 @@ namespace AlicizaX.MemoryPoolTests
             f.Service.IdleAssetCapacity = 0;
             var clip = f.Keep(AudioClip.Create("pool-clip", 128, 1, 8000, false));
             f.Loader.Assets.Add("clip", clip);
-            var entry = MemoryPool<AudioClipCacheEntry>.Acquire();
+            var entry = MemoryPool.Acquire<AudioClipCacheEntry>();
             entry.Clip = clip;
             entry.Lease = f.Service.LoadLease<AudioClip>("clip");
             var requests = new AudioLoadRequest[pendingCount];
             for (int i = 0; i < requests.Length; i++)
             {
-                requests[i] = MemoryPool<AudioLoadRequest>.Acquire();
+                requests[i] = MemoryPool.Acquire<AudioLoadRequest>();
                 requests[i].Completed = _ => Assert.Fail("Returning a request must not invoke its completion callback.");
                 entry.AddPending(requests[i]);
             }
             MemoryPool.Release(entry);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(Info<AudioClipCacheEntry>().UsingCount, Is.Zero);
-            Assert.That(Info<AudioLoadRequest>().UsingCount, Is.Zero);
+            Assert.That(Info<AudioClipCacheEntry>().LeasedCount, Is.Zero);
+            Assert.That(Info<AudioLoadRequest>().LeasedCount, Is.Zero);
             Assert.That(entry.Clip, Is.Null);
             Assert.That(entry.PendingHead, Is.Null);
             foreach (var request in requests)
@@ -48,7 +48,7 @@ namespace AlicizaX.MemoryPoolTests
         public void ReturningUiEventProxyUnsubscribesEveryListenerBeforeReuse()
         {
             Use<EventListenerProxy>();
-            var proxy = MemoryPool<EventListenerProxy>.Acquire();
+            var proxy = MemoryPool.Acquire<EventListenerProxy>();
             int calls = 0;
             try
             {
@@ -63,12 +63,12 @@ namespace AlicizaX.MemoryPoolTests
                 Assert.That(EventBus.GetEmptySubscriberCount<PoolEvent>(), Is.Zero);
                 EventBus.Publish<PoolEvent>();
                 Assert.That(calls, Is.EqualTo(65));
-                proxy = MemoryPool<EventListenerProxy>.Acquire();
+                proxy = MemoryPool.Acquire<EventListenerProxy>();
                 proxy.AddUIEvent<PoolEvent>(() => calls++);
                 EventBus.Publish<PoolEvent>();
                 Assert.That(calls, Is.EqualTo(66));
                 MemoryPool.Release(proxy);
-                Assert.That(Info<EventListenerProxy>().UsingCount, Is.Zero);
+                Assert.That(Info<EventListenerProxy>().LeasedCount, Is.Zero);
             }
             finally { EventBus.ClearEmpty<PoolEvent>(); }
         }

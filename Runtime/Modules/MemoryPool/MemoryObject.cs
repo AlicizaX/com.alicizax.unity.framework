@@ -7,12 +7,8 @@ namespace AlicizaX
 
     public abstract class MemoryObject
     {
-        internal MemoryPoolHandle OwnerHandle;
-        internal int PoolId;
-        internal int SlotId;
-        internal int PageGeneration;
-        internal int SlotGeneration;
-        internal byte State;
+        internal MemoryPoolBase Pool;
+        internal bool InPool;
 
         public abstract void Clear();
     }

@@ -1,5 +1,3 @@
-using System;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using AlicizaX.Resource.Tests;
 using NUnit.Framework;
@@ -9,82 +7,68 @@ namespace AlicizaX.MemoryPoolTests
 {
     public sealed class BusinessPoolOwnershipTests : PoolFixture
     {
-        public sealed class ResourceWrapper : ObjectBase
+        public sealed class LeaseWrapper : MemoryObject
         {
             public ResourceAssetLease<TextAsset> Lease;
-            public bool ThrowOnRelease;
-            public void Bind(ResourceAssetLease<TextAsset> lease) { Lease = lease; Initialize(lease.Asset); }
-            protected internal override void Release(bool isShutdown)
-            {
-                if (ThrowOnRelease) throw new InvalidOperationException("business release");
-                Lease.Dispose();
-            }
+
             public override void Clear()
             {
-                // 业务 Release() 失败也不能泄漏底层资源：包装对象归还 MemoryPool 时会执行
-                // Clear()，这里才是最终释放点。
                 Lease.Dispose();
-                base.Clear();
                 Lease = default;
-                ThrowOnRelease = false;
+            }
+        }
+
+        public sealed class CachedLeaseWrapper : MemoryObject, IPoolEvictable
+        {
+            public ResourceAssetLease<TextAsset> Lease;
+            public int Uses;
+
+            public override void Clear()
+            {
+                Uses++;
+            }
+
+            public void OnEvict()
+            {
+                Lease.Dispose();
+                Lease = default;
             }
         }
 
         [Test]
-        public void SharedObjectPoolReferencesRetainResourceUntilTheLastUnspawn()
+        public void WrapperReleasesItsLeaseWhenReturned()
         {
-            Use<ResourceWrapper>();
+            Use<LeaseWrapper>();
             using var f = new ResourceFixture();
             f.Text("a");
             f.Service.IdleAssetCapacity = 0;
-            var service = new ObjectPoolService();
-            ((IServiceLifecycle)service).Initialize(null, null);
-            try
-            {
-                var pool = service.GetOrCreatePool<ResourceWrapper>(new ObjectPoolCreateOptions(allowMultiSpawn: true));
-                var wrapper = MemoryPool<ResourceWrapper>.Acquire();
-                wrapper.Bind(f.Service.LoadLease<TextAsset>("a"));
-                Assert.That(pool.Register(wrapper, false), Is.True);
-                Assert.That(pool.Spawn(), Is.SameAs(wrapper));
-                Assert.That(pool.Spawn(), Is.SameAs(wrapper));
-                pool.Unspawn(wrapper);
-                pool.ReleaseAllUnused();
-                Assert.That(wrapper.Lease.IsValid, Is.True);
-                pool.Unspawn(wrapper);
-                pool.ReleaseAllUnused();
-                Assert.That(f.Loader.LiveHandles, Is.Zero);
-                Assert.That(Info<ResourceWrapper>().UsingCount, Is.Zero);
-            }
-            finally { ((IServiceLifecycle)service).Destroy(); }
+            var wrapper = MemoryPool.Acquire<LeaseWrapper>();
+            wrapper.Lease = f.Service.LoadLease<TextAsset>("a");
+            Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
+            MemoryPool.Release(wrapper);
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            Assert.That(wrapper.Lease.IsValid, Is.False);
+            Assert.That(Info<LeaseWrapper>().LeasedCount, Is.Zero);
         }
 
         [Test]
-        public void BusinessReleaseFailureDetachesAndClearReleasesTheLease()
+        public void CachedWrapperKeepsItsLeaseAcrossReuseUntilEviction()
         {
-            Use<ResourceWrapper>();
+            Use<CachedLeaseWrapper>();
             using var f = new ResourceFixture();
             f.Text("a");
             f.Service.IdleAssetCapacity = 0;
-            var service = new ObjectPoolService();
-            ((IServiceLifecycle)service).Initialize(null, null);
-            var wrapper = MemoryPool<ResourceWrapper>.Acquire();
-            wrapper.Bind(f.Service.LoadLease<TextAsset>("a"));
-            var pool = service.GetOrCreatePool<ResourceWrapper>();
-            Assert.That(pool.Register(wrapper, false), Is.True);
-            wrapper.ThrowOnRelease = true;
-            try
-            {
-                Assert.Throws<InvalidOperationException>(() => pool.ReleaseAllUnused());
-                Assert.That(pool.Count, Is.Zero, "a failed release must not retain a zombie slot");
-                Assert.That(pool.Spawn(), Is.Null);
-                Assert.That(Info<ResourceWrapper>().UsingCount, Is.Zero);
-                Assert.That(f.Loader.LiveHandles, Is.Zero, "Clear() releases the underlying resource lease");
-            }
-            finally
-            {
-                wrapper.ThrowOnRelease = false;
-                ((IServiceLifecycle)service).Destroy();
-            }
+            var wrapper = MemoryPool.Acquire<CachedLeaseWrapper>();
+            wrapper.Lease = f.Service.LoadLease<TextAsset>("a");
+            MemoryPool.Release(wrapper);
+            Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
+            Assert.That(MemoryPool.Acquire<CachedLeaseWrapper>(), Is.SameAs(wrapper));
+            Assert.That(wrapper.Lease.IsValid, Is.True);
+            Assert.That(f.Loader.Loads, Is.EqualTo(1));
+            MemoryPool.Release(wrapper);
+            MemoryPool<CachedLeaseWrapper>.Instance.Trim(0);
+            Assert.That(f.Loader.LiveHandles, Is.Zero);
+            Assert.That(wrapper.Uses, Is.EqualTo(2));
         }
     }
 }

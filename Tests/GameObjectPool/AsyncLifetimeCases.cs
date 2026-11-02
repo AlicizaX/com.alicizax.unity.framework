@@ -36,7 +36,7 @@ namespace AlicizaX.GameObjectPool.Tests
         }
 
         [UnityTest]
-        public IEnumerator WarmupCannotCreateInReusedPoolAfterCatalogReload()
+        public IEnumerator WarmupStopsInTheReplacedPoolAfterCatalogReload()
         {
             Prefab("fx/a");
             Prefab("fx/b");
@@ -47,7 +47,7 @@ namespace AlicizaX.GameObjectPool.Tests
             Assert.That(original.TotalCount, Is.InRange(1, 8));
             Catalog(Entry("fx/b", PoolPolicy.Sticky, soft: 64, hard: 64));
             Service.LoadPrefab("fx/b");
-            Assert.That(RuntimePool("fx/b"), Is.SameAs(original), "Exercise wrapper reuse.");
+            Assert.That(RuntimePool("fx/b"), Is.Not.SameAs(original));
             yield return Canceled(warmup);
             Ledger("fx/b", 0, 0, 0, true);
             Assert.That(Loader.LiveLeases, Is.EqualTo(1));
@@ -62,10 +62,10 @@ namespace AlicizaX.GameObjectPool.Tests
             UniTask warmup = Service.WarmupAsync("fx/a", 64);
             Assert.That(RuntimePool("fx/a").TotalCount, Is.InRange(1, 8));
             ((IServiceLifecycle)Service).Destroy();
+            Assert.That(PoolCount(), Is.Zero);
             Service = null;
             yield return Canceled(warmup);
             Assert.That(Loader.LiveLeases, Is.Zero);
-            Assert.That(Using<RuntimeGameObjectPool>(), Is.Zero);
         }
 
         [UnityTest]

@@ -1,4 +1,6 @@
+using System;
 using System.Collections;
+using System.Diagnostics;
 using AlicizaX;
 using NUnit.Framework;
 using UnityEngine;
@@ -56,6 +58,36 @@ namespace AlicizaX.GameObjectPool.Tests
                 for (int i = 0; i < 16; i++)
                     Tick();
             }, sample => Assert.That(sample.Bytes, Is.Zero));
+        }
+
+        [UnityTest]
+        public IEnumerator HitPathCostDoesNotDependOnIdleCount()
+        {
+            Prefab("fx/hit");
+            Catalog(Entry("fx/hit", PoolPolicy.Sticky, minIdle: 0, soft: 2048, hard: 2048));
+            double smallest = 0;
+            foreach (int idle in new[] { 1, 2048 })
+            {
+                FillIdle("fx/hit", idle);
+                Action hitPath = () =>
+                {
+                    for (int i = 0; i < 2000; i++) Service.Despawn(Service.Spawn("fx/hit"));
+                };
+                hitPath();
+                double best = double.MaxValue;
+                for (int run = 0; run < 5; run++)
+                {
+                    var clock = Stopwatch.StartNew();
+                    hitPath();
+                    clock.Stop();
+                    best = Math.Min(best, clock.Elapsed.TotalMilliseconds * 1000000.0 / 2000);
+                }
+
+                TestContext.WriteLine($"GOP-HOTPATH,idle={idle},ns/op={best:F0}");
+                if (idle == 1) smallest = best;
+                else Assert.That(best, Is.LessThan(smallest * 3 + 2000), "idle=" + idle);
+                yield return AllocationCapture.Measure("hit-path-idle-" + idle, 2000, hitPath, sample => Assert.That(sample.Bytes, Is.Zero));
+            }
         }
     }
 }

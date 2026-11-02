@@ -1,5 +1,4 @@
 using System;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -183,19 +182,12 @@ namespace AlicizaX
 
             Destroy(gameObject);
             Utility.Unity.Shutdown();
-            MemoryPoolRegistry.ClearAllNativeMetadata();
             Utility.Marshal.FreeCachedHGlobal();
         }
 
         private void OnLowMemory()
         {
             Log.Warning("Low memory reported...");
-
-            IObjectPoolService objectPoolModule = AppServices.App.Require<IObjectPoolService>();
-            if (objectPoolModule != null)
-            {
-                objectPoolModule.ReleaseAllUnused();
-            }
         }
     }
 }

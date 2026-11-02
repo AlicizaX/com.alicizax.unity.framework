@@ -19,9 +19,6 @@ namespace AlicizaX.GameObjectPool.Tests
         public void SetUp()
         {
             MemoryPoolRegistry.InitializeMainThread();
-            MemoryPool<RuntimeGameObjectPool>.ClearAll();
-            MemoryPool<GameObjectPoolSnapshot>.ClearAll();
-            MemoryPool<GameObjectPoolInstanceSnapshot>.ClearAll();
             _resources = new ResourceFixture();
             AppServices.EnsureWorld();
             AppServices.App.Register<IResourceService>(_resources.Service);
@@ -46,8 +43,10 @@ namespace AlicizaX.GameObjectPool.Tests
             try
             {
                 if (_service != null)
+                {
                     ((IServiceLifecycle)_service).Destroy();
-                Assert.That(GameObjectPoolFixture.Using<RuntimeGameObjectPool>(), Is.Zero);
+                    Assert.That(GameObjectPoolFixture.Read<int>(_service, "_poolCount"), Is.Zero);
+                }
             }
             finally
             {
@@ -56,9 +55,6 @@ namespace AlicizaX.GameObjectPool.Tests
                     UnityEngine.Object.DestroyImmediate(_container.gameObject);
                 AppServices.Shutdown();
                 _resources.Dispose();
-                MemoryPool<RuntimeGameObjectPool>.ClearAll();
-                MemoryPool<GameObjectPoolSnapshot>.ClearAll();
-                MemoryPool<GameObjectPoolInstanceSnapshot>.ClearAll();
             }
         }
 

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Text;
 using Cysharp.Threading.Tasks;
@@ -22,10 +21,10 @@ namespace AlicizaX
         private readonly IPrefabLoader _loader;
         private readonly Transform _containerRoot;
         private readonly List<GameObjectPoolSnapshot> _debugSnapshots = new List<GameObjectPoolSnapshot>(16);
-        private OpenHashMap<string> _unregisteredWarned = new OpenHashMap<string>(8);
-        private OpenHashMap<string> _unhandledDespawnWarned = new OpenHashMap<string>(8);
-        private OpenHashMap<string> _groupRootMap = new OpenHashMap<string>(8);
-        private OpenHashMap<string> _poolByLocation = new OpenHashMap<string>(32);
+        private readonly HashSet<string> _unregisteredWarned = new HashSet<string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _groupRootMap = new Dictionary<string, int>(8, StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _poolByLocation = new Dictionary<string, int>(32, StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _poolByRequestedLocation = new Dictionary<string, int>(32, StringComparer.Ordinal);
 
         private RuntimeGameObjectPool[] _pools = new RuntimeGameObjectPool[8];
         private int _poolCount;
@@ -57,12 +56,7 @@ namespace AlicizaX
         {
             Application.lowMemory -= OnLowMemory;
             ClearAllPools();
-            _catalog.Dispose();
             _catalog = null;
-            _unregisteredWarned.Dispose();
-            _unhandledDespawnWarned.Dispose();
-            _groupRootMap.Dispose();
-            _poolByLocation.Dispose();
         }
 
         public void Tick(float deltaTime)
@@ -72,14 +66,8 @@ namespace AlicizaX
                 return;
             }
 
-            ProcessDueMaintenance(Time.time);
+            ProcessDueMaintenance(Time.unscaledTime);
             _enabled = _maintenanceCount > 0;
-        }
-
-        public bool TrySpawn(string location, Transform parent, out GameObject instance)
-        {
-            instance = Spawn(location, parent);
-            return instance != null;
         }
 
         public GameObject Spawn(string location, Transform parent = null)
@@ -153,36 +141,17 @@ namespace AlicizaX
 
         public void Despawn(GameObject instance)
         {
-            if (instance == null)
+            if (!instance.TryGetComponent(out GameObjectPoolHandle handle))
             {
-                return;
+                throw new InvalidOperationException(ZString.Format("[GameObjectPool] {0} is not a pooled instance.", instance.name));
             }
 
-            if (instance.TryGetComponent(out GameObjectPoolHandle handle) && handle.TryRelease())
-            {
-                return;
-            }
-
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            WarnUnhandledDespawn(instance);
-#endif
-            instance.SafeDestroySelf();
+            handle.Despawn();
         }
 
         public void Despawn(GameObjectPoolHandle handle)
         {
-            if (handle == null || handle.TryRelease())
-            {
-                return;
-            }
-
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            WarnUnhandledDespawn(handle.gameObject);
-#endif
-            if (handle != null)
-            {
-                handle.gameObject.SafeDestroySelf();
-            }
+            handle.Despawn();
         }
 
         public void Flush(string location)
@@ -197,7 +166,7 @@ namespace AlicizaX
             for (int i = 0; i < _poolCount; i++)
             {
                 RuntimeGameObjectPool pool = _pools[i];
-                if (pool != null && string.Equals(pool.Group, groupName, StringComparison.Ordinal))
+                if (string.Equals(pool.Group, groupName, StringComparison.Ordinal))
                 {
                     pool.Flush();
                 }
@@ -208,14 +177,13 @@ namespace AlicizaX
         {
             for (int i = 0; i < _poolCount; i++)
             {
-                _pools[i]?.Flush();
+                _pools[i].Flush();
             }
         }
 
         public void LoadCatalog(PoolConfigScriptableObject config)
         {
             ClearAllPools();
-            _catalog.Dispose();
             _catalog = config == null ? PoolCompiledCatalog.Empty() : config.BuildCatalog();
             _enabled = false;
         }
@@ -237,11 +205,6 @@ namespace AlicizaX
             for (int i = 0; i < _poolCount; i++)
             {
                 RuntimeGameObjectPool pool = _pools[i];
-                if (pool == null)
-                {
-                    continue;
-                }
-
                 if (pool.IsPrefabLoaded)
                 {
                     loadedPrefabCount++;
@@ -264,20 +227,15 @@ namespace AlicizaX
 
         public int GetDebugSnapshots(GameObjectPoolSnapshot[] snapshots)
         {
-            if (snapshots == null || snapshots.Length == 0)
+            ReleaseDebugSnapshots();
+            if (snapshots.Length == 0)
             {
-                ReleaseDebugSnapshots();
                 return 0;
             }
 
-            ReleaseDebugSnapshots();
             for (int i = 0; i < _poolCount; i++)
             {
-                RuntimeGameObjectPool pool = _pools[i];
-                if (pool != null)
-                {
-                    _debugSnapshots.Add(pool.CreateSnapshot(false));
-                }
+                _debugSnapshots.Add(_pools[i].CreateSnapshot(false));
             }
 
             _debugSnapshots.Sort(SnapshotComparer);
@@ -292,100 +250,103 @@ namespace AlicizaX
 
         public void FillDebugInstances(GameObjectPoolSnapshot snapshot)
         {
-            if (snapshot == null || string.IsNullOrEmpty(snapshot.location))
-            {
-                return;
-            }
-
             FindPool(snapshot.location)?.FillInstances(snapshot);
         }
 
-        internal void ScheduleMaintenance(int poolIndex, float dueTime, ref int heapIndex)
+        internal float GetMaintenanceDueTime(int heapIndex)
         {
+            return heapIndex < 0 ? float.MaxValue : _maintenanceHeap[heapIndex].dueTime;
+        }
+
+        internal void ScheduleMaintenance(RuntimeGameObjectPool pool, float dueTime)
+        {
+            int heapIndex = pool.MaintenanceHeapIndex;
             if (dueTime >= float.MaxValue)
             {
-                RemoveMaintenance(ref heapIndex);
+                if (heapIndex >= 0)
+                {
+                    RemoveMaintenanceAt(heapIndex);
+                }
+
                 return;
             }
 
             if (heapIndex >= 0)
             {
                 _maintenanceHeap[heapIndex].dueTime = dueTime;
-                _maintenanceHeap[heapIndex].poolIndex = poolIndex;
                 SiftMaintenanceUp(heapIndex);
                 SiftMaintenanceDown(heapIndex);
                 _enabled = true;
                 return;
             }
 
-            EnsureMaintenanceCapacity(_maintenanceCount + 1);
+            if (_maintenanceCount == _maintenanceHeap.Length)
+            {
+                Array.Resize(ref _maintenanceHeap, _maintenanceCount << 1);
+            }
+
             int insertIndex = _maintenanceCount++;
             _maintenanceHeap[insertIndex].dueTime = dueTime;
-            _maintenanceHeap[insertIndex].poolIndex = poolIndex;
-            heapIndex = insertIndex;
-            _pools[poolIndex].SetMaintenanceHeapIndex(insertIndex);
+            _maintenanceHeap[insertIndex].poolIndex = pool.PoolIndex;
+            pool.MaintenanceHeapIndex = insertIndex;
             SiftMaintenanceUp(insertIndex);
             _enabled = true;
         }
 
-        internal void RemoveMaintenance(ref int heapIndex)
-        {
-            if (heapIndex < 0 || heapIndex >= _maintenanceCount)
-            {
-                heapIndex = -1;
-                return;
-            }
-
-            RemoveMaintenanceAt(heapIndex);
-            heapIndex = -1;
-        }
-
         private RuntimeGameObjectPool ResolvePool(string location)
         {
+            if (location == null)
+            {
+                return null;
+            }
+
+            if (_poolByRequestedLocation.TryGetValue(location, out int requestedIndex))
+            {
+                return _pools[requestedIndex];
+            }
+
             string normalized = PoolEntry.NormalizeLocation(location);
-            if (string.IsNullOrEmpty(normalized))
+            if (normalized.Length == 0)
             {
                 return null;
             }
 
-            if (_poolByLocation.TryGetValue(normalized, out int poolIndex))
+            if (!_poolByLocation.TryGetValue(normalized, out int poolIndex))
             {
-                return _pools[poolIndex];
+                int ruleIndex = _catalog.Resolve(normalized);
+                if (ruleIndex < 0)
+                {
+                    WarnUnregistered(normalized);
+                    return null;
+                }
+
+                poolIndex = CreatePool(ruleIndex, normalized);
             }
 
-            int ruleIndex = _catalog.Resolve(normalized);
-            if (ruleIndex < 0)
-            {
-                WarnUnregistered(normalized);
-                return null;
-            }
-
-            return GetOrCreatePool(ruleIndex, normalized);
+            _poolByRequestedLocation.Add(location, poolIndex);
+            return _pools[poolIndex];
         }
 
         private RuntimeGameObjectPool FindPool(string location)
         {
             string normalized = PoolEntry.NormalizeLocation(location);
-            return !string.IsNullOrEmpty(normalized) && _poolByLocation.TryGetValue(normalized, out int poolIndex)
+            return normalized.Length != 0 && _poolByLocation.TryGetValue(normalized, out int poolIndex)
                 ? _pools[poolIndex]
                 : null;
         }
 
-        private RuntimeGameObjectPool GetOrCreatePool(int ruleIndex, string location)
+        private int CreatePool(int ruleIndex, string location)
         {
-            if (_poolByLocation.TryGetValue(location, out int existing))
+            if (_poolCount == _pools.Length)
             {
-                return _pools[existing];
+                Array.Resize(ref _pools, _poolCount << 1);
             }
 
-            EnsurePoolCapacity(_poolCount + 1);
             ref readonly PoolCompiledRule rule = ref _catalog.GetRule(ruleIndex);
-            var pool = MemoryPool.Acquire<RuntimeGameObjectPool>();
-            pool.Initialize(this, _poolCount, rule, location, _loader, GetOrCreateGroupRoot(rule.Group));
-            _pools[_poolCount] = pool;
-            _poolByLocation.AddOrUpdate(location, _poolCount);
-            _poolCount++;
-            return pool;
+            int poolIndex = _poolCount++;
+            _pools[poolIndex] = new RuntimeGameObjectPool(this, poolIndex, rule, location, _loader, GetOrCreateGroupRoot(rule.Group));
+            _poolByLocation.Add(location, poolIndex);
+            return poolIndex;
         }
 
         private Transform GetOrCreateGroupRoot(string group)
@@ -410,7 +371,7 @@ namespace AlicizaX
             root.SetParent(_containerRoot, false);
             int newIndex = _groupRootCount++;
             _groupRoots[newIndex] = root;
-            _groupRootMap.AddOrUpdate(groupName, newIndex);
+            _groupRootMap[groupName] = newIndex;
             return root;
         }
 
@@ -418,20 +379,13 @@ namespace AlicizaX
         {
             for (int i = 0; i < _poolCount; i++)
             {
-                RuntimeGameObjectPool pool = _pools[i];
-                if (pool == null)
-                {
-                    continue;
-                }
-
-                pool.Shutdown();
-                MemoryPool.Release(pool);
+                _pools[i].Shutdown();
                 _pools[i] = null;
             }
 
             _poolCount = 0;
-            _maintenanceCount = 0;
             _poolByLocation.Clear();
+            _poolByRequestedLocation.Clear();
             _unregisteredWarned.Clear();
             ClearGroupRoots();
             ReleaseDebugSnapshots();
@@ -445,8 +399,9 @@ namespace AlicizaX
                 if (root != null)
                 {
                     root.gameObject.SafeDestroySelf();
-                    _groupRoots[i] = null;
                 }
+
+                _groupRoots[i] = null;
             }
 
             _groupRootCount = 0;
@@ -456,34 +411,19 @@ namespace AlicizaX
         private void WarnUnregistered(string location)
         {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (_unregisteredWarned.TryGetValue(location, out _))
+            if (_unregisteredWarned.Add(location))
             {
-                return;
+                Log.Error(ZString.Format("[GameObjectPool] Location is not in PoolConfig: {0}", location));
             }
-
-            _unregisteredWarned.AddOrUpdate(location, 1);
-            Log.Error(ZString.Format("[GameObjectPool] Location is not in PoolConfig: {0}", location));
 #endif
-        }
-
-        private void WarnUnhandledDespawn(GameObject instance)
-        {
-            string name = instance == null ? "<null>" : instance.name;
-            if (_unhandledDespawnWarned.TryGetValue(name, out _))
-            {
-                return;
-            }
-
-            _unhandledDespawnWarned.AddOrUpdate(name, 1);
-            Log.Warning(ZString.Format("[GameObjectPool] Despawn target is not a pooled instance and will be destroyed: {0}", name));
         }
 
         private void OnLowMemory()
         {
-            float now = Time.time;
+            float now = Time.unscaledTime;
             for (int i = 0; i < _poolCount; i++)
             {
-                _pools[i]?.ExecuteMaintenance(now, true);
+                _pools[i].ExecuteMaintenance(now, true);
             }
         }
 
@@ -509,40 +449,19 @@ namespace AlicizaX
 
             for (int i = 0; i < dueCount; i++)
             {
-                _pools[_duePools[i]]?.ExecuteMaintenance(now, false);
+                _pools[_duePools[i]].ExecuteMaintenance(now, false);
             }
-        }
-
-        private void EnsurePoolCapacity(int required)
-        {
-            if (_pools.Length >= required)
-            {
-                return;
-            }
-
-            Array.Resize(ref _pools, Mathf.Max(required, _pools.Length << 1));
-        }
-
-        private void EnsureMaintenanceCapacity(int required)
-        {
-            if (_maintenanceHeap.Length >= required)
-            {
-                return;
-            }
-
-            Array.Resize(ref _maintenanceHeap, Mathf.Max(required, _maintenanceHeap.Length << 1));
         }
 
         private void RemoveMaintenanceAt(int heapIndex)
         {
-            MaintenanceNode removed = _maintenanceHeap[heapIndex];
-            _pools[removed.poolIndex]?.SetMaintenanceHeapIndex(-1);
+            _pools[_maintenanceHeap[heapIndex].poolIndex].MaintenanceHeapIndex = -1;
             int lastIndex = _maintenanceCount - 1;
             if (heapIndex != lastIndex)
             {
                 MaintenanceNode moved = _maintenanceHeap[lastIndex];
                 _maintenanceHeap[heapIndex] = moved;
-                _pools[moved.poolIndex]?.SetMaintenanceHeapIndex(heapIndex);
+                _pools[moved.poolIndex].MaintenanceHeapIndex = heapIndex;
             }
 
             _maintenanceHeap[lastIndex] = default;
@@ -598,8 +517,8 @@ namespace AlicizaX
             MaintenanceNode temp = _maintenanceHeap[left];
             _maintenanceHeap[left] = _maintenanceHeap[right];
             _maintenanceHeap[right] = temp;
-            _pools[_maintenanceHeap[left].poolIndex]?.SetMaintenanceHeapIndex(left);
-            _pools[_maintenanceHeap[right].poolIndex]?.SetMaintenanceHeapIndex(right);
+            _pools[_maintenanceHeap[left].poolIndex].MaintenanceHeapIndex = left;
+            _pools[_maintenanceHeap[right].poolIndex].MaintenanceHeapIndex = right;
         }
 
         private void ReleaseDebugSnapshots()
@@ -614,21 +533,6 @@ namespace AlicizaX
 
         private static int CompareSnapshot(GameObjectPoolSnapshot left, GameObjectPoolSnapshot right)
         {
-            if (ReferenceEquals(left, right))
-            {
-                return 0;
-            }
-
-            if (left == null)
-            {
-                return 1;
-            }
-
-            if (right == null)
-            {
-                return -1;
-            }
-
             int groupCompare = string.CompareOrdinal(left.group, right.group);
             return groupCompare != 0 ? groupCompare : string.CompareOrdinal(left.location, right.location);
         }

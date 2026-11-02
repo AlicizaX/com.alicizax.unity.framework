@@ -1,988 +1,160 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
-using System.Runtime.InteropServices;
+using UnityEngine;
 
 namespace AlicizaX
 {
-    public static unsafe class MemoryPool<T> where T : MemoryObject, new()
+    internal abstract class MemoryPoolBase
     {
-        private const int PageShift = 5;
-        private const int PageSize = 1 << PageShift;
-        private const int PageMask = PageSize - 1;
-        private const int InvalidIndex = -1;
-        private const int MinKeep = MemoryPool.MinimumFreeReserveLimit;
-        private const int GrowthBudgetPerTick = 64;
-        private const int EvictBudgetPerTick = 16;
+        internal abstract void Return(MemoryObject memory);
 
-        private const byte ObjectStateNone = 0;
-        private const byte ObjectStateFree = 1;
-        private const byte ObjectStateLeased = 2;
-        private const byte ObjectStateEvicting = 4;
+        internal abstract bool Tick(float now);
 
-        private const byte SlotStateEmpty = 0;
-        private const byte SlotStateFree = 1;
-        private const byte SlotStateLeased = 2;
-        private const byte SlotStateEvicting = 4;
+        internal abstract void Trim(int keepFreeCount);
 
-        private const int PageFlagInFreeList = 1 << 0;
-        private const int PageFlagInEmptyList = 1 << 1;
-        private const int PageFlagTombstone = 1 << 2;
+        internal abstract void ApplyBudget();
 
-        private struct PageLink
+        internal abstract MemoryPoolInfo GetInfo();
+    }
+
+    internal sealed class MemoryPool<T> : MemoryPoolBase where T : MemoryObject, new()
+    {
+        private const int InitialCapacity = 8;
+
+        internal static readonly MemoryPool<T> Instance = new MemoryPool<T>();
+
+        private static readonly bool s_Evictable = typeof(IPoolEvictable).IsAssignableFrom(typeof(T));
+
+        private T[] _freeObjects = new T[InitialCapacity];
+        private int _freeHead;
+        private int _freeCount;
+        private int _leasedCount;
+        private int _createdCount;
+        private int _targetFreeCount;
+        private PeakWindow _peak;
+        private bool _scheduled;
+
+        private MemoryPool()
         {
-            public int Previous;
-            public int Next;
+            _targetFreeCount = MemoryPoolRegistry.Budget.SoftFreeCount;
+            MemoryPoolRegistry.Register(this);
         }
 
-        private struct PageHeader
-        {
-            public int FreeCount;
-            public int LeasedCount;
-            public int EmptyCount;
-            public int FreeHead;
-            public int EmptyHead;
-            public int NextUninitializedSlot;
-            public int PageGeneration;
-            public PageLink FreeLink;
-            public PageLink EmptyLink;
-            public int Flags;
-        }
-
-        private struct SlotMeta
-        {
-            public int PageGeneration;
-            public int SlotGeneration;
-            public int Next;
-            public byte State;
-        }
-
-
-        private static readonly MemoryPoolRegistry.MemoryPoolHandle s_Handle;
-        private static readonly MemoryPoolHandle s_PublicHandle;
-        private static readonly int s_PoolId;
-
-        private static PageHeader* s_PageHeaders;
-        private static SlotMeta* s_SlotMetas;
-        private static T[][] s_ObjectPages = Array.Empty<T[]>();
-        private static int s_PageCount;
-        private static int s_PageCapacity;
-
-        private static int s_FreePageHead = InvalidIndex;
-        private static int s_EmptyPageHead = InvalidIndex;
-
-        private static int* s_ReleasedPageStack;
-        private static int s_ReleasedPageCount;
-
-        private static int s_InUse;
-        private static int s_FreeCount;
-        private static int s_CreatedCount;
-        private static int s_PendingGrowth;
-        private static int s_AcquireCount;
-        private static int s_ReleaseCount;
-        private static int s_AcquireThisFrame;
-        private static int s_ReleaseThisFrame;
-        private static int s_PeakInUse;
-        private static int s_TargetFreeReserve = MinKeep;
-        private static int s_SoftFreeReserveLimit = MemoryPool.DefaultSoftFreeReserveLimit;
-        private static int s_HardFreeReserveLimit = MemoryPool.DefaultHardFreeReserveLimit;
-        private static int s_IdleFrames;
-        private static int s_LastTickFrame = InvalidIndex;
-        private static bool s_InPoolCallback;
-        private static bool s_PendingClearNativeMetadata;
-
-        static MemoryPool()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T Acquire()
         {
             MemoryPoolRegistry.AssertMainThread();
-            s_Handle = new MemoryPoolRegistry.MemoryPoolHandle(
-                acquire: AcquireAsMemory,
-                release: ReleaseAsMemory,
-                clear: ClearAll,
-                clearNativeMetadata: ClearAllNativeMetadata,
-                add: Add,
-                setCapacity: SetCapacity,
-                getInfo: GetInfo,
-                tick: Tick,
-                shrink: Shrink,
-                compact: Compact,
-                trimNativeMetadata: TrimNativeMetadata,
-                resetStats: ResetStats,
-                forceReleaseNativeMetadata: ForceReleaseNativeMetadata);
-            s_PublicHandle = new MemoryPoolHandle(s_Handle);
-            s_PoolId = s_Handle.PoolId;
-            MemoryPoolRegistry.Register(typeof(T), s_Handle);
-        }
+            T item;
+            if (_freeCount != 0)
+            {
+                int index = (_freeHead + --_freeCount) & (_freeObjects.Length - 1);
+                item = _freeObjects[index];
+                _freeObjects[index] = null;
+                item.InPool = false;
+            }
+            else
+            {
+                item = new T();
+                item.Pool = this;
+                _createdCount++;
+            }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static MemoryObject AcquireAsMemory()
-        {
-            return Acquire();
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void ReleaseAsMemory(MemoryObject memory)
-        {
-            Release((T)memory);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static T Acquire()
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("Acquire");
-            if (!TryAcquireFree(out T item))
-                item = CreateLeasedObject();
-
-            s_AcquireCount++;
-            s_AcquireThisFrame++;
-            s_InUse++;
-            if (s_InUse > s_PeakInUse)
-                s_PeakInUse = s_InUse;
-            MemoryPoolRegistry.ScheduleTick(s_Handle);
+            if (++_leasedCount > _peak.Current)
+                _peak.Current = _leasedCount;
             return item;
         }
 
-        /// <summary>
-        /// 释放该类型的存储并从全局维护中注销。调用前必须先归还所有已租出的对象；
-        /// 之后再次 Acquire 会自动重新注册该池。
-        /// </summary>
-        public static bool Destroy()
-        {
-            return MemoryPoolRegistry.Unregister(typeof(T));
-        }
-
-        public static void Release(T item)
+        internal override void Return(MemoryObject memory)
         {
             MemoryPoolRegistry.AssertMainThread();
-            if (item == null)
-                return;
-            ThrowIfInPoolCallback("Release");
+            if (memory.InPool)
+                ThrowAlreadyReleased();
 
-            ValidateForRelease(item, out int pageIndex, out int slotIndex);
-            ReleaseLeased(item, pageIndex, slotIndex);
-        }
-
-        public static void Add(int count)
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("Add");
-            if (count <= 0)
-                return;
-
-            MemoryPoolRegistry.ScheduleTick(s_Handle);
-            s_TargetFreeReserve = (int)Math.Min((long)s_TargetFreeReserve + count, s_HardFreeReserveLimit);
-            s_PendingGrowth = (int)Math.Min((long)s_PendingGrowth + count, s_HardFreeReserveLimit);
-            LimitPendingGrowth();
-
-            ProcessGrowth(Math.Min(count, GrowthBudgetPerTick));
-        }
-
-        public static void Shrink(int keepCount)
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("Shrink");
-            keepCount = Math.Max(keepCount, 0);
-            s_TargetFreeReserve = Math.Min(s_TargetFreeReserve, keepCount);
-            s_PendingGrowth = 0;
-            int budget = Math.Max(0, s_FreeCount - keepCount);
-            ProcessEvict(budget);
-        }
-
-        public static void Compact()
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("Compact");
-            ProcessEvict(Math.Max(0, s_FreeCount - s_TargetFreeReserve));
-        }
-
-        public static void TrimNativeMetadata()
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("TrimNativeMetadata");
-            if (s_InUse != 0)
-                return;
-
-            Exception callbackException = RetirePages();
-            ReleaseNativeMetadataNow();
-            MemoryPoolRegistry.UnscheduleTick(s_Handle);
-            Rethrow(callbackException);
-        }
-
-        public static void SetCapacity(int softCapacity, int hardCapacity)
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("SetCapacity");
-            softCapacity = Math.Max(softCapacity, MinKeep);
-            hardCapacity = Math.Max(hardCapacity, softCapacity);
-            s_SoftFreeReserveLimit = softCapacity;
-            s_HardFreeReserveLimit = hardCapacity;
-            s_TargetFreeReserve = Math.Min(s_TargetFreeReserve, s_SoftFreeReserveLimit);
-            LimitPendingGrowth();
-            MemoryPoolRegistry.ScheduleTick(s_Handle);
-        }
-
-        public static void ClearAll()
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("ClearAll");
-            Exception callbackException = RetirePages();
-            if (s_InUse == 0)
-                ReleaseNativeMetadataNow();
-            else
-                s_PendingClearNativeMetadata = true;
-            Rethrow(callbackException);
-        }
-
-        private static Exception RetirePages()
-        {
-            List<Exception> callbackExceptions = null;
-            for (int pageIndex = 0; pageIndex < s_PageCount; pageIndex++)
-                CollectException(ref callbackExceptions, TombstonePage(pageIndex));
-
-            ClearPageLists();
-            s_AcquireThisFrame = 0;
-            s_ReleaseThisFrame = 0;
-            s_PendingGrowth = 0;
-            s_PeakInUse = 0;
-            s_TargetFreeReserve = 0;
-            s_IdleFrames = 0;
-            s_LastTickFrame = InvalidIndex;
-
-            MemoryPoolRegistry.UnscheduleTick(s_Handle);
-            return CreateException(callbackExceptions);
-        }
-
-        public static void ClearAllNativeMetadata()
-        {
-            ClearAll();
-        }
-
-        private static void ReleaseNativeMetadataNow()
-        {
-            s_PendingClearNativeMetadata = false;
-            ResetNativeStorage();
-        }
-
-        internal static void ForceReleaseNativeMetadata()
-        {
-            ResetNativeStorage();
-            s_PendingClearNativeMetadata = false;
-            s_PendingGrowth = 0;
-            s_TargetFreeReserve = 0;
-            s_IdleFrames = 0;
-            s_LastTickFrame = InvalidIndex;
-        }
-
-        private static void ResetNativeStorage()
-        {
-            ClearPageLists();
-            FreeNativeMetadata();
-            s_ObjectPages = Array.Empty<T[]>();
-            s_PageCount = 0;
-            s_ReleasedPageCount = 0;
-            s_InUse = 0;
-            s_FreeCount = 0;
-
-            s_PageCapacity = 0;
-        }
-
-        public static void ResetStats()
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("ResetStats");
-            s_AcquireCount = 0;
-            s_ReleaseCount = 0;
-            s_CreatedCount = 0;
-
-            s_AcquireThisFrame = 0;
-            s_ReleaseThisFrame = 0;
-            s_PeakInUse = s_InUse;
-        }
-
-        public static int UnusedCount
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => s_FreeCount;
-        }
-
-        internal static void GetInfo(ref MemoryPoolInfo info)
-        {
-            info.Set(
-                typeof(T), s_FreeCount,
-                s_InUse,
-                s_AcquireCount, s_ReleaseCount,
-                s_CreatedCount,
-                s_TargetFreeReserve, s_HardFreeReserveLimit,
-                s_IdleFrames, Math.Max(0, s_PageCount - s_ReleasedPageCount) * PageSize);
-        }
-
-        internal static bool Tick(int frameCount)
-        {
-            MemoryPoolRegistry.AssertMainThread();
-            ThrowIfInPoolCallback("Tick");
-            if (frameCount == s_LastTickFrame)
-                return true;
-
-            s_LastTickFrame = frameCount;
-            bool active = s_AcquireThisFrame > 0 || s_ReleaseThisFrame > 0 || s_PendingGrowth > 0;
-            s_IdleFrames = active ? 0 : s_IdleFrames + 1;
-
-            UpdateWatermarks();
-            LimitPendingGrowth();
-            ProcessGrowth(GrowthBudgetPerTick);
-            ProcessEvict(EvictBudgetPerTick);
-
-            s_AcquireThisFrame = 0;
-            s_ReleaseThisFrame = 0;
-
-            if (TryAutoTrimNativeMetadata())
-                return false;
-
-            return s_IdleFrames < MemoryPool.UnscheduleIdleFrames || ShouldKeepTickingForAutoTrim() || s_FreeCount > s_TargetFreeReserve || s_PendingGrowth > 0;
-        }
-
-        private static bool ShouldKeepTickingForAutoTrim()
-        {
-            return MemoryPool.AutoTrimNativeMetadataFrames >= 0
-                   && s_IdleFrames < MemoryPool.AutoTrimNativeMetadataFrames
-                   && s_InUse == 0
-                   && s_PageCapacity > 0;
-        }
-
-        private static bool TryAutoTrimNativeMetadata()
-        {
-            if (MemoryPool.AutoTrimNativeMetadataFrames < 0)
-                return false;
-            if (s_IdleFrames < MemoryPool.AutoTrimNativeMetadataFrames)
-                return false;
-            if (s_InUse != 0 || s_FreeCount != 0)
-                return false;
-            if (s_PageCapacity <= 0)
-                return false;
-
-            ReleaseNativeMetadataNow();
-            return true;
-        }
-
-        private static bool TryAcquireFree(out T item)
-        {
-            int pageIndex = s_FreePageHead;
-            if (pageIndex < 0)
+            T item = Unsafe.As<T>(memory);
+            item.Clear();
+            item.InPool = true;
+            _leasedCount--;
+            if (_freeCount == MemoryPoolRegistry.Budget.HardFreeCount)
             {
-                item = null;
-                return false;
-            }
-
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            int slotIndex = page.FreeHead;
-            ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-            item = s_ObjectPages[pageIndex][slotIndex];
-            page.FreeHead = slot.Next;
-            page.FreeCount--;
-            page.LeasedCount++;
-            slot.Next = InvalidIndex;
-            slot.State = SlotStateLeased;
-            item.State = ObjectStateLeased;
-            s_ObjectPages[pageIndex][slotIndex] = null;
-            s_FreeCount--;
-            if (page.FreeCount == 0)
-                UnlinkPage(pageIndex, true);
-            return true;
-        }
-
-        private static T CreateLeasedObject()
-        {
-            T item = ConstructObject();
-            TakeEmptySlot(out int pageIndex, out int slotIndex);
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-            s_CreatedCount++;
-            page.EmptyCount--;
-            page.LeasedCount++;
-            InitializeMemoryObject(item, pageIndex, slotIndex, page.PageGeneration, slot.SlotGeneration, ObjectStateLeased);
-            slot.PageGeneration = page.PageGeneration;
-            slot.State = SlotStateLeased;
-            slot.Next = InvalidIndex;
-            return item;
-        }
-
-        private static T ConstructObject()
-        {
-            s_InPoolCallback = true;
-            MemoryPoolRegistry.BeginCallback();
-            try
-            {
-                return new T();
-            }
-            finally
-            {
-                MemoryPoolRegistry.EndCallback();
-                s_InPoolCallback = false;
-            }
-        }
-
-        private static void ReleaseLeased(T item, int pageIndex, int slotIndex)
-        {
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-            bool tombstone = (page.Flags & PageFlagTombstone) != 0;
-            bool keepFree = !tombstone && s_FreeCount < s_HardFreeReserveLimit;
-
-            InvokeClear(item);
-
-            s_ReleaseCount++;
-            s_ReleaseThisFrame++;
-            MemoryPoolRegistry.ScheduleTick(s_Handle);
-
-            if (keepFree)
-            {
-                item.State = ObjectStateFree;
-                slot.State = SlotStateFree;
-                slot.Next = page.FreeHead;
-                page.FreeHead = slotIndex;
-                page.LeasedCount--;
-                page.FreeCount++;
-                s_InUse--;
-                s_FreeCount++;
-                s_ObjectPages[pageIndex][slotIndex] = item;
-                if (page.FreeCount == 1)
-                    LinkPage(pageIndex, true);
-                CompletePendingNativeMetadataClear();
+                Evict(item);
                 return;
             }
 
-            Exception evictException = EvictLeasedObject(item, ref page, ref slot, pageIndex, slotIndex, !tombstone);
-            s_InUse--;
-            if (page.LeasedCount == 0 && page.FreeCount == 0)
-                ReleasePageStorage(pageIndex);
+            if (_freeCount == _freeObjects.Length)
+                GrowFreeObjects();
 
-            CompletePendingNativeMetadataClear();
-            Rethrow(evictException);
+            _freeObjects[(_freeHead + _freeCount++) & (_freeObjects.Length - 1)] = item;
+            RequestTick();
         }
 
-        private static Exception EvictLeasedObject(T item, ref PageHeader page, ref SlotMeta slot, int pageIndex, int slotIndex, bool enqueueEmpty)
+        internal override bool Tick(float now)
         {
-            item.State = ObjectStateEvicting;
-            slot.State = SlotStateEvicting;
-            Exception callbackException = CaptureCallbackException(item);
+            MemoryPoolBudget budget = MemoryPoolRegistry.Budget;
+            _peak.Advance(now, _leasedCount, budget.PeakWindowSeconds);
+            _targetFreeCount = Mathf.Clamp(_peak.Peak, budget.RetainFreeCount, budget.SoftFreeCount);
+            for (int trimCount = budget.TrimPerTick; trimCount != 0 && _freeCount > _targetFreeCount; trimCount--)
+                EvictOldest();
 
-            ResetMemoryObject(item);
-            slot.SlotGeneration++;
-            slot.State = SlotStateEmpty;
-            if (enqueueEmpty)
-            {
-                slot.Next = page.EmptyHead;
-                page.EmptyHead = slotIndex;
-            }
-            else
-            {
-                slot.Next = InvalidIndex;
-            }
-            page.LeasedCount--;
-
-            page.EmptyCount++;
-
-            if (enqueueEmpty && page.EmptyCount == 1)
-                LinkPage(pageIndex, false);
-            return callbackException;
+            _scheduled = _freeCount > budget.RetainFreeCount;
+            return _scheduled;
         }
 
-        private static Exception EvictFree(int pageIndex, int slotIndex)
+        internal override void Trim(int keepFreeCount)
         {
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-            T item = s_ObjectPages[pageIndex][slotIndex];
-            item.State = ObjectStateEvicting;
-            slot.State = SlotStateEvicting;
-            Exception callbackException = CaptureCallbackException(item);
-
-            s_ObjectPages[pageIndex][slotIndex] = null;
-            ResetMemoryObject(item);
-            slot.SlotGeneration++;
-            slot.State = SlotStateEmpty;
-            slot.Next = page.EmptyHead;
-            page.EmptyHead = slotIndex;
-
-            page.FreeCount--;
-            page.EmptyCount++;
-
-            s_FreeCount--;
-            if (page.EmptyCount == 1)
-                LinkPage(pageIndex, false);
-            return callbackException;
+            while (_freeCount > keepFreeCount)
+                EvictOldest();
         }
 
-        private static void ProcessGrowth(int budget)
+        internal override void ApplyBudget()
         {
-            LimitPendingGrowth();
-            while (budget > 0 && s_PendingGrowth > 0)
-            {
-                T item = ConstructObject();
-                TakeEmptySlot(out int pageIndex, out int slotIndex);
-                ref PageHeader page = ref s_PageHeaders[pageIndex];
-                ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-                s_CreatedCount++;
-                page.EmptyCount--;
-                page.FreeCount++;
-                InitializeMemoryObject(item, pageIndex, slotIndex, page.PageGeneration, slot.SlotGeneration, ObjectStateFree);
-                slot.PageGeneration = page.PageGeneration;
-                slot.State = SlotStateFree;
-                slot.Next = page.FreeHead;
-                page.FreeHead = slotIndex;
-                s_ObjectPages[pageIndex][slotIndex] = item;
-                s_FreeCount++;
-                s_PendingGrowth--;
-                if (page.FreeCount == 1)
-                    LinkPage(pageIndex, true);
-                budget--;
-            }
+            MemoryPoolBudget budget = MemoryPoolRegistry.Budget;
+            Trim(budget.HardFreeCount);
+            if (_freeCount > budget.RetainFreeCount)
+                RequestTick();
         }
 
-        private static void ProcessEvict(int budget)
+        internal override MemoryPoolInfo GetInfo()
         {
-            LimitPendingGrowth();
-            if (s_PendingGrowth > 0)
+            return new MemoryPoolInfo(typeof(T), _freeCount, _leasedCount, _createdCount, _targetFreeCount, _peak.Peak);
+        }
+
+        private void RequestTick()
+        {
+            if (_scheduled)
                 return;
 
-            List<Exception> callbackExceptions = null;
-            while (budget > 0 && s_FreeCount > s_TargetFreeReserve)
-            {
-                int pageIndex = s_FreePageHead;
-                ref PageHeader page = ref s_PageHeaders[pageIndex];
-                int slotIndex = page.FreeHead;
-                page.FreeHead = s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)].Next;
-                CollectException(ref callbackExceptions, EvictFree(pageIndex, slotIndex));
-                if (page.FreeCount == 0)
-                    UnlinkPage(pageIndex, true);
-                if (page.LeasedCount == 0 && page.FreeCount == 0)
-                    ReleasePageStorage(pageIndex);
-                budget--;
-            }
-            Rethrow(CreateException(callbackExceptions));
+            _scheduled = true;
+            MemoryPoolRegistry.Schedule(this);
         }
 
-        private static void TakeEmptySlot(out int pageIndex, out int slotIndex)
+        private void EvictOldest()
         {
-            pageIndex = s_EmptyPageHead >= 0 ? s_EmptyPageHead : CreatePage();
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            if (page.EmptyHead >= 0)
-            {
-                slotIndex = page.EmptyHead;
-                page.EmptyHead = s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)].Next;
-            }
-            else
-            {
-                slotIndex = page.NextUninitializedSlot++;
-            }
-
-            if (page.EmptyCount == 1)
-                UnlinkPage(pageIndex, false);
+            T item = _freeObjects[_freeHead];
+            _freeObjects[_freeHead] = null;
+            _freeHead = (_freeHead + 1) & (_freeObjects.Length - 1);
+            _freeCount--;
+            Evict(item);
         }
 
-        private static int CreatePage()
+        private void GrowFreeObjects()
         {
-            int pageIndex;
-            if (s_ReleasedPageCount > 0)
-            {
-                pageIndex = s_ReleasedPageStack[--s_ReleasedPageCount];
-                s_ReleasedPageStack[s_ReleasedPageCount] = 0;
-            }
-            else
-            {
-                GrowPageStorage(s_PageCount + 1);
-                pageIndex = s_PageCount++;
-            }
+            var grown = new T[_freeObjects.Length << 1];
+            for (int i = 0; i < _freeCount; i++)
+                grown[i] = _freeObjects[(_freeHead + i) & (_freeObjects.Length - 1)];
 
-            int pageGeneration = s_PageHeaders[pageIndex].PageGeneration;
-            if (pageGeneration == 0)
-                pageGeneration = 1;
-
-            s_PageHeaders[pageIndex] = new PageHeader
-            {
-                EmptyCount = PageSize,
-                FreeHead = InvalidIndex,
-                EmptyHead = InvalidIndex,
-                PageGeneration = pageGeneration
-            };
-            s_ObjectPages[pageIndex] = new T[PageSize];
-            int start = pageIndex << PageShift;
-            for (int i = 0; i < PageSize; i++)
-            {
-                s_SlotMetas[start + i].PageGeneration = pageGeneration;
-                if (s_SlotMetas[start + i].SlotGeneration == 0)
-                    s_SlotMetas[start + i].SlotGeneration = 1;
-                s_SlotMetas[start + i].Next = InvalidIndex;
-                s_SlotMetas[start + i].State = SlotStateEmpty;
-            }
-
-            LinkPage(pageIndex, false);
-            return pageIndex;
+            _freeObjects = grown;
+            _freeHead = 0;
         }
 
-        private static void GrowPageStorage(int requiredPages)
+        private static void Evict(T item)
         {
-            if (s_PageCapacity >= requiredPages)
-                return;
-
-            int newPageCapacity = s_PageCapacity == 0 ? 4 : s_PageCapacity;
-            while (newPageCapacity < requiredPages)
-                newPageCapacity <<= 1;
-
-            Array.Resize(ref s_ObjectPages, newPageCapacity);
-            ResizeUnmanaged(ref s_PageHeaders, s_PageCapacity, newPageCapacity);
-            ResizeUnmanaged(ref s_SlotMetas, s_PageCapacity * PageSize, newPageCapacity * PageSize);
-            ResizeUnmanaged(ref s_ReleasedPageStack, s_PageCapacity, newPageCapacity);
-            s_PageCapacity = newPageCapacity;
+            if (s_Evictable)
+                ((IPoolEvictable)item).OnEvict();
         }
 
-        private static void ValidateForRelease(T item, out int pageIndex, out int slotIndex)
+        private static void ThrowAlreadyReleased()
         {
-            if (!item.OwnerHandle.IsValid)
-                ThrowInvalidState("Memory object has no owner pool.");
-            if (item.PoolId != s_PoolId)
-                ThrowInvalidState("Memory object belongs to another pool.");
-
-            DecodeSlotId(item.SlotId, out pageIndex, out slotIndex);
-            if ((uint)pageIndex >= (uint)s_PageCount)
-                ThrowInvalidState("Memory object slot is out of range.");
-
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-            if (item.PageGeneration != page.PageGeneration || slot.PageGeneration != page.PageGeneration)
-                ThrowInvalidState("Memory object page generation mismatch.");
-            if (item.SlotGeneration != slot.SlotGeneration)
-                ThrowInvalidState("Memory object slot generation mismatch.");
-            if (item.State != ObjectStateLeased || slot.State != SlotStateLeased)
-                ThrowInvalidState("Memory object is not leased.");
-        }
-
-        private static void LimitPendingGrowth()
-        {
-            if (s_PendingGrowth <= 0)
-                return;
-
-            int reserveLimit = Math.Min(s_TargetFreeReserve, s_HardFreeReserveLimit);
-            int maxDebt = Math.Max(0, reserveLimit - s_FreeCount);
-            if (s_PendingGrowth > maxDebt)
-                s_PendingGrowth = maxDebt;
-        }
-
-        private static void UpdateWatermarks()
-        {
-            // 空闲储备策略，刻意保持简单且可度量：
-            //   活跃/短空闲：保留最近峰值并发所需的数量，并以软上限封顶
-            //   短空闲：    衰减到最小储备
-            //   长空闲：    允许储备降到零（可裁剪 native 元数据）
-            if (s_IdleFrames >= MemoryPool.ZeroFreeReserveStartFrames)
-            {
-                s_TargetFreeReserve = 0;
-                return;
-            }
-
-            int desiredFree = s_IdleFrames >= MemoryPool.ShortDecayStartFrames
-                ? MinKeep
-                : Math.Max(s_PeakInUse, MinKeep);
-
-            // 显式 Add() 会立即提高目标储备；在该需求被满足或池空闲足够久开始衰减之前，
-            // 一直保留这个目标值。
-            if (s_PendingGrowth > 0 || s_IdleFrames < MemoryPool.ShortDecayStartFrames)
-                desiredFree = Math.Max(desiredFree, s_TargetFreeReserve);
-
-            s_TargetFreeReserve = Math.Min(
-                Math.Max(desiredFree, MinKeep),
-                Math.Min(s_SoftFreeReserveLimit, s_HardFreeReserveLimit));
-        }
-
-        private static Exception TombstonePage(int pageIndex)
-        {
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            if (s_ObjectPages[pageIndex] == null || (page.Flags & PageFlagTombstone) != 0)
-                return null;
-            if ((page.Flags & PageFlagInFreeList) != 0)
-                UnlinkPage(pageIndex, true);
-            if ((page.Flags & PageFlagInEmptyList) != 0)
-                UnlinkPage(pageIndex, false);
-
-            page.Flags |= PageFlagTombstone;
-
-            List<Exception> callbackExceptions = null;
-            int slotIndex = page.FreeHead;
-            while (slotIndex >= 0)
-            {
-                int next = s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)].Next;
-                CollectException(ref callbackExceptions, TombstoneEvictFree(pageIndex, slotIndex));
-                slotIndex = next;
-            }
-
-            page.FreeHead = InvalidIndex;
-            page.EmptyHead = InvalidIndex;
-            page.NextUninitializedSlot = PageSize;
-            page.FreeCount = 0;
-            page.EmptyCount = PageSize - page.LeasedCount;
-
-            if (page.LeasedCount == 0)
-                ReleasePageStorage(pageIndex);
-            return CreateException(callbackExceptions);
-        }
-
-        private static Exception TombstoneEvictFree(int pageIndex, int slotIndex)
-        {
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref SlotMeta slot = ref s_SlotMetas[GetSlotMetaIndex(pageIndex, slotIndex)];
-            T item = s_ObjectPages[pageIndex][slotIndex];
-            item.State = ObjectStateEvicting;
-            slot.State = SlotStateEvicting;
-            Exception callbackException = CaptureCallbackException(item);
-            ResetMemoryObject(item);
-
-            s_ObjectPages[pageIndex][slotIndex] = null;
-            slot.SlotGeneration++;
-            slot.State = SlotStateEmpty;
-            slot.Next = InvalidIndex;
-
-            page.FreeCount--;
-            page.EmptyCount++;
-
-            s_FreeCount--;
-            return callbackException;
-        }
-
-        private static void ReleasePageStorage(int pageIndex)
-        {
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            if ((page.Flags & PageFlagInEmptyList) != 0)
-                UnlinkPage(pageIndex, false);
-            page.PageGeneration++;
-            page.FreeHead = InvalidIndex;
-            page.EmptyHead = InvalidIndex;
-            page.NextUninitializedSlot = 0;
-
-            page.FreeCount = 0;
-            page.LeasedCount = 0;
-            page.EmptyCount = PageSize;
-            page.Flags = 0;
-            s_ObjectPages[pageIndex] = null;
-            s_ReleasedPageStack[s_ReleasedPageCount++] = pageIndex;
-        }
-
-        private static void ClearPageLists()
-        {
-            s_FreePageHead = s_EmptyPageHead = InvalidIndex;
-        }
-
-        private static void LinkPage(int pageIndex, bool free)
-        {
-            ref int head = ref (free ? ref s_FreePageHead : ref s_EmptyPageHead);
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref PageLink link = ref (free ? ref page.FreeLink : ref page.EmptyLink);
-            link.Previous = InvalidIndex;
-            link.Next = head;
-            if (head >= 0)
-            {
-                ref PageHeader next = ref s_PageHeaders[head];
-                ref PageLink nextLink = ref (free ? ref next.FreeLink : ref next.EmptyLink);
-                nextLink.Previous = pageIndex;
-            }
-            head = pageIndex;
-            page.Flags |= free ? PageFlagInFreeList : PageFlagInEmptyList;
-        }
-
-        private static void UnlinkPage(int pageIndex, bool free)
-        {
-            ref PageHeader page = ref s_PageHeaders[pageIndex];
-            ref PageLink link = ref (free ? ref page.FreeLink : ref page.EmptyLink);
-            if (link.Previous >= 0)
-            {
-                ref PageHeader previous = ref s_PageHeaders[link.Previous];
-                ref PageLink previousLink = ref (free ? ref previous.FreeLink : ref previous.EmptyLink);
-                previousLink.Next = link.Next;
-            }
-            else
-            {
-                ref int head = ref (free ? ref s_FreePageHead : ref s_EmptyPageHead);
-                head = link.Next;
-            }
-            if (link.Next >= 0)
-            {
-                ref PageHeader next = ref s_PageHeaders[link.Next];
-                ref PageLink nextLink = ref (free ? ref next.FreeLink : ref next.EmptyLink);
-                nextLink.Previous = link.Previous;
-            }
-            page.Flags &= ~(free ? PageFlagInFreeList : PageFlagInEmptyList);
-        }
-
-        private static void InitializeMemoryObject(T item, int pageIndex, int slotIndex, int pageGeneration, int slotGeneration, byte state)
-        {
-            item.OwnerHandle = s_PublicHandle;
-            item.PoolId = s_PoolId;
-            item.SlotId = EncodeSlotId(pageIndex, slotIndex);
-            item.PageGeneration = pageGeneration;
-            item.SlotGeneration = slotGeneration;
-            item.State = state;
-        }
-
-        private static void ResetMemoryObject(T item)
-        {
-            item.OwnerHandle = default;
-            item.PoolId = 0;
-            item.SlotId = InvalidIndex;
-            item.PageGeneration = 0;
-            item.SlotGeneration = 0;
-            item.State = ObjectStateNone;
-        }
-
-        private static void InvokeClear(T item)
-        {
-            s_InPoolCallback = true;
-            MemoryPoolRegistry.BeginCallback();
-            try
-            {
-                item.Clear();
-            }
-            catch (Exception exception)
-            {
-                throw new InvalidOperationException($"MemoryPool<{typeof(T).Name}>: Clear() failed.", exception);
-            }
-            finally
-            {
-                MemoryPoolRegistry.EndCallback();
-                s_InPoolCallback = false;
-            }
-        }
-
-        private static void InvokeOnEvict(T item)
-        {
-            if (!(item is IPoolEvictable evictable))
-                return;
-            s_InPoolCallback = true;
-            MemoryPoolRegistry.BeginCallback();
-            try
-            {
-                evictable.OnEvict();
-            }
-            catch (Exception exception)
-            {
-                throw new InvalidOperationException($"MemoryPool<{typeof(T).Name}>: OnEvict() failed.", exception);
-            }
-            finally
-            {
-                MemoryPoolRegistry.EndCallback();
-                s_InPoolCallback = false;
-            }
-        }
-
-        private static void ThrowIfInPoolCallback(string operation)
-        {
-            if (s_InPoolCallback)
-                ThrowInvalidState($"{operation} is not allowed during construction, Clear() or OnEvict().");
-        }
-
-        private static U* AllocUnmanaged<U>(int count) where U : unmanaged
-        {
-            if (count <= 0)
-                return null;
-
-            int size = sizeof(U) * count;
-            IntPtr memory = Marshal.AllocHGlobal(size);
-            Span<byte> bytes = new Span<byte>((void*)memory, size);
-            bytes.Clear();
-            return (U*)memory;
-        }
-
-        private static void ResizeUnmanaged<U>(ref U* buffer, int oldCount, int newCount) where U : unmanaged
-        {
-            U* newBuffer = AllocUnmanaged<U>(newCount);
-            if (buffer != null && oldCount > 0 && newBuffer != null)
-            {
-                int copyCount = Math.Min(oldCount, newCount);
-                Buffer.MemoryCopy(buffer, newBuffer, sizeof(U) * newCount, sizeof(U) * copyCount);
-            }
-
-            FreeUnmanaged(buffer);
-            buffer = newBuffer;
-        }
-
-        private static void FreeUnmanaged<U>(U* buffer) where U : unmanaged
-        {
-            if (buffer != null)
-                Marshal.FreeHGlobal((IntPtr)buffer);
-        }
-
-        private static void FreeNativeMetadata()
-        {
-            FreeUnmanaged(s_PageHeaders);
-            FreeUnmanaged(s_SlotMetas);
-            FreeUnmanaged(s_ReleasedPageStack);
-            s_PageHeaders = null;
-            s_SlotMetas = null;
-            s_ReleasedPageStack = null;
-        }
-
-        private static void CompletePendingNativeMetadataClear()
-        {
-            if (!s_PendingClearNativeMetadata || s_InUse != 0)
-                return;
-            s_PendingClearNativeMetadata = false;
-            if (s_FreeCount == 0)
-            {
-                ReleaseNativeMetadataNow();
-                MemoryPoolRegistry.UnscheduleTick(s_Handle);
-            }
-        }
-
-        private static Exception CaptureCallbackException(T item)
-        {
-            try
-            {
-                InvokeOnEvict(item);
-                return null;
-            }
-            catch (Exception exception)
-            {
-                return exception;
-            }
-        }
-
-        private static void CollectException(ref List<Exception> exceptions, Exception exception)
-        {
-            if (exception != null)
-                (exceptions ??= new List<Exception>()).Add(exception);
-        }
-
-        private static Exception CreateException(List<Exception> exceptions)
-        {
-            return exceptions == null ? null : exceptions.Count == 1 ? exceptions[0] : new AggregateException(exceptions);
-        }
-
-        private static void Rethrow(Exception exception)
-        {
-            if (exception != null)
-                ExceptionDispatchInfo.Capture(exception).Throw();
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int EncodeSlotId(int pageIndex, int slotIndex)
-        {
-            return (pageIndex << PageShift) | slotIndex;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void DecodeSlotId(int slotId, out int pageIndex, out int slotIndex)
-        {
-            pageIndex = slotId >> PageShift;
-            slotIndex = slotId & PageMask;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int GetSlotMetaIndex(int pageIndex, int slotIndex)
-        {
-            return (pageIndex << PageShift) + slotIndex;
-        }
-
-        private static void ThrowInvalidState(string message)
-        {
-            throw new InvalidOperationException($"MemoryPool<{typeof(T).Name}>: {message}");
+            throw new InvalidOperationException($"MemoryPool<{typeof(T).Name}>: object is already released.");
         }
     }
 }

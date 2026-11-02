@@ -10,8 +10,6 @@ namespace AlicizaX
 
         T Spawn<T>(string location, Transform parent = null) where T : Component;
 
-        bool TrySpawn(string location, Transform parent, out GameObject instance);
-
         UniTask<GameObject> SpawnAsync(string location, Transform parent = null, CancellationToken cancellationToken = default);
 
         UniTask<T> SpawnAsync<T>(string location, Transform parent = null, CancellationToken cancellationToken = default) where T : Component;

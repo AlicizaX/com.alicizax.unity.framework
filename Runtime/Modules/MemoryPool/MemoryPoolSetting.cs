@@ -2,76 +2,60 @@ using UnityEngine;
 
 namespace AlicizaX
 {
-    /// <summary>
-    /// 内存池模块。
-    /// </summary>
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(-1000)]
     public sealed class MemoryPoolSetting : MonoBehaviour
     {
-        [Header("Idle Trim Settings")]
-        [Tooltip("池空闲多少帧后开始衰减目标空闲水位。每 tick 驱逐数量由 Phase 预算决定（Gameplay=2）。@60fps: 1800帧≈30秒")]
+        [Header("Free Object Budget")]
+        [Tooltip("长期保留的空闲对象数。")]
         [SerializeField]
-        private int m_ShortDecayStartFrames = 1800;
+        private int m_RetainFreeCount;
 
-        [Tooltip("池空闲多少帧后停止调度Tick。@60fps: 18000帧≈5分钟")]
+        [Tooltip("空闲对象软上限。超过近期峰值需求的空闲对象会逐帧淘汰。")]
         [SerializeField]
-        private int m_UnscheduleIdleFrames = 18000;
+        private int m_SoftFreeCount = 128;
 
-        [Tooltip("池空闲多少帧后允许目标空闲缓存降为0。@60fps: 7200帧≈2分钟")]
+        [Tooltip("空闲对象硬上限。归还时空闲数已达该值则直接丢弃。")]
         [SerializeField]
-        private int m_ZeroFreeReserveStartFrames = 7200;
+        private int m_HardFreeCount = 512;
 
-        [Tooltip("池空闲多少帧后，若已完全空闲则自动释放native metadata。@60fps: 18000帧≈5分钟")]
+        [Tooltip("每帧每个池最多淘汰的空闲对象数。")]
         [SerializeField]
-        private int m_AutoTrimNativeMetadataFrames = 18000;
+        private int m_TrimPerTick = 16;
 
-        [Header("Capacity Settings")]
-        [Tooltip("默认空闲缓存软上限。新池会使用该值，运行时修改会同步到已创建池。")]
+        [Tooltip("峰值需求统计窗口，单位秒，不受 timeScale 影响。")]
         [SerializeField]
-        private int m_SoftFreeReserveLimit = 128;
-
-        [Tooltip("默认空闲缓存硬上限。释放对象时超过该值会直接驱逐。")]
-        [SerializeField]
-        private int m_HardFreeReserveLimit = 512;
+        private float m_PeakWindowSeconds = 30f;
 
         private void OnValidate()
         {
-            NormalizeSettings();
+            m_RetainFreeCount = Mathf.Max(0, m_RetainFreeCount);
+            m_SoftFreeCount = Mathf.Max(m_RetainFreeCount, m_SoftFreeCount);
+            m_HardFreeCount = Mathf.Max(m_SoftFreeCount, m_HardFreeCount);
+            m_TrimPerTick = Mathf.Max(1, m_TrimPerTick);
+            m_PeakWindowSeconds = Mathf.Max(0.1f, m_PeakWindowSeconds);
         }
 
         private void Awake()
         {
-            NormalizeSettings();
-            MemoryPoolRegistry.InitializeMainThread();
-            MemoryPool.ShortDecayStartFrames = m_ShortDecayStartFrames;
-            MemoryPool.UnscheduleIdleFrames = m_UnscheduleIdleFrames;
-            MemoryPool.ZeroFreeReserveStartFrames = m_ZeroFreeReserveStartFrames;
-            MemoryPool.AutoTrimNativeMetadataFrames = m_AutoTrimNativeMetadataFrames;
-            MemoryPool.SetDefaultCapacity(m_SoftFreeReserveLimit, m_HardFreeReserveLimit);
+            MemoryPool.SetBudget(new MemoryPoolBudget(m_RetainFreeCount, m_SoftFreeCount, m_HardFreeCount, m_TrimPerTick, m_PeakWindowSeconds));
+            Application.lowMemory += OnLowMemory;
         }
 
         private void Update()
         {
-            MemoryPoolRegistry.TickAll(Time.frameCount);
+            MemoryPoolRegistry.TickAll(Time.unscaledTime);
         }
 
         private void OnDestroy()
         {
-            MemoryPoolRegistry.ClearAllNativeMetadata();
+            Application.lowMemory -= OnLowMemory;
+            MemoryPool.TrimAll();
         }
 
-        private void NormalizeSettings()
+        private static void OnLowMemory()
         {
-            m_ShortDecayStartFrames = Mathf.Max(0, m_ShortDecayStartFrames);
-            m_ZeroFreeReserveStartFrames = Mathf.Max(m_ShortDecayStartFrames, m_ZeroFreeReserveStartFrames);
-            m_UnscheduleIdleFrames = Mathf.Max(m_ZeroFreeReserveStartFrames, m_UnscheduleIdleFrames);
-            m_AutoTrimNativeMetadataFrames = m_AutoTrimNativeMetadataFrames < 0
-                ? -1
-                : Mathf.Max(m_ZeroFreeReserveStartFrames, m_AutoTrimNativeMetadataFrames);
-            m_SoftFreeReserveLimit = Mathf.Max(MemoryPool.MinimumFreeReserveLimit, m_SoftFreeReserveLimit);
-            m_HardFreeReserveLimit = Mathf.Max(m_SoftFreeReserveLimit, m_HardFreeReserveLimit);
+            MemoryPoolRegistry.TrimAll(MemoryPoolRegistry.Budget.RetainFreeCount);
         }
-
     }
 }

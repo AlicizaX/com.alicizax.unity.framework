@@ -64,7 +64,6 @@ namespace AlicizaX.Audio.Tests
             var borrowed = f.Clip("borrowed");
             f.Clip("shared"); f.Clip("pending");
             using var external = f.Resources.Service.LoadLease<AudioClip>("shared");
-            var pool = f.Pools.GetObjectPool<AudioSourceObject>("Audio Source Pool");
             Assert.That(f.Audio.Play(AudioType.Music, borrowed, true), Is.Not.Zero);
             Assert.That(f.Audio.Play(AudioType.Sound, "shared", true), Is.Not.Zero);
             f.Loader.CompleteImmediately = false;
@@ -75,7 +74,6 @@ namespace AlicizaX.Audio.Tests
             Assert.That(external.IsValid && borrowed != null, Is.True);
             Assert.That(f.Resources.Info("shared").DirectRefCount, Is.EqualTo(1));
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
-            Assert.That(pool.Count, Is.Zero);
             AudioFixture.CheckAudioPoolsReleased();
             Assert.That(f.Root.GetComponentsInChildren<AudioSource>(true), Is.Empty);
             Assert.That(f.Root.transform.childCount, Is.Zero);

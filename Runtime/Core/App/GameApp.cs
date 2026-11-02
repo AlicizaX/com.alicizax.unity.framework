@@ -1,6 +1,5 @@
 using AlicizaX;
 using AlicizaX.Audio.Runtime;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using AlicizaX.Scene.Runtime;
 using AlicizaX.Timer.Runtime;
@@ -31,25 +30,6 @@ public static partial class GameApp
     }
 
     private static IAudioService _audio;
-
-
-    /// <summary>
-    /// 获取对象池组件。
-    /// </summary>
-    public static IObjectPoolService ObjectPool
-    {
-        get
-        {
-            if (_objectPool == null)
-            {
-                _objectPool = AppServices.App.Require<IObjectPoolService>();
-            }
-
-            return _objectPool;
-        }
-    }
-
-    private static IObjectPoolService _objectPool;
 
 
     /// <summary>

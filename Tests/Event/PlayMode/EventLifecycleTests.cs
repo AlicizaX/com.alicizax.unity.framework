@@ -93,7 +93,7 @@ namespace AlicizaX.EventTests
             using var f = new EventFixture(false);
             for (int cycle = 0; cycle < 3; cycle++)
             {
-                var proxy = MemoryPool<EventListenerProxy>.Acquire();
+                var proxy = MemoryPool.Acquire<EventListenerProxy>();
                 var listener = new Listener(); proxy.AddUIEvent<EmptyProbe>(listener.OnEmpty);
                 f.Publish(); Assert.That(listener.Calls, Is.EqualTo(1));
                 MemoryPool.Release(proxy); f.VerifyLedger(0);

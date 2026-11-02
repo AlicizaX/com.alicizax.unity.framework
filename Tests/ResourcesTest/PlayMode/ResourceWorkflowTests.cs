@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Threading;
-using AlicizaX.ObjectPool;
 using AlicizaX.Resource.Runtime;
 using NUnit.Framework;
 using UnityEngine;
@@ -96,21 +95,21 @@ namespace AlicizaX.Resource.Tests
             f.Service.IdleAssetCapacity = 0;
             var instance = f.Keep(f.Service.LoadGameObject("prefab"));
             var owner = instance.GetComponent<ResourceOwner>();
-            var pools = AppServices.App.Register<IObjectPoolService>(new ObjectPoolService());
-            var pool = pools.GetOrCreatePool<PooledResourceView>();
+            MemoryPool<PooledResourceView>.Instance.Trim(0);
             var entry = MemoryPool.Acquire<PooledResourceView>();
-            entry.SetTarget(instance);
-            Assert.That(pool.Register(entry, false), Is.True);
+            entry.Target = instance;
             for (int i = 0; i < 64; i++)
             {
-                Assert.That(pool.Spawn(), Is.SameAs(entry));
+                Assert.That(i == 0 ? entry : MemoryPool.Acquire<PooledResourceView>(), Is.SameAs(entry));
+                instance.SetActive(true);
                 instance.GetComponent<Image>().SetMaterial("material");
-                pool.Unspawn(entry);
+                MemoryPool.Release(entry);
+                Assert.That(instance.activeSelf, Is.False);
                 f.AssertNoReferences("material");
                 Assert.That(f.Info("prefab").DirectRefCount, Is.EqualTo(1));
                 Assert.That(owner.IsRegistered, Is.True);
             }
-            pool.ReleaseAllUnused();
+            MemoryPool<PooledResourceView>.Instance.Trim(0);
             yield return null;
             f.Service.ProcessResourceMaintenance(Time.unscaledTime, 64);
             Assert.That(instance == null, Is.True);
@@ -178,16 +177,21 @@ namespace AlicizaX.Resource.Tests
         }
 #endif
 
-        public sealed class PooledResourceView : ObjectBase<GameObject>
+        public sealed class PooledResourceView : MemoryObject, IPoolEvictable
         {
-            public void SetTarget(GameObject value) => Initialize(value);
-            protected internal override void OnSpawn() => Target.SetActive(true);
-            protected internal override void OnUnspawn()
+            public GameObject Target;
+
+            public override void Clear()
             {
                 ResourceOwner.ReleaseBindingsInHierarchy(Target);
                 Target.SetActive(false);
             }
-            protected internal override void Release(bool isShutdown) => Object.Destroy(Target);
+
+            public void OnEvict()
+            {
+                Object.Destroy(Target);
+                Target = null;
+            }
         }
     }
 

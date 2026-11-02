@@ -274,9 +274,7 @@ namespace AlicizaX.UI.Tests
             Assert.That(root.State, Is.EqualTo(UIState.Destroyed));
             Assert.That(child.Destroys, Is.EqualTo(1));
             Assert.That(leaf.Destroys, Is.EqualTo(1));
-            var info = default(MemoryPoolInfo);
-            MemoryPool<EventListenerProxy>.GetInfo(ref info);
-            Assert.That(info.UsingCount, Is.Zero);
+            Assert.That(MemoryPool<EventListenerProxy>.Instance.GetInfo().LeasedCount, Is.Zero);
             Assert.That(_fixture.Loader.PendingCount, Is.Zero);
         }
 

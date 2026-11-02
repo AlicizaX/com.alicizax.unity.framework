@@ -10,191 +10,218 @@ namespace AlicizaX.MemoryPoolTests
         [Test]
         public void ReturnClearsPayloadAndReusesIdentity()
         {
-            var item = MemoryPool<PoolItem>.Acquire();
+            var item = MemoryPool.Acquire<PoolItem>();
             item.Payload = new object();
             MemoryPool.Release(item);
             Assert.That(item.Payload, Is.Null);
             Assert.That(item.Clears, Is.EqualTo(1));
-            Assert.That(MemoryPool<PoolItem>.Acquire(), Is.SameAs(item));
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(item));
             MemoryPool.Release(item);
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(1));
         }
 
         [Test]
-        public void ConstructorFailureDoesNotAcquireOwnership()
+        public void AcquireReturnsTheMostRecentlyReleasedObject()
         {
-            var cause = new InvalidOperationException("constructor");
-            ConstructorItem.Construct = () => throw cause;
-            var error = Assert.Throws<System.Reflection.TargetInvocationException>(() => MemoryPool<ConstructorItem>.Acquire());
-            Assert.That(error.InnerException, Is.SameAs(cause));
-            Assert.That(Info<ConstructorItem>().UsingCount, Is.Zero);
-            Assert.That(Info<ConstructorItem>().AcquireCount, Is.Zero);
-            ConstructorItem.Construct = null;
-            var item = MemoryPool<ConstructorItem>.Acquire();
-            MemoryPool.Release(item);
-        }
-
-        [Test]
-        public void ClearFailureKeepsLeaseForRetry()
-        {
-            var item = MemoryPool<PoolItem>.Acquire();
-            var cause = new InvalidOperationException("clear");
-            item.OnClear = () => throw cause;
-            var error = Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(item));
-            Assert.That(error.Message, Does.Contain("Clear() failed"));
-            Assert.That(error.InnerException, Is.SameAs(cause));
-            Assert.That(Info<PoolItem>().UsingCount, Is.EqualTo(1));
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            item.OnClear = null;
-            MemoryPool.Release(item);
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
-        }
-
-        [Test]
-        public void EvictionFailureStillRetiresEveryFreeObject()
-        {
-            var a = MemoryPool<PoolItem>.Acquire();
-            var b = MemoryPool<PoolItem>.Acquire();
-            var cause = new InvalidOperationException("evict");
-            a.OnEviction = () => throw cause;
+            var a = MemoryPool.Acquire<PoolItem>();
+            var b = MemoryPool.Acquire<PoolItem>();
             MemoryPool.Release(a);
             MemoryPool.Release(b);
-            var error = Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.ClearAll());
-            Assert.That(error.Message, Does.Contain("OnEvict() failed"));
-            Assert.That(error.InnerException, Is.SameAs(cause));
-            Assert.That(b.Evictions, Is.EqualTo(1));
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(b));
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(a));
+            MemoryPool.Release(a);
+            MemoryPool.Release(b);
         }
 
         [Test]
-        public void ClearRetiresOldLeasesWithoutEvictingNewGeneration()
+        public void ConstructorFailureDoesNotCountALease()
         {
-            var old = MemoryPool<PoolItem>.Acquire();
-            MemoryPool<PoolItem>.ClearAll();
-            var current = MemoryPool<PoolItem>.Acquire();
-            MemoryPool.Release(current);
-            MemoryPool.Release(old);
-            Assert.That(old.Evictions, Is.EqualTo(1));
-            Assert.That(current.Evictions, Is.Zero);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(1));
+            int created = Info<ConstructorItem>().CreatedCount;
+            var cause = new InvalidOperationException("constructor");
+            ConstructorItem.Construct = () => throw cause;
+            var error = Assert.Throws<System.Reflection.TargetInvocationException>(() => MemoryPool.Acquire<ConstructorItem>());
+            Assert.That(error.InnerException, Is.SameAs(cause));
+            Assert.That(Info<ConstructorItem>().LeasedCount, Is.Zero);
+            Assert.That(Info<ConstructorItem>().CreatedCount, Is.EqualTo(created));
+            ConstructorItem.Construct = null;
+            MemoryPool.Release(MemoryPool.Acquire<ConstructorItem>());
+            Assert.That(Info<ConstructorItem>().CreatedCount, Is.EqualTo(created + 1));
         }
 
-        [TestCase("Acquire")]
-        [TestCase("Add")]
-        [TestCase("Shrink")]
-        [TestCase("Compact")]
-        [TestCase("SetCapacity")]
-        [TestCase("ClearAll")]
-        [TestCase("Trim")]
-        [TestCase("ResetStats")]
-        public void SamePoolMutationDuringClearIsRejected(string operation)
+        [Test]
+        public void ClearFailurePropagatesAndKeepsTheLeaseForRetry()
         {
-            Action mutation = operation switch
-            {
-                "Acquire" => () => MemoryPool<PoolItem>.Acquire(),
-                "Add" => () => MemoryPool<PoolItem>.Add(1),
-                "Shrink" => () => MemoryPool<PoolItem>.Shrink(0),
-                "Compact" => () => MemoryPool<PoolItem>.Compact(),
-                "SetCapacity" => () => MemoryPool<PoolItem>.SetCapacity(4, 4),
-                "ClearAll" => () => MemoryPool<PoolItem>.ClearAll(),
-                "Trim" => () => MemoryPool<PoolItem>.TrimNativeMetadata(),
-                _ => () => MemoryPool<PoolItem>.ResetStats()
-            };
-            var item = MemoryPool<PoolItem>.Acquire();
-            bool rejected = false;
-            item.OnClear = () =>
-            {
-                try { mutation(); }
-                catch (InvalidOperationException) { rejected = true; }
-            };
-            MemoryPool.Release(item);
+            var item = MemoryPool.Acquire<PoolItem>();
+            var cause = new InvalidOperationException("clear");
+            item.OnClear = () => throw cause;
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(item)), Is.SameAs(cause));
+            Assert.That(Info<PoolItem>().LeasedCount, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
             item.OnClear = null;
-            Assert.That(rejected, Is.True, operation);
+            MemoryPool.Release(item);
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void DoubleReleaseIsRejectedWithoutCorruptingTheFreeList()
+        {
+            var item = MemoryPool.Acquire<PoolItem>();
+            MemoryPool.Release(item);
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(item)).Message, Does.Contain("already released"));
+            Assert.That(item.Clears, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
+        }
+
+        [Test]
+        public void EvictedObjectCannotBeReleasedAgain()
+        {
+            var item = MemoryPool.Acquire<PoolItem>();
+            MemoryPool.Release(item);
+            MemoryPool<PoolItem>.Instance.Trim(0);
+            Assert.That(item.Evictions, Is.EqualTo(1));
+            Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(item));
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
+        }
+
+        [Test]
+        public void ReleaseRoutesThroughTheOwningPoolOfTheRuntimeType()
+        {
+            PoolItem item = MemoryPool.Acquire<OtherItem>();
+            MemoryPool.Release(item);
+            Assert.That(Info<OtherItem>().FreeCount, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
         }
 
         [Test]
         public void CrossPoolNestedOwnershipIsAllowed()
         {
-            var child = MemoryPool<OtherItem>.Acquire();
-            var parent = MemoryPool<PoolItem>.Acquire();
+            var child = MemoryPool.Acquire<OtherItem>();
+            var parent = MemoryPool.Acquire<PoolItem>();
             parent.OnClear = () => MemoryPool.Release(child);
             MemoryPool.Release(parent);
             parent.OnClear = null;
-            Assert.That(Info<OtherItem>().UsingCount, Is.Zero);
+            Assert.That(Info<OtherItem>().LeasedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
         }
 
         [Test]
-        public void DoubleForeignAndUnownedReturnsAreRejected()
+        public void SamePoolNestedReleaseDuringClearKeepsBothObjects()
         {
-            var item = MemoryPool<OtherItem>.Acquire();
-            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.Release(item)).Message, Does.Contain("belongs to another pool"));
-            MemoryPool.Release((MemoryObject)item);
-            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.Release((MemoryObject)item)).Message, Does.Contain("not leased"));
-            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.Release(new PoolItem())).Message, Does.Contain("no owner pool"));
-            Assert.That(Info<OtherItem>().UsingCount, Is.Zero);
+            var child = MemoryPool.Acquire<PoolItem>();
+            var parent = MemoryPool.Acquire<PoolItem>();
+            parent.OnClear = () => MemoryPool.Release(child);
+            MemoryPool.Release(parent);
+            parent.OnClear = null;
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(2));
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(parent));
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(child));
+            MemoryPool.Release(child);
+            MemoryPool.Release(parent);
         }
 
         [Test]
-        public void TypeAndHandleApisKeepOwnerIdentity()
+        public void AcquireDuringClearOfTheSamePoolIsAllowed()
         {
-            var handle = MemoryPool.GetHandle(typeof(PoolItem));
-            var item = handle.Acquire();
+            PoolItem nested = null;
+            var item = MemoryPool.Acquire<PoolItem>();
+            item.OnClear = () => nested = MemoryPool.Acquire<PoolItem>();
             MemoryPool.Release(item);
-            Assert.That(handle.Acquire(), Is.SameAs(item));
-            handle.Release(item);
-            Assert.That(MemoryPool.Acquire(typeof(PoolItem)), Is.SameAs(item));
-            handle.Release(item);
-            Assert.That(Assert.Throws<InvalidOperationException>(() => default(MemoryPoolHandle).Acquire()).Message, Does.Contain("invalid"));
-            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.GetHandle(typeof(string))).Message, Does.Contain("must inherit MemoryObject"));
-            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool.GetHandle(typeof(MemoryObject))).Message, Does.Contain("must not be abstract"));
-            Assert.Throws<ArgumentNullException>(() => MemoryPool.GetHandle(null));
+            item.OnClear = null;
+            Assert.That(nested, Is.Not.SameAs(item));
+            Assert.That(Info<PoolItem>().LeasedCount, Is.EqualTo(1));
+            MemoryPool.Release(nested);
         }
 
         [Test]
-        public void WorkerThreadCannotMutateAnInitializedPool()
+        public void WorkerThreadIsRejected()
         {
             Exception error = null;
             var thread = new Thread(() =>
             {
-                try { MemoryPool<PoolItem>.Acquire(); }
+                try { MemoryPool.Acquire<PoolItem>(); }
                 catch (Exception e) { error = e; }
             });
             thread.Start();
             Assert.That(thread.Join(5000), Is.True);
             Assert.That(error, Is.TypeOf<InvalidOperationException>());
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
         }
 
-        [TestCase(31)]
-        [TestCase(32)]
+        [TestCase(1)]
+        [TestCase(4)]
+        [TestCase(5)]
         [TestCase(33)]
         [TestCase(4097)]
-        public void BurstOverflowRetiresOnlyReturnedObjects(int count)
+        public void HardCapEvictsOnReturnWithoutGrowingTheFreeList(int count)
         {
-            MemoryPool<PoolItem>.SetCapacity(4, 4);
+            MemoryPool.SetBudget(new MemoryPoolBudget(0, 4, 4, 16, 30f));
             var items = new PoolItem[count];
-            for (int i = 0; i < count; i++) items[i] = MemoryPool<PoolItem>.Acquire();
+            for (int i = 0; i < count; i++) items[i] = MemoryPool.Acquire<PoolItem>();
             for (int i = 0; i < count; i++) MemoryPool.Release(items[i]);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.EqualTo(Math.Min(4, count)));
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(Math.Min(4, count)));
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
             int evicted = 0;
             foreach (var item in items) evicted += item.Evictions;
             Assert.That(evicted, Is.EqualTo(Math.Max(0, count - 4)));
         }
 
         [Test]
-        public void RandomBusinessLifetimesKeepTheOwnershipLedgerBalanced()
+        public void TrimEvictsTheOldestFreeObjectsFirst()
         {
+            var a = MemoryPool.Acquire<PoolItem>();
+            var b = MemoryPool.Acquire<PoolItem>();
+            var c = MemoryPool.Acquire<PoolItem>();
+            MemoryPool.Release(a);
+            MemoryPool.Release(b);
+            MemoryPool.Release(c);
+            MemoryPool<PoolItem>.Instance.Trim(1);
+            Assert.That(a.Evictions, Is.EqualTo(1));
+            Assert.That(b.Evictions, Is.EqualTo(1));
+            Assert.That(c.Evictions, Is.Zero);
+            Assert.That(MemoryPool.Acquire<PoolItem>(), Is.SameAs(c));
+            MemoryPool.Release(c);
+        }
+
+        [Test]
+        public void EvictionFailurePropagatesAndKeepsTheRemainingFreeObjects()
+        {
+            var a = MemoryPool.Acquire<PoolItem>();
+            var b = MemoryPool.Acquire<PoolItem>();
+            var c = MemoryPool.Acquire<PoolItem>();
+            var cause = new InvalidOperationException("evict");
+            a.OnEviction = () => throw cause;
+            MemoryPool.Release(a);
+            MemoryPool.Release(b);
+            MemoryPool.Release(c);
+            Assert.That(Assert.Throws<InvalidOperationException>(() => MemoryPool<PoolItem>.Instance.Trim(0)), Is.SameAs(cause));
+            a.OnEviction = null;
+            Assert.That(Info<PoolItem>().FreeCount, Is.EqualTo(2));
+            MemoryPool<PoolItem>.Instance.Trim(0);
+            Assert.That(b.Evictions, Is.EqualTo(1));
+            Assert.That(c.Evictions, Is.EqualTo(1));
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
+        }
+
+        [Test]
+        public void RandomLifetimesKeepTheOwnershipLedgerBalanced()
+        {
+            MemoryPool.SetBudget(new MemoryPoolBudget(2, 16, 64, 4, 1f));
             var random = new Random(314159);
             var leased = new List<PoolItem>();
+            var seen = new HashSet<PoolItem>();
+            int created = Info<PoolItem>().CreatedCount;
             for (int i = 0; i < 20000; i++)
             {
                 if (leased.Count == 0 || random.Next(100) < 55)
                 {
-                    var item = MemoryPool<PoolItem>.Acquire();
+                    var item = MemoryPool.Acquire<PoolItem>();
                     Assert.That(leased.Contains(item), Is.False);
                     leased.Add(item);
+                    seen.Add(item);
                 }
                 else
                 {
@@ -202,15 +229,21 @@ namespace AlicizaX.MemoryPoolTests
                     MemoryPool.Release(leased[index]);
                     leased.RemoveAt(index);
                 }
-                if (i % 113 == 0) MemoryPool<PoolItem>.ClearAll();
-                if (i % 71 == 0) MemoryPool<PoolItem>.Shrink(3);
-                if (i % 17 == 0) Tick();
-                Assert.That(Info<PoolItem>().UsingCount, Is.EqualTo(leased.Count));
+
+                if (i % 113 == 0) MemoryPool<PoolItem>.Instance.Trim(3);
+                if (i % 17 == 0) Tick(0.05f);
+                MemoryPoolInfo info = Info<PoolItem>();
+                Assert.That(info.LeasedCount, Is.EqualTo(leased.Count));
+                Assert.That(info.FreeCount, Is.LessThanOrEqualTo(64));
             }
+
             foreach (var item in leased) MemoryPool.Release(item);
-            MemoryPool<PoolItem>.ClearAll();
-            Assert.That(Info<PoolItem>().UsingCount, Is.Zero);
-            Assert.That(Info<PoolItem>().UnusedCount, Is.Zero);
+            int evicted = 0;
+            foreach (var item in seen) evicted += item.Evictions;
+            Assert.That(Info<PoolItem>().CreatedCount - created, Is.EqualTo(Info<PoolItem>().FreeCount + evicted));
+            MemoryPool<PoolItem>.Instance.Trim(0);
+            Assert.That(Info<PoolItem>().LeasedCount, Is.Zero);
+            Assert.That(Info<PoolItem>().FreeCount, Is.Zero);
         }
     }
 }

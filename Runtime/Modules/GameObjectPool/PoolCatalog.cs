@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using AlicizaX.ObjectPool;
 
 namespace AlicizaX
 {
@@ -72,9 +71,9 @@ namespace AlicizaX
         private readonly PoolCompiledRule[] _rules;
         private readonly int[] _globRuleIndices;
         private readonly int _globRuleCount;
-        private OpenHashMap<string> _exactRuleMap;
+        private readonly Dictionary<string, int> _exactRuleMap;
 
-        private PoolCompiledCatalog(PoolCompiledRule[] rules, int[] globRuleIndices, int globRuleCount, OpenHashMap<string> exactRuleMap)
+        private PoolCompiledCatalog(PoolCompiledRule[] rules, int[] globRuleIndices, int globRuleCount, Dictionary<string, int> exactRuleMap)
         {
             _rules = rules;
             _globRuleIndices = globRuleIndices;
@@ -106,17 +105,12 @@ namespace AlicizaX
                 int ruleIndex = _globRuleIndices[i];
                 if (_rules[ruleIndex].Matcher.IsMatch(location))
                 {
-                    _exactRuleMap.AddOrUpdate(location, ruleIndex);
+                    _exactRuleMap.Add(location, ruleIndex);
                     return ruleIndex;
                 }
             }
 
             return -1;
-        }
-
-        public void Dispose()
-        {
-            _exactRuleMap.Dispose();
         }
 
         public static PoolCompiledCatalog Empty()
@@ -125,7 +119,7 @@ namespace AlicizaX
                 Array.Empty<PoolCompiledRule>(),
                 Array.Empty<int>(),
                 0,
-                new OpenHashMap<string>(8));
+                new Dictionary<string, int>(StringComparer.Ordinal));
         }
 
         public static PoolCompiledCatalog Build(IList<PoolEntry> entries)
@@ -177,7 +171,7 @@ namespace AlicizaX
 
             var rules = new PoolCompiledRule[normalized.Length];
             var globIndices = new int[normalized.Length];
-            var exactMap = new OpenHashMap<string>(normalized.Length);
+            var exactMap = new Dictionary<string, int>(normalized.Length, StringComparer.Ordinal);
             int globCount = 0;
             for (int i = 0; i < order.Length; i++)
             {
@@ -185,7 +179,7 @@ namespace AlicizaX
                 rules[i] = rule;
                 if (rule.IsLiteralPattern && !exactMap.ContainsKey(rule.Pattern))
                 {
-                    exactMap.AddOrUpdate(rule.Pattern, i);
+                    exactMap.Add(rule.Pattern, i);
                 }
                 else
                 {

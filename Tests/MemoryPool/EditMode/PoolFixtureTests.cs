@@ -8,25 +8,26 @@ namespace AlicizaX.MemoryPoolTests
         private sealed class Fixture : PoolFixture { }
 
         [Test]
-        public void LeakedLeaseFailsTeardownAndStillRestoresGlobalSettings()
+        public void LeakedLeaseFailsTeardownAndStillRestoresTheBudget()
         {
+            MemoryPoolBudget before = MemoryPoolRegistry.Budget;
             var fixture = new Fixture();
             fixture.SetUpPool();
-            int decay = MemoryPool.ShortDecayStartFrames;
-            MemoryPool.ShortDecayStartFrames = decay + 1;
-            var item = MemoryPool<PoolItem>.Acquire();
+            MemoryPool.SetBudget(new MemoryPoolBudget(1, 2, 3, 1, 1f));
+            var item = MemoryPool.Acquire<PoolItem>();
             try
             {
                 var error = Assert.Throws<AggregateException>(() => fixture.TearDownPool());
                 Assert.That(error.InnerExceptions.Count, Is.EqualTo(1));
                 Assert.That(error.InnerException, Is.TypeOf<AssertionException>());
                 Assert.That(error.InnerException.Message, Does.Contain("unreturned leases"));
-                Assert.That(MemoryPool.ShortDecayStartFrames, Is.EqualTo(decay));
+                Assert.That(MemoryPoolRegistry.Budget.SoftFreeCount, Is.EqualTo(before.SoftFreeCount));
+                Assert.That(MemoryPoolRegistry.Budget.HardFreeCount, Is.EqualTo(before.HardFreeCount));
             }
             finally
             {
                 MemoryPool.Release(item);
-                MemoryPool<PoolItem>.ClearAll();
+                MemoryPool<PoolItem>.Instance.Trim(0);
             }
         }
     }

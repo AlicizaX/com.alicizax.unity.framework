@@ -82,18 +82,14 @@ namespace AlicizaX.GameObjectPool.Tests
                 GameObjectPoolFixture.Entry("fx/hit", PoolPolicy.Fixed, name: "exact", priority: 0),
                 GameObjectPoolFixture.Entry("fx/*", PoolPolicy.Burst, name: "glob", priority: 10)
             });
-            try
-            {
-                int exact = catalog.Resolve("fx/hit");
-                Assert.That(catalog.GetRule(exact).EntryName, Is.EqualTo("exact"));
-                int glob = catalog.Resolve("fx/miss");
-                Assert.That(catalog.GetRule(glob).EntryName, Is.EqualTo("glob"));
-                Assert.That(catalog.Resolve("fx/miss"), Is.EqualTo(glob));
-                Assert.That(catalog.Resolve("other"), Is.EqualTo(-1));
-                Assert.That(catalog.Resolve(""), Is.EqualTo(-1));
-                Assert.That(catalog.Resolve(null), Is.EqualTo(-1));
-            }
-            finally { catalog.Dispose(); }
+            int exact = catalog.Resolve("fx/hit");
+            Assert.That(catalog.GetRule(exact).EntryName, Is.EqualTo("exact"));
+            int glob = catalog.Resolve("fx/miss");
+            Assert.That(catalog.GetRule(glob).EntryName, Is.EqualTo("glob"));
+            Assert.That(catalog.Resolve("fx/miss"), Is.EqualTo(glob));
+            Assert.That(catalog.Resolve("other"), Is.EqualTo(-1));
+            Assert.That(catalog.Resolve(""), Is.EqualTo(-1));
+            Assert.That(catalog.Resolve(null), Is.EqualTo(-1));
         }
 
         [Test]
@@ -104,13 +100,9 @@ namespace AlicizaX.GameObjectPool.Tests
                 GameObjectPoolFixture.Entry("fx/hit", PoolPolicy.Burst, name: "low", priority: 1, group: "A"),
                 GameObjectPoolFixture.Entry("fx/hit", PoolPolicy.Fixed, name: "high", priority: 5, group: "B")
             });
-            try
-            {
-                int index = catalog.Resolve("fx/hit");
-                Assert.That(catalog.GetRule(index).EntryName, Is.EqualTo("high"));
-                Assert.That(catalog.GetRule(index).Policy, Is.EqualTo(PoolPolicy.Fixed));
-            }
-            finally { catalog.Dispose(); }
+            int index = catalog.Resolve("fx/hit");
+            Assert.That(catalog.GetRule(index).EntryName, Is.EqualTo("high"));
+            Assert.That(catalog.GetRule(index).Policy, Is.EqualTo(PoolPolicy.Fixed));
         }
 
         [Test]
@@ -121,13 +113,9 @@ namespace AlicizaX.GameObjectPool.Tests
                 GameObjectPoolFixture.Entry("fx/hit", PoolPolicy.Burst, name: "first", priority: 3, group: "G"),
                 GameObjectPoolFixture.Entry("fx/hit", PoolPolicy.Fixed, name: "second", priority: 3, group: "G")
             });
-            try
-            {
-                int index = catalog.Resolve("fx/hit");
-                Assert.That(catalog.GetRule(index).EntryName, Is.EqualTo("first"));
-                Assert.That(catalog.GetRule(index).Policy, Is.EqualTo(PoolPolicy.Burst));
-            }
-            finally { catalog.Dispose(); }
+            int index = catalog.Resolve("fx/hit");
+            Assert.That(catalog.GetRule(index).EntryName, Is.EqualTo("first"));
+            Assert.That(catalog.GetRule(index).Policy, Is.EqualTo(PoolPolicy.Burst));
         }
 
         [Test]
@@ -138,12 +126,8 @@ namespace AlicizaX.GameObjectPool.Tests
                 GameObjectPoolFixture.Entry("fx/*", PoolPolicy.Burst, name: "short", priority: 1, group: "Z"),
                 GameObjectPoolFixture.Entry("fx/ui/*", PoolPolicy.Burst, name: "long", priority: 1, group: "A")
             });
-            try
-            {
-                Assert.That(catalog.GetRule(catalog.Resolve("fx/ui/a")).EntryName, Is.EqualTo("long"));
-                Assert.That(catalog.GetRule(catalog.Resolve("fx/a")).EntryName, Is.EqualTo("short"));
-            }
-            finally { catalog.Dispose(); }
+            Assert.That(catalog.GetRule(catalog.Resolve("fx/ui/a")).EntryName, Is.EqualTo("long"));
+            Assert.That(catalog.GetRule(catalog.Resolve("fx/a")).EntryName, Is.EqualTo("short"));
         }
 
         [Test]
@@ -155,15 +139,10 @@ namespace AlicizaX.GameObjectPool.Tests
                 new PoolEntry { assetPath = "" },
                 GameObjectPoolFixture.Entry("fx/ok")
             });
-            try
-            {
-                Assert.That(catalog.RuleCount, Is.EqualTo(1));
-                Assert.That(catalog.Resolve("fx/ok"), Is.GreaterThanOrEqualTo(0));
-            }
-            finally { catalog.Dispose(); }
+            Assert.That(catalog.RuleCount, Is.EqualTo(1));
+            Assert.That(catalog.Resolve("fx/ok"), Is.GreaterThanOrEqualTo(0));
             var empty = PoolCompiledCatalog.Build(null);
-            try { Assert.That(empty.Resolve("fx/ok"), Is.EqualTo(-1)); }
-            finally { empty.Dispose(); }
+            Assert.That(empty.Resolve("fx/ok"), Is.EqualTo(-1));
         }
 
         [Test]

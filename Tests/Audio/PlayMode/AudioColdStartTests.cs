@@ -14,15 +14,15 @@ namespace AlicizaX.Audio.Tests
         public IEnumerator FirstAudioTypesAndDemandGrowthStayWithinDeclaredAllocationBudgets()
         {
             var infos = new MemoryPoolInfo[MemoryPool.Count];
-            int count = MemoryPool.GetAllMemoryPoolInfos(infos);
+            int count = MemoryPool.GetInfos(infos);
             int existingTypes = 0;
             for (int i = 0; i < count; i++)
             {
                 if (infos[i].Type.Namespace != typeof(AudioService).Namespace) continue;
-                Assert.That(infos[i].UsingCount, Is.Zero, "A previous test retained an audio object.");
-                MemoryPool.RemoveAll(infos[i].Type);
+                Assert.That(infos[i].LeasedCount, Is.Zero, "A previous test retained an audio object.");
                 existingTypes++;
             }
+            MemoryPool.TrimAll();
             TestContext.WriteLine($"COLD_EXISTING_TYPE_REGISTRATIONS,{existingTypes}");
             AudioService service = null;
             yield return AllocationCapture.Measure("cold-service-construction", 1, () => service = new AudioService(),
