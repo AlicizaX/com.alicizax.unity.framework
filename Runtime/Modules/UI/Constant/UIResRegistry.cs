@@ -20,7 +20,7 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private static readonly Dictionary<RuntimeTypeHandle, UIResInfo> _typeHandleMap = new();
+        private static readonly Dictionary<RuntimeTypeHandle, UIResInfo> _typeHandleMap = new(RuntimeTypeHandleComparer.Instance);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Register(Type holderType, string location, EUIResLoadType loadType)

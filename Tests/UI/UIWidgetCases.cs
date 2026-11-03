@@ -265,6 +265,7 @@ namespace AlicizaX.UI.Tests
                     Assert.That(nodes[n].Updates - beforeUpdates[n], Is.EqualTo(effective ? 1 : 0));
                     Assert.That(nodes[n].Events - beforeEvents[n], Is.EqualTo(effective ? 1 : 0));
                 }
+                _fixture.Verify();
             }
         }
     }

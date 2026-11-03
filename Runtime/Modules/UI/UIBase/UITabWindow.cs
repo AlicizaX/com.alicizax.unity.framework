@@ -39,6 +39,7 @@ namespace AlicizaX.UI.Runtime
         private UIWidget _activeTab;
         private TabRequest _request;
         private bool _switching;
+        private int _switchRound;
 
         protected void InitTabVirtuallyView<TTab>(Transform parent = null) where TTab : UIWidget =>
             RegisterTab(typeof(TTab), parent);
@@ -73,13 +74,33 @@ namespace AlicizaX.UI.Runtime
                 Log.Error("[UI] Invalid tab index: {0}", index);
                 return UniTask.FromResult<UIWidget>(null);
             }
+            int round = ++_switchRound;
+            TabEntry entry = _tabs[index];
+            UIWidget target = entry.View;
+            UIWidget active = _activeTab;
+            if (_request == null && !_switching && target != null && target.State != UIState.Closing &&
+                (active == null || active.State != UIState.Closing))
+            {
+                if (active != null && active != target)
+                {
+                    active.Close();
+                    if (round != _switchRound || DestroyRequested || entry.View != target)
+                        return UniTask.FromResult<UIWidget>(null);
+                }
+                if (active == null || active == target || active.State != UIState.Closing)
+                {
+                    _activeTab = target;
+                    target.Open(userDatas);
+                    return UniTask.FromResult(round == _switchRound && target.IsOpen ? target : null);
+                }
+            }
+
             TabRequest previous = _request;
-            var request = new TabRequest(_tabs[index], userDatas);
+            var request = new TabRequest(entry, userDatas);
             _request = request;
             previous?.Completion.TrySetResult(null);
             // UniTask 续体内联执行：上面的完成回调可能重入 SwitchTab 并替换 _request，此时返回新请求的任务。
             if (_request != request) return request.Completion.Task;
-            TabEntry entry = request.Entry;
             if (entry.View != null) SwitchLoadedTab().Forget();
             else if (!entry.Loading)
             {
@@ -117,6 +138,11 @@ namespace AlicizaX.UI.Runtime
                         await previous.AwaitClosed();
                         continue;
                     }
+                    if (target.State == UIState.Closing)
+                    {
+                        await target.AwaitClosed();
+                        continue;
+                    }
                     _activeTab = target;
                     target.Open(request.Arguments);
                     CompleteTab(request, target.IsOpen ? target : null);
@@ -142,8 +168,8 @@ namespace AlicizaX.UI.Runtime
 
         internal override void OnDestroyStarted()
         {
-            CompleteTab(_request, null);
             base.OnDestroyStarted();
+            CompleteTab(_request, null);
         }
     }
 }

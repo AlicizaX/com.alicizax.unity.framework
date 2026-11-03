@@ -38,6 +38,15 @@ namespace AlicizaX.UI.Runtime
             public float Alpha;
         }
 
+        [System.Flags]
+        private enum VisualChannels : byte
+        {
+            None = 0,
+            Position = 1,
+            Scale = 2,
+            Alpha = 4,
+        }
+
         [SerializeField] private UITransitionPreset openPreset = UITransitionPreset.FadeScale;
         [SerializeField] private UITransitionPreset closePreset = UITransitionPreset.FadeScale;
         [SerializeField] private UITransitionEase openEase = UITransitionEase.OutCubic;
@@ -57,6 +66,8 @@ namespace AlicizaX.UI.Runtime
 
         private VisualState _fromState;
         private VisualState _toState;
+        private VisualChannels _channels;
+        private Transform _scaleTarget;
         private UITransitionEase _ease;
         private float _duration;
         private float _elapsed;
@@ -88,9 +99,15 @@ namespace AlicizaX.UI.Runtime
         {
             CaptureBaseline();
             _opening = open;
-            if (open && _closed) ApplyVisualState(BuildClosedState(openPreset, _openState));
-            _fromState = CaptureCurrentState();
-            _toState = open ? _openState : BuildClosedState(closePreset, _openState);
+            if (open && _closed)
+            {
+                BuildClosedState(openPreset, in _openState, out VisualState closed);
+                ApplyVisualState(in closed);
+            }
+            CaptureCurrentState(out _fromState);
+            if (open) _toState = _openState;
+            else BuildClosedState(closePreset, in _openState, out _toState);
+            ResolveChannels();
             _ease = open ? openEase : closeEase;
             _duration = open
                 ? (openPreset == UITransitionPreset.None ? 0f : openDuration)
@@ -103,7 +120,7 @@ namespace AlicizaX.UI.Runtime
             }
 
             _active = false;
-            ApplyVisualState(_toState);
+            ApplyChannels(in _toState);
             _closed = !open;
             return false;
         }
@@ -113,10 +130,11 @@ namespace AlicizaX.UI.Runtime
             if (!_active) return true;
             _elapsed += GetDeltaTime(deltaTime);
             float progress = Mathf.Clamp01(_elapsed / _duration);
-            ApplyVisualState(Lerp(_fromState, _toState, Evaluate(_ease, progress)));
+            Lerp(in _fromState, in _toState, Evaluate(_ease, progress), out VisualState current);
+            ApplyChannels(in current);
             if (progress < 1f) return false;
 
-            ApplyVisualState(_toState);
+            ApplyChannels(in _toState);
             _closed = !_opening;
             _active = false;
             return true;
@@ -129,11 +147,12 @@ namespace AlicizaX.UI.Runtime
             _active = false;
             if (open)
             {
-                ApplyVisualState(_openState);
+                ApplyVisualState(in _openState);
                 return;
             }
 
-            ApplyVisualState(BuildClosedState(closePreset, _openState));
+            BuildClosedState(closePreset, in _openState, out VisualState closed);
+            ApplyVisualState(in closed);
         }
 
         private void CaptureBaseline()
@@ -144,7 +163,8 @@ namespace AlicizaX.UI.Runtime
             }
 
             ResolveTargets();
-            _openState = CaptureCurrentState();
+            _scaleTarget = targetRect != null ? targetRect : transform;
+            CaptureCurrentState(out _openState);
             _initialized = true;
         }
 
@@ -161,7 +181,7 @@ namespace AlicizaX.UI.Runtime
 
         private bool RequiresCanvasGroup() => UsesAlpha(openPreset) || UsesAlpha(closePreset);
 
-        private bool UsesAlpha(UITransitionPreset preset)
+        private static bool UsesAlpha(UITransitionPreset preset)
         {
             switch (preset)
             {
@@ -178,14 +198,14 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private VisualState BuildClosedState(UITransitionPreset preset, VisualState baseline)
+        private void BuildClosedState(UITransitionPreset preset, in VisualState baseline, out VisualState state)
         {
-            VisualState state = baseline;
+            state = baseline;
 
             switch (preset)
             {
                 case UITransitionPreset.None:
-                    return state;
+                    return;
                 case UITransitionPreset.Fade:
                     state.Alpha = 0f;
                     break;
@@ -218,21 +238,33 @@ namespace AlicizaX.UI.Runtime
                     state.AnchoredPosition = baseline.AnchoredPosition + new Vector2(0f, -toastDistance);
                     break;
             }
-
-            return state;
         }
 
-        private VisualState CaptureCurrentState()
+        private void CaptureCurrentState(out VisualState state)
         {
-            return new VisualState
-            {
-                AnchoredPosition = targetRect != null ? targetRect.anchoredPosition : Vector2.zero,
-                Scale = targetRect != null ? targetRect.localScale : transform.localScale,
-                Alpha = canvasGroup != null ? canvasGroup.alpha : 1f,
-            };
+            state.AnchoredPosition = targetRect != null ? targetRect.anchoredPosition : Vector2.zero;
+            state.Scale = targetRect != null ? targetRect.localScale : transform.localScale;
+            state.Alpha = canvasGroup != null ? canvasGroup.alpha : 1f;
         }
 
-        private void ApplyVisualState(VisualState state)
+        private void ResolveChannels()
+        {
+            VisualChannels channels = VisualChannels.None;
+            if (targetRect != null && _fromState.AnchoredPosition != _toState.AnchoredPosition)
+                channels |= VisualChannels.Position;
+            if (_fromState.Scale != _toState.Scale) channels |= VisualChannels.Scale;
+            if (canvasGroup != null && _fromState.Alpha != _toState.Alpha) channels |= VisualChannels.Alpha;
+            _channels = channels;
+        }
+
+        private void ApplyChannels(in VisualState state)
+        {
+            if ((_channels & VisualChannels.Position) != 0) targetRect.anchoredPosition = state.AnchoredPosition;
+            if ((_channels & VisualChannels.Scale) != 0) _scaleTarget.localScale = state.Scale;
+            if ((_channels & VisualChannels.Alpha) != 0) canvasGroup.alpha = state.Alpha;
+        }
+
+        private void ApplyVisualState(in VisualState state)
         {
             if (targetRect != null)
             {
@@ -253,19 +285,15 @@ namespace AlicizaX.UI.Runtime
         private float GetDeltaTime(float driverDeltaTime) =>
             useUnscaledTime ? Time.unscaledDeltaTime : driverDeltaTime;
 
-        private VisualState Lerp(VisualState from, VisualState to, float t)
+        private static void Lerp(in VisualState from, in VisualState to, float t, out VisualState state)
         {
-            return new VisualState
-            {
-                AnchoredPosition = Vector2.LerpUnclamped(from.AnchoredPosition, to.AnchoredPosition, t),
-                Scale = Vector3.LerpUnclamped(from.Scale, to.Scale, t),
-                Alpha = Mathf.LerpUnclamped(from.Alpha, to.Alpha, t),
-            };
+            state.AnchoredPosition = Vector2.LerpUnclamped(from.AnchoredPosition, to.AnchoredPosition, t);
+            state.Scale = Vector3.LerpUnclamped(from.Scale, to.Scale, t);
+            state.Alpha = Mathf.LerpUnclamped(from.Alpha, to.Alpha, t);
         }
 
-        private float Evaluate(UITransitionEase ease, float t)
+        private static float Evaluate(UITransitionEase ease, float t)
         {
-            t = Mathf.Clamp01(t);
             switch (ease)
             {
                 case UITransitionEase.InQuad:
@@ -313,7 +341,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            ApplyVisualState(_editorPreviewRestoreState);
+            ApplyVisualState(in _editorPreviewRestoreState);
             _editorPreviewActive = false;
         }
 
@@ -330,12 +358,13 @@ namespace AlicizaX.UI.Runtime
             progress = Mathf.Clamp01(progress);
             UITransitionPreset preset = isOpening ? openPreset : closePreset;
             UITransitionEase ease = isOpening ? openEase : closeEase;
-            VisualState closedState = BuildClosedState(preset, _editorPreviewRestoreState);
+            BuildClosedState(preset, in _editorPreviewRestoreState, out VisualState closedState);
             float easedProgress = Evaluate(ease, progress);
 
-            ApplyVisualState(isOpening
-                ? Lerp(closedState, _editorPreviewRestoreState, easedProgress)
-                : Lerp(_editorPreviewRestoreState, closedState, easedProgress));
+            VisualState previewState;
+            if (isOpening) Lerp(in closedState, in _editorPreviewRestoreState, easedProgress, out previewState);
+            else Lerp(in _editorPreviewRestoreState, in closedState, easedProgress, out previewState);
+            ApplyVisualState(in previewState);
         }
 
         private void BeginEditorPreview()
@@ -345,7 +374,7 @@ namespace AlicizaX.UI.Runtime
                 return;
             }
 
-            _editorPreviewRestoreState = CaptureCurrentState();
+            CaptureCurrentState(out _editorPreviewRestoreState);
             _editorPreviewActive = true;
         }
 

@@ -30,7 +30,7 @@ namespace AlicizaX.UI.Tests
             _fixture.Tick();
             UIFixture.Publish();
             Assert.That(child.Opens, Is.EqualTo(1));
-            Assert.That(child.Registrations, Is.EqualTo(2));
+            Assert.That(child.Registrations, Is.EqualTo(1));
             Assert.That(child.Updates, Is.EqualTo(2));
             Assert.That(child.Events, Is.EqualTo(2));
         }

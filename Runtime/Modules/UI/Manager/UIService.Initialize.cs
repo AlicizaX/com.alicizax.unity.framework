@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using AlicizaX.Timer.Runtime;
 using Cysharp.Text;
 using UnityEngine;
@@ -19,11 +18,10 @@ namespace AlicizaX.UI.Runtime
         internal const int LAYER_DEEP = 200 * WINDOW_DEEP;
 
         private readonly RectTransform[] _layers = new RectTransform[(int)UILayer.All];
-        private RectTransform _cacheLayer;
 
         public void Initialize(Transform root, bool isOrthographic)
         {
-            if (_initialized || _shuttingDown)
+            if (_lifetime != UILifetime.Created)
             {
                 Log.Error("[UI] UIService is already initialized or stopped.");
                 return;
@@ -61,15 +59,13 @@ namespace AlicizaX.UI.Runtime
                 UICamera.farClipPlane = 1000;
             }
 
-            const int len = (int)UILayer.All;
-            for (var i = len - 1; i >= 0; i--) AddLayer(i);
-            AddLayer((int)UILayer.All);
+            for (var i = (int)UILayer.All - 1; i >= 0; i--) AddLayer(i);
 
-            _cache = new UIWindowCache(_timerService, _cacheLayer);
+            _cache = new UIWindowCache(_timerService);
             _blocker = new UIBlocker(_timerService, canvas, camera, UICanvasRoot);
             root.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
             UIRoot = root;
-            _initialized = true;
+            _lifetime = UILifetime.Running;
         }
 
         public RectTransform GetLayer(UILayer layer)
@@ -107,14 +103,7 @@ namespace AlicizaX.UI.Runtime
             rect.sizeDelta = Vector2.zero;
             rect.localRotation = Quaternion.identity;
             rect.localPosition = Vector3.zero;
-            if (layer == (int)UILayer.All)
-            {
-                _cacheLayer = rect;
-                return;
-            }
-
             _layers[layer] = rect;
-            _openUI[layer] = new List<UIWindowRecord>(16);
         }
 
         private RectTransform GetLayerRect(int layer) => _layers[layer];

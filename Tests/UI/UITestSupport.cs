@@ -16,6 +16,7 @@ using Object = UnityEngine.Object;
 namespace AlicizaX.UI.Tests
 {
     internal struct UIProbeEvent : IEmptyEventArgs { }
+    internal struct UIProbeWindowEvent : IEmptyEventArgs { }
 
     public sealed class UIWindowHolder : UIHolderObjectBase { }
     public sealed class UIWidgetHolder : UIHolderObjectBase { }
@@ -23,9 +24,11 @@ namespace AlicizaX.UI.Tests
     internal sealed class UIProbeWindow : UIWindow<UIWindowHolder>
     {
         internal static Action<UIProbeWindow> Initializing;
-        internal int Initializes, Opens, Closes, Destroys, Refreshes, Updates;
-        internal Action Opening, Closing, Updating, Destroying, Refreshing;
+        internal int Initializes, Opens, Closes, Destroys, Refreshes, Updates, Events, Registrations;
+        internal Action Opening, Closing, Updating, Destroying, Refreshing, Registering;
         internal object Argument => UserData;
+        private Action _eventHandler;
+        internal UISecondWidget CreatePlain() => CreateWidgetSync<UISecondWidget>(baseui.RectTransform);
         internal UIProbeWidget Create(bool open = true) => CreateWidgetSync<UIProbeWidget>(baseui != null ? baseui.RectTransform : null, open);
         internal UniTask<UIProbeWidget> CreateAsync(bool open = true, CancellationToken token = default) =>
             CreateWidgetAsync<UIProbeWidget>(baseui.RectTransform, open, token);
@@ -36,6 +39,13 @@ namespace AlicizaX.UI.Tests
         protected override void OnDestroy() { Destroys++; Destroying?.Invoke(); }
         protected override void OnRefresh() { Refreshes++; Refreshing?.Invoke(); }
         protected override void OnUpdate(float deltaTime) { Updates++; Updating?.Invoke(); }
+        protected override void OnRegisterEvent(EventListenerProxy proxy)
+        {
+            Registrations++;
+            proxy.AddUIEvent<UIProbeWindowEvent>(_eventHandler ??= () => Events++);
+            Registering?.Invoke();
+        }
+        internal UniTask CloseThis(bool force = false, bool skipTransition = false) => CloseSelf(force, skipTransition);
     }
 
     internal sealed class UISecondWindow : UIWindow<UIWindowHolder> { }
@@ -44,6 +54,29 @@ namespace AlicizaX.UI.Tests
     internal sealed class UIZeroCacheWindow : UIWindow<UIWindowHolder>
     {
         internal UIProbeWidget Create() => CreateWidgetSync<UIProbeWidget>(baseui.RectTransform);
+        internal UniTask CloseThis() => CloseSelf();
+    }
+
+    internal sealed class UIThrowingWindow : UIWindow<UIWindowHolder>
+    {
+        public UIThrowingWindow() => throw new InvalidOperationException("expected constructor failure");
+    }
+
+    internal sealed class UIThrowingWidget : UIWidget<UIWidgetHolder>
+    {
+        public UIThrowingWidget() => throw new InvalidOperationException("expected constructor failure");
+    }
+
+    internal sealed class UIThrowingTabWindow : UITabWindow<UIWindowHolder>
+    {
+        protected override void OnInitialize() => InitTabVirtuallyView<UIThrowingWidget>();
+    }
+
+    internal sealed class UIMethodGroupEventWindow : UIWindow<UIWindowHolder>
+    {
+        internal int Events;
+        protected override void OnRegisterEvent(EventListenerProxy proxy) => proxy.AddUIEvent<UIProbeWindowEvent>(Receive);
+        private void Receive() => Events++;
     }
 
     internal sealed class UITimedCacheWindow : UIWindow<UIWindowHolder>
@@ -160,13 +193,16 @@ namespace AlicizaX.UI.Tests
         internal int OpenPlays, ClosePlays, Snaps;
         internal bool LastSnap;
         internal UniTaskCompletionSource Pending;
+        internal Action PlayAction, SnapAction, CancelAction;
         public UniTask Play(bool open, CancellationToken token)
         {
             if (open) OpenPlays++; else ClosePlays++;
             Pending = new UniTaskCompletionSource();
+            if (CancelAction != null) token.Register(CancelAction);
+            PlayAction?.Invoke();
             return Pending.Task.AttachExternalCancellation(token);
         }
-        public void Snap(bool open) { Snaps++; LastSnap = open; }
+        public void Snap(bool open) { Snaps++; LastSnap = open; SnapAction?.Invoke(); }
         internal void Finish() => Pending.TrySetResult();
     }
 
@@ -176,18 +212,21 @@ namespace AlicizaX.UI.Tests
         internal bool Finished;
         internal bool LastSnap;
         internal bool BeginResult = true;
+        internal Action BeginAction, AdvanceAction, SnapAction;
 
         public bool Begin(bool open)
         {
             Begins++;
             Finished = false;
             LastSnap = open;
+            BeginAction?.Invoke();
             return BeginResult;
         }
 
         public bool Advance(float deltaTime)
         {
             Advances++;
+            AdvanceAction?.Invoke();
             return Finished;
         }
 
@@ -195,6 +234,7 @@ namespace AlicizaX.UI.Tests
         {
             Snaps++;
             LastSnap = open;
+            SnapAction?.Invoke();
         }
 
         public UniTask Play(bool open, CancellationToken token) =>
@@ -221,6 +261,10 @@ namespace AlicizaX.UI.Tests
             Register<UIZeroCacheWindow, UIWindowHolder>("UIProbeWindow", 0, false);
             Register<UITimedCacheWindow, UIWindowHolder>("UIProbeWindow", 1, false);
             Register<UIProbeTabWindow, UIWindowHolder>("UIProbeWindow", -1, false);
+            Register<UIMethodGroupEventWindow, UIWindowHolder>("UIProbeWindow", -1, false);
+            Register<UIThrowingWindow, UIWindowHolder>("UIProbeWindow", -1, false);
+            Register<UIThrowingTabWindow, UIWindowHolder>("UIProbeWindow", -1, false);
+            Register<UIThrowingWidget, UIWidgetHolder>("UIProbeWidget", 0, false);
             Register<UIProbeWidget, UIWidgetHolder>("UIProbeWidget", 0, true);
             Register<UISecondWidget, UIWidgetHolder>("UIProbeWidget", 0, false);
             Root = new GameObject("UIRefactorTestRoot", typeof(RectTransform), typeof(Canvas));
@@ -242,20 +286,41 @@ namespace AlicizaX.UI.Tests
             UIResRegistry.Register(typeof(THolder), resource, EUIResLoadType.Resources);
         }
 
-        internal UIProbeWindow Open() => Service.ShowUISync<UIProbeWindow>();
+        internal UIProbeWindow Open(params object[] args) => Service.ShowUISync<UIProbeWindow>(args);
         internal void Tick() => ((IServiceTickable)Service).Tick(0.016f);
         internal static void Publish() => EventBus.Publish<UIProbeEvent>();
+        internal static void PublishWindow() => EventBus.Publish<UIProbeWindowEvent>();
+#if UNITY_EDITOR
+        internal void Verify() => UIInvariantChecker.Verify(Service);
+#endif
 
         public void Dispose()
         {
             UIProbeWindow.Initializing = null;
             UIProbeWidget.Initializing = null;
-            AppServices.Shutdown();
-            while (Loader.Pending != null) Loader.Deliver();
-            foreach (GameObject obj in Loader.Objects)
-                if (obj != null) Object.DestroyImmediate(obj);
-            if (Root != null) Object.DestroyImmediate(Root);
-            EventBus.ClearEmpty<UIProbeEvent>();
+            int probeSubscribers, windowSubscribers, leasedProxies;
+            try
+            {
+#if UNITY_EDITOR
+                if (AppServices.HasWorld) Verify();
+#endif
+            }
+            finally
+            {
+                AppServices.Shutdown();
+                while (Loader.Pending != null) Loader.Deliver();
+                foreach (GameObject obj in Loader.Objects)
+                    if (obj != null) Object.DestroyImmediate(obj);
+                if (Root != null) Object.DestroyImmediate(Root);
+                probeSubscribers = EventBus.GetEmptySubscriberCount<UIProbeEvent>();
+                windowSubscribers = EventBus.GetEmptySubscriberCount<UIProbeWindowEvent>();
+                leasedProxies = MemoryPool<EventListenerProxy>.Instance.GetInfo().LeasedCount;
+                EventBus.ClearEmpty<UIProbeEvent>();
+                EventBus.ClearEmpty<UIProbeWindowEvent>();
+            }
+            Assert.That(probeSubscribers, Is.Zero, "Widget event subscribers left after shutdown.");
+            Assert.That(windowSubscribers, Is.Zero, "Window event subscribers left after shutdown.");
+            Assert.That(leasedProxies, Is.Zero, "Event listener proxies left after shutdown.");
         }
 
         internal IEnumerator Wait(UniTask task)

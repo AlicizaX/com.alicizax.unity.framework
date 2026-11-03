@@ -18,7 +18,6 @@ namespace AlicizaX.UI.Runtime
         private readonly List<UIWindow> _navigationCleanup = new(MaxHistoryCount);
         private NavigationCommand _running;
         private NavigationCommand _pending;
-        private UIWindow _currentView;
         private int _sequence;
         private bool _navigating;
 
@@ -44,7 +43,9 @@ namespace AlicizaX.UI.Runtime
         }
 
         public bool CanBack => _history.Count > 1;
-        public Type Current => _currentView?.GetType();
+        public Type Current => CurrentRecord?.Metadata.UILogicType;
+        private UIWindowRecord CurrentRecord =>
+            _history.Count == 0 ? null : TryGetWindowRecord(_history[_history.Count - 1].TypeHandle);
 
         /// <summary>当前路由条目（内部实例，只读视图，不做拷贝）。</summary>
         public UIRouteEntry CurrentEntry => _history.Count == 0 ? null : _history[_history.Count - 1];
@@ -69,7 +70,7 @@ namespace AlicizaX.UI.Runtime
         private UniTask<UIRouteResult> EnqueueNavigation(Navigation operation, UIRouteEntry target = null,
             bool force = false, bool openIfMissing = false)
         {
-            if (_shuttingDown || !_initialized) return UniTask.FromResult(UIRouteResult.From(UIRouteStatus.Cancelled));
+            if (_lifetime != UILifetime.Running) return UniTask.FromResult(UIRouteResult.From(UIRouteStatus.Cancelled));
 
             NavigationCommand running = _running;
             NavigationCommand pending = _pending;
@@ -105,7 +106,7 @@ namespace AlicizaX.UI.Runtime
 
         private async UniTaskVoid DrainNavigation()
         {
-            while (_pending != null && !_shuttingDown)
+            while (_pending != null && _lifetime == UILifetime.Running)
             {
                 NavigationCommand command = _pending;
                 _pending = null;
@@ -150,21 +151,21 @@ namespace AlicizaX.UI.Runtime
                     command.Committed = true;
                     ClearHistory();
                     _history.Add(command.Target);
-                    _currentView = GetWindow(command.Target.TypeHandle);
                     return UIRouteResult.Ok;
                 case Navigation.Close:
-                    if (_currentView == null) return UIRouteResult.From(UIRouteStatus.NotFound);
+                    UIWindow current = CurrentRecord?.View;
+                    if (current == null) return UIRouteResult.From(UIRouteStatus.NotFound);
                     command.Committed = true;
-                    await CloseWindow(_currentView, command.Force, token: command.Cts.Token);
-                    return command.Cts.IsCancellationRequested
-                        ? UIRouteResult.From(UIRouteStatus.Cancelled) : UIRouteResult.Ok;
+                    try { await CloseWindow(current, command.Force).AttachExternalCancellation(command.Cts.Token); }
+                    catch (OperationCanceledException) { return UIRouteResult.From(UIRouteStatus.Cancelled); }
+                    return UIRouteResult.Ok;
                 case Navigation.Back:
                     return _history.Count < 2 ? UIRouteResult.From(UIRouteStatus.NotFound)
                         : await CommitTarget(command, _history[_history.Count - 2], Navigation.Back);
                 case Navigation.BackToRoot:
                     if (_history.Count == 0) return UIRouteResult.From(UIRouteStatus.NotFound);
                     if (_history.Count == 1)
-                        return new UIRouteResult(UIRouteStatus.Success, _currentView?.AwaitTransition() ?? UniTask.CompletedTask);
+                        return new UIRouteResult(UIRouteStatus.Success, CurrentRecord?.View?.AwaitTransition() ?? UniTask.CompletedTask);
                     return await CommitTarget(command, _history[0], Navigation.Back);
                 case Navigation.BackTo:
                     int index = FindHistoryIndex(command.Target.TypeHandle);
@@ -180,7 +181,7 @@ namespace AlicizaX.UI.Runtime
         private async UniTask<UIRouteResult> CommitTarget(NavigationCommand command, UIRouteEntry target, Navigation operation)
         {
             if (command.Cts.IsCancellationRequested) return UIRouteResult.From(UIRouteStatus.Cancelled);
-            UIWindow previous = _currentView;
+            UIWindow previous = CurrentRecord?.View;
             int existing = FindHistoryIndex(target.TypeHandle);
             int keep = operation == Navigation.Reset ? 0 : existing >= 0 ? existing
                 : operation == Navigation.Replace && _history.Count > 0 ? _history.Count - 1 : _history.Count;
@@ -209,16 +210,12 @@ namespace AlicizaX.UI.Runtime
                 return UIRouteResult.From(UIRouteStatus.Cancelled);
             if (result.Status == UIOpenStatus.Failed || opened == null)
                 return UIRouteResult.From(UIRouteStatus.OpenFailed);
-            if (result.Status != UIOpenStatus.Opened || opened.DestroyRequested || _shuttingDown)
+            if (result.Status != UIOpenStatus.Opened || opened.DestroyRequested || _lifetime != UILifetime.Running)
                 return UIRouteResult.From(UIRouteStatus.Cancelled);
 
             command.Committed = true;
-            if (_shuttingDown || opened.DestroyRequested)
-                return UIRouteResult.From(UIRouteStatus.Cancelled);
-
-            _history.RemoveRange(keep, _history.Count - keep);
+            if (keep < _history.Count) _history.RemoveRange(keep, _history.Count - keep);
             _history.Add(target);
-            _currentView = opened;
             for (int i = 0; i < _navigationCleanup.Count; i++)
             {
                 UIWindow old = _navigationCleanup[i];
@@ -242,11 +239,7 @@ namespace AlicizaX.UI.Runtime
             return -1;
         }
 
-        private void ClearHistory()
-        {
-            _currentView = null;
-            _history.Clear();
-        }
+        private void ClearHistory() => _history.Clear();
 
         private void StopNavigation()
         {

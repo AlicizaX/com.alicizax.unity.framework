@@ -15,17 +15,21 @@ namespace AlicizaX.UI.Runtime
         internal UIService Service;
         internal UIMetadata Metadata;
         internal UIHolderObjectBase Holder;
+        internal UIWindow RootWindow;
+        private readonly UITransitionGate _transitionGate = new();
         private UIState _state = UIState.CreatedUI;
         private int _transitionGeneration;
-        private UniTaskCompletionSource _transition;
         private UniTaskCompletionSource<bool> _logicalOpen;
         private EventListenerProxy _eventListenerProxy;
+        private UITickNode _updateNode;
+        private UITickNode _transitionNode;
         private bool _proxyReleasePending;
         private object[] _userDatas;
         private bool _visible;
         private bool _initializeInvoked;
         private bool _openInvoked;
         private bool _destroyHolderOnDispose = true;
+        private bool _holderLost;
         private bool _pendingRefresh;
         private bool _pendingOpen;
         private Hook _activeHook;
@@ -40,6 +44,7 @@ namespace AlicizaX.UI.Runtime
         internal UIState State => _state;
         internal bool DestroyRequested { get; private set; }
         internal bool Effective { get; private set; }
+        internal bool IsUpdating => Effective && _updateNode != null;
         internal virtual bool ParentEffective => true;
         public bool IsOpen { get; private set; }
         public virtual bool IsVisible => _visible;
@@ -68,7 +73,6 @@ namespace AlicizaX.UI.Runtime
         internal virtual void OnDestroyStarted() { }
         internal virtual void OnDestroyed() { }
         internal virtual void OnClosed() { }
-        internal virtual void OnActivityChanged() { }
 
         internal bool Visible
         {
@@ -76,10 +80,10 @@ namespace AlicizaX.UI.Runtime
             set
             {
                 _visible = value;
-                if (Holder == null || !Holder.IsValid()) return;
+                if (_holderLost) return;
                 ApplyVisible(value);
 #if UNITY_EDITOR
-                if (Application.isPlaying && EditorApplication.isPlayingOrWillChangePlaymode)
+                if (Holder != null && Application.isPlaying && EditorApplication.isPlayingOrWillChangePlaymode)
                 {
                     if (value) SceneVisibilityManager.instance.Show(Holder.gameObject, true);
                     else SceneVisibilityManager.instance.Hide(Holder.gameObject, true);
@@ -104,7 +108,7 @@ namespace AlicizaX.UI.Runtime
             : _pendingOpen || State is UIState.Initializing or UIState.Opening
                 ? (_logicalOpen ??= new UniTaskCompletionSource<bool>()).Task : UniTask.FromResult(false);
 
-        internal UniTask AwaitClosed() => State == UIState.Closing ? AwaitTransition() : UniTask.CompletedTask;
+        internal UniTask AwaitClosed() => State == UIState.Closing ? _transitionGate.Task : UniTask.CompletedTask;
 
         protected void SetTransition(IUITransitionSource source) => Holder.SetTransition(source);
         protected void SetTransition(Func<bool, CancellationToken, UniTask> play, Action<bool> snap) =>
@@ -114,17 +118,33 @@ namespace AlicizaX.UI.Runtime
         {
             Holder = holder;
             holder.SetOwner(this);
+            if (Metadata.MetaInfo.HasUpdate) _updateNode = new UITickNode(this);
+            ReserveTransitionNode();
             _state = UIState.Loaded;
+        }
+
+        internal void ReserveTransitionNode()
+        {
+            if (_transitionNode == null && Holder.UsesTickTransition) _transitionNode = new UITickNode(this);
+        }
+
+        internal void LinkTransition() => Service.LinkTransition(_transitionNode);
+        internal void UnlinkTransition() => Service.UnlinkTransition(_transitionNode);
+
+        internal void LoseHolder()
+        {
+            _holderLost = true;
+            DestroyNow();
         }
 
         internal bool InternalInitialize(bool open = false)
         {
-            if (_initializeInvoked)
-                return State != UIState.Destroying && State != UIState.Destroyed;
             _state = UIState.Initializing;
             _pendingOpen = open;
             Visible = false;
+            if (DestroyRequested) return false;
             SetInteractable(false);
+            if (DestroyRequested) return false;
             InvokeHook(Hook.HolderInit);
             if (DestroyRequested) return false;
             _initializeInvoked = true;
@@ -136,8 +156,10 @@ namespace AlicizaX.UI.Runtime
             if (requested) OpenView();
             else if (open)
             {
+                int generation = _transitionGeneration;
                 _state = UIState.Closed;
-                OnClosed();
+                Visible = false;
+                if (IsCurrent(generation)) OnClosed();
             }
             return !DestroyRequested;
         }
@@ -179,10 +201,11 @@ namespace AlicizaX.UI.Runtime
         {
             int generation = ++_transitionGeneration;
             _state = UIState.Opening;
+            _transitionGate.Restart();
             Holder.StopTransition();
             if (!IsCurrent(generation)) return false;
             Visible = true;
-            SetInteractable(false);
+            if (!IsCurrent(generation)) return false;
             InvokeHook(Hook.BeforeShow);
             if (!IsCurrent(generation)) return false;
             _openInvoked = true;
@@ -193,7 +216,7 @@ namespace AlicizaX.UI.Runtime
             if (!IsCurrent(generation)) return false;
             InvokeHook(Hook.AfterShow);
             if (!IsCurrent(generation)) return false;
-            PlayOpenVisual(generation, !ParentEffective).Forget();
+            PlayOpenVisual(generation);
             if (!IsCurrent(generation)) return false;
             CompleteLogicalOpen(IsOpen);
             return IsOpen;
@@ -214,11 +237,26 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        private async UniTaskVoid PlayOpenVisual(int generation, bool skipTransition)
+        private void PlayOpenVisual(int generation)
         {
-            if (skipTransition) Holder.ApplyTransitionState(true);
-            else await Holder.PlayOpenTransitionAsync();
-            if (!IsCurrent(generation) || State != UIState.Opening) return;
+            if (ParentEffective)
+            {
+                Holder.PlayOpenTransition();
+                return;
+            }
+            Holder.ApplyTransitionState(true);
+            if (IsCurrent(generation)) FinishOpen();
+        }
+
+        internal void FinishTransition()
+        {
+            if (_state == UIState.Opening) FinishOpen();
+            else if (_state == UIState.Closing) FinishClose();
+        }
+
+        private void FinishOpen()
+        {
+            int generation = _transitionGeneration;
             _state = UIState.Opened;
             if (_pendingRefresh)
             {
@@ -226,61 +264,59 @@ namespace AlicizaX.UI.Runtime
                 InvokeHook(Hook.Refresh);
                 if (!IsCurrent(generation)) return;
             }
-            OnActivityChanged();
-            if (IsCurrent(generation)) CompleteTransition();
+            _transitionGate.Release(_transitionGate.Settle());
         }
 
         internal UniTask InternalClose(bool skipTransition = false, bool destroy = false)
         {
-            if (State is UIState.Destroyed or UIState.Destroying) return UniTask.CompletedTask;
+            BeginClose(skipTransition, destroy);
+            return AwaitClosed();
+        }
+
+        internal void BeginClose(bool skipTransition, bool destroy)
+        {
+            if (State is UIState.Destroyed or UIState.Destroying) return;
             DestroyRequested |= destroy;
             _pendingOpen = false;
             _pendingRefresh = false;
-            if (destroy) CancelChildCreations();
+            if (destroy)
+            {
+                CancelChildCreations();
+                if (State is UIState.Destroyed or UIState.Destroying) return;
+            }
+            if (State == UIState.Closing) return;
             if (State == UIState.Initializing)
             {
                 if (destroy) DestroyNow();
                 else CompleteLogicalOpen(false);
-                return UniTask.CompletedTask;
+                return;
             }
-            if (State == UIState.Closing) return AwaitClosed();
             if (State == UIState.Closed)
             {
                 if (destroy) DestroyNow();
                 CompleteLogicalOpen(false);
-                return UniTask.CompletedTask;
+                return;
             }
-            if (State is UIState.CreatedUI or UIState.Loaded)
+            if (State is UIState.CreatedUI or UIState.Loaded or UIState.Initialized)
             {
                 DestroyNow();
-                return UniTask.CompletedTask;
-            }
-            if (State == UIState.Initialized)
-            {
-                if (destroy) DestroyNow();
-                else
-                {
-                    _state = UIState.Closed;
-                    OnClosed();
-                }
-                return UniTask.CompletedTask;
+                return;
             }
 
             int generation = ++_transitionGeneration;
-            UniTaskCompletionSource opening = TakeTransition();
+            UITransitionWaiters opening = _transitionGate.Restart();
             UniTaskCompletionSource<bool> logicalOpen = TakeLogicalOpen();
             _state = UIState.Closing;
             IsOpen = false;
             RefreshEffective();
-            CloseView(generation, skipTransition || !ParentEffective).Forget();
-            UniTask closing = IsCurrent(generation) ? AwaitClosed() : UniTask.CompletedTask;
-            opening?.TrySetResult();
+            CloseView(generation, skipTransition || !ParentEffective);
+            _transitionGate.Release(opening);
             logicalOpen?.TrySetResult(false);
-            return closing;
         }
 
-        private async UniTaskVoid CloseView(int generation, bool skipTransition)
+        private void CloseView(int generation, bool skipTransition)
         {
+            if (!IsCurrent(generation)) return;
             Holder.StopTransition();
             if (!IsCurrent(generation)) return;
             if (_openInvoked)
@@ -291,37 +327,32 @@ namespace AlicizaX.UI.Runtime
                 InvokeHook(Hook.Close);
                 if (!IsCurrent(generation)) return;
             }
-            if (skipTransition) Holder.ApplyTransitionState(false);
-            else await Holder.PlayCloseTransitionAsync();
-            if (!IsCurrent(generation) || State != UIState.Closing) return;
-            Visible = false;
-            _state = UIState.Closed;
-            UniTaskCompletionSource closing = TakeTransition();
-            try
+            if (!skipTransition)
             {
-                InvokeHook(Hook.AfterClose);
-                if (!IsCurrent(generation)) return;
+                Holder.PlayCloseTransition();
+                return;
+            }
+            Holder.ApplyTransitionState(false);
+            if (IsCurrent(generation)) FinishClose();
+        }
+
+        private void FinishClose()
+        {
+            int generation = _transitionGeneration;
+            _state = UIState.Closed;
+            UITransitionWaiters closing = _transitionGate.Settle();
+            Visible = false;
+            if (IsCurrent(generation)) InvokeHook(Hook.AfterClose);
+            if (IsCurrent(generation))
+            {
                 OnClosed();
                 if (DestroyRequested && State == UIState.Closed) DestroyNow();
             }
-            finally { closing?.TrySetResult(); }
+            _transitionGate.Release(closing);
         }
 
         public UniTask AwaitTransition() => State is UIState.Opening or UIState.Closing
-            ? (_transition ??= new UniTaskCompletionSource()).Task : UniTask.CompletedTask;
-
-        private void CompleteTransition()
-        {
-            UniTaskCompletionSource completion = TakeTransition();
-            completion?.TrySetResult();
-        }
-
-        private UniTaskCompletionSource TakeTransition()
-        {
-            UniTaskCompletionSource source = _transition;
-            _transition = null;
-            return source;
-        }
+            ? _transitionGate.Task : UniTask.CompletedTask;
 
         private UniTaskCompletionSource<bool> TakeLogicalOpen()
         {
@@ -341,20 +372,24 @@ namespace AlicizaX.UI.Runtime
             bool effective = IsOpen && !DestroyRequested && ParentEffective;
             if (Effective == effective) return;
             Effective = effective;
-            SetInteractable(effective);
-            if (effective) RegisterEventListeners();
-            else ReleaseEventListeners();
-            OnActivityChanged();
+            if (_updateNode != null)
+            {
+                if (effective) Service.LinkUpdate(_updateNode);
+                else Service.UnlinkUpdate(_updateNode);
+            }
+            if (!_holderLost)
+            {
+                SetInteractable(effective);
+                if (Effective != effective) return;
+            }
+            if (effective) ResumeEventListeners();
+            else _eventListenerProxy?.Suspend();
             RefreshChildrenEffective();
         }
 
-        internal void InternalUpdate(float deltaTime) => InternalUpdate(this, _transitionGeneration, deltaTime);
-
-        private void InternalUpdate(UIBase root, int generation, float deltaTime)
+        internal void RunUpdate(float deltaTime)
         {
-            if (!Effective) return;
-            if (State == UIState.Opened && Metadata.MetaInfo.HasUpdate) InvokeHook(Hook.Update, deltaTime);
-            if (Effective && root.IsCurrent(generation)) UpdateChildren(root, generation, deltaTime);
+            if (State == UIState.Opened && RootWindow.State == UIState.Opened) InvokeHook(Hook.Update, deltaTime);
         }
 
         internal UniTask InternalDestroy(bool skipTransition = false) =>
@@ -369,26 +404,26 @@ namespace AlicizaX.UI.Runtime
             _pendingRefresh = false;
             _state = UIState.Destroying;
             IsOpen = false;
-            CancelChildCreations();
             RefreshEffective();
-            UniTaskCompletionSource transition = TakeTransition();
+            UITransitionWaiters transition = _transitionGate.Settle();
             UniTaskCompletionSource<bool> logicalOpen = TakeLogicalOpen();
             try
             {
                 OnDestroyStarted();
+                if (Holder is not null) Holder.StopTransition();
+                CancelChildCreations();
                 DisposeView();
             }
             finally
             {
                 _state = UIState.Destroyed;
-                transition?.TrySetResult();
+                _transitionGate.Release(transition);
                 logicalOpen?.TrySetResult(false);
             }
         }
 
         private void DisposeView()
         {
-            Holder?.StopTransition();
             if (_openInvoked)
             {
                 _openInvoked = false;
@@ -403,8 +438,6 @@ namespace AlicizaX.UI.Runtime
             ReleaseEventListenerProxy();
             Metadata = null;
             _visible = false;
-            _state = UIState.Destroyed;
-            _childBuffer = null;
         }
 
         private void InvokeHook(Hook hook, float updateDeltaTime = 0f)
@@ -441,13 +474,23 @@ namespace AlicizaX.UI.Runtime
 
         private bool IsCurrent(int generation) => generation == _transitionGeneration;
 
-        private void RegisterEventListeners()
+#if UNITY_EDITOR
+        internal bool HasPendingOpen => _pendingOpen;
+        internal bool IsTransitionPending => _transitionGate.UnsafeGetStatus() == UniTaskStatus.Pending;
+        internal EventListenerProxy EventListeners => _eventListenerProxy;
+        internal UITickNode UpdateNode => _updateNode;
+#endif
+
+        private void ResumeEventListeners()
         {
-            _eventListenerProxy ??= MemoryPool.Acquire<EventListenerProxy>();
+            if (_eventListenerProxy != null)
+            {
+                _eventListenerProxy.Resume();
+                return;
+            }
+            _eventListenerProxy = MemoryPool.Acquire<EventListenerProxy>();
             InvokeHook(Hook.RegisterEvent);
         }
-
-        private void ReleaseEventListeners() => _eventListenerProxy?.Clear();
 
         /// <summary>
         /// 释放事件代理。若正处于用户钩子内（例如 OnRegisterEvent 中销毁自身），延迟到钩子返回后释放，
@@ -468,8 +511,8 @@ namespace AlicizaX.UI.Runtime
 
         private void DetachHolder()
         {
-            Visible = false;
             UIHolderObjectBase holder = Holder;
+            if (holder != null) Visible = false;
             Holder = null;
             ReleaseVisuals();
             _userDatas = null;

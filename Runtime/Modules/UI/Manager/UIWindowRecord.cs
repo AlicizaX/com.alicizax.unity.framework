@@ -10,43 +10,74 @@ namespace AlicizaX.UI.Runtime
         internal readonly UIMetadata Metadata;
         internal UIWindow View;
         internal UIWindowLoad Flight;
-        internal int LayerIndex = -1;
+        internal UIWindowRecord StackBelow;
+        internal UIWindowRecord StackAbove;
+        internal int Order = -1;
         internal int CacheIndex = -1;
         internal ulong CacheTimer;
-        internal bool ForceClose;
+        internal bool IsStacked => Order >= 0;
         internal bool IsCached => CacheIndex >= 0;
         internal UIState State => View?.State ?? UIState.Uninitialized;
-        internal UIMetaRegistry.UIMetaInfo MetaInfo => Metadata.MetaInfo;
+        internal ref readonly UIMetaRegistry.UIMetaInfo MetaInfo => ref Metadata.MetaInfo;
 
         internal UIWindowRecord(UIMetadata metadata) => Metadata = metadata;
     }
 
     internal sealed class UIWindowLoad
     {
-        internal readonly UIWindow View;
-        internal readonly CancellationTokenSource Cancellation;
+        internal readonly UIWindowRecord Record;
+        internal readonly CancellationTokenSource Cancellation = new();
         internal readonly List<UIOpenRequest> Requests = new();
-        internal int Waiters;
 
-        internal UIWindowLoad(UIWindow view)
+        internal UIWindowLoad(UIWindowRecord record) => Record = record;
+
+        internal bool HasWaiter() => HasWaiterOtherThan(null);
+
+        internal bool HasWaiterOtherThan(UIOpenRequest excluded)
         {
-            View = view;
-            Cancellation = new CancellationTokenSource();
+            for (int i = 0; i < Requests.Count; i++)
+            {
+                UIOpenRequest request = Requests[i];
+                if (request != excluded && !request.Completed && !request.Token.IsCancellationRequested) return true;
+            }
+            return false;
         }
 
-        internal void Cancel() => UIHolderObjectBase.Cancel(Cancellation);
+        internal object[] LatestArguments()
+        {
+            object[] arguments = null;
+            for (int i = 0; i < Requests.Count; i++)
+            {
+                UIOpenRequest request = Requests[i];
+                if (request.Completed || request.Token.IsCancellationRequested) continue;
+                if (request.Arguments != null && request.Arguments.Length > 0) arguments = request.Arguments;
+            }
+            return arguments;
+        }
+
+        internal void Finish(UIOpenResult result)
+        {
+            for (int i = 0; i < Requests.Count; i++)
+            {
+                UIOpenRequest request = Requests[i];
+                if (!request.Completed) request.Finish(result);
+            }
+            Requests.Clear();
+        }
     }
 
     internal sealed class UIOpenRequest
     {
+        internal readonly UIWindowLoad Flight;
         internal readonly object[] Arguments;
         internal readonly CancellationToken Token;
         internal readonly UniTaskCompletionSource<UIOpenResult> Completion = new();
         internal CancellationTokenRegistration Registration;
         internal bool Completed => Completion.Task.Status.IsCompleted();
 
-        internal UIOpenRequest(object[] arguments, CancellationToken token)
+        internal UIOpenRequest(UIWindowLoad flight, object[] arguments, CancellationToken token)
         {
+            Flight = flight;
             Arguments = arguments;
             Token = token;
         }

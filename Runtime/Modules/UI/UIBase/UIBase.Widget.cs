@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -8,57 +7,24 @@ namespace AlicizaX.UI.Runtime
 {
     public abstract partial class UIBase
     {
-        private List<UIWidget> _children;
-        private UIWidget[] _childBuffer;
-        private int _childCount;
+        private UIWidget _firstChild;
+        private UIWidget _lastChild;
 
-        private int SnapshotChildren()
-        {
-            int count = _children?.Count ?? 0;
-            if (count == 0)
-            {
-                // 子节点被移除后清掉快照尾部引用，避免缓存窗口长期持有已销毁的 Widget。
-                if (_childBuffer != null && _childCount > 0) Array.Clear(_childBuffer, 0, _childCount);
-                _childCount = 0;
-                return 0;
-            }
-            if (_childBuffer == null || _childBuffer.Length < count)
-                _childBuffer = new UIWidget[Mathf.NextPowerOfTwo(count)];
-            _children.CopyTo(_childBuffer);
-            if (_childCount > count) Array.Clear(_childBuffer, count, _childCount - count);
-            _childCount = count;
-            return count;
-        }
+        internal UIWidget FirstChild => _firstChild;
 
         private void RefreshChildrenEffective()
         {
-            int count = SnapshotChildren();
-            for (int i = 0; i < count; i++)
-            {
-                UIWidget child = _childBuffer[i];
-                if (!child.DestroyRequested) child.RefreshEffective();
-            }
+            for (UIWidget child = _firstChild; child != null; child = child.NextSibling) child.RefreshEffective();
         }
 
         private void DestroyChildrenImmediate()
         {
-            int count = SnapshotChildren();
-            for (int i = 0; i < count; i++) _childBuffer[i].DestroyNow();
-            if (_childBuffer != null) Array.Clear(_childBuffer, 0, _childCount);
-            _childCount = 0;
-        }
-
-        private void UpdateChildren(UIBase root, int generation, float deltaTime)
-        {
-            int count = SnapshotChildren();
-            for (int i = 0; i < count && Effective && root.IsCurrent(generation); i++)
-                _childBuffer[i].InternalUpdate(root, generation, deltaTime);
+            for (UIWidget child = _firstChild; child != null; child = child.NextSibling) child.DestroyNow();
         }
 
         private void CancelChildCreations()
         {
-            int count = SnapshotChildren();
-            for (int i = 0; i < count; i++) _childBuffer[i].CancelLoad();
+            for (UIWidget child = _firstChild; child != null; child = child.NextSibling) child.CancelLoad();
         }
 
         internal async UniTask<UIWidget> CreateWidgetUIAsync(UIMetadata metadata, Transform parent, bool visible,
@@ -168,7 +134,11 @@ namespace AlicizaX.UI.Runtime
             UIWidget widget = (UIWidget)metadata.CreateUI(Service);
             if (widget == null) return null;
             widget.Parent = this;
-            (_children ??= new List<UIWidget>(4)).Add(widget);
+            widget.RootWindow = RootWindow;
+            widget.PreviousSibling = _lastChild;
+            if (_lastChild == null) _firstChild = widget;
+            else _lastChild.NextSibling = widget;
+            _lastChild = widget;
             return widget;
         }
 
@@ -184,7 +154,13 @@ namespace AlicizaX.UI.Runtime
 
         internal void DetachWidget(UIWidget widget)
         {
-            _children.Remove(widget);
+            UIWidget previous = widget.PreviousSibling;
+            UIWidget next = widget.NextSibling;
+            if (previous == null) _firstChild = next;
+            else previous.NextSibling = next;
+            if (next == null) _lastChild = previous;
+            else next.PreviousSibling = previous;
+            widget.PreviousSibling = null;
             OnWidgetRemoved(widget);
         }
 

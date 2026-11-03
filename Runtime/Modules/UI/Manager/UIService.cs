@@ -14,17 +14,17 @@ namespace AlicizaX.UI.Runtime
 #endif
         IServiceTickable
     {
+        private enum UILifetime : byte { Created, Running, Stopped }
+
         internal readonly IUIResourceLoader ResourceLoader;
         private readonly Dictionary<RuntimeTypeHandle, UIWindowRecord> _windows = new(RuntimeTypeHandleComparer.Instance);
-        private readonly List<UIWindow> _updating = new(8);
-        private readonly List<UIWindow> _tickBuffer = new(8);
-        private readonly List<UIHolderObjectBase> _transitions = new(8);
-        private readonly List<UIHolderObjectBase> _transitionBuffer = new(8);
+        private readonly UITickList _updateViews = new();
+        private readonly UITickList _transitionViews = new();
         private UIWindowCache _cache;
         private UIBlocker _blocker;
         private ITimerService _timerService;
-        private bool _initialized;
-        private bool _shuttingDown;
+        private UILifetime _lifetime;
+        private uint _tick;
 
         public UIService() : this(new UIResourceLoader()) { }
         internal UIService(IUIResourceLoader resourceLoader) => ResourceLoader = resourceLoader;
@@ -33,12 +33,12 @@ namespace AlicizaX.UI.Runtime
 
         private UIWindowRecord GetWindowRecord(RuntimeTypeHandle handle)
         {
-            if (_windows.TryGetValue(handle, out UIWindowRecord record)) return record;
-            if (_shuttingDown || !_initialized)
+            if (_lifetime != UILifetime.Running)
             {
                 Log.Error("[UI] UIService is not running.");
                 return null;
             }
+            if (_windows.TryGetValue(handle, out UIWindowRecord record)) return record;
             UIMetadata metadata = UIMetadata.Create(Type.GetTypeFromHandle(handle));
             if (metadata == null) return null;
             record = new UIWindowRecord(metadata);
@@ -65,33 +65,18 @@ namespace AlicizaX.UI.Runtime
             return true;
         }
 
-        internal void SetUpdating(UIWindow view, bool enabled)
-        {
-            if (enabled)
-            {
-                if (!_updating.Contains(view)) _updating.Add(view);
-            }
-            else _updating.Remove(view);
-        }
-
-        internal void RegisterTransition(UIHolderObjectBase holder)
-        {
-            if (!_transitions.Contains(holder)) _transitions.Add(holder);
-        }
-
-        internal void UnregisterTransition(UIHolderObjectBase holder) => _transitions.Remove(holder);
+        internal void LinkUpdate(UITickNode node) => _updateViews.Link(node, _tick);
+        internal void UnlinkUpdate(UITickNode node) => _updateViews.Unlink(node);
+        internal void LinkTransition(UITickNode node) => _transitionViews.Link(node, _tick);
+        internal void UnlinkTransition(UITickNode node) => _transitionViews.Unlink(node);
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            // 帧初冻结两份快照：本帧 update 中新建的窗口/转场从下一帧开始推进，
-            // 避免“刚打开就在同一帧被推进一帧”的时间差。
-            _tickBuffer.Clear();
-            _tickBuffer.AddRange(_updating);
-            _transitionBuffer.Clear();
-            _transitionBuffer.AddRange(_transitions);
-
-            for (int i = 0; i < _tickBuffer.Count; i++) _tickBuffer[i].InternalUpdate(deltaTime);
-            for (int i = 0; i < _transitionBuffer.Count; i++) _transitionBuffer[i].AdvanceTransition(deltaTime);
+            uint tick = ++_tick;
+            _updateViews.BeginTraversal();
+            while (_updateViews.MoveNext(tick) is { } update) update.View.RunUpdate(deltaTime);
+            _transitionViews.BeginTraversal();
+            while (_transitionViews.MoveNext(tick) is { } transition) transition.View.Holder.AdvanceTransition(deltaTime);
         }
 
         public UniTask<T> ShowUI<T>(params object[] userDatas) where T : UIWindow =>
@@ -116,11 +101,16 @@ namespace AlicizaX.UI.Runtime
 
         public UniTask<UIWindow> ShowUI(RuntimeTypeHandle handle, CancellationToken cancellationToken, params object[] userDatas)
         {
-            if (!IsValidWindowHandle(handle)) return UniTask.FromResult<UIWindow>(null);
+            if (!_windows.ContainsKey(handle) && !IsValidWindowHandle(handle)) return UniTask.FromResult<UIWindow>(null);
             return GetView<UIWindow>(RequestShow(GetWindowRecord(handle), userDatas, cancellationToken));
         }
 
-        private static async UniTask<T> GetView<T>(UniTask<UIOpenResult> task) where T : UIWindow
+        private static UniTask<T> GetView<T>(UniTask<UIOpenResult> task) where T : UIWindow =>
+            task.Status == UniTaskStatus.Succeeded
+                ? UniTask.FromResult((T)task.GetAwaiter().GetResult().View)
+                : AwaitView<T>(task);
+
+        private static async UniTask<T> AwaitView<T>(UniTask<UIOpenResult> task) where T : UIWindow
         {
             UIOpenResult result = await task;
             return (T)result.View;
@@ -136,15 +126,14 @@ namespace AlicizaX.UI.Runtime
             RequestClose(TryGetWindowRecord(handle), force, skipTransition, affectNavigation: true);
 
         internal UniTask CloseWindow(UIWindow view, bool force = false, bool skipTransition = false,
-            bool affectNavigation = true, CancellationToken token = default)
+            bool affectNavigation = true)
         {
-            UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
-            if (record == null || record.View != view)
+            if (view.State is UIState.Destroying or UIState.Destroyed)
             {
                 Log.Warning("[UI] Close ignored because the window is not open and not cached.");
                 return UniTask.CompletedTask;
             }
-            return RequestClose(record, force, skipTransition, affectNavigation, token);
+            return RequestClose(view.Record, force, skipTransition, affectNavigation);
         }
 
         public T GetUI<T>() where T : UIWindow
@@ -160,44 +149,17 @@ namespace AlicizaX.UI.Runtime
         public bool IsOpen(RuntimeTypeHandle handle) => TryGetWindowRecord(handle)?.View?.IsOpen ?? false;
         internal UIWindow GetWindow(RuntimeTypeHandle handle) => TryGetWindowRecord(handle)?.View;
 
-        internal void NotifyWindowClosed(UIWindow view)
-        {
-            UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
-            if (record != null && record.View == view) FinalizeAfterClosed(record, view);
-        }
-
-        internal void NotifyWindowDestroying(UIWindow view)
-        {
-            UIWindowRecord record = TryGetWindowRecord(view.GetType().TypeHandle);
-            if (record != null && record.View == view)
-            {
-                RemoveFromOpenStack(record);
-                _cache.Remove(record);
-                record.View = null;
-            }
-            if (_currentView == view) ClearHistory();
-        }
-
         private void DestroyAllManagedUI()
         {
-            _shuttingDown = true;
+            bool initialized = _lifetime == UILifetime.Running;
+            _lifetime = UILifetime.Stopped;
+            if (!initialized) return;
             StopNavigation();
-            foreach (UIWindowRecord record in _windows.Values)
-            {
-                CancelWindowLoad(record);
-                record.View?.DestroyNow();
-            }
+            foreach (UIWindowRecord record in _windows.Values) record.View?.DestroyNow();
             _windows.Clear();
-            _cache.Clear();
-            _blocker?.Dispose();
+            _blocker.Dispose();
             _blocker = null;
-            _updating.Clear();
-            _tickBuffer.Clear();
-            _transitions.Clear();
-            _transitionBuffer.Clear();
-            for (int i = 0; i < _openUI.Length; i++) _openUI[i] = null;
             DestroyUIRoot();
-            _initialized = false;
         }
 
         private void DestroyUIRoot()
@@ -211,7 +173,6 @@ namespace AlicizaX.UI.Runtime
             UICanvas = null;
             UICanvasRoot = null;
             UICamera = null;
-            _cacheLayer = null;
             for (int i = 0; i < _layers.Length; i++) _layers[i] = null;
         }
     }

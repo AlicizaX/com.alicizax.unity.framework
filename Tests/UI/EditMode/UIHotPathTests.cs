@@ -146,7 +146,7 @@ namespace AlicizaX.UI.Tests
             child.Holder.SetTransition(source);
             child.Open();
             yield return AllocationCapture.Measure("first-active-tick", 1,
-                () => _fixture.Tick(), sample => Assert.That(sample.Bytes, Is.LessThanOrEqualTo(128)));
+                () => _fixture.Tick(), sample => Assert.That(sample.Bytes, Is.Zero));
             int advances = source.Advances;
             yield return AllocationCapture.Measure("tick-active-transition", 1000,
                 () => { for (int i = 0; i < 1000; i++) _fixture.Tick(); },
@@ -163,7 +163,6 @@ namespace AlicizaX.UI.Tests
             var window = _fixture.Open();
             Action callback = () => { };
             window.Holder.OnWindowAfterShowEvent += callback;
-            window.Holder.InvokeWindowAfterShow();
             yield return AllocationCapture.Measure("holder-event-invoke", 1000,
                 () => { for (int i = 0; i < 1000; i++) window.Holder.InvokeWindowAfterShow(); },
                 sample => Assert.That(sample.Bytes, Is.Zero));

@@ -14,15 +14,17 @@ namespace AlicizaX.UI.Runtime
             public readonly int UILayer;
             public readonly int CacheTime;
             public readonly bool HasUpdate;
+            public readonly Func<UIBase> Create;
 
             public UIMetaInfo(RuntimeTypeHandle runtimeTypeHandle, RuntimeTypeHandle holderRuntimeTypeHandle,
-                UILayer windowLayer, int cacheTime, bool needUpdate)
+                UILayer windowLayer, int cacheTime, bool needUpdate, Func<UIBase> create)
             {
                 RuntimeTypeHandle = runtimeTypeHandle;
                 HolderRuntimeTypeHandle = holderRuntimeTypeHandle;
                 UILayer = (int)windowLayer;
                 CacheTime = cacheTime;
                 HasUpdate = needUpdate;
+                Create = create;
             }
         }
 
@@ -33,10 +35,11 @@ namespace AlicizaX.UI.Runtime
         /// 注册 UI 类型。注册期校验类型与层级，非法注册直接抛异常（冷路径 fail fast）。
         /// </summary>
         public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, int cacheTime = 0,
-            bool needUpdate = false)
+            bool needUpdate = false, Func<UIBase> create = null)
         {
             Validate(uiType, holderType, layer);
-            var info = new UIMetaInfo(uiType.TypeHandle, holderType.TypeHandle, layer, cacheTime, needUpdate);
+            var info = new UIMetaInfo(uiType.TypeHandle, holderType.TypeHandle, layer, cacheTime, needUpdate,
+                create ?? CreateReflectionFactory(uiType));
             _byHandle[uiType.TypeHandle] = info;
             string fullName = uiType.FullName;
             if (!string.IsNullOrEmpty(fullName)) _byName[fullName] = info;
@@ -57,6 +60,9 @@ namespace AlicizaX.UI.Runtime
             Type type = AlicizaX.Utility.Assembly.GetType(typeName);
             return type != null && TryReflectAndRegister(type, out info);
         }
+
+        private static Func<UIBase> CreateReflectionFactory(Type uiType) =>
+            () => (UIBase)Utility.InstanceFactory.CreateInstanceOptimized(uiType);
 
         private static void Validate(Type uiType, Type holderType, UILayer layer)
         {

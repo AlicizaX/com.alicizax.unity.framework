@@ -96,8 +96,9 @@ namespace AlicizaX.UI.Tests
         public void OpenInsideRegistrationRefreshesAfterCallback()
         {
             var window = _fixture.Open();
-            var child = window.Create();
+            var child = window.Create(false);
             _fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult();
+            child.Open();
             int refreshesInside = -1;
             child.Registering = () =>
             {
@@ -108,6 +109,7 @@ namespace AlicizaX.UI.Tests
             _fixture.Open();
             Assert.That(refreshesInside, Is.Zero);
             Assert.That(child.Refreshes, Is.EqualTo(1));
+            Assert.That(child.Registrations, Is.EqualTo(1));
             Assert.That(child.Argument, Is.EqualTo("registered"));
         }
 

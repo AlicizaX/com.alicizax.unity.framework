@@ -8,6 +8,8 @@ namespace AlicizaX.UI.Runtime
     public abstract class UIWidget : UIBase
     {
         internal UIBase Parent;
+        internal UIWidget PreviousSibling;
+        internal UIWidget NextSibling;
         private CanvasGroup _canvasGroup;
         private float _shownAlpha = 1f;
         private CancellationTokenSource _loadCts;
@@ -39,7 +41,7 @@ namespace AlicizaX.UI.Runtime
         public void Close()
         {
             if (DestroyRequested || State == UIState.Initialized) return;
-            InternalClose().Forget();
+            BeginClose(false, false);
         }
 
         public UniTask Destroy() => InternalDestroy();
@@ -63,10 +65,11 @@ namespace AlicizaX.UI.Runtime
 
         internal void BindWidgetHolder(UIHolderObjectBase holder)
         {
-            BindHolderCommon(holder);
             _canvasGroup = holder.GetComponent<CanvasGroup>();
             if (_canvasGroup == null) _canvasGroup = holder.gameObject.AddComponent<CanvasGroup>();
             if (_canvasGroup.alpha > 0f) _shownAlpha = _canvasGroup.alpha;
+            if (DestroyRequested) return;
+            BindHolderCommon(holder);
             if (Holder.HasTransition) Holder.ApplyTransitionState(false);
         }
     }

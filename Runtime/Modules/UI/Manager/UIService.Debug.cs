@@ -5,7 +5,7 @@ namespace AlicizaX.UI.Runtime
 {
     internal sealed partial class UIService
     {
-        int IUIDebugService.LayerCount => _openUI.Length;
+        int IUIDebugService.LayerCount => _layerStacks.Length;
         int IUIDebugService.CacheWindowCount => _cache.Count;
 
         void IUIDebugService.FillServiceDebugInfo(UIServiceDebugInfo info)
@@ -16,18 +16,12 @@ namespace AlicizaX.UI.Runtime
             }
 
             int openWindowCount = 0;
-            for (int i = 0; i < _openUI.Length; i++)
+            for (int i = 0; i < _layerStacks.Length; i++)
             {
-                List<UIWindowRecord> windows = _openUI[i];
-                if (windows == null)
-                {
-                    continue;
-                }
-
-                openWindowCount += windows.Count;
+                openWindowCount += _layerStacks[i].Count;
             }
-            info.UpdateCount = _updating.Count;
-            info.Initialized = _initialized;
+            info.UpdateCount = _updateViews.Count;
+            info.Initialized = _lifetime == UILifetime.Running;
             info.Orthographic = UICamera != null && UICamera.orthographic;
             info.OpenWindowCount = openWindowCount;
             info.CacheWindowCount = _cache.Count;
@@ -40,39 +34,32 @@ namespace AlicizaX.UI.Runtime
 
         bool IUIDebugService.FillLayerDebugInfo(int layerIndex, UILayerDebugInfo info)
         {
-            if (info == null || (uint)layerIndex >= (uint)_openUI.Length)
+            if (info == null || (uint)layerIndex >= (uint)_layerStacks.Length)
             {
-                return false;
-            }
-
-            List<UIWindowRecord> windows = _openUI[layerIndex];
-            if (windows == null)
-            {
-                info.Clear();
-                info.Layer = (UILayer)layerIndex;
                 return false;
             }
 
             info.Layer = (UILayer)layerIndex;
-            info.WindowCount = windows.Count;
+            info.WindowCount = _layerStacks[layerIndex].Count;
             return true;
         }
 
         bool IUIDebugService.FillWindowDebugInfo(int layerIndex, int windowIndex, UIWindowDebugInfo info)
         {
-            if (info == null || (uint)layerIndex >= (uint)_openUI.Length)
+            if (info == null || (uint)layerIndex >= (uint)_layerStacks.Length)
             {
                 return false;
             }
 
-            List<UIWindowRecord> windows = _openUI[layerIndex];
-            if (windows == null || (uint)windowIndex >= (uint)windows.Count)
+            UIWindowRecord record = _layerStacks[layerIndex].Bottom;
+            for (int i = 0; record != null && i < windowIndex; i++) record = record.StackAbove;
+            if (windowIndex < 0 || record == null)
             {
                 info.Clear();
                 return false;
             }
 
-            FillWindowDebugInfo(windows[windowIndex], layerIndex, windowIndex, info);
+            FillWindowDebugInfo(record, layerIndex, windowIndex, info);
             return true;
         }
 
@@ -121,12 +108,19 @@ namespace AlicizaX.UI.Runtime
             info.State = record.State;
             info.Visible = view != null && view.Visible;
             info.Processing = record.Flight != null || record.State == UIState.Opening || record.State == UIState.Closing;
-            info.Updating = view != null && _updating.Contains(view);
+            info.Updating = view != null && view.IsUpdating;
             info.Depth = view != null ? view.Depth : 0;
             info.CacheTime = record.MetaInfo.CacheTime;
             info.CacheRemaining = GetTimerRemaining(record.CacheTimer);
             info.HolderTransform = holder != null ? holder.transform : null;
         }
+
+        internal UIWindowRecord FindRecord(System.RuntimeTypeHandle handle) => TryGetWindowRecord(handle);
+        internal UITickList UpdateViews => _updateViews;
+        internal UITickList TransitionViews => _transitionViews;
+        internal UILayerStack LayerStack(int layer) => _layerStacks[layer];
+        internal uint CurrentTick => _tick;
+        internal Dictionary<System.RuntimeTypeHandle, UIWindowRecord>.ValueCollection Records => _windows.Values;
 
         private float GetTimerRemaining(ulong timerHandle)
         {

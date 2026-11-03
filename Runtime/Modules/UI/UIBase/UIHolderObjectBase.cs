@@ -15,58 +15,51 @@ namespace AlicizaX.UI.Runtime
         private bool _hasTransitionOverride;
         private CancellationTokenSource _transitionCts;
         private ITickTransitionSource _tickTransition;
-        private UniTaskCompletionSource _tickCompletion;
+        private int _transitionRound;
         private bool _tickTransitionOpen;
         private bool _isAlive = true;
 
-        // 生命周期事件：订阅变更时重建快照，invoke 路径零分配（GetInvocationList 只在订阅变化后的首次调用发生）。
-        private Action _windowInitHandler;
-        private Action[] _windowInitSnapshot;
-        private Action _windowBeforeShowHandler;
-        private Action[] _windowBeforeShowSnapshot;
-        private Action _windowAfterShowHandler;
-        private Action[] _windowAfterShowSnapshot;
-        private Action _windowBeforeClosedHandler;
-        private Action[] _windowBeforeClosedSnapshot;
-        private Action _windowAfterClosedHandler;
-        private Action[] _windowAfterClosedSnapshot;
-        private Action _windowDestroyHandler;
-        private Action[] _windowDestroySnapshot;
+        private Action[] _windowInitCallbacks = Array.Empty<Action>();
+        private Action[] _windowBeforeShowCallbacks = Array.Empty<Action>();
+        private Action[] _windowAfterShowCallbacks = Array.Empty<Action>();
+        private Action[] _windowBeforeClosedCallbacks = Array.Empty<Action>();
+        private Action[] _windowAfterClosedCallbacks = Array.Empty<Action>();
+        private Action[] _windowDestroyCallbacks = Array.Empty<Action>();
 
         public event Action OnWindowInitEvent
         {
-            add { _windowInitHandler += value; _windowInitSnapshot = null; }
-            remove { _windowInitHandler -= value; _windowInitSnapshot = null; }
+            add => AddCallbacks(ref _windowInitCallbacks, value);
+            remove => RemoveCallbacks(ref _windowInitCallbacks, value);
         }
 
         public event Action OnWindowBeforeShowEvent
         {
-            add { _windowBeforeShowHandler += value; _windowBeforeShowSnapshot = null; }
-            remove { _windowBeforeShowHandler -= value; _windowBeforeShowSnapshot = null; }
+            add => AddCallbacks(ref _windowBeforeShowCallbacks, value);
+            remove => RemoveCallbacks(ref _windowBeforeShowCallbacks, value);
         }
 
         public event Action OnWindowAfterShowEvent
         {
-            add { _windowAfterShowHandler += value; _windowAfterShowSnapshot = null; }
-            remove { _windowAfterShowHandler -= value; _windowAfterShowSnapshot = null; }
+            add => AddCallbacks(ref _windowAfterShowCallbacks, value);
+            remove => RemoveCallbacks(ref _windowAfterShowCallbacks, value);
         }
 
         public event Action OnWindowBeforeClosedEvent
         {
-            add { _windowBeforeClosedHandler += value; _windowBeforeClosedSnapshot = null; }
-            remove { _windowBeforeClosedHandler -= value; _windowBeforeClosedSnapshot = null; }
+            add => AddCallbacks(ref _windowBeforeClosedCallbacks, value);
+            remove => RemoveCallbacks(ref _windowBeforeClosedCallbacks, value);
         }
 
         public event Action OnWindowAfterClosedEvent
         {
-            add { _windowAfterClosedHandler += value; _windowAfterClosedSnapshot = null; }
-            remove { _windowAfterClosedHandler -= value; _windowAfterClosedSnapshot = null; }
+            add => AddCallbacks(ref _windowAfterClosedCallbacks, value);
+            remove => RemoveCallbacks(ref _windowAfterClosedCallbacks, value);
         }
 
         public event Action OnWindowDestroyEvent
         {
-            add { _windowDestroyHandler += value; _windowDestroySnapshot = null; }
-            remove { _windowDestroyHandler -= value; _windowDestroySnapshot = null; }
+            add => AddCallbacks(ref _windowDestroyCallbacks, value);
+            remove => RemoveCallbacks(ref _windowDestroyCallbacks, value);
         }
 
         public GameObject Target => _target ??= gameObject;
@@ -77,7 +70,7 @@ namespace AlicizaX.UI.Runtime
         private IUITransitionSource TransitionSource => _hasTransitionOverride
             ? _transitionSource : _transitionPlayerComponent as IUITransitionSource;
 
-        internal UIService Service => _owner != null ? _owner.Service : null;
+        internal bool UsesTickTransition => TransitionSource is ITickTransitionSource;
 
         public virtual void Awake()
         {
@@ -86,25 +79,40 @@ namespace AlicizaX.UI.Runtime
 
         internal void SetOwner(UIBase owner) => _owner = owner;
 
-        internal void InvokeWindowInit() => InvokeEvent(_windowInitHandler, ref _windowInitSnapshot);
-        internal void InvokeWindowBeforeShow() => InvokeEvent(_windowBeforeShowHandler, ref _windowBeforeShowSnapshot);
-        internal void InvokeWindowAfterShow() => InvokeEvent(_windowAfterShowHandler, ref _windowAfterShowSnapshot);
-        internal void InvokeWindowBeforeClosed() => InvokeEvent(_windowBeforeClosedHandler, ref _windowBeforeClosedSnapshot);
-        internal void InvokeWindowAfterClosed() => InvokeEvent(_windowAfterClosedHandler, ref _windowAfterClosedSnapshot);
-        internal void InvokeWindowDestroy() => InvokeEvent(_windowDestroyHandler, ref _windowDestroySnapshot);
+        internal void InvokeWindowInit() => InvokeCallbacks(_windowInitCallbacks);
+        internal void InvokeWindowBeforeShow() => InvokeCallbacks(_windowBeforeShowCallbacks);
+        internal void InvokeWindowAfterShow() => InvokeCallbacks(_windowAfterShowCallbacks);
+        internal void InvokeWindowBeforeClosed() => InvokeCallbacks(_windowBeforeClosedCallbacks);
+        internal void InvokeWindowAfterClosed() => InvokeCallbacks(_windowAfterClosedCallbacks);
+        internal void InvokeWindowDestroy() => InvokeCallbacks(_windowDestroyCallbacks);
 
-        private static void InvokeEvent(Action handler, ref Action[] snapshot)
+        private static void AddCallbacks(ref Action[] callbacks, Action value)
         {
-            if (handler == null) return;
-            Action[] callbacks = snapshot;
-            if (callbacks == null)
-            {
-                Delegate[] handlers = handler.GetInvocationList();
-                callbacks = new Action[handlers.Length];
-                for (int i = 0; i < handlers.Length; i++) callbacks[i] = (Action)handlers[i];
-                snapshot = callbacks;
-            }
+            if (value == null) return;
+            Delegate[] added = value.GetInvocationList();
+            var merged = new Action[callbacks.Length + added.Length];
+            Array.Copy(callbacks, merged, callbacks.Length);
+            for (int i = 0; i < added.Length; i++) merged[callbacks.Length + i] = (Action)added[i];
+            callbacks = merged;
+        }
 
+        private static void RemoveCallbacks(ref Action[] callbacks, Action value)
+        {
+            if (value == null) return;
+            Delegate[] removed = value.GetInvocationList();
+            for (int i = removed.Length - 1; i >= 0; i--)
+            {
+                int index = Array.LastIndexOf(callbacks, (Action)removed[i]);
+                if (index < 0) continue;
+                var remaining = new Action[callbacks.Length - 1];
+                Array.Copy(callbacks, remaining, index);
+                Array.Copy(callbacks, index + 1, remaining, index, remaining.Length - index);
+                callbacks = remaining;
+            }
+        }
+
+        private static void InvokeCallbacks(Action[] callbacks)
+        {
             for (int i = 0; i < callbacks.Length; i++)
             {
                 try { callbacks[i](); }
@@ -119,9 +127,13 @@ namespace AlicizaX.UI.Runtime
 
         public void SetTransition(IUITransitionSource source)
         {
-            _hasTransitionOverride = true;
+            _hasTransitionOverride = source != null;
             _transitionSource = source;
+            _owner?.ReserveTransitionNode();
+            if (_tickTransition == null && _transitionCts == null) return;
+            int round = _transitionRound + 1;
             CancelTransitionPlay();
+            if (round == _transitionRound) _owner.FinishTransition();
         }
 
         public void SetTransition(Func<bool, CancellationToken, UniTask> play, Action<bool> snap)
@@ -131,33 +143,32 @@ namespace AlicizaX.UI.Runtime
 
         internal bool HasTransition => TransitionSource != null;
 
-        internal UniTask PlayOpenTransitionAsync() => PlayTransition(true);
-        internal UniTask PlayCloseTransitionAsync() => PlayTransition(false);
-        internal void ApplyTransitionState(bool open) => SnapTransition(open);
+        internal void PlayOpenTransition() => PlayTransition(true);
+        internal void PlayCloseTransition() => PlayTransition(false);
 
-        /// <summary>由 <see cref="UIService"/> 的 Tick 推进；返回 true 表示本次播放已结束（成功或异常）。</summary>
-        internal bool AdvanceTransition(float deltaTime)
+        internal void ApplyTransitionState(bool open)
+        {
+            CancelTransitionPlay();
+            ApplySnapshot(TransitionSource, open);
+        }
+
+        internal void AdvanceTransition(float deltaTime)
         {
             ITickTransitionSource tick = _tickTransition;
-            if (tick == null) return true;
-
+            int round = _transitionRound;
             bool finished;
             try { finished = tick.Advance(deltaTime); }
             catch (Exception error)
             {
                 Log.Exception(error);
-                ApplySnapshot(tick, _tickTransitionOpen);
+                if (round == _transitionRound) ApplySnapshot(tick, _tickTransitionOpen);
                 finished = true;
             }
-
-            if (!finished) return false;
-
+            if (!finished || round != _transitionRound) return;
+            _transitionRound++;
             _tickTransition = null;
-            UniTaskCompletionSource completion = _tickCompletion;
-            _tickCompletion = null;
-            Service?.UnregisterTransition(this);
-            completion?.TrySetResult();
-            return true;
+            _owner.UnlinkTransition();
+            _owner.FinishTransition();
         }
 
         internal void ResetRuntimeTransition()
@@ -169,43 +180,43 @@ namespace AlicizaX.UI.Runtime
 
         internal void StopTransition() => CancelTransitionPlay();
 
-        private UniTask PlayTransition(bool open)
+        private void PlayTransition(bool open)
         {
-            if (!_isAlive || this == null) return UniTask.CompletedTask;
-
-            // 新播放接管旧播放：任何未结束的旧转场先取消，避免遗留 CTS/播放循环。
-            CancelTransitionPlay();
-
             IUITransitionSource source = TransitionSource;
-            if (source == null) return UniTask.CompletedTask;
-
-            UIService service = Service;
-            if (source is ITickTransitionSource tick && service != null)
+            if (source == null) _owner.FinishTransition();
+            else if (source is ITickTransitionSource tick) PlayTickTransition(tick, open);
+            else
             {
-                bool started;
-                try { started = tick.Begin(open); }
-                catch (Exception error)
-                {
-                    Log.Exception(error);
-                    ApplySnapshot(tick, open);
-                    return UniTask.CompletedTask;
-                }
-                if (!started) return UniTask.CompletedTask;
-                _tickTransition = tick;
-                _tickTransitionOpen = open;
-                _tickCompletion = new UniTaskCompletionSource();
-                service.RegisterTransition(this);
-                return _tickCompletion.Task;
+                var cancellation = new CancellationTokenSource();
+                _transitionCts = cancellation;
+                RunTransition(source, open, cancellation, ++_transitionRound).Forget();
             }
-
-            _transitionCts = new CancellationTokenSource();
-            return PlayTransitionAsync(source, open, _transitionCts);
         }
 
-        private async UniTask PlayTransitionAsync(
-            IUITransitionSource source,
-            bool open,
-            CancellationTokenSource cancellation)
+        private void PlayTickTransition(ITickTransitionSource tick, bool open)
+        {
+            int round = ++_transitionRound;
+            bool started;
+            try { started = tick.Begin(open); }
+            catch (Exception error)
+            {
+                Log.Exception(error);
+                if (round == _transitionRound) ApplySnapshot(tick, open);
+                started = false;
+            }
+            if (round != _transitionRound) return;
+            if (!started)
+            {
+                _owner.FinishTransition();
+                return;
+            }
+            _tickTransition = tick;
+            _tickTransitionOpen = open;
+            _owner.LinkTransition();
+        }
+
+        private async UniTaskVoid RunTransition(IUITransitionSource source, bool open,
+            CancellationTokenSource cancellation, int round)
         {
             CancellationToken cancellationToken = cancellation.Token;
             try
@@ -226,34 +237,24 @@ namespace AlicizaX.UI.Runtime
                 if (_transitionCts == cancellation) _transitionCts = null;
                 cancellation.Dispose();
             }
-        }
-
-        private void SnapTransition(bool open)
-        {
-            if (!_isAlive || this == null) return;
-
-            CancelTransitionPlay();
-            ApplySnapshot(TransitionSource, open);
+            if (round != _transitionRound) return;
+            _transitionRound++;
+            _owner.FinishTransition();
         }
 
         private void CancelTransitionPlay()
         {
-            ITickTransitionSource tick = _tickTransition;
-            if (tick != null)
+            _transitionRound++;
+            if (_tickTransition != null)
             {
                 _tickTransition = null;
-                UniTaskCompletionSource completion = _tickCompletion;
-                _tickCompletion = null;
-                Service?.UnregisterTransition(this);
-                completion?.TrySetResult();
+                _owner.UnlinkTransition();
             }
 
             CancellationTokenSource cancellation = _transitionCts;
             _transitionCts = null;
-            if (cancellation != null) Cancel(cancellation);
+            if (cancellation != null) cancellation.Cancel();
         }
-
-        internal static void Cancel(CancellationTokenSource cancellation) => cancellation.Cancel();
 
         private static void ApplySnapshot(IUITransitionSource source, bool open)
         {
@@ -264,11 +265,14 @@ namespace AlicizaX.UI.Runtime
         private void OnDestroy()
         {
             _isAlive = false;
+            _owner?.LoseHolder();
             ResetRuntimeTransition();
             _owner = null;
         }
 
 #if UNITY_EDITOR
+        internal bool HasActiveTickTransition => _tickTransition != null;
+
         private void OnValidate()
         {
             RefreshTransitionPlayerCacheInEditor();

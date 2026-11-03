@@ -1,44 +1,81 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-using Unity.IL2CPP.CompilerServices;
 
 namespace AlicizaX
 {
     public class EventListenerProxy : MemoryObject
     {
-        private readonly List<EventRuntimeHandle> _eventHandles = new();
+        private const int InitialCapacity = 4;
 
+        private delegate EventRuntimeHandle SubscribeHandler(Delegate handler);
 
-        [Il2CppSetOption(Option.NullChecks, false)]
-        [Il2CppSetOption(Option.DivideByZeroChecks, false)]
-        [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void AddUIEvent<T>(Action handler) where T : struct, IEmptyEventArgs
+        private struct Subscription
         {
-            EventRuntimeHandle handle = EventBus.Subscribe<T>(handler);
-            _eventHandles.Add(handle);
+            internal Delegate Handler;
+            internal SubscribeHandler Subscribe;
+            internal EventRuntimeHandle Handle;
         }
 
-        [Il2CppSetOption(Option.NullChecks, false)]
-        [Il2CppSetOption(Option.DivideByZeroChecks, false)]
-        [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void AddUIEvent<T>(InEventHandler<T> handler) where T : struct, IPayloadEventArgs
+        private static class EmptySubscriber<T> where T : struct, IEmptyEventArgs
         {
-            EventRuntimeHandle handle = EventBus.Subscribe<T>(handler);
-            _eventHandles.Add(handle);
+            internal static readonly SubscribeHandler Subscribe = SubscribeToBus;
+            private static EventRuntimeHandle SubscribeToBus(Delegate handler) => EventBus.Subscribe<T>((Action)handler);
         }
 
+        private static class PayloadSubscriber<T> where T : struct, IPayloadEventArgs
+        {
+            internal static readonly SubscribeHandler Subscribe = SubscribeToBus;
+            private static EventRuntimeHandle SubscribeToBus(Delegate handler) => EventBus.Subscribe<T>((InEventHandler<T>)handler);
+        }
+
+        private Subscription[] _subscriptions = Array.Empty<Subscription>();
+        private int _count;
+        private bool _suspended;
+
+        public void AddUIEvent<T>(Action handler) where T : struct, IEmptyEventArgs =>
+            AddSubscription(handler, EmptySubscriber<T>.Subscribe);
+
+        public void AddUIEvent<T>(InEventHandler<T> handler) where T : struct, IPayloadEventArgs =>
+            AddSubscription(handler, PayloadSubscriber<T>.Subscribe);
+
+        private void AddSubscription(Delegate handler, SubscribeHandler subscribe)
+        {
+            EventRuntimeHandle handle = _suspended ? default : subscribe(handler);
+            if (_count == _subscriptions.Length)
+                Array.Resize(ref _subscriptions, _count == 0 ? InitialCapacity : _count * 2);
+            ref Subscription subscription = ref _subscriptions[_count++];
+            subscription.Handler = handler;
+            subscription.Subscribe = subscribe;
+            subscription.Handle = handle;
+        }
+
+#if UNITY_EDITOR
+        internal bool IsSuspended => _suspended;
+        internal int SubscriptionCount => _count;
+        internal int SubscriptionCapacity => _subscriptions.Length;
+#endif
+
+        internal void Suspend()
+        {
+            _suspended = true;
+            for (int i = _count - 1; i >= 0; i--) _subscriptions[i].Handle.Dispose();
+        }
+
+        internal void Resume()
+        {
+            _suspended = false;
+            for (int i = 0; i < _count; i++)
+            {
+                ref Subscription subscription = ref _subscriptions[i];
+                subscription.Handle = subscription.Subscribe(subscription.Handler);
+            }
+        }
 
         public override void Clear()
         {
-            for (int i = _eventHandles.Count - 1; i >= 0; i--)
-            {
-                _eventHandles[i].Dispose();
-            }
-
-            _eventHandles.Clear();
+            Suspend();
+            Array.Clear(_subscriptions, 0, _count);
+            _count = 0;
+            _suspended = false;
         }
     }
 }

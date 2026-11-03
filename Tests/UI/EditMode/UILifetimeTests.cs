@@ -69,8 +69,11 @@ namespace AlicizaX.UI.Tests
         public void RegistrationMayDestroySiblingWithoutSkippingRemainingChildren()
         {
             UIProbeWindow window = _fixture.Open();
-            UIProbeWidget a = window.Create(), b = window.Create(), c = window.Create();
+            UIProbeWidget a = window.Create(false), b = window.Create(false), c = window.Create(false);
             _fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult();
+            a.Open();
+            b.Open();
+            c.Open();
             a.Registering = () => b.Destroy().GetAwaiter().GetResult();
             _fixture.Open();
             UIFixture.Publish();

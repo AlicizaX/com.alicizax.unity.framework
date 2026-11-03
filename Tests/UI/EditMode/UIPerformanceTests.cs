@@ -31,19 +31,12 @@ namespace AlicizaX.UI.Tests
         }
 
         [UnityTest]
-        public IEnumerator CloseWithTransitionAllocatesOnlyTransitionState()
+        public IEnumerator CloseWithTransitionDoesNotAllocate()
         {
             var window = _fixture.Open();
             UIProbeWidget child = window.Create();
             var source = new UITickGateTransition();
             window.Holder.SetTransition(source);
-
-            // 预热：首次异步关闭会分配一次 UniTask 状态机池对象；本次测量只覆盖稳定态。
-            UniTask warm = _fixture.Service.CloseUI<UIProbeWindow>();
-            source.Finished = true;
-            _fixture.Tick();
-            warm.GetAwaiter().GetResult();
-            _fixture.Open();
 
             yield return AllocationCapture.Measure("ui-close-with-transition", 1,
                 () =>
@@ -53,7 +46,7 @@ namespace AlicizaX.UI.Tests
                     _fixture.Tick();
                     close.GetAwaiter().GetResult();
                 },
-                sample => Assert.That(sample.Bytes, Is.LessThanOrEqualTo(256)));
+                sample => Assert.That(sample.Bytes, Is.Zero));
             Assert.That(window.IsOpen, Is.False);
             Assert.That(child.IsVisible, Is.False);
         }

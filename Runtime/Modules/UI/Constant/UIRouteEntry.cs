@@ -10,13 +10,14 @@ namespace AlicizaX.UI.Runtime
     public sealed class UIRouteEntry
     {
         private readonly object[] _args;
+        private IReadOnlyList<object> _arguments;
 
         public Type UIType { get; }
         public RuntimeTypeHandle TypeHandle { get; }
         public int Sequence { get; }
 
         /// <summary>参数只读视图；数组由 history 条目独占，业务不得写入。</summary>
-        public IReadOnlyList<object> Arguments { get; }
+        public IReadOnlyList<object> Arguments => _arguments ??= Array.AsReadOnly(_args);
 
         internal object[] Args => _args;
 
@@ -26,7 +27,6 @@ namespace AlicizaX.UI.Runtime
             TypeHandle = uiType.TypeHandle;
             _args = args;
             Sequence = sequence;
-            Arguments = Array.AsReadOnly(args);
         }
 
         internal static object[] CopyArgs(object[] args)

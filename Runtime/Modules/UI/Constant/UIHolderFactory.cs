@@ -67,6 +67,7 @@ namespace AlicizaX.UI.Runtime
                 if (!TryBindHolder(obj, view.UIHolderType, view.Metadata.ResInfo.Location, out UIHolderObjectBase holder))
                     return false;
                 view.BindUIHolder(holder);
+                if (view.DestroyRequested) return false;
                 view.SetDestroyHolderOnDispose(true);
                 bound = true;
                 return true;
@@ -91,6 +92,7 @@ namespace AlicizaX.UI.Runtime
                 if (!TryBindHolder(obj, view.UIHolderType, view.Metadata.ResInfo.Location, out UIHolderObjectBase holder))
                     return false;
                 view.BindUIHolder(holder);
+                if (view.DestroyRequested) return false;
                 view.SetDestroyHolderOnDispose(true);
                 bound = true;
                 return true;

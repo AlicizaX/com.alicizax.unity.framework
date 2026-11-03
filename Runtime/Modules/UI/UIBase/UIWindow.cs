@@ -7,16 +7,18 @@ namespace AlicizaX.UI.Runtime
 {
     public abstract class UIWindow : UIBase
     {
+        internal UIWindowRecord Record;
         private Canvas _canvas;
         private GraphicRaycaster _raycaster;
         private int _depth;
 
+        protected UIWindow() => RootWindow = this;
+
         protected UniTask CloseSelf(bool force = false, bool skipTransition = false) =>
             Service.CloseWindow(this, force, skipTransition);
 
-        internal override void OnClosed() => Service.NotifyWindowClosed(this);
-        internal override void OnDestroyStarted() => Service.NotifyWindowDestroying(this);
-        internal override void OnActivityChanged() => Service.SetUpdating(this, Effective && State == UIState.Opened);
+        internal override void OnClosed() => Service.FinalizeAfterClosed(Record);
+        internal override void OnDestroyStarted() => Service.ReleaseRecord(Record);
 
         internal Canvas Canvas => _canvas;
 
@@ -26,14 +28,18 @@ namespace AlicizaX.UI.Runtime
             get => _depth;
             set
             {
+                if (_depth == value) return;
                 _depth = value;
                 if (_canvas != null) _canvas.sortingOrder = value;
             }
         }
 
-        internal void SetCanvasEnabled(bool value) => _canvas.enabled = value;
-        private protected override void ApplyVisible(bool value) =>
+        private protected override void ApplyVisible(bool value)
+        {
             Holder.gameObject.layer = value ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+            if (State != UIState.Initializing) _canvas.enabled = value;
+        }
+
         private protected override void SetInteractable(bool value)
         {
             _raycaster.enabled = value;
@@ -47,7 +53,6 @@ namespace AlicizaX.UI.Runtime
 
         internal void BindWindowHolder(UIHolderObjectBase holder)
         {
-            BindHolderCommon(holder);
             RectTransform rect = holder.RectTransform;
             rect.localPosition = Vector3.zero;
             rect.pivot = new Vector2(0.5f, 0.5f);
@@ -63,6 +68,7 @@ namespace AlicizaX.UI.Runtime
             _raycaster = holder.GetComponent<GraphicRaycaster>();
             if (_raycaster == null) _raycaster = holder.gameObject.AddComponent<GraphicRaycaster>();
             _raycaster.enabled = false;
+            if (!DestroyRequested) BindHolderCommon(holder);
         }
     }
 

@@ -44,7 +44,7 @@ namespace AlicizaX.UI.Runtime
         {
             try
             {
-                var view = (UIBase)Utility.InstanceFactory.CreateInstanceOptimized(UILogicType);
+                UIBase view = MetaInfo.Create();
                 view.Service = service;
                 view.Metadata = this;
                 return view;
@@ -56,9 +56,11 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal UIWindow CreateWindow(UIService service)
+        internal UIWindow CreateWindow(UIService service, UIWindowRecord record)
         {
-            return (UIWindow)CreateUI(service);
+            var window = (UIWindow)CreateUI(service);
+            if (window != null) window.Record = record;
+            return window;
         }
     }
 }
