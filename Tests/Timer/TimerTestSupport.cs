@@ -14,16 +14,16 @@ namespace AlicizaX.Timer.Tests
     internal sealed class TimerFixture : IDisposable
     {
         internal readonly TimerService Service;
-        internal readonly ServiceWorld World = new ServiceWorld();
+        internal readonly ServiceRegistry Registry = new ServiceRegistry();
 
         internal TimerFixture(int capacity = 256)
         {
             Service = new TimerService(capacity);
-            World.App.Register<ITimerService>(Service);
+            Registry.Register<ITimerService>(Service);
         }
 
         internal void Tick(float delta = 0) => ((IServiceTickable)Service).Tick(delta);
-        public void Dispose() => World.Dispose();
+        public void Dispose() => Registry.Dispose();
     }
 
     internal sealed class TimerArg

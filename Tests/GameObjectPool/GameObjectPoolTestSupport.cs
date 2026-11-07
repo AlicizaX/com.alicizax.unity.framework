@@ -188,7 +188,7 @@ namespace AlicizaX.GameObjectPool.Tests
             var containerObject = Keep(new GameObject("gop-container"));
             Container = containerObject.transform;
             Service = new GameObjectPoolService(Container, Loader);
-            ((IServiceLifecycle)Service).Initialize(null, null);
+            ((IServiceLifecycle)Service).Initialize(null);
             Config = ScriptableObject.CreateInstance<PoolConfigScriptableObject>();
             Owned.Add(Config);
         }
@@ -210,7 +210,7 @@ namespace AlicizaX.GameObjectPool.Tests
             {
                 if (Service != null)
                 {
-                    ((IServiceLifecycle)Service).Destroy();
+                    ((IServiceLifecycle)Service).Dispose();
                     Assert.That(PoolCount(), Is.Zero, "Service shutdown must release every pool.");
                 }
 

@@ -128,7 +128,7 @@ namespace AlicizaX.Audio.Tests
         public IEnumerator ComponentDestructionReleasesOwnedServiceWhileResourceWorldSurvives()
         {
             using var f = new AudioFixture(initialVoices: 2);
-            Assert.That(AppServices.App.Unregister(f.Audio), Is.True);
+            Assert.That(AppServices.Unregister(f.Audio), Is.True);
             var host = f.Resources.Keep(new GameObject("component-lifetime"));
             host.SetActive(false);
             var component = host.AddComponent<AudioComponent>();
@@ -136,7 +136,7 @@ namespace AlicizaX.Audio.Tests
             AudioFixture.Set(component, "m_AudioListener", f.Listener);
             AudioFixture.Set(component, "m_AudioGroupConfigs", f.Groups);
             host.SetActive(true);
-            var service = (AudioService)AppServices.App.Require<IAudioService>();
+            var service = (AudioService)AppServices.Require<IAudioService>();
             f.Clip("playing"); f.Clip("pending");
             Assert.That(service.Play(AudioType.Music, "playing", true), Is.Not.Zero);
             f.Loader.CompleteImmediately = false;
@@ -144,8 +144,8 @@ namespace AlicizaX.Audio.Tests
             service.PreloadAsync("pending", AudioCachePolicy.Pin, success => { Assert.That(success, Is.False); callbacks++; });
             Object.Destroy(component);
             yield return AudioFixture.Frames();
-            Assert.That(AppServices.App.TryGet<IAudioService>(out _), Is.False);
-            Assert.That(AppServices.App.Require<AlicizaX.Resource.Runtime.IResourceService>(), Is.SameAs(f.Resources.Service));
+            Assert.That(AppServices.TryGet<IAudioService>(out _), Is.False);
+            Assert.That(AppServices.Require<AlicizaX.Resource.Runtime.IResourceService>(), Is.SameAs(f.Resources.Service));
             Assert.That(callbacks, Is.EqualTo(1));
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             Assert.That(host.transform.childCount, Is.Zero);

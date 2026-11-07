@@ -3,14 +3,14 @@ using NUnit.Framework;
 
 namespace AlicizaX.UI.Tests
 {
-    /// <summary>PlayMode 运行同样是长驻域；整批开始前清理上一次遗留的 ServiceWorld。</summary>
+    /// <summary>PlayMode 运行同样是长驻域；整批开始前清理上一次遗留的 ServiceRegistry。</summary>
     [SetUpFixture]
     public sealed class UISessionSetupPlayMode
     {
         [OneTimeSetUp]
-        public void ResetServiceWorld()
+        public void ResetServiceRegistry()
         {
-            if (AppServices.HasWorld) AppServices.Shutdown();
+            if (AppServices.IsAvailable) AppServices.Shutdown();
         }
     }
 }

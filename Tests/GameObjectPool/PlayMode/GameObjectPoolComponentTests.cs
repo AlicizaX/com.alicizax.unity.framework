@@ -21,7 +21,7 @@ namespace AlicizaX.GameObjectPool.Tests
         public void SetUp()
         {
             MemoryPoolRegistry.InitializeMainThread();
-            Assert.That(AppServices.HasWorld, Is.False);
+            Assert.That(AppServices.IsAvailable, Is.False);
         }
 
         [UnityTearDown]
@@ -41,26 +41,26 @@ namespace AlicizaX.GameObjectPool.Tests
             _root.AddComponent<GameObjectPoolTestRoot>();
             _first = new GameObject("gop-component-owner");
             _first.AddComponent<GameObjectPoolComponent>();
-            var registered = AppServices.App.Require<IGameObjectPoolService>();
+            var registered = AppServices.Require<IGameObjectPoolService>();
             _second = new GameObject("gop-component-duplicate");
-            LogAssert.Expect(LogType.Exception, new Regex("already contains contract"));
+            LogAssert.Expect(LogType.Exception, new Regex("is already bound to"));
             _second.AddComponent<GameObjectPoolComponent>();
-            Assert.That(AppServices.App.Require<IGameObjectPoolService>(), Is.SameAs(registered));
-            Assert.That(AppServices.App.Require<IGameObjectPoolDebugService>(), Is.SameAs(registered));
+            Assert.That(AppServices.Require<IGameObjectPoolService>(), Is.SameAs(registered));
+            Assert.That(AppServices.Require<IGameObjectPoolDebugService>(), Is.SameAs(registered));
             yield return null;
         }
 
         [UnityTest]
         public IEnumerator DestroyingComponentDoesNotUnregisterTheService()
         {
-            AppServices.EnsureWorld();
+            AppServices.GetOrCreateRegistry();
             _first = new GameObject("gop-component-owner");
             _first.AddComponent<GameObjectPoolComponent>();
-            var registered = AppServices.App.Require<IGameObjectPoolService>();
+            var registered = AppServices.Require<IGameObjectPoolService>();
             UnityEngine.Object.Destroy(_first);
             yield return null;
             Assert.That(_first == null, Is.True);
-            Assert.That(AppServices.App.TryGet<IGameObjectPoolService>(out var remaining), Is.True);
+            Assert.That(AppServices.TryGet<IGameObjectPoolService>(out var remaining), Is.True);
             Assert.That(remaining, Is.SameAs(registered));
         }
     }

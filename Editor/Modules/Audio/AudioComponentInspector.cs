@@ -807,8 +807,7 @@ namespace AlicizaX.Audio.Editor
                 return;
             }
 
-            if (!AppServices.HasWorld ||
-                !AppServices.App.TryGet<IAudioService>(out IAudioService audioService) ||
+            if (!AppServices.TryGet<IAudioService>(out IAudioService audioService) ||
                 audioService is not IAudioDebugService debugService)
             {
                 if (_runtimeState != RuntimeStateUnavailable)

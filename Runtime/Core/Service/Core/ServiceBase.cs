@@ -1,64 +1,31 @@
-using Cysharp.Text;
-
 namespace AlicizaX
 {
-    internal interface IServiceLifecycle
-    {
-        void Initialize(ServiceWorld world, ServiceScope scope);
-        void Destroy();
-    }
-
     public abstract class ServiceBase : IService, IServiceLifecycle
     {
-        private ServiceWorld _world;
-        private ServiceScope _scope;
+        private ServiceRegistry _registry;
 
-        protected bool IsInitialized { get; private set; }
-
-        void IServiceLifecycle.Initialize(ServiceWorld world, ServiceScope scope)
+        void IServiceLifecycle.Initialize(ServiceRegistry registry)
         {
-            if (IsInitialized)
-                throw new System.InvalidOperationException(ZString.Format("{0} is already initialized.", GetType().FullName));
-
-            _world = world;
-            _scope = scope;
-            IsInitialized = true;
+            _registry = registry;
             OnInitialize();
         }
 
-        void IServiceLifecycle.Destroy()
+        void IServiceLifecycle.Dispose()
         {
-            if (!IsInitialized) return;
-
-            OnDestroyService();
-            IsInitialized = false;
-            _world = null;
-            _scope = null;
+            OnDispose();
+            _registry = null;
         }
 
-        protected T Require<T>() where T : class, IService
-            => _world.Require<T>(_scope);
+        protected T Require<T>() where T : class, IService => _registry.Require<T>();
 
-        protected bool TryGet<T>(out T service) where T : class, IService
-            => _world.TryGet(_scope, out service);
-
-        protected T RequireApp<T>() where T : class, IService
-            => _world.App.Require<T>();
-
-        protected T RequireScene<T>() where T : class, IService
-            => _world.Scene.Require<T>();
-
-        protected T RequireGameplay<T>() where T : class, IService
-            => _world.Gameplay.Require<T>();
+        protected bool TryGet<T>(out T service) where T : class, IService => _registry.TryGet(out service);
 
         protected virtual void OnInitialize()
         {
-
         }
 
-        protected virtual void OnDestroyService()
+        protected virtual void OnDispose()
         {
-
         }
     }
 }

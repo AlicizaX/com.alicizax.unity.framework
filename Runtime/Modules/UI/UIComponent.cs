@@ -36,7 +36,7 @@ namespace AlicizaX.UI.Runtime
                 Destroy(obj);
                 return;
             }
-            AppServices.App.Register<IUIService>(service);
+            AppServices.Register<IUIService>(service);
             Object.DontDestroyOnLoad(instanceRoot);
         }
     }

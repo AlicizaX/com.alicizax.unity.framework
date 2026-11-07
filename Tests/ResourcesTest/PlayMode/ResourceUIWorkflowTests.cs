@@ -67,7 +67,7 @@ namespace AlicizaX.Resource.Tests
         [SetUp]
         public void SetUp()
         {
-            if (AppServices.HasWorld) AppServices.Shutdown();
+            if (AppServices.IsAvailable) AppServices.Shutdown();
             f = new ResourceFixture(true);
             var templates = f.GameObject("ui-templates");
             templates.SetActive(false);
@@ -83,9 +83,9 @@ namespace AlicizaX.Resource.Tests
             UIResRegistry.Register(typeof(ResUIWidgetHolder), WidgetLocation, EUIResLoadType.AssetBundle);
 
             MemoryPoolRegistry.InitializeMainThread();
-            AppServices.EnsureWorld();
-            AppServices.App.Register<IResourceService>(f.Service);
-            AppServices.App.Register<ITimerService>(new TimerService(256));
+            AppServices.GetOrCreateRegistry();
+            AppServices.Register<IResourceService>(f.Service);
+            AppServices.Register<ITimerService>(new TimerService(256));
             uiRoot = f.Keep(new GameObject("ResourceUIRoot", typeof(RectTransform), typeof(Canvas)));
             Canvas canvas = uiRoot.GetComponent<Canvas>();
             var camera = new GameObject("ResourceUICamera", typeof(Camera));
@@ -94,7 +94,7 @@ namespace AlicizaX.Resource.Tests
             canvas.worldCamera = camera.GetComponent<Camera>();
             ui = new UIService();
             ui.Initialize(uiRoot.transform, true);
-            AppServices.App.Register<IUIService>(ui);
+            AppServices.Register<IUIService>(ui);
         }
 
         [TearDown]
@@ -281,7 +281,7 @@ namespace AlicizaX.Resource.Tests
             Assert.That(f.Loader.Loads, Is.EqualTo(AssetsPerWindow));
             AssertWindowResources(window, window.Widget);
 
-            AppServices.App.Unregister(ui);
+            AppServices.Unregister(ui);
             yield return AssertEverythingReleased();
         }
     }

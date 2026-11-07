@@ -32,7 +32,7 @@ namespace AlicizaX.Audio.Runtime
             _audioService.Initialize(m_AudioGroupConfigs, m_AudioListener, transform, m_AudioMixer, m_ServiceConfig);
             try
             {
-                AppServices.App.Register<IAudioService>(_audioService);
+                AppServices.Register<IAudioService>(_audioService);
             }
             catch
             {
@@ -49,11 +49,8 @@ namespace AlicizaX.Audio.Runtime
                 return;
             }
 
-            if (AppServices.HasWorld && AppServices.App.TryGet<IAudioService>(out IAudioService registeredService) && ReferenceEquals(registeredService, _audioService))
-            {
-                AppServices.App.Unregister(_audioService);
-            }
-
+            // Unregister 只移除同一实例，服务世界已销毁时返回 false。
+            AppServices.Unregister(_audioService);
             _audioService = null;
         }
 

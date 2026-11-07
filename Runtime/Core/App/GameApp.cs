@@ -22,7 +22,7 @@ public static partial class GameApp
         {
             if (_audio == null)
             {
-                _audio = AppServices.App.Require<IAudioService>();
+                _audio = AppServices.Require<IAudioService>();
             }
 
             return _audio;
@@ -41,7 +41,7 @@ public static partial class GameApp
         {
             if (_resource == null)
             {
-                _resource = AppServices.App.Require<IResourceService>();
+                _resource = AppServices.Require<IResourceService>();
             }
 
             return _resource;
@@ -56,7 +56,7 @@ public static partial class GameApp
         {
             if (_resourcePackage == null)
             {
-                _resourcePackage = AppServices.App.Require<IResourcePackageService>();
+                _resourcePackage = AppServices.Require<IResourcePackageService>();
             }
 
             return _resourcePackage;
@@ -74,7 +74,7 @@ public static partial class GameApp
         {
             if (_scene == null)
             {
-                _scene = AppServices.App.Require<ISceneService>();
+                _scene = AppServices.Require<ISceneService>();
             }
 
             return _scene;
@@ -92,7 +92,7 @@ public static partial class GameApp
         {
             if (_timer == null)
             {
-                _timer = AppServices.App.Require<ITimerService>();
+                _timer = AppServices.Require<ITimerService>();
             }
 
             return _timer;
@@ -111,7 +111,7 @@ public static partial class GameApp
         {
             if (_ui == null)
             {
-                _ui = AppServices.App.Require<IUIService>();
+                _ui = AppServices.Require<IUIService>();
             }
 
             return _ui;
@@ -129,7 +129,7 @@ public static partial class GameApp
         {
             if (_gameObjectPool == null)
             {
-                _gameObjectPool = AppServices.App.Require<IGameObjectPoolService>();
+                _gameObjectPool = AppServices.Require<IGameObjectPoolService>();
             }
 
             return _gameObjectPool;
@@ -137,4 +137,19 @@ public static partial class GameApp
     }
 
     private static IGameObjectPoolService _gameObjectPool;
+
+    /// <summary>
+    /// 清空静态缓存。服务世界销毁后必须调用，否则旧服务实例会一直被静态字段 root 住，
+    /// 且下次读取拿到的会是被销毁的实例。
+    /// </summary>
+    internal static void ResetCachedServices()
+    {
+        _audio = null;
+        _resource = null;
+        _resourcePackage = null;
+        _scene = null;
+        _timer = null;
+        _ui = null;
+        _gameObjectPool = null;
+    }
 }

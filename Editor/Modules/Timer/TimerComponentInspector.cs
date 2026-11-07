@@ -86,7 +86,7 @@ namespace AlicizaX.Timer.Editor
                 return;
             }
 
-            if (!AppServices.HasWorld || !AppServices.App.TryGet<ITimerService>(out ITimerService timerService))
+            if (!AppServices.TryGet<ITimerService>(out ITimerService timerService))
             {
                 _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
                     "Timer service is not initialized."));

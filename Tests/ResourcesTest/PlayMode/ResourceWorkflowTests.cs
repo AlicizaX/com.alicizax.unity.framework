@@ -16,8 +16,8 @@ namespace AlicizaX.Resource.Tests
         public void SetUp()
         {
             f = new ResourceFixture(true);
-            AppServices.EnsureWorld();
-            AppServices.App.Register<IResourceService>(f.Service);
+            AppServices.GetOrCreateRegistry();
+            AppServices.Register<IResourceService>(f.Service);
         }
 
         [TearDown]

@@ -759,12 +759,7 @@ namespace AlicizaX.UI.Editor
         private static bool TryGetUIDebugService(out IUIDebugService debugService)
         {
             debugService = null;
-            if (!AppServices.HasWorld)
-            {
-                return false;
-            }
-
-            if (!AppServices.App.TryGet<IUIService>(out IUIService uiService))
+            if (!AppServices.TryGet<IUIService>(out IUIService uiService))
             {
                 return false;
             }
@@ -776,12 +771,7 @@ namespace AlicizaX.UI.Editor
         private static bool TryGetNavigationDebug(out IUINavigationDebug debug)
         {
             debug = null;
-            if (!AppServices.HasWorld)
-            {
-                return false;
-            }
-
-            if (!AppServices.App.TryGet<IUIService>(out IUIService uiService))
+            if (!AppServices.TryGet<IUIService>(out IUIService uiService))
             {
                 return false;
             }

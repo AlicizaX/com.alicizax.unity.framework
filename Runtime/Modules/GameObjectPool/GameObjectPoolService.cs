@@ -52,7 +52,7 @@ namespace AlicizaX
             Application.lowMemory += OnLowMemory;
         }
 
-        protected override void OnDestroyService()
+        protected override void OnDispose()
         {
             Application.lowMemory -= OnLowMemory;
             ClearAllPools();
@@ -190,7 +190,7 @@ namespace AlicizaX
 
         public void LoadCatalog(string poolConfigPath)
         {
-            IResourceService resourceService = AppServices.App.Require<IResourceService>();
+            IResourceService resourceService = AppServices.Require<IResourceService>();
             using AssetLease<PoolConfigScriptableObject> lease =
                 resourceService.LoadLease<PoolConfigScriptableObject>(poolConfigPath);
             LoadCatalog(lease.Asset);

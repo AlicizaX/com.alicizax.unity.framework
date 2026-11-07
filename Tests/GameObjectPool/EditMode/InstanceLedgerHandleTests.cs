@@ -143,7 +143,7 @@ namespace AlicizaX.GameObjectPool.Tests
             GameObject instance = MustSpawn("fx/hit");
             instance.GetComponent<PoolableProbe>().ThrowDestroy = true;
             LogAssert.Expect(LogType.Exception, new Regex("destroy failure"));
-            ((IServiceLifecycle)Service).Destroy();
+            ((IServiceLifecycle)Service).Dispose();
             Assert.That(PoolCount(), Is.Zero);
             Service = null;
             Assert.That(Loader.LiveLeases, Is.Zero);

@@ -25,7 +25,7 @@ namespace AlicizaX
 
         private IResourceService _resourceService;
 
-        private IResourceService ResourceService => _resourceService ??= AppServices.App.Require<IResourceService>();
+        private IResourceService ResourceService => _resourceService ??= AppServices.Require<IResourceService>();
 
         public GameObject LoadPrefab(string location)
         {

@@ -70,7 +70,7 @@ namespace AlicizaX.Audio.Tests
             f.Audio.PreloadAsync("pending", AudioCachePolicy.Pin);
             f.Audio.Shutdown();
             yield return AudioFixture.Frames();
-            Assert.That(AppServices.App.Require<IResourceService>(), Is.SameAs(f.Resources.Service));
+            Assert.That(AppServices.Require<IResourceService>(), Is.SameAs(f.Resources.Service));
             Assert.That(external.IsValid && borrowed != null, Is.True);
             Assert.That(f.Resources.Info("shared").RefCount, Is.EqualTo(1));
             Assert.That(f.Loader.LiveHandles, Is.EqualTo(1));
@@ -93,7 +93,7 @@ namespace AlicizaX.Audio.Tests
             Assert.That(callback.IsAlive, Is.False);
             Assert.That(f.Loader.LiveHandles, Is.Zero);
             AudioFixture.CheckAudioPoolsReleased();
-            Assert.That(AppServices.App.Require<IResourceService>(), Is.SameAs(f.Resources.Service));
+            Assert.That(AppServices.Require<IResourceService>(), Is.SameAs(f.Resources.Service));
         }
 
         private sealed class CallbackTarget { internal void Complete(bool success) { } }

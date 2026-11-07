@@ -20,12 +20,12 @@ namespace AlicizaX.Timer.Tests
             if (componentObject != null) Object.Destroy(componentObject);
             if (rootObject != null) Object.Destroy(rootObject);
             yield return null;
-            if (AppServices.HasWorld) AppServices.Shutdown();
+            if (AppServices.IsAvailable) AppServices.Shutdown();
         }
 
         private TimerTestRoot CreateRoot(bool persistent = true)
         {
-            Assert.That(AppServices.HasWorld, Is.False, "test requires no pre-existing application world");
+            Assert.That(AppServices.IsAvailable, Is.False, "test requires no pre-existing application registry");
             rootObject = new GameObject("Timer test root");
             rootObject.SetActive(false);
             var root = rootObject.AddComponent<TimerTestRoot>();
@@ -39,12 +39,12 @@ namespace AlicizaX.Timer.Tests
         public IEnumerator RootDrivesTimerAndDuplicateComponentDoesNotReplaceService()
         {
             CreateRoot();
-            var service = (TimerService)AppServices.App.Require<ITimerService>();
+            var service = (TimerService)AppServices.Require<ITimerService>();
             Assert.That(typeof(AppServiceRoot).GetCustomAttribute<DefaultExecutionOrder>().order, Is.EqualTo(-32000));
             Assert.That(typeof(TimerComponent).GetCustomAttribute<DefaultExecutionOrder>().order, Is.EqualTo(-800));
             componentObject = new GameObject("duplicate timer bootstrap");
             componentObject.AddComponent<TimerComponent>();
-            Assert.That(AppServices.App.Require<ITimerService>(), Is.SameAs(service));
+            Assert.That(AppServices.Require<ITimerService>(), Is.SameAs(service));
             int calls = 0;
             service.AddTimer(() => calls++, 0.01f, isUnscaled: true);
             double deadline = Time.realtimeSinceStartupAsDouble + 5;
@@ -58,7 +58,7 @@ namespace AlicizaX.Timer.Tests
         public IEnumerator DisablingRootStopsDispatchAndResumeCatchesUpOnTheNextTick()
         {
             var root = CreateRoot();
-            var service = (TimerService)AppServices.App.Require<ITimerService>();
+            var service = (TimerService)AppServices.Require<ITimerService>();
             root.enabled = false;
             int calls = 0;
             service.AddTimer(() => calls++, 0.3f, isUnscaled: true);
@@ -85,7 +85,7 @@ namespace AlicizaX.Timer.Tests
         public IEnumerator BootstrapDisableAndSceneUnloadPreserveApplicationOwnedService()
         {
             CreateRoot();
-            var service = (TimerService)AppServices.App.Require<ITimerService>();
+            var service = (TimerService)AppServices.Require<ITimerService>();
             rootObject.GetComponent<TimerComponent>().enabled = false;
             var scene = SceneManager.CreateScene("Timer bootstrap scene");
             componentObject = new GameObject("scene timer bootstrap");
@@ -93,7 +93,7 @@ namespace AlicizaX.Timer.Tests
             componentObject.AddComponent<TimerComponent>();
             ulong h = service.AddTimer(TimerProbe.NoOp, 60, true);
             yield return SceneManager.UnloadSceneAsync(scene);
-            Assert.That(AppServices.App.Require<ITimerService>(), Is.SameAs(service));
+            Assert.That(AppServices.Require<ITimerService>(), Is.SameAs(service));
             Assert.That(service.IsRunning(h), Is.True);
             Object.Destroy(rootObject.GetComponent<TimerComponent>());
             yield return null;
@@ -108,13 +108,13 @@ namespace AlicizaX.Timer.Tests
             CreateRoot(false);
             var scene = SceneManager.CreateScene("Timer owning root scene");
             SceneManager.MoveGameObjectToScene(rootObject, scene);
-            var service = (TimerService)AppServices.App.Require<ITimerService>();
+            var service = (TimerService)AppServices.Require<ITimerService>();
             int calls = 0;
             ulong pending = service.AddTimer(() => calls++, 60, isUnscaled: true);
             ulong stopped = service.AddTimer(TimerProbe.CountArg, new TimerArg(), 60, true);
             service.Stop(stopped);
             yield return SceneManager.UnloadSceneAsync(scene);
-            Assert.That(AppServices.HasWorld, Is.False);
+            Assert.That(AppServices.IsAvailable, Is.False);
             Assert.That(service.IsRunning(pending), Is.False);
             service.Restart(stopped);
             Assert.That(service.AddTimer(TimerProbe.NoOp, 1), Is.Zero);
@@ -127,14 +127,14 @@ namespace AlicizaX.Timer.Tests
         public IEnumerator WorldShutdownInsideRootDrivenCallbackStopsBothWheels()
         {
             CreateRoot();
-            var service = (TimerService)AppServices.App.Require<ITimerService>();
+            var service = (TimerService)AppServices.Require<ITimerService>();
             int calls = 0;
             service.AddTimer(() => { calls++; AppServices.Shutdown(); }, 0.001f);
             service.AddTimer(() => calls += 100, 0.03f, isUnscaled: true);
             double deadline = Time.realtimeSinceStartupAsDouble + 5;
             while (calls == 0 && Time.realtimeSinceStartupAsDouble < deadline) yield return null;
             Assert.That(calls, Is.EqualTo(1));
-            Assert.That(AppServices.HasWorld, Is.False);
+            Assert.That(AppServices.IsAvailable, Is.False);
             TimerProbe.Statistics(service, 0, 0);
             TimerProbe.Ledger(service);
         }

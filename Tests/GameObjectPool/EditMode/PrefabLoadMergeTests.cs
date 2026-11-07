@@ -94,7 +94,7 @@ namespace AlicizaX.GameObjectPool.Tests
             Loader.CompleteImmediately = false;
             UniTask<GameObject> pending = Service.LoadPrefabAsync("fx/hit");
             int version = LoadVersion("fx/hit");
-            ((IServiceLifecycle)Service).Destroy();
+            ((IServiceLifecycle)Service).Dispose();
             Service = null;
             Loader.CompletePending();
             yield return null;

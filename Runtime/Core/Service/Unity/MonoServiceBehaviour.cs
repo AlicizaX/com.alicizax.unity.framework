@@ -1,130 +1,48 @@
-using Cysharp.Text;
+using System;
 using UnityEngine;
 
 namespace AlicizaX
 {
-    public interface IMonoService : IService
+    /// <summary>
+    /// 以 MonoBehaviour 形式存在的服务：Awake 注册、OnDestroy 注销，解析方式与普通 <see cref="IService"/> 完全一致。
+    /// Unity 负责驱动 Update/LateUpdate/FixedUpdate，所以子类不能再实现 tick 生命周期接口。
+    /// 子类重写 Awake/OnDestroy 时必须调用 base 对应实现。
+    /// </summary>
+    [DisallowMultipleComponent]
+    public abstract class MonoServiceBehaviour : MonoBehaviour, IMonoService
     {
-    }
-
-    public abstract class MonoServiceBehaviour<TScope> : MonoBehaviour, IMonoService, IServiceLifecycle
-        where TScope : IScope
-    {
-        private ServiceWorld _world;
-        private ServiceScope _scope;
-
-        protected bool IsInitialized { get; private set; }
-
-        void IServiceLifecycle.Initialize(ServiceWorld world, ServiceScope scope)
-        {
-            if (IsInitialized)
-                throw new System.InvalidOperationException(ZString.Format("{0} is already initialized.", GetType().FullName));
-
-            _world = world;
-            _scope = scope;
-            IsInitialized = true;
-            OnInitialize();
-        }
-
-        void IServiceLifecycle.Destroy()
-        {
-            if (!IsInitialized) return;
-
-            OnDestroyService();
-            IsInitialized = false;
-            _world = null;
-            _scope = null;
-        }
-
-        protected T Require<T>() where T : class, IService
-            => _world.Require<T>(_scope);
-
-        protected bool TryGet<T>(out T service) where T : class, IService
-            => _world.TryGet(_scope, out service);
-
-        protected T RequireApp<T>() where T : class, IService
-            => _world.App.Require<T>();
-
-        protected T RequireScene<T>() where T : class, IService
-            => _world.Scene.Require<T>();
-
-        protected T RequireGameplay<T>() where T : class, IService
-            => _world.Gameplay.Require<T>();
-
-        protected virtual void OnInitialize()
-        {
-        }
-
-        protected virtual void OnDestroyService()
-        {
-        }
-
-        [SerializeField] private bool _dontDestroyOnLoad = false;
+        [SerializeField] private bool _dontDestroyOnLoad;
 
         protected virtual void Awake()
         {
-            var scope = ResolveOrCreateScope();
-
-            if (scope.HasContract(GetType()))
-            {
-                Destroy(gameObject);
-                return;
-            }
-
             if (_dontDestroyOnLoad)
                 DontDestroyOnLoad(gameObject);
 
-            scope.RegisterSelf(this);
+            AppServices.Register(this, GetServiceContracts());
         }
 
-        private void OnDestroy()
+        protected virtual void OnDestroy()
         {
-            if (!IsInitialized) return;
-            if (!AppServices.HasWorld) return;
-            if (!TryResolveScope(out var scope)) return;
-
-            scope.Unregister(this);
+            AppServices.Unregister(this);
         }
 
-        private static ServiceScope ResolveOrCreateScope()
-        {
-            var kind = ScopeKindCache<TScope>.Kind;
-            if (kind == ServiceScopeKind.App) return AppServices.App;
-            if (kind == ServiceScopeKind.Scene) return AppServices.Scene;
-            return AppServices.Gameplay;
-        }
+        /// <summary>
+        /// 除具体类型外额外暴露的契约。默认只按具体类型可解析；
+        /// 用 <see cref="MonoServiceBehaviour{TContract}"/> 或重写本方法声明接口契约。
+        /// </summary>
+        protected virtual Type[] GetServiceContracts() => Array.Empty<Type>();
 
-        private static bool TryResolveScope(out ServiceScope scope)
-        {
-            var kind = ScopeKindCache<TScope>.Kind;
-            if (kind == ServiceScopeKind.App)
-            {
-                scope = AppServices.App;
-                return true;
-            }
+        protected T Require<T>() where T : class, IService => AppServices.Require<T>();
 
-            if (kind == ServiceScopeKind.Scene)
-            {
-                scope = AppServices.Scene;
-                return true;
-            }
-
-            scope = AppServices.Gameplay;
-            return true;
-        }
+        protected bool TryGet<T>(out T service) where T : class, IService => AppServices.TryGet(out service);
     }
 
-    public static class ScopeKindCache<TScope>
-        where TScope : IScope
+    /// <summary>
+    /// 额外暴露一个接口契约的 Mono 服务，等价于 <see cref="AppServices.Register{TContract}(IService)"/>。
+    /// </summary>
+    public abstract class MonoServiceBehaviour<TContract> : MonoServiceBehaviour
+        where TContract : class, IService
     {
-        public static readonly ServiceScopeKind Kind = Resolve();
-
-        private static ServiceScopeKind Resolve()
-        {
-            if (typeof(TScope) == typeof(AppScope)) return ServiceScopeKind.App;
-            if (typeof(TScope) == typeof(SceneScope)) return ServiceScopeKind.Scene;
-            if (typeof(TScope) == typeof(GameplayScope)) return ServiceScopeKind.Gameplay;
-            throw new System.InvalidOperationException(ZString.Format("Unsupported service scope: {0}.", typeof(TScope).FullName));
-        }
+        protected override Type[] GetServiceContracts() => new[] { typeof(TContract) };
     }
 }

@@ -42,7 +42,7 @@ namespace AlicizaX.Audio.Tests
         internal AudioFixture(int capacity = 8, float ttl = 30, int voices = 8, int initialVoices = 0,
             AudioCachePolicy policy = AudioCachePolicy.Ttl, bool initialize = true)
         {
-            Assert.That(AppServices.HasWorld, Is.False, "Tests must not take over a running service world.");
+            Assert.That(AppServices.IsAvailable, Is.False, "Tests must not take over a running service registry.");
             Active = this;
             MemoryPoolRegistry.InitializeMainThread();
             Root = Resources.Keep(new GameObject("Audio audit"));
@@ -61,9 +61,9 @@ namespace AlicizaX.Audio.Tests
             }
             Config = new AudioServiceConfig { ClipCacheCapacity = capacity, ClipCacheTtl = ttl, DefaultClipCachePolicy = policy };
             Resources.Service.IdleAssetCapacity = 0;
-            var world = AppServices.EnsureWorld();
-            world.App.Register<IResourceService>(Resources.Service);
-            world.App.Register<IAudioService>(Audio);
+            var registry = AppServices.GetOrCreateRegistry();
+            registry.Register<IResourceService>(Resources.Service);
+            registry.Register<IAudioService>(Audio);
             if (initialize) Reinitialize();
         }
 

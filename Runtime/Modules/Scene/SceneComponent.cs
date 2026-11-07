@@ -1,18 +1,29 @@
-using AlicizaX;
 using UnityEngine;
 
 namespace AlicizaX.Scene.Runtime
 {
     [DisallowMultipleComponent]
     [AddComponentMenu("Game Framework/Scene")]
+    [DefaultExecutionOrder(-600)]
     public sealed class SceneComponent : MonoBehaviour
     {
+        private ISceneService _sceneService;
+
         private void Awake()
         {
-            if (!AppServices.App.TryGet<ISceneService>(out _))
+            _sceneService = new SceneService();
+            AppServices.Register<ISceneService>(_sceneService);
+        }
+
+        private void OnDestroy()
+        {
+            if (_sceneService == null)
             {
-                AppServices.App.Register<ISceneService>(new SceneService());
+                return;
             }
+
+            AppServices.Unregister(_sceneService);
+            _sceneService = null;
         }
     }
 }

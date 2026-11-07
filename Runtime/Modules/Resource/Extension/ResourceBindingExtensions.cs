@@ -87,7 +87,7 @@ namespace AlicizaX.Resource.Runtime
 
         private static ResourceScope OwnerScope(Component target)
         {
-            return ((ResourceService)AppServices.App.Require<IResourceService>()).OwnerScope(target.gameObject, ResourceScopeSource.Binding, null);
+            return ((ResourceService)AppServices.Require<IResourceService>()).OwnerScope(target.gameObject, ResourceScopeSource.Binding, null);
         }
 
         private static void Bind(in ResourceScope scope, Component target, ResourceBindingSlot slot, string location, ResourceBindingOptions options)

@@ -357,7 +357,7 @@ namespace AlicizaX.Timer.Runtime
             AdvanceQueue(true, Time.unscaledTimeAsDouble);
         }
 
-        protected override void OnDestroyService()
+        protected override void OnDispose()
         {
             _isDestroyed = true;
             ClearAll();

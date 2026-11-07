@@ -143,7 +143,7 @@ namespace AlicizaX.Audio.Runtime
 
         private bool TryBindService()
         {
-            return AppServices.HasWorld && AppServices.App.TryGet(out _audioService);
+            return AppServices.TryGet(out _audioService);
         }
 
         private void StartPlayback()

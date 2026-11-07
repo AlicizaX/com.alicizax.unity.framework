@@ -22,8 +22,8 @@ namespace AlicizaX.GameObjectPool.Tests
         {
             MemoryPoolRegistry.InitializeMainThread();
             _resources = new ResourceFixture();
-            AppServices.EnsureWorld();
-            AppServices.App.Register<IResourceService>(_resources.Service);
+            AppServices.GetOrCreateRegistry();
+            AppServices.Register<IResourceService>(_resources.Service);
             _prefab = _resources.Keep(new GameObject("yoo-prefab"));
             _resources.Loader.Assets["fx/hit"] = _prefab;
             _loader = new YooAssetPrefabLoader();

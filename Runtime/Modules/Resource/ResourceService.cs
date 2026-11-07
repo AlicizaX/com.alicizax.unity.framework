@@ -154,7 +154,7 @@ namespace AlicizaX.Resource.Runtime
 #endif
         }
 
-        protected override void OnDestroyService()
+        protected override void OnDispose()
         {
             Shutdown();
         }

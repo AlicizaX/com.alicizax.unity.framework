@@ -1,0 +1,6 @@
+{
+    "name": "AlicizaX.Framework.Scene.PlayMode.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "UniTask.Runtime", "YooAsset"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

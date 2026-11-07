@@ -133,7 +133,7 @@ namespace AlicizaX.Audio.Tests
                 Assert.That(success, Is.False);
                 Assert.That(f.Audio.Preload("a"), Is.False);
             });
-            AppServices.App.Unregister(f.Audio);
+            AppServices.Unregister(f.Audio);
             Assert.That(calls, Is.EqualTo(1));
             yield return AudioFixture.Frames();
             Assert.That(f.Loader.LiveHandles, Is.Zero);

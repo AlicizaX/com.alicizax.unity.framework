@@ -30,8 +30,8 @@ namespace AlicizaX.Resource.Tests
         {
             f.Prefab("ui/Home");
             f.Sprite("icon");
-            AppServices.EnsureWorld();
-            AppServices.App.Register<IResourceService>(f.Service);
+            AppServices.GetOrCreateRegistry();
+            AppServices.Register<IResourceService>(f.Service);
             GameObject instance = null;
             try
             {

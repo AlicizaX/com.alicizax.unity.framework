@@ -275,18 +275,19 @@ namespace AlicizaX
                     return;
                 }
 
-                if (!AppServices.HasWorld)
+                if (!AppServices.IsAvailable)
                 {
                     return;
                 }
 
-                if (AppServices.App.TryGet(out UtilityLoopService service))
+                if (AppServices.TryGet(out UtilityLoopService service))
                 {
                     _loopService = service;
                     return;
                 }
 
-                _loopService = AppServices.App.RegisterSelf(new UtilityLoopService());
+                _loopService = new UtilityLoopService();
+                AppServices.Register(_loopService);
             }
 
             private static UtilityLoopService EnsureLoopService()
@@ -392,7 +393,7 @@ namespace AlicizaX
                 {
                 }
 
-                protected override void OnDestroyService()
+                protected override void OnDispose()
                 {
                     Clear();
                 }

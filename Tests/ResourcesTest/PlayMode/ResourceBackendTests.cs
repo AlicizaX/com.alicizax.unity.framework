@@ -67,9 +67,9 @@ namespace AlicizaX.Resource.Tests
             ((IList)settingsType.GetField("Packages").GetValue(settings)).Add(collectorPackage);
             settingsField.SetValue(null, settings);
 
-            AppServices.EnsureWorld();
+            AppServices.GetOrCreateRegistry();
             service = new ResourceService { DefaultPackageName = packageName, PlayMode = EPlayMode.EditorSimulateMode };
-            AppServices.App.Register<IResourceService, IResourcePackageService>(service);
+            AppServices.Register<IResourceService, IResourcePackageService>(service);
             driver = ResourceFrameDriver.Start(service);
             initializedGlobal = !YooAssets.IsInitialized;
             service.Initialize();
@@ -219,7 +219,7 @@ namespace AlicizaX.Resource.Tests
         public IEnumerator DestroyedServiceCannotInitializePackages()
         {
             var cachedPackage = package;
-            AppServices.App.Unregister(service);
+            AppServices.Unregister(service);
             bool result = true;
             yield return ResourceFixture.WaitFor(service.InitPackageAsync(), success => result = success);
             Assert.That(result, Is.False);
@@ -232,7 +232,7 @@ namespace AlicizaX.Resource.Tests
         {
             var held = service.LoadLease<TextAsset>(folder + "/text.txt");
             Assert.That(held.IsValid, Is.True);
-            AppServices.App.Unregister(service);
+            AppServices.Unregister(service);
             Assert.That(held.IsValid, Is.False);
             yield return WaitForBackendRelease();
         }

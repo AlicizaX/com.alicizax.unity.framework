@@ -99,7 +99,7 @@ namespace AlicizaX.MemoryPoolTests
             f.Text("a");
             f.Loader.CompleteImmediately = false;
             var operation = f.Service.LoadLeaseAsync<TextAsset>("a");
-            typeof(ResourceService).GetMethod("OnDestroyService", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(f.Service, null);
+            typeof(ResourceService).GetMethod("OnDispose", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(f.Service, null);
             AssetLease<TextAsset> lease = default;
             yield return f.Wait(operation, value => lease = value);
             Assert.That(lease.IsValid, Is.False);

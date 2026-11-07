@@ -14,7 +14,6 @@ namespace AlicizaX.Resource.Runtime
         #region Propreties
 
         private ResourceService _resourceService;
-        private ServiceScope _resourceScope;
 
         private bool _forceUnloadUnusedAssets = false;
 
@@ -127,9 +126,8 @@ namespace AlicizaX.Resource.Runtime
 
         private void Awake()
         {
-            _resourceScope = AppServices.App;
             _resourceService = new ResourceService();
-            _resourceScope.Register<IResourceService, IResourcePackageService>(_resourceService);
+            AppServices.Register<IResourceService, IResourcePackageService>(_resourceService);
 
             Application.lowMemory += OnLowMemory;
 #if UNITY_EDITOR
@@ -153,9 +151,8 @@ namespace AlicizaX.Resource.Runtime
         private void OnDestroy()
         {
             Application.lowMemory -= OnLowMemory;
-            _resourceScope?.Unregister(_resourceService);
+            AppServices.Unregister(_resourceService);
             _resourceService = null;
-            _resourceScope = null;
         }
 
         #region 释放资源

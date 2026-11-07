@@ -24,7 +24,7 @@ namespace AlicizaX.Resource.Tests
         [SetUp]
         public void SetUp()
         {
-            AppServices.EnsureWorld();
+            AppServices.GetOrCreateRegistry();
             root = new GameObject("ResourceModuleAudit");
         }
 
@@ -81,7 +81,7 @@ namespace AlicizaX.Resource.Tests
             var task = service.LoadLeaseAsync<TextAsset>("module");
             loader.Complete("module");
             Assert.That(task.GetAwaiter().IsCompleted, Is.False);
-            AppServices.EnsureWorld().Tick(0.016f);
+            AppServices.GetOrCreateRegistry().Tick(0.016f);
             Assert.That(task.GetAwaiter().IsCompleted, Is.True);
             var lease = task.GetAwaiter().GetResult();
             Assert.That(lease.Asset, Is.SameAs(asset));
@@ -159,9 +159,9 @@ namespace AlicizaX.Resource.Tests
         {
             root.AddComponent<ResourceComponent>();
             var original = AppServices.Require<IResourceService>();
-            AppServices.App.Unregister(original);
+            AppServices.Unregister(original);
             var replacement = new ResourceService();
-            AppServices.App.Register<IResourceService, IResourcePackageService>(replacement);
+            AppServices.Register<IResourceService, IResourcePackageService>(replacement);
             Assert.DoesNotThrow(() => replacement.Initialize());
             Assert.That(AppServices.Require<IResourcePackageService>(), Is.SameAs(replacement));
         }

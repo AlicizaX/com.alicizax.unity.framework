@@ -23,7 +23,7 @@ namespace AlicizaX
             get
             {
                 if (_resources.Service == null)
-                    _resources = AppServices.App.Require<IResourceService>().CreateScope(GetType().Name);
+                    _resources = AppServices.Require<IResourceService>().CreateScope(GetType().Name);
                 return _resources;
             }
         }

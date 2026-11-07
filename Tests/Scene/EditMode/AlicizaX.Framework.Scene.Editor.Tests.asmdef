@@ -1,0 +1,7 @@
+{
+    "name": "AlicizaX.Framework.Scene.Editor.Tests",
+    "references": ["AlicizaX.Framework.Runtime", "UniTask.Runtime"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

@@ -54,12 +54,12 @@ namespace AlicizaX.Audio.Tests
             AudioFixture.Set(component, "m_AudioMixer", f.Mixer);
             AudioFixture.Set(component, "m_AudioListener", f.Listener);
             AudioFixture.Set(component, "m_AudioGroupConfigs", f.Groups);
-            LogAssert.Expect(LogType.Exception, new Regex("InvalidOperationException: Scope .* already contains contract"));
+            LogAssert.Expect(LogType.Exception, new Regex("InvalidOperationException: Contract .* is already bound to"));
             host.SetActive(true);
             yield return null;
             Assert.That(host.transform.childCount, Is.Zero);
             Assert.That(f.Audio.IsPlaying(handle), Is.True);
-            Assert.That(AppServices.App.Require<IAudioService>(), Is.SameAs(f.Audio));
+            Assert.That(AppServices.Require<IAudioService>(), Is.SameAs(f.Audio));
         }
 
         [UnityTest]

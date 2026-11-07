@@ -72,8 +72,7 @@ namespace AlicizaX
                 return;
             }
 
-            if (!AppServices.HasWorld ||
-                !AppServices.App.TryGet<IGameObjectPoolDebugService>(out IGameObjectPoolDebugService debugService))
+            if (!AppServices.TryGet<IGameObjectPoolDebugService>(out IGameObjectPoolDebugService debugService))
             {
                 _runtimeRoot.Add(AlicizaEditorUI.CreateRuntimePlaceholder(
                     "GameObject pool service is not initialized."));

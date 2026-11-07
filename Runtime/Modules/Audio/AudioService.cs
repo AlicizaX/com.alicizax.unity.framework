@@ -92,7 +92,7 @@ namespace AlicizaX.Audio.Runtime
 
         protected override void OnInitialize() { }
 
-        protected override void OnDestroyService()
+        protected override void OnDispose()
         {
             Shutdown();
         }
@@ -122,7 +122,7 @@ namespace AlicizaX.Audio.Runtime
                 _listenerCache = audioListener;
                 BuildConfigMap(audioGroupConfigs);
                 InitializeAudioMixer(audioMixer);
-                _resourceService = AppServices.App.Require<IResourceService>();
+                _resourceService = AppServices.Require<IResourceService>();
                 InitializeInstanceRoot(instanceRoot);
                 InitializeHandleSystem();
                 InitializeCategories();

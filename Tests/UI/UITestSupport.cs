@@ -250,11 +250,11 @@ namespace AlicizaX.UI.Tests
 
         internal UIFixture()
         {
-            Assert.That(AppServices.HasWorld, Is.False, "UI tests require an isolated service world.");
+            Assert.That(AppServices.IsAvailable, Is.False, "UI tests require an isolated service registry.");
             MemoryPoolRegistry.InitializeMainThread();
-            AppServices.EnsureWorld();
+            AppServices.GetOrCreateRegistry();
             Timer = new TimerService(256);
-            AppServices.App.Register<ITimerService>(Timer);
+            AppServices.Register<ITimerService>(Timer);
             Register<UIProbeWindow, UIWindowHolder>("UIProbeWindow", -1, true);
             Register<UISecondWindow, UIWindowHolder>("UIProbeWindow", -1, false);
             Register<UIThirdWindow, UIWindowHolder>("UIProbeWindow", -1, false);
@@ -277,7 +277,7 @@ namespace AlicizaX.UI.Tests
             canvas.worldCamera.cullingMask = 1 << UIComponent.UIShowLayer;
             Service = new UIService(Loader);
             Service.Initialize(Root.transform, true);
-            AppServices.App.Register<IUIService>(Service);
+            AppServices.Register<IUIService>(Service);
         }
 
         private static void Register<T, THolder>(string resource, int cacheTime, bool update)
@@ -302,7 +302,7 @@ namespace AlicizaX.UI.Tests
             try
             {
 #if UNITY_EDITOR
-                if (AppServices.HasWorld) Verify();
+                if (AppServices.IsAvailable) Verify();
 #endif
             }
             finally

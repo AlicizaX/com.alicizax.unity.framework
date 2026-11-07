@@ -223,7 +223,7 @@ namespace AlicizaX.Audio.Tests
             ulong handle = f.Audio.Play(AudioType.Sound, clip, true);
             Object.Destroy(f.Source(handle).gameObject);
             yield return null;
-            AppServices.App.Unregister(f.Audio);
+            AppServices.Unregister(f.Audio);
             yield return null;
             Assert.That(f.Root.GetComponentsInChildren<AudioSource>(true), Is.Empty);
             Assert.That(f.Root, Is.Not.Null, "A borrowed root must survive service shutdown.");

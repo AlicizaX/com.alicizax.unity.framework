@@ -61,7 +61,7 @@ namespace AlicizaX.GameObjectPool.Tests
             Catalog(Entry("fx/a", soft: 64, hard: 64));
             UniTask warmup = Service.WarmupAsync("fx/a", 64);
             Assert.That(RuntimePool("fx/a").TotalCount, Is.InRange(1, 8));
-            ((IServiceLifecycle)Service).Destroy();
+            ((IServiceLifecycle)Service).Dispose();
             Assert.That(PoolCount(), Is.Zero);
             Service = null;
             yield return Canceled(warmup);

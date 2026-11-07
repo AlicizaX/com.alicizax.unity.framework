@@ -29,7 +29,7 @@ namespace AlicizaX.UI.Runtime
         public UIService() : this(new UIResourceLoader()) { }
         internal UIService(IUIResourceLoader resourceLoader) => ResourceLoader = resourceLoader;
 
-        protected override void OnDestroyService() => DestroyAllManagedUI();
+        protected override void OnDispose() => DestroyAllManagedUI();
 
         private UIWindowRecord GetWindowRecord(RuntimeTypeHandle handle)
         {

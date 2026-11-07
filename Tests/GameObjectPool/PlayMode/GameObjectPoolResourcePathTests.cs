@@ -20,11 +20,11 @@ namespace AlicizaX.GameObjectPool.Tests
         {
             MemoryPoolRegistry.InitializeMainThread();
             _resources = new ResourceFixture();
-            AppServices.EnsureWorld();
-            AppServices.App.Register<IResourceService>(_resources.Service);
+            AppServices.GetOrCreateRegistry();
+            AppServices.Register<IResourceService>(_resources.Service);
             _container = new GameObject("gop-resource-container").transform;
             _service = new GameObjectPoolService(_container);
-            ((IServiceLifecycle)_service).Initialize(null, null);
+            ((IServiceLifecycle)_service).Initialize(null);
             var prefab = _resources.Keep(new GameObject("fx_hit"));
             _resources.Loader.Assets["fx/hit"] = prefab;
             var config = ScriptableObject.CreateInstance<PoolConfigScriptableObject>();
@@ -44,7 +44,7 @@ namespace AlicizaX.GameObjectPool.Tests
             {
                 if (_service != null)
                 {
-                    ((IServiceLifecycle)_service).Destroy();
+                    ((IServiceLifecycle)_service).Dispose();
                     Assert.That(GameObjectPoolFixture.Read<int>(_service, "_poolCount"), Is.Zero);
                 }
             }

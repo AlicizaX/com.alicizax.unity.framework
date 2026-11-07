@@ -211,10 +211,10 @@ namespace AlicizaX.Timer.Tests
             }, s => Assert.That(s.Bytes, Is.InRange(32 * 40000, 32 * 60000)));
             for (int i = 0; i < services.Length; i++)
             {
-                var world = new ServiceWorld();
-                world.App.Register<ITimerService>(services[i]);
+                var registry = new ServiceRegistry();
+                registry.Register<ITimerService>(services[i]);
                 services[i].AddTimer(TimerProbe.CountArg, new TimerArg(), 30, true);
-                world.Dispose();
+                registry.Dispose();
                 TimerProbe.Statistics(services[i], 0, 0);
                 TimerProbe.Ledger(services[i]);
             }

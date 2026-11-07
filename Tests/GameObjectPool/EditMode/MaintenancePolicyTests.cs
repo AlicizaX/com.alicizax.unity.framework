@@ -161,7 +161,7 @@ namespace AlicizaX.GameObjectPool.Tests
             Catalog(Entry("fx/hit", PoolPolicy.Fixed, minIdle: 0, soft: 8, hard: 16));
             FillIdle("fx/hit", 3);
             Assert.That(PoolCount(), Is.EqualTo(1));
-            ((IServiceLifecycle)Service).Destroy();
+            ((IServiceLifecycle)Service).Dispose();
             Assert.That(PoolCount(), Is.Zero);
             Assert.That(MaintenanceCount(), Is.Zero);
             Service = null;
