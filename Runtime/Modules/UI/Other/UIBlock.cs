@@ -1,11 +1,10 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
-
-
-    public class UIBlock : Graphic, ICanvasRaycastFilter
+    /// <summary>不绘制、只拦截射线的全屏 Graphic。</summary>
+    public class UIBlock : Graphic
     {
         public override bool raycastTarget
         {
@@ -13,49 +12,18 @@ namespace AlicizaX.UI.Runtime
             set { }
         }
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage(
-            "StyleCop.CSharp.NamingRules",
-            "SA1300:ElementMustBeginWithUpperCaseLetter",
-            Justification = "Reviewed. Suppression is OK here.")]
-        public override Texture mainTexture
-        {
-            get { return null; }
-        }
+        public override Texture mainTexture => null;
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage(
-            "StyleCop.CSharp.NamingRules",
-            "SA1300:ElementMustBeginWithUpperCaseLetter",
-            Justification = "Reviewed. Suppression is OK here.")]
-        public override Material materialForRendering
-        {
-            get { return null; }
-        }
+        public override Material materialForRendering => null;
 
-        public bool IsRaycastLocationValid(
-            Vector2 screenPoint, Camera eventCamera)
-        {
-            return true;
-        }
+        protected override void OnPopulateMesh(VertexHelper vh) => vh.Clear();
 
-        protected override void OnPopulateMesh(VertexHelper vh)
-        {
-            vh.Clear();
-        }
+        public override void SetAllDirty() { }
 
-        public override void SetAllDirty()
-        {
-        }
+        public override void SetLayoutDirty() { }
 
-        public override void SetLayoutDirty()
-        {
-        }
+        public override void SetVerticesDirty() { }
 
-        public override void SetVerticesDirty()
-        {
-        }
-
-        public override void SetMaterialDirty()
-        {
-        }
+        public override void SetMaterialDirty() { }
     }
 }

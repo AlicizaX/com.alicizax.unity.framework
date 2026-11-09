@@ -1,175 +1,79 @@
-using System;
 using System.Collections.Generic;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
+    /// <summary>
+    /// 页签窗口：未加载的页签在首次切换时异步创建。<see cref="SwitchTab"/> 被更新的切换取代时返回 null。
+    /// </summary>
     public abstract class UITabWindow<T> : UIWindow<T> where T : UIHolderObjectBase
     {
         private sealed class TabEntry
         {
-            internal readonly UIMetadata Definition;
+            internal readonly UIMetaRegistry.UIMetaInfo Info;
             internal readonly Transform Parent;
             internal UIWidget View;
-            internal bool Loading;
 
-            internal TabEntry(UIMetadata definition, Transform parent)
+            internal TabEntry(UIMetaRegistry.UIMetaInfo info, Transform parent)
             {
-                Definition = definition;
+                Info = info;
                 Parent = parent;
             }
         }
 
-        private sealed class TabRequest
-        {
-            internal readonly TabEntry Entry;
-            internal readonly object[] Arguments;
-            internal readonly UniTaskCompletionSource<UIWidget> Completion = new();
-
-            internal TabRequest(TabEntry entry, object[] arguments)
-            {
-                Entry = entry;
-                Arguments = arguments;
-            }
-        }
-
         private readonly List<TabEntry> _tabs = new();
-        private readonly Dictionary<RuntimeTypeHandle, TabEntry> _tabsByType = new(RuntimeTypeHandleComparer.Instance);
-        private UIWidget _activeTab;
-        private TabRequest _request;
-        private bool _switching;
-        private int _switchRound;
+        private int _activeIndex = -1;
+        private int _switchVersion;
+
+        public UIWidget ActiveTab => _activeIndex >= 0 ? _tabs[_activeIndex].View : null;
 
         protected void InitTabVirtuallyView<TTab>(Transform parent = null) where TTab : UIWidget =>
-            RegisterTab(typeof(TTab), parent);
+            AddTab(UIMetaRegistry.Require(typeof(TTab)), parent);
 
         protected void InitTabVirtuallyView(string typeName, Transform parent = null)
         {
-            if (UIMetaRegistry.TryGet(typeName, out var info))
-                RegisterTab(Type.GetTypeFromHandle(info.RuntimeTypeHandle), parent);
-            else Log.Error("[UI] Unknown Tab type: {0}.", typeName);
-        }
-
-        private void RegisterTab(Type type, Transform parent)
-        {
-            if (_tabsByType.ContainsKey(type.TypeHandle)) return;
-            if (!typeof(UIWidget).IsAssignableFrom(type))
+            if (!UIMetaRegistry.TryGet(typeName, out UIMetaRegistry.UIMetaInfo info) || info.IsWindow)
             {
-                Log.Error("[UI] Tab type must be a Widget: {0}", type);
+                Log.Error("[UI] Unknown or invalid Tab type: {0}.", typeName);
                 return;
             }
-            UIMetadata metadata = UIMetadata.Create(type);
-            if (metadata == null) return;
-            var entry = new TabEntry(metadata, parent != null ? parent : baseui.RectTransform);
-            _tabs.Add(entry);
-            _tabsByType.Add(type.TypeHandle, entry);
+            AddTab(info, parent);
         }
 
-        public UniTask<UIWidget> SwitchTab(int index, params object[] userDatas)
+        /// <summary>
+        /// 切到指定页签；结果为本次切换生效后的页签。已加载页签之间切换同步完成且不分配。
+        /// </summary>
+        public async UniTask<UIWidget> SwitchTab(int index, object userData = null)
         {
-            if (DestroyRequested) return UniTask.FromResult<UIWidget>(null);
             if ((uint)index >= (uint)_tabs.Count)
             {
                 Log.Error("[UI] Invalid tab index: {0}", index);
-                return UniTask.FromResult<UIWidget>(null);
+                return null;
             }
-            int round = ++_switchRound;
+            int version = ++_switchVersion;
             TabEntry entry = _tabs[index];
-            UIWidget target = entry.View;
-            UIWidget active = _activeTab;
-            if (_request == null && !_switching && target != null && target.State != UIState.Closing &&
-                (active == null || active.State != UIState.Closing))
+            if (entry.View == null || entry.View.State == UIState.Destroyed)
             {
-                if (active != null && active != target)
-                {
-                    active.Close();
-                    if (round != _switchRound || DestroyRequested || entry.View != target)
-                        return UniTask.FromResult<UIWidget>(null);
-                }
-                if (active == null || active == target || active.State != UIState.Closing)
-                {
-                    _activeTab = target;
-                    target.Open(userDatas);
-                    return UniTask.FromResult(round == _switchRound && target.IsOpen ? target : null);
-                }
+                entry.View = AddWidget(entry.Info, entry.Parent);
+                if (entry.View == null) return null;
+                entry.View.LoadHolderAsync(entry.Parent, false, CancellationToken.None).Forget();
             }
-
-            TabRequest previous = _request;
-            var request = new TabRequest(entry, userDatas);
-            _request = request;
-            previous?.Completion.TrySetResult(null);
-            // UniTask 续体内联执行：上面的完成回调可能重入 SwitchTab 并替换 _request，此时返回新请求的任务。
-            if (_request != request) return request.Completion.Task;
-            if (entry.View != null) SwitchLoadedTab().Forget();
-            else if (!entry.Loading)
-            {
-                entry.Loading = true;
-                LoadTab(entry).Forget();
-            }
-            return request.Completion.Task;
+            await entry.View.AwaitLoaded();
+            if (version != _switchVersion || entry.View.State == UIState.Destroyed) return null;
+            if (_activeIndex >= 0 && _activeIndex != index) _tabs[_activeIndex].View.Close();
+            _activeIndex = index;
+            entry.View.Open(userData);
+            return entry.View;
         }
 
-        private async UniTask LoadTab(TabEntry entry)
+        private void AddTab(UIMetaRegistry.UIMetaInfo info, Transform parent)
         {
-            try { entry.View = await CreateWidgetUIAsync(entry.Definition, entry.Parent, false); }
-            finally { entry.Loading = false; }
-            if (_request?.Entry != entry) return;
-            if (entry.View == null || DestroyRequested) CompleteTab(_request, null);
-            else SwitchLoadedTab().Forget();
-        }
-
-        private async UniTask SwitchLoadedTab()
-        {
-            if (_switching) return;
-            _switching = true;
-            try
-            {
-                while (_request != null && !DestroyRequested)
-                {
-                    TabRequest request = _request;
-                    UIWidget target = request.Entry.View;
-                    if (target == null) return;
-                    if (_activeTab != null && _activeTab != target)
-                    {
-                        UIWidget previous = _activeTab;
-                        _activeTab = null;
-                        previous.Close();
-                        await previous.AwaitClosed();
-                        continue;
-                    }
-                    if (target.State == UIState.Closing)
-                    {
-                        await target.AwaitClosed();
-                        continue;
-                    }
-                    _activeTab = target;
-                    target.Open(request.Arguments);
-                    CompleteTab(request, target.IsOpen ? target : null);
-                }
-            }
-            finally { _switching = false; }
-        }
-
-        private void CompleteTab(TabRequest request, UIWidget view)
-        {
-            if (request == null || _request != request) return;
-            _request = null;
-            request.Completion.TrySetResult(view);
-        }
-
-        internal override void OnWidgetRemoved(UIWidget widget)
-        {
-            if (_activeTab == widget) _activeTab = null;
-            if (_tabsByType.TryGetValue(widget.GetType().TypeHandle, out var entry) && entry.View == widget)
-                entry.View = null;
-            if (DestroyRequested) CompleteTab(_request, null);
-        }
-
-        internal override void OnDestroyStarted()
-        {
-            base.OnDestroyStarted();
-            CompleteTab(_request, null);
+            if (info == null) return;
+            for (int i = 0; i < _tabs.Count; i++)
+                if (_tabs[i].Info.Handle.Equals(info.Handle)) return;
+            _tabs.Add(new TabEntry(info, parent != null ? parent : baseui.RectTransform));
         }
     }
 }

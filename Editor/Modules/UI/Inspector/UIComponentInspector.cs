@@ -401,8 +401,7 @@ namespace AlicizaX.UI.Editor
         {
             string windowName = GetWindowName(info);
 
-            if (!(info.State == UIState.CreatedUI && info.Processing) && info.HolderTransform == null &&
-                info.State != UIState.Uninitialized && info.State != UIState.Destroyed)
+            if (info.HolderTransform == null && info.State != UIState.Loading && info.State != UIState.Destroyed)
             {
                 _alerts.Add(windowName + " holder transform is missing in state " + info.State + ".");
             }
@@ -607,7 +606,7 @@ namespace AlicizaX.UI.Editor
                 return;
             }
 
-            if (!TryGetNavigationDebug(out IUINavigationDebug debug))
+            if (!AppServices.TryGet<IUIService>(out IUIService uiService) || uiService is not IUIDebugService debug)
             {
                 SetCardMeta(_navigationCard, "No Service");
                 _navigationContent.Add(CreateWarningLabel("UI Navigation is not initialized."));
@@ -617,16 +616,16 @@ namespace AlicizaX.UI.Editor
             SetCardMeta(_navigationCard, "History " + debug.HistoryCount);
             ShowControls(_navigationControls);
 
-            BuildNavigationSummary(debug);
+            BuildNavigationSummary(uiService, debug);
             BuildNavigationHistory(debug);
         }
 
-        private void BuildNavigationSummary(IUINavigationDebug debug)
+        private void BuildNavigationSummary(IUIService uiService, IUIDebugService debug)
         {
             AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Navigation Summary");
             _navigationContent.Add(section);
 
-            System.Type current = debug.Current;
+            System.Type current = uiService.Current;
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Current",
@@ -635,8 +634,8 @@ namespace AlicizaX.UI.Editor
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Can Back",
-                debug.CanBack ? "Yes" : "No",
-                debug.CanBack ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+                uiService.CanBack ? "Yes" : "No",
+                uiService.CanBack ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "History",
@@ -655,7 +654,7 @@ namespace AlicizaX.UI.Editor
             return controls;
         }
 
-        private void BuildNavigationHistory(IUINavigationDebug debug)
+        private void BuildNavigationHistory(IUIDebugService debug)
         {
             if (!_showNavigationHistory)
             {
@@ -766,18 +765,6 @@ namespace AlicizaX.UI.Editor
 
             debugService = uiService as IUIDebugService;
             return debugService != null;
-        }
-
-        private static bool TryGetNavigationDebug(out IUINavigationDebug debug)
-        {
-            debug = null;
-            if (!AppServices.TryGet<IUIService>(out IUIService uiService))
-            {
-                return false;
-            }
-
-            debug = uiService as IUINavigationDebug;
-            return debug != null;
         }
 
         private static string GetWindowTitle(UIWindowDebugInfo info, bool cached)

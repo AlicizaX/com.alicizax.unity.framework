@@ -1,8 +1,18 @@
-﻿using System;
+using System;
 using UnityEngine;
 
 namespace AlicizaX.UI.Runtime
 {
+    /// <summary>窗口关闭后的缓存时长（秒）。</summary>
+    public static class UICacheTime
+    {
+        /// <summary>关闭即销毁。</summary>
+        public const int None = 0;
+
+        /// <summary>常驻缓存，不计时（任意负数均表示常驻）。</summary>
+        public const int Forever = -1;
+    }
+
     [AttributeUsage(AttributeTargets.Class)]
     public class WindowAttribute : Attribute
     {
@@ -10,7 +20,7 @@ namespace AlicizaX.UI.Runtime
 
         public readonly int CacheTime;
 
-        public WindowAttribute(UILayer windowLayer, int cacheTime = 0)
+        public WindowAttribute(UILayer windowLayer, int cacheTime = UICacheTime.None)
         {
             WindowLayer = windowLayer;
             CacheTime = cacheTime;

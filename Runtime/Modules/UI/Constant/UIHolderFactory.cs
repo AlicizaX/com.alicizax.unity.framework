@@ -7,136 +7,97 @@ using Object = UnityEngine.Object;
 
 namespace AlicizaX.UI.Runtime
 {
+    /// <summary>
+    /// UI 节点的实例化：按 <see cref="UIResRegistry"/> 的资源配置从 Resources 或 AssetBundle 实例化并解析 Holder。
+    /// 对外提供直接创建 Holder 的入口（不经过 UIService，生命周期由调用方自己管理）。
+    /// </summary>
     public static class UIHolderFactory
     {
         private static IResourceService ResourceService => AppServices.Require<IResourceService>();
 
-        public static async UniTask<T> CreateUIHolderAsync<T>(Transform parent) where T : UIHolderObjectBase
+        /// <summary>异步实例化 T 的资源并返回 Holder；失败时记录错误并返回 null。</summary>
+        public static async UniTask<T> CreateUIHolderAsync<T>(Transform parent) where T : UIHolderObjectBase =>
+            (T)await LoadAsync(typeof(T), parent, CancellationToken.None);
+
+        /// <summary>同步实例化 T 的资源并返回 Holder；失败时记录错误并返回 null。</summary>
+        public static T CreateUIHolderSync<T>(Transform parent) where T : UIHolderObjectBase =>
+            (T)Load(typeof(T), parent);
+
+        internal static UIHolderObjectBase Load(Type holderType, Transform parent)
         {
-            if (!UIResRegistry.TryGet(typeof(T).TypeHandle, out var resource)) return null;
+            if (!TryGetResource(holderType, out UIResRegistry.UIResInfo resource)) return null;
+            GameObject node;
             try
             {
-                GameObject obj = await LoadUIResourcesAsync(resource, parent, CancellationToken.None);
-                if (TryBindHolder(obj, typeof(T), resource.Location, out UIHolderObjectBase holder)) return (T)holder;
-                DestroyLoadedObject(obj);
-                return null;
+                node = resource.LoadType == EUIResLoadType.AssetBundle
+                    ? ResourceService.Instantiate(resource.Location, parent)
+                    : InstantiateResourceSync(resource.Location, parent);
             }
             catch (Exception error)
             {
                 Log.Error("[UI] Failed to load {0}: {1}", resource.Location, error);
                 return null;
             }
+            return ResolveHolder(node, holderType, resource.Location);
         }
 
-        public static T CreateUIHolderSync<T>(Transform parent) where T : UIHolderObjectBase
+        internal static async UniTask<UIHolderObjectBase> LoadAsync(Type holderType, Transform parent,
+            CancellationToken cancellationToken)
         {
-            if (!UIResRegistry.TryGet(typeof(T).TypeHandle, out var resource)) return null;
+            if (!TryGetResource(holderType, out UIResRegistry.UIResInfo resource)) return null;
+            GameObject node;
             try
             {
-                GameObject obj = LoadUIResourcesSync(resource, parent);
-                if (TryBindHolder(obj, typeof(T), resource.Location, out UIHolderObjectBase holder)) return (T)holder;
-                DestroyLoadedObject(obj);
-                return null;
+                node = resource.LoadType == EUIResLoadType.AssetBundle
+                    ? await ResourceService.InstantiateAsync(resource.Location, parent, cancellationToken)
+                    : await InstantiateResourceAsync(resource.Location, parent, cancellationToken);
             }
-            catch (Exception error)
+            catch (Exception error) when (error is not OperationCanceledException)
             {
                 Log.Error("[UI] Failed to load {0}: {1}", resource.Location, error);
                 return null;
             }
+            return ResolveHolder(node, holderType, resource.Location);
         }
 
-        internal static async UniTask<GameObject> LoadUIResourcesAsync(UIResRegistry.UIResInfo resource,
-            Transform parent, CancellationToken cancellationToken) =>
-            resource.LoadType == EUIResLoadType.AssetBundle
-                ? await ResourceService.InstantiateAsync(resource.Location, parent, cancellationToken)
-                : await InstantiateResourceAsync(resource.Location, parent, cancellationToken);
-
-        internal static GameObject LoadUIResourcesSync(UIResRegistry.UIResInfo resource, Transform parent) =>
-            resource.LoadType == EUIResLoadType.AssetBundle
-                ? ResourceService.Instantiate(resource.Location, parent)
-                : InstantiateResourceSync(resource.Location, parent);
-
-        internal static async UniTask<bool> CreateUIResourceAsync(UIBase view, Transform parent, CancellationToken token)
+        internal static void DestroyNode(GameObject node)
         {
-            GameObject obj = null;
-            bool bound = false;
-            try
-            {
-                obj = await view.Service.ResourceLoader.LoadAsync(view.Metadata.ResInfo, parent, token);
-                if (token.IsCancellationRequested || view.DestroyRequested) return false;
-                if (!TryBindHolder(obj, view.UIHolderType, view.Metadata.ResInfo.Location, out UIHolderObjectBase holder))
-                    return false;
-                view.BindUIHolder(holder);
-                if (view.DestroyRequested) return false;
-                view.SetDestroyHolderOnDispose(true);
-                bound = true;
-                return true;
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
-            catch (Exception error)
-            {
-                Log.Error("[UI] Failed to load {0}: {1}", view.GetType().Name, error);
-                return false;
-            }
-            finally { if (!bound) DestroyLoadedObject(obj); }
+            if (node == null) return;
+            if (Application.isPlaying) Object.Destroy(node);
+            else Object.DestroyImmediate(node);
         }
 
-        internal static bool CreateUIResourceSync(UIBase view, Transform parent)
+        private static bool TryGetResource(Type holderType, out UIResRegistry.UIResInfo resource)
         {
-            GameObject obj = null;
-            bool bound = false;
-            try
-            {
-                obj = view.Service.ResourceLoader.Load(view.Metadata.ResInfo, parent);
-                if (view.DestroyRequested) return false;
-                if (!TryBindHolder(obj, view.UIHolderType, view.Metadata.ResInfo.Location, out UIHolderObjectBase holder))
-                    return false;
-                view.BindUIHolder(holder);
-                if (view.DestroyRequested) return false;
-                view.SetDestroyHolderOnDispose(true);
-                bound = true;
-                return true;
-            }
-            catch (Exception error)
-            {
-                Log.Error("[UI] Failed to load {0}: {1}", view.GetType().Name, error);
-                return false;
-            }
-            finally { if (!bound) DestroyLoadedObject(obj); }
+            if (UIResRegistry.TryGet(holderType.TypeHandle, out resource)) return true;
+            Log.Error("[UI] UI resource is not registered: {0}.", holderType);
+            return false;
         }
 
-        private static bool TryBindHolder(GameObject obj, Type holderType, string location, out UIHolderObjectBase holder)
+        private static UIHolderObjectBase ResolveHolder(GameObject node, Type holderType, string location)
         {
-            holder = null;
-            if (obj == null)
+            if (node == null)
             {
                 Log.Error("[UI] UI resource could not be loaded: {0}.", location);
-                return false;
+                return null;
             }
-            holder = (UIHolderObjectBase)obj.GetComponent(holderType);
-            if (holder != null) return true;
+            var holder = (UIHolderObjectBase)node.GetComponent(holderType);
+            if (holder != null) return holder;
             Log.Error("[UI] UI resource {0} is missing holder {1}.", location, holderType.FullName);
-            return false;
+            DestroyNode(node);
+            return null;
         }
 
         private static async UniTask<GameObject> InstantiateResourceAsync(string location, Transform parent, CancellationToken token)
         {
             var prefab = (GameObject)await Resources.LoadAsync<GameObject>(location).ToUniTask(cancellationToken: token);
-            if (prefab == null || token.IsCancellationRequested) return null;
-            return Object.Instantiate(prefab, parent);
+            return prefab != null ? Object.Instantiate(prefab, parent) : null;
         }
 
         private static GameObject InstantiateResourceSync(string location, Transform parent)
         {
             GameObject prefab = Resources.Load<GameObject>(location);
             return prefab != null ? Object.Instantiate(prefab, parent) : null;
-        }
-
-        private static void DestroyLoadedObject(GameObject obj)
-        {
-            if (obj == null) return;
-            if (Application.isPlaying) Object.Destroy(obj);
-            else Object.DestroyImmediate(obj);
         }
     }
 }

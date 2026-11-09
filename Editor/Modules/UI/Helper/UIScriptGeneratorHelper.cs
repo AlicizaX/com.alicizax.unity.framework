@@ -939,6 +939,7 @@ namespace AlicizaX.UI.Editor
             }
 
             var targetHolder = targetObject.GetOrAddComponent(scriptType);
+            if (targetHolder is UIHolderObjectBase holder) UIHolderTransitionBinder.Refresh(holder);
             return BindFieldsToComponents(targetHolder, scriptType);
         }
 

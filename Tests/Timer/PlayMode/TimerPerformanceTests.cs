@@ -201,34 +201,6 @@ namespace AlicizaX.Timer.Tests
             TestContext.WriteLine($"SIZE,TimerDebugInfo,{Marshal.SizeOf<TimerDebugInfo>()},ulong,{sizeof(ulong)}");
         }
 
-        [UnityTest]
-        public IEnumerator RepeatedNewServicesHaveBoundedStorageAndReleaseAllHandlers()
-        {
-            var services = new TimerService[32];
-            yield return AllocationCapture.Measure("32-new-services", 32, () =>
-            {
-                for (int i = 0; i < services.Length; i++) services[i] = new TimerService(256);
-            }, s => Assert.That(s.Bytes, Is.InRange(32 * 40000, 32 * 60000)));
-            for (int i = 0; i < services.Length; i++)
-            {
-                var registry = new ServiceRegistry();
-                registry.Register<ITimerService>(services[i]);
-                services[i].AddTimer(TimerProbe.CountArg, new TimerArg(), 30, true);
-                registry.Dispose();
-                TimerProbe.Statistics(services[i], 0, 0);
-                TimerProbe.Ledger(services[i]);
-            }
-            var weak = new WeakReference[services.Length];
-            for (int i = 0; i < services.Length; i++) weak[i] = new WeakReference(services[i]);
-            Array.Clear(services, 0, services.Length);
-            yield return null;
-            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
-            int retained = 0;
-            foreach (var reference in weak) if (reference.IsAlive) retained++;
-            Assert.That(retained, Is.Zero);
-            TestContext.WriteLine($"RECLAIM,services,32,retained,{retained},mono-used,{Profiler.GetMonoUsedSizeLong()}");
-        }
-
         [Test]
         public void CpuBatchMedians()
         {

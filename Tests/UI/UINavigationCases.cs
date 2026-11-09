@@ -1,4 +1,6 @@
+#if UNITY_EDITOR
 using System;
+using System.Collections;
 using System.Text.RegularExpressions;
 using AlicizaX.UI.Runtime;
 using Cysharp.Threading.Tasks;
@@ -14,6 +16,14 @@ namespace AlicizaX.UI.Tests
         [SetUp] public void SetUp() => _fixture = new UIFixture();
         [TearDown] public void TearDown() => _fixture?.Dispose();
         private void Success(UniTask<UIRouteResult> task) => Assert.That(task.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Success));
+        private static bool IsOpen(UIBase view) => view.State is UIState.Opening or UIState.Opened;
+
+        private IEnumerator Expect(UniTask<UIRouteResult> task, UIRouteStatus status)
+        {
+            UIRouteResult result = default;
+            yield return _fixture.Wait(task, value => result = value);
+            Assert.That(result.Status, Is.EqualTo(status));
+        }
 
         [TestCase("back")] [TestCase("root")] [TestCase("existing")]
         public void BackVariantsRestoreCorrectPageAndArguments(string operation)
@@ -32,7 +42,7 @@ namespace AlicizaX.UI.Tests
             {
                 Assert.That(root.Argument, Is.EqualTo("root"));
                 Assert.That(child.Opens, Is.EqualTo(1));
-                Assert.That(child.IsVisible, Is.True);
+                Assert.That(child.Visible, Is.True);
             }
             Assert.That(_fixture.Service.IsOpen<UIThirdWindow>(), Is.False);
         }
@@ -95,7 +105,7 @@ namespace AlicizaX.UI.Tests
             Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.True);
             Success(_fixture.Service.SyncFromCurrentUI(typeof(UIProbeWindow), "adopt"));
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
-            Assert.That(_fixture.Service.CurrentEntry.Arguments[0], Is.EqualTo("adopt"));
+            Assert.That(_fixture.Service.CurrentEntry.UserData, Is.EqualTo("adopt"));
             Assert.That(_fixture.Service.SyncFromCurrentUI(typeof(UISecondWindow)).GetAwaiter().GetResult().Status,
                 Is.EqualTo(UIRouteStatus.NotFound));
         }
@@ -108,20 +118,81 @@ namespace AlicizaX.UI.Tests
             Success(_fixture.Service.CloseCurrent(force));
             Assert.That(_fixture.Service.Current, Is.Null);
             Assert.That(_fixture.Service.CanBack, Is.False);
-            Assert.That(window.IsOpen, Is.False);
+            Assert.That(IsOpen(window), Is.False);
             Assert.That(window.Destroys, Is.EqualTo(force ? 1 : 0));
         }
 
         [Test]
-        public void RouteArgumentsAreCopiedOnInputAndReadOnlyOnQuery()
+        public void LeavingZeroCachePageKeepsHistoryAndBackReloadsIt()
         {
-            object[] args = { "original" };
-            Success(_fixture.Service.NavigateTo<UIProbeWindow>(args));
-            args[0] = "changed";
-            var entry = _fixture.Service.CurrentEntry;
-            Assert.That(entry.Arguments[0], Is.EqualTo("original"));
-            Assert.That(_fixture.Service.CurrentEntry, Is.SameAs(entry));
-            Assert.That(entry.Arguments, Is.Not.InstanceOf<object[]>());
+            Success(_fixture.Service.NavigateTo<UIZeroCacheWindow>("zero"));
+            var zero = _fixture.Service.GetUI<UIZeroCacheWindow>();
+            // 前一页面关闭即销毁（cacheTime 为 0、无转场），不能清掉刚提交的 history
+            Success(_fixture.Service.NavigateTo<UIProbeWindow>());
+            Assert.That(zero.State, Is.EqualTo(UIState.Destroyed));
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
+            Assert.That(_fixture.Service.CanBack, Is.True);
+            Success(_fixture.Service.NavigateTo<UISecondWindow>());
+            Success(_fixture.Service.Back());
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
+            Success(_fixture.Service.Back());
+            var reloaded = _fixture.Service.GetUI<UIZeroCacheWindow>();
+            Assert.That(reloaded, Is.Not.Null.And.Not.SameAs(zero));
+            Assert.That(IsOpen(reloaded), Is.True);
+            Assert.That(_fixture.Service.CanBack, Is.False);
+            Assert.That(_fixture.Service.CurrentEntry.UserData, Is.EqualTo("zero"));
+        }
+
+        [UnityTest]
+        public IEnumerator RepeatedNavigationToLoadingTargetReusesTheLoad()
+        {
+            Success(_fixture.Service.NavigateTo<UIProbeWindow>());
+            _fixture.Loader.Deferred = true;
+            var first = _fixture.Service.NavigateTo<UISecondWindow>("a");
+            var second = _fixture.Service.NavigateTo<UISecondWindow>("b");
+            Assert.That(_fixture.Loader.PendingCount, Is.EqualTo(1));
+            _fixture.Loader.Deliver();
+            yield return Expect(first, UIRouteStatus.Cancelled);
+            yield return Expect(second, UIRouteStatus.Success);
+            Assert.That(_fixture.Loader.Loads, Is.EqualTo(2));
+            Assert.That(_fixture.Service.GetUI<UISecondWindow>(), Is.Not.Null);
+            Assert.That(_fixture.Service.CurrentEntry.UserData, Is.EqualTo("b"));
+            Assert.That(_fixture.Service.CanBack, Is.True);
+            _fixture.Verify();
+        }
+
+        [UnityTest]
+        public IEnumerator SupersededNavigationKeepsTheWindowShowUIRequested([Values(false, true)] bool showFirst)
+        {
+            Success(_fixture.Service.NavigateTo<UIProbeWindow>());
+            _fixture.Loader.Deferred = true;
+            UniTask<UISecondWindow> shown = default;
+            if (showFirst) shown = _fixture.Service.ShowUI<UISecondWindow>();
+            var navigation = _fixture.Service.NavigateTo<UISecondWindow>();
+            if (!showFirst) shown = _fixture.Service.ShowUI<UISecondWindow>();
+            var other = _fixture.Service.NavigateTo<UIThirdWindow>();
+            Assert.That(_fixture.Loader.PendingCount, Is.EqualTo(2));
+            _fixture.Loader.Deliver();
+            yield return Expect(navigation, UIRouteStatus.Cancelled);
+            yield return _fixture.Wait(shown, _ => { });
+            _fixture.Loader.Deliver();
+            yield return Expect(other, UIRouteStatus.Success);
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.True);
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIThirdWindow)));
+            _fixture.Verify();
+        }
+
+        [Test]
+        public void RouteEntryCarriesUserDataAsValue()
+        {
+            var data = new object();
+            Success(_fixture.Service.NavigateTo<UIProbeWindow>(data));
+            UIRouteEntry entry = _fixture.Service.CurrentEntry;
+            Assert.That(entry.IsValid, Is.True);
+            Assert.That(entry.UIType, Is.EqualTo(typeof(UIProbeWindow)));
+            Assert.That(entry.UserData, Is.SameAs(data));
+            Assert.That(_fixture.Service.GetUI<UIProbeWindow>().Argument, Is.SameAs(data));
+            Assert.That(_fixture.Service.CurrentEntry.Sequence, Is.EqualTo(entry.Sequence));
         }
 
         [TestCase("push")] [TestCase("replace")] [TestCase("reset")]
@@ -138,18 +209,19 @@ namespace AlicizaX.UI.Tests
             Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.True);
         }
 
-        [Test]
-        public void BackDuringLoadingCancelsNavigationWithoutClosingCurrent()
+        [UnityTest]
+        public IEnumerator BackDuringLoadingCancelsNavigationWithoutClosingCurrent()
         {
             Success(_fixture.Service.NavigateTo<UIProbeWindow>());
             _fixture.Loader.Deferred = true;
             var pending = _fixture.Service.NavigateTo<UISecondWindow>();
             Success(_fixture.Service.Back());
-            Assert.That(pending.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Assert.That(_fixture.Service.GetWindow(typeof(UISecondWindow).TypeHandle), Is.Null);
             _fixture.Loader.Deliver();
+            yield return Expect(pending, UIRouteStatus.Cancelled);
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
             Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.True);
-            Assert.That(_fixture.Service.GetUI<UISecondWindow>(), Is.Null);
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.False);
         }
 
         [TestCase("back")] [TestCase("root")] [TestCase("existing")]
@@ -159,7 +231,7 @@ namespace AlicizaX.UI.Tests
             var root = _fixture.Service.GetUI<UIProbeWindow>();
             Success(_fixture.Service.NavigateTo<UISecondWindow>("source"));
             var source = _fixture.Service.GetUI<UISecondWindow>();
-            root.DestroyNow();
+            _fixture.Service.DestroyWindow(root);
             var before = _fixture.Service.CurrentEntry;
             Func<UniTask<UIRouteResult>> back = operation == "back" ? () => _fixture.Service.Back()
                 : operation == "root" ? () => _fixture.Service.BackToRoot()
@@ -168,7 +240,7 @@ namespace AlicizaX.UI.Tests
             LogAssert.Expect(LogType.Error, new Regex("could not be loaded"));
             Assert.That(back().GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.OpenFailed));
             Assert.That(_fixture.Service.GetUI<UISecondWindow>(), Is.SameAs(source));
-            Assert.That(source.IsOpen, Is.True);
+            Assert.That(IsOpen(source), Is.True);
             Assert.That(_fixture.Service.CurrentEntry.Sequence, Is.EqualTo(before.Sequence));
             Assert.That(_fixture.Service.CanBack, Is.True);
             _fixture.Loader.Fail = false;
@@ -176,12 +248,12 @@ namespace AlicizaX.UI.Tests
             var restored = _fixture.Service.GetUI<UIProbeWindow>();
             Assert.That(restored, Is.Not.SameAs(root));
             Assert.That(restored.Argument, Is.EqualTo("root"));
-            Assert.That(source.IsOpen, Is.False);
+            Assert.That(IsOpen(source), Is.False);
             Assert.That(_fixture.Service.CanBack, Is.False);
         }
 
-        [TestCase("replace")] [TestCase("reset")]
-        public void BackCancelsOtherOpeningCommandsWithoutChangingCommittedHistory(string operation)
+        [UnityTest]
+        public IEnumerator BackCancelsOtherOpeningCommandsWithoutChangingCommittedHistory([Values("replace", "reset")] string operation)
         {
             Success(_fixture.Service.NavigateTo<UIProbeWindow>("root"));
             Success(_fixture.Service.NavigateTo<UISecondWindow>("source"));
@@ -190,36 +262,17 @@ namespace AlicizaX.UI.Tests
             var opening = operation == "replace" ? _fixture.Service.Replace<UIThirdWindow>()
                 : _fixture.Service.ResetTo<UIThirdWindow>();
             Success(_fixture.Service.Back());
-            Assert.That(opening.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Assert.That(_fixture.Service.GetWindow(typeof(UIThirdWindow).TypeHandle), Is.Null);
             _fixture.Loader.Deliver();
+            yield return Expect(opening, UIRouteStatus.Cancelled);
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UISecondWindow)));
             Assert.That(_fixture.Service.CurrentEntry.Sequence, Is.EqualTo(before.Sequence));
             Assert.That(_fixture.Service.CanBack, Is.True);
-            Assert.That(_fixture.Service.GetUI<UIThirdWindow>(), Is.Null);
+            Assert.That(_fixture.Service.IsOpen<UIThirdWindow>(), Is.False);
         }
 
-        [Test]
-        public void LatestRequestSupersedesCancelledNavigationContinuation()
-        {
-            Success(_fixture.Service.NavigateTo<UIProbeWindow>());
-            _fixture.Loader.Deferred = true;
-            var first = _fixture.Service.NavigateTo<UISecondWindow>();
-            UniTask<UIRouteResult> continuation = default;
-            first.GetAwaiter().OnCompleted(() => continuation = _fixture.Service.ResetTo<UIZeroCacheWindow>());
-            var replaced = _fixture.Service.NavigateTo<UIThirdWindow>();
-            Assert.That(replaced.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
-            Assert.That(_fixture.Loader.PendingCount, Is.EqualTo(2));
-            _fixture.Loader.Deliver(1);
-            Success(continuation);
-            _fixture.Loader.Deliver();
-            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIZeroCacheWindow)));
-            Assert.That(_fixture.Service.CanBack, Is.False);
-            Assert.That(_fixture.Service.GetUI<UISecondWindow>(), Is.Null);
-            Assert.That(_fixture.Service.GetUI<UIThirdWindow>(), Is.Null);
-        }
-
-        [TestCase(false)] [TestCase(true)]
-        public void ResetHistoryDuringLoadCancelsUncommittedRouteAndPreservesSource(bool shutdown)
+        [UnityTest]
+        public IEnumerator ResetHistoryDuringLoadCancelsUncommittedRouteAndPreservesSource([Values(false, true)] bool shutdown)
         {
             Success(_fixture.Service.NavigateTo<UIProbeWindow>());
             var source = _fixture.Service.GetUI<UIProbeWindow>();
@@ -227,12 +280,13 @@ namespace AlicizaX.UI.Tests
             var opening = _fixture.Service.NavigateTo<UISecondWindow>();
             if (shutdown) AppServices.Shutdown();
             else Success(_fixture.Service.ResetHistory());
-            Assert.That(opening.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Assert.That(_fixture.Service.GetWindow(typeof(UISecondWindow).TypeHandle), Is.Null);
             _fixture.Loader.Deliver();
+            yield return Expect(opening, UIRouteStatus.Cancelled);
             Assert.That(_fixture.Service.Current, Is.Null);
-            Assert.That(_fixture.Service.CurrentEntry, Is.Null);
-            Assert.That(source.IsOpen, Is.EqualTo(!shutdown));
-            Assert.That(_fixture.Service.GetUI<UISecondWindow>(), Is.Null);
+            Assert.That(_fixture.Service.CurrentEntry.IsValid, Is.False);
+            Assert.That(IsOpen(source), Is.EqualTo(!shutdown));
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.False);
         }
 
         [TestCase("null")] [TestCase("empty-handle")] [TestCase("widget")] [TestCase("closed")]
@@ -253,10 +307,10 @@ namespace AlicizaX.UI.Tests
         {
             Success(_fixture.Service.NavigateTo<UISecondWindow>());
             Success(_fixture.Service.NavigateTo<UIProbeWindow>());
-            if (destroy) _fixture.Service.GetUI<UIProbeWindow>().DestroyNow();
-            else _fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult();
+            if (destroy) _fixture.Service.DestroyWindow(_fixture.Service.GetUI<UIProbeWindow>());
+            else _fixture.Service.CloseUI<UIProbeWindow>().AwaitTransition().GetAwaiter().GetResult();
             Assert.That(_fixture.Service.Current, Is.Null);
-            Assert.That(_fixture.Service.CurrentEntry, Is.Null);
+            Assert.That(_fixture.Service.CurrentEntry.IsValid, Is.False);
             Assert.That(_fixture.Service.CanBack, Is.False);
             Assert.That(_fixture.Service.Back().GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.NotFound));
         }
@@ -278,50 +332,55 @@ namespace AlicizaX.UI.Tests
             Assert.That(_fixture.Loader.PendingCount, Is.Zero);
         }
 
-        [Test]
-        public void LatestNavigationWinsDespiteOutOfOrderLoads()
+        [UnityTest]
+        public IEnumerator LatestNavigationWinsDespiteOutOfOrderLoads()
         {
             Success(_fixture.Service.NavigateTo<UIProbeWindow>());
             _fixture.Loader.Deferred = true;
             var first = _fixture.Service.NavigateTo<UISecondWindow>();
             var second = _fixture.Service.NavigateTo<UIThirdWindow>();
-            Assert.That(first.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Assert.That(_fixture.Service.GetWindow(typeof(UISecondWindow).TypeHandle), Is.Null);
             _fixture.Loader.Deliver(1);
-            Success(second);
+            yield return Expect(second, UIRouteStatus.Success);
             _fixture.Loader.Deliver();
+            yield return Expect(first, UIRouteStatus.Cancelled);
+            _fixture.Loader.Deferred = false;
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIThirdWindow)));
-            Assert.That(_fixture.Service.GetUI<UISecondWindow>(), Is.Null);
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.False);
             Success(_fixture.Service.Back());
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
         }
 
         [Test]
-        public void NavigationWaitsForClosingCachedTarget()
+        public void BackToClosingTargetReversesItsCloseImmediately()
         {
             Success(_fixture.Service.NavigateTo<UIProbeWindow>());
             var root = _fixture.Service.GetUI<UIProbeWindow>();
-            var gate = new UIGateTransition();
-            root.Holder.SetTransition(gate);
+            var gate = _fixture.Gate(root);
             Success(_fixture.Service.NavigateTo<UISecondWindow>());
+            Assert.That(root.State, Is.EqualTo(UIState.Closing));
+            // 关闭转场中的目标直接反向打开，导航在逻辑打开后即完成
             var back = _fixture.Service.Back();
-            Assert.That(back.Status.IsCompleted(), Is.False);
-            gate.Finish();
+            Assert.That(back.Status.IsCompleted(), Is.True);
             Success(back);
-            Assert.That(root.IsOpen, Is.True);
             Assert.That(root.State, Is.EqualTo(UIState.Opening));
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
             gate.Finish();
+            Assert.That(root.State, Is.EqualTo(UIState.Opened));
+            _fixture.Verify();
         }
 
-        [Test]
-        public void CompletedNavigationContinuationMayNavigateAgain()
+        [UnityTest]
+        public IEnumerator CompletedNavigationContinuationMayNavigateAgain()
         {
             _fixture.Loader.Deferred = true;
             var first = _fixture.Service.NavigateTo<UIProbeWindow>();
             UniTask<UIRouteResult> second = default;
             first.GetAwaiter().OnCompleted(() => second = _fixture.Service.NavigateTo<UISecondWindow>());
             _fixture.Loader.Deliver();
+            for (int i = 0; _fixture.Loader.PendingCount == 0 && i < 10; i++) yield return _fixture.Frames(1);
             _fixture.Loader.Deliver();
-            Success(second);
+            yield return Expect(second, UIRouteStatus.Success);
             Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UISecondWindow)));
             Assert.That(_fixture.Service.CanBack, Is.True);
         }
@@ -333,7 +392,7 @@ namespace AlicizaX.UI.Tests
             if (cached)
             {
                 var window = _fixture.Open();
-                _fixture.Service.CloseUI<UIProbeWindow>().GetAwaiter().GetResult();
+                _fixture.Service.CloseUI<UIProbeWindow>().AwaitTransition().GetAwaiter().GetResult();
                 window.Opening = () => next = _fixture.Service.NavigateTo<UISecondWindow>();
             }
             else UIProbeWindow.Initializing = window => window.Opening = () => next = _fixture.Service.NavigateTo<UISecondWindow>();
@@ -345,14 +404,100 @@ namespace AlicizaX.UI.Tests
             Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.False);
         }
 
+        private void OnProbeOpening(bool cached, Action<UIProbeWindow> opening)
+        {
+            Action<UIProbeWindow> install = window => window.Opening = () =>
+            {
+                window.Opening = null;
+                opening(window);
+            };
+            if (cached)
+            {
+                UIProbeWindow window = _fixture.Open();
+                _fixture.Service.CloseUI<UIProbeWindow>().AwaitTransition().GetAwaiter().GetResult();
+                install(window);
+            }
+            else UIProbeWindow.Initializing = install;
+        }
+
         [Test]
-        public void ShutdownDuringNavigationCancelsCallerAndLateLoad()
+        public void FailedNavigationReleasesItsOwnership()
+        {
+            Success(_fixture.Service.NavigateTo<UISecondWindow>());
+            _fixture.Loader.Fail = true;
+            LogAssert.Expect(LogType.Error, new Regex("could not be loaded"));
+            Assert.That(_fixture.Service.NavigateTo<UIProbeWindow>().GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.OpenFailed));
+            Assert.That(_fixture.Service.Back().GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.NotFound));
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.True);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void BackInsideTargetOnOpenUndoesOnlyThatNavigation(bool cached)
+        {
+            Success(_fixture.Service.NavigateTo<UIThirdWindow>());
+            Success(_fixture.Service.NavigateTo<UISecondWindow>());
+            UniTask<UIRouteResult> back = default;
+            OnProbeOpening(cached, _ => back = _fixture.Service.Back());
+            var first = _fixture.Service.NavigateTo<UIProbeWindow>();
+            Assert.That(first.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Success(back);
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UISecondWindow)));
+            Assert.That(_fixture.Service.CanBack, Is.True);
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.True);
+            Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.False);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ShowUISyncInsideNavigationHookAdoptsTheWindow(bool cached)
+        {
+            Success(_fixture.Service.NavigateTo<UISecondWindow>());
+            UniTask<UIRouteResult> next = default;
+            OnProbeOpening(cached, _ =>
+            {
+                _fixture.Service.ShowUISync<UIProbeWindow>();
+                next = _fixture.Service.NavigateTo<UIThirdWindow>();
+            });
+            var first = _fixture.Service.NavigateTo<UIProbeWindow>();
+            Assert.That(first.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Success(next);
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIThirdWindow)));
+            Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.True);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SameTargetNavigationInsideOnOpenKeepsTheTargetOpen(bool cached)
+        {
+            UniTask<UIRouteResult> next = default;
+            Success(_fixture.Service.NavigateTo<UISecondWindow>());
+            Action<UIProbeWindow> navigateOnOpen = window => window.Opening = () =>
+            {
+                window.Opening = null;
+                next = _fixture.Service.NavigateTo<UIProbeWindow>();
+            };
+            if (cached)
+            {
+                UIProbeWindow window = _fixture.Open();
+                _fixture.Service.CloseUI<UIProbeWindow>().AwaitTransition().GetAwaiter().GetResult();
+                navigateOnOpen(window);
+            }
+            else UIProbeWindow.Initializing = navigateOnOpen;
+            var first = _fixture.Service.NavigateTo<UIProbeWindow>();
+            Assert.That(first.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
+            Success(next);
+            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
+            Assert.That(_fixture.Service.IsOpen<UIProbeWindow>(), Is.True);
+            Assert.That(_fixture.Service.IsOpen<UISecondWindow>(), Is.False);
+            _fixture.Verify();
+        }
+
+        [UnityTest]
+        public IEnumerator ShutdownDuringNavigationCancelsCallerAndLateLoad()
         {
             _fixture.Loader.Deferred = true;
             var task = _fixture.Service.NavigateTo<UIProbeWindow>();
             AppServices.Shutdown();
-            Assert.That(task.GetAwaiter().GetResult().Status, Is.EqualTo(UIRouteStatus.Cancelled));
             _fixture.Loader.Deliver();
+            yield return Expect(task, UIRouteStatus.Cancelled);
             Assert.That(_fixture.Service.Current, Is.Null);
         }
 
@@ -366,7 +511,7 @@ namespace AlicizaX.UI.Tests
                 Type page = typeof(UIHistoryPages).GetNestedType("Page" + i, System.Reflection.BindingFlags.NonPublic);
                 UIMetaRegistry.Register(page, typeof(UIWindowHolder), UILayer.UI, -1, false);
                 var task = (UniTask<UIRouteResult>)method.MakeGenericMethod(page).Invoke(_fixture.Service,
-                    new object[] { Array.Empty<object>() });
+                    new object[] { null });
                 Assert.That(task.GetAwaiter().GetResult().Status, Is.EqualTo(i < 64 ? UIRouteStatus.Success : UIRouteStatus.RejectedLimit));
                 if (i < 64) last = page;
             }
@@ -382,17 +527,18 @@ namespace AlicizaX.UI.Tests
             var window = _fixture.Service.ShowUISync<UIProbeTabWindow>();
             var first = (UIProbeWidget)window.SwitchTab(0).GetAwaiter().GetResult();
             var child = first.Create();
-            var gate = new UIGateTransition();
-            first.Holder.SetTransition(gate);
-            var second = window.SwitchTab(1);
+            var gate = _fixture.Gate(first);
+            // 已加载与同步加载的页签切换立即完成；前一个页签的关闭转场与切换并行
+            UIWidget second = window.SwitchTab(1).GetAwaiter().GetResult();
+            Assert.That(second, Is.Not.Null);
             var latest = window.SwitchTab(returnToPrevious ? 0 : 1, "last");
-            Assert.That(second.GetAwaiter().GetResult(), Is.Null);
             gate.Finish();
             var selected = latest.GetAwaiter().GetResult();
-            Assert.That(selected, Is.Not.Null);
-            Assert.That(first.IsOpen, Is.EqualTo(returnToPrevious));
-            Assert.That(child.IsOpen, Is.True);
-            Assert.That(child.IsVisible, Is.EqualTo(returnToPrevious));
+            Assert.That(selected, Is.SameAs(returnToPrevious ? first : second));
+            Assert.That(window.ActiveTab, Is.SameAs(selected));
+            Assert.That(IsOpen(first), Is.EqualTo(returnToPrevious));
+            Assert.That(IsOpen(child), Is.True);
+            Assert.That(child.IsEnabled, Is.EqualTo(returnToPrevious));
             if (returnToPrevious) gate.Finish();
         }
 
@@ -401,10 +547,10 @@ namespace AlicizaX.UI.Tests
         {
             var window = _fixture.Service.ShowUISync<UIProbeTabWindow>();
             var first = window.SwitchTab(0).GetAwaiter().GetResult();
-            first.Destroy().GetAwaiter().GetResult();
+            first.Destroy().AwaitTransition().GetAwaiter().GetResult();
             var next = window.SwitchTab(0).GetAwaiter().GetResult();
             Assert.That(next, Is.Not.SameAs(first));
-            Assert.That(next.IsOpen, Is.True);
+            Assert.That(IsOpen(next), Is.True);
         }
 
         [TestCase(-1)] [TestCase(2)]
@@ -416,3 +562,4 @@ namespace AlicizaX.UI.Tests
         }
     }
 }
+#endif

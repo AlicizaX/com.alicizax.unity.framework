@@ -1,113 +1,45 @@
 #if UNITY_EDITOR
-using System.Collections.Generic;
 using AlicizaX.UI.Runtime;
-using Cysharp.Threading.Tasks;
 using NUnit.Framework;
 
 namespace AlicizaX.UI.Tests
 {
     internal static class UIInvariantChecker
     {
+        private const int CacheCapacity = 64;
+        private static readonly UIWindowDebugInfo Window = new();
+        private static readonly UIWindowDebugInfo[] Cached = CreateCacheInfos();
+
         internal static void Verify(UIService service)
         {
-            var views = new List<UIBase>();
-            foreach (UIWindowRecord record in service.Records) VerifyRecord(record, views);
-            VerifyLayerStacks(service);
-            VerifyViews(views);
-            VerifyUpdateList(service, views);
-            VerifyTransitionList(service, views);
-        }
-
-        private static void VerifyRecord(UIWindowRecord record, List<UIBase> views)
-        {
-            string name = record.Metadata.UILogicTypeName;
-            UIWindow view = record.View;
-            if (view != null)
+            IUIDebugService debug = service;
+            for (int layer = 0; layer < debug.LayerCount; layer++)
             {
-                Assert.That(view.State, Is.Not.EqualTo(UIState.Destroying).And.Not.EqualTo(UIState.Destroyed), "I1 " + name);
-                Collect(view, views);
-            }
-            if (record.Flight != null)
-            {
-                Assert.That(view, Is.Not.Null, "I2 " + name);
-                Assert.That(view.State, Is.EqualTo(UIState.CreatedUI).Or.EqualTo(UIState.Loaded), "I2 " + name);
-            }
-            Assert.That(record.IsStacked && record.IsCached, Is.False, "I3 " + name);
-            if (!record.IsCached) return;
-            Assert.That(view.State, Is.EqualTo(UIState.Closed), "I12 " + name);
-            Assert.That(view.IsOpen, Is.False, "I12 " + name);
-            Assert.That(view.HasPendingOpen, Is.False, "I12 " + name);
-        }
-
-        private static void Collect(UIBase view, List<UIBase> views)
-        {
-            views.Add(view);
-            for (UIWidget child = view.FirstChild; child != null; child = child.NextSibling) Collect(child, views);
-        }
-
-        private static void VerifyLayerStacks(UIService service)
-        {
-            for (int layer = 0; layer < (int)UILayer.All; layer++)
-            {
-                int previous = -1, count = 0;
-                UILayerStack stack = service.LayerStack(layer);
-                for (UIWindowRecord record = stack.Bottom; record != null; record = record.StackAbove)
+                for (int index = 0; debug.FillWindowDebugInfo(layer, index, Window); index++)
                 {
-                    Assert.That(record.Order, Is.GreaterThan(previous), "I3 order");
-                    Assert.That(record.View.Depth, Is.EqualTo(layer * UIService.LAYER_DEEP + record.Order * UIService.WINDOW_DEEP), "I3 depth");
-                    previous = record.Order;
-                    count++;
-                }
-                Assert.That(stack.Count, Is.EqualTo(count), "I3 count");
-            }
-        }
-
-        private static void VerifyViews(List<UIBase> views)
-        {
-            foreach (UIBase view in views)
-            {
-                string name = view.GetType().Name;
-                Assert.That(view.Effective, Is.EqualTo(view.IsOpen && !view.DestroyRequested && view.ParentEffective), "I4 " + name);
-                if (view.Holder != null)
-                {
-                    Assert.That(view.IsTransitionPending, Is.EqualTo(view.State is UIState.Opening or UIState.Closing), "I8 " + name);
-                }
-                if (!view.Effective && view.EventListeners != null)
-                    Assert.That(view.EventListeners.IsSuspended, Is.True, "I9 " + name);
-            }
-        }
-
-        private static void VerifyUpdateList(UIService service, List<UIBase> views)
-        {
-            var linked = new Dictionary<UIBase, int>();
-            int index = 0;
-            for (UITickNode node = service.UpdateViews.First; node != null; node = node.Next) linked.Add(node.View, index++);
-            Assert.That(service.UpdateViews.Count, Is.EqualTo(linked.Count), "I5 count");
-            int expected = 0;
-            foreach (UIBase view in views)
-            {
-                if (view.IsUpdating)
-                {
-                    expected++;
-                    Assert.That(linked.ContainsKey(view), Is.True, "I5 " + view.GetType().Name);
-                    if (view is UIWidget widget)
-                    {
-                        UIBase ancestor = widget.Parent;
-                        while (ancestor is UIWidget parent && !parent.IsUpdating) ancestor = parent.Parent;
-                        if (ancestor.IsUpdating)
-                            Assert.That(linked[ancestor], Is.LessThan(linked[view]), "I11 " + view.GetType().Name);
-                    }
+                    string name = Window.LogicTypeName;
+                    Assert.That(Window.State, Is.Not.EqualTo(UIState.Destroyed), "I6 " + name);
+                    Assert.That(Window.HolderTransform == null, Is.EqualTo(Window.State == UIState.Loading), "I1 " + name);
+                    Assert.That(Window.Depth, Is.EqualTo(layer * UIService.LAYER_DEEP + index * UIService.WINDOW_DEEP), "I4 " + name);
                 }
             }
-            Assert.That(linked.Count, Is.EqualTo(expected), "I5 membership");
+            int cached = debug.FillCacheDebugInfo(Cached, CacheCapacity);
+            Assert.That(cached, Is.EqualTo(debug.CacheWindowCount), "I5 count");
+            for (int i = 0; i < cached; i++)
+            {
+                Assert.That(Cached[i].State, Is.EqualTo(UIState.Closed), "I5 " + Cached[i].LogicTypeName);
+                Assert.That(Cached[i].Updating, Is.False, "I2 " + Cached[i].LogicTypeName);
+                for (int layer = 0; layer < debug.LayerCount; layer++)
+                    for (int index = 0; debug.FillWindowDebugInfo(layer, index, Window); index++)
+                        Assert.That(Window.LogicTypeName, Is.Not.EqualTo(Cached[i].LogicTypeName), "I5 " + Window.LogicTypeName);
+            }
         }
 
-        private static void VerifyTransitionList(UIService service, List<UIBase> views)
+        private static UIWindowDebugInfo[] CreateCacheInfos()
         {
-            int expected = 0;
-            foreach (UIBase view in views)
-                if (view.Holder != null && view.Holder.HasActiveTickTransition) expected++;
-            Assert.That(service.TransitionViews.Count, Is.EqualTo(expected), "I6");
+            var infos = new UIWindowDebugInfo[CacheCapacity];
+            for (int i = 0; i < infos.Length; i++) infos[i] = new UIWindowDebugInfo();
+            return infos;
         }
     }
 }

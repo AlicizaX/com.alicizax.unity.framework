@@ -234,7 +234,7 @@ namespace AlicizaX.Resource.Tests
             AssertWindowResources(window, window.Widget);
             Assert.That(f.Loader.Loads, Is.EqualTo(AssetsPerWindow));
 
-            yield return Wait(ui.CloseUI<ResUIWindow>());
+            yield return Wait(ui.CloseUI<ResUIWindow>().AwaitTransition());
             yield return AssertEverythingReleased();
             f.Service.IdleAssetCapacity = 0;
             Assert.That(f.Loader.LiveHandles, Is.Zero);
@@ -250,7 +250,7 @@ namespace AlicizaX.Resource.Tests
                 yield return Open<ResUIWindow>(cycle % 2 == 0);
                 var window = ui.GetUI<ResUIWindow>();
                 AssertWindowResources(window, window.Widget);
-                yield return Wait(ui.CloseUI<ResUIWindow>());
+                yield return Wait(ui.CloseUI<ResUIWindow>().AwaitTransition());
                 yield return AssertEverythingReleased();
                 if (cycle == 0) scopeSlots = f.Service.ScopeSlotCount;
                 else Assert.That(f.Service.ScopeSlotCount, Is.EqualTo(scopeSlots), "Scope slots must be reused, not grown, by repeated windows.");
@@ -270,7 +270,7 @@ namespace AlicizaX.Resource.Tests
             yield return Open<ResUICachedWindow>(false);
             var window = ui.GetUI<ResUICachedWindow>();
             AssertWindowResources(window, window.Widget);
-            yield return Wait(ui.CloseUI<ResUICachedWindow>());
+            yield return Wait(ui.CloseUI<ResUICachedWindow>().AwaitTransition());
             yield return null;
             Assert.That(f.Service.GetStats().ReferenceCount, Is.EqualTo(ReferencesPerWindow), "A cached window keeps what it owns.");
 

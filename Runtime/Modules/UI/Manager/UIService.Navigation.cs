@@ -1,286 +1,199 @@
 using System;
-using System.Collections.Generic;
-using System.Threading;
 using Cysharp.Threading.Tasks;
-#if UNITY_EDITOR
-using System.Text;
-#endif
 
 namespace AlicizaX.UI.Runtime
 {
+    /// <summary>
+    /// 页面导航：history 为定长值类型数组，同类型最多一条。没有命令队列：每次导航递增版本号，
+    /// 只在目标窗口加载期间挂起；提交前（加载中或打开钩子里）被后来的导航取代则返回 Cancelled，并撤销它发起的打开；
+    /// 后来的导航以同一窗口为目标、或 ShowUI 也请求了该窗口时由对方接手。
+    /// </summary>
     internal sealed partial class UIService
-#if UNITY_EDITOR
-        : IUINavigationDebug
-#endif
     {
         private const int MaxHistoryCount = 64;
-        private readonly List<UIRouteEntry> _history = new(MaxHistoryCount);
-        private readonly List<UIWindow> _navigationCleanup = new(MaxHistoryCount);
-        private NavigationCommand _running;
-        private NavigationCommand _pending;
+
+        private enum Navigation : byte { Push, Replace, Reset, Back }
+
+        private readonly UIRouteEntry[] _history = new UIRouteEntry[MaxHistoryCount];
+        private int _historyCount;
+        private int _navigationVersion;
         private int _sequence;
-        private bool _navigating;
+        private RuntimeTypeHandle _pendingHandle;
 
-        private enum Navigation { Push, Replace, Reset, Back, BackToRoot, BackTo, Close, Clear, Sync }
+        public bool CanBack => _historyCount > 1;
+        public Type Current => _historyCount == 0 ? null : _history[_historyCount - 1].UIType;
+        public UIRouteEntry CurrentEntry => _historyCount == 0 ? default : _history[_historyCount - 1];
 
-        private sealed class NavigationCommand
+        private UIWindow CurrentPage => _historyCount == 0 ? null : GetWindow(_history[_historyCount - 1].TypeHandle);
+
+        private static UIRouteResult Result(UIRouteStatus status) => UIRouteResult.From(status);
+
+        public UniTask<UIRouteResult> NavigateTo<T>(object userData = null) where T : UIWindow =>
+            Navigate(Navigation.Push, typeof(T), userData);
+
+        public UniTask<UIRouteResult> Replace<T>(object userData = null) where T : UIWindow =>
+            Navigate(Navigation.Replace, typeof(T), userData);
+
+        public UniTask<UIRouteResult> ResetTo<T>(object userData = null) where T : UIWindow =>
+            Navigate(Navigation.Reset, typeof(T), userData);
+
+        public UniTask<UIRouteResult> Back()
         {
-            internal readonly Navigation Operation;
-            internal readonly UIRouteEntry Target;
-            internal readonly bool Force;
-            internal readonly bool OpenIfMissing;
-            internal readonly UniTaskCompletionSource<UIRouteResult> Completion = new();
-            internal CancellationTokenSource Cts;
-            internal bool Committed;
-
-            internal NavigationCommand(Navigation operation, UIRouteEntry target, bool force, bool openIfMissing)
-            {
-                Operation = operation;
-                Target = target;
-                Force = force;
-                OpenIfMissing = openIfMissing;
-            }
+            // Back 打断尚未完成加载的打开：撤销那次打开即视为返回成功，history 不动
+            if (_pendingHandle.Value != IntPtr.Zero) return Finish(UIRouteStatus.Success);
+            return _historyCount < 2
+                ? Finish(UIRouteStatus.NotFound)
+                : Commit(Navigation.Back, _history[_historyCount - 2]);
         }
 
-        public bool CanBack => _history.Count > 1;
-        public Type Current => CurrentRecord?.Metadata.UILogicType;
-        private UIWindowRecord CurrentRecord =>
-            _history.Count == 0 ? null : TryGetWindowRecord(_history[_history.Count - 1].TypeHandle);
-
-        /// <summary>当前路由条目（内部实例，只读视图，不做拷贝）。</summary>
-        public UIRouteEntry CurrentEntry => _history.Count == 0 ? null : _history[_history.Count - 1];
-
-        public UniTask<UIRouteResult> NavigateTo<T>(params object[] args) where T : UIWindow =>
-            EnqueueNavigation(Navigation.Push, CreateEntry(typeof(T), args));
-        public UniTask<UIRouteResult> Replace<T>(params object[] args) where T : UIWindow =>
-            EnqueueNavigation(Navigation.Replace, CreateEntry(typeof(T), args));
-        public UniTask<UIRouteResult> ResetTo<T>(params object[] args) where T : UIWindow =>
-            EnqueueNavigation(Navigation.Reset, CreateEntry(typeof(T), args));
-        public UniTask<UIRouteResult> Back() => EnqueueNavigation(Navigation.Back);
-        public UniTask<UIRouteResult> BackToRoot() => EnqueueNavigation(Navigation.BackToRoot);
-        public UniTask<UIRouteResult> CloseCurrent(bool force = false) => EnqueueNavigation(Navigation.Close, force: force);
-        public UniTask<UIRouteResult> BackTo<T>(bool openIfMissing = true, params object[] args) where T : UIWindow =>
-            EnqueueNavigation(Navigation.BackTo, CreateEntry(typeof(T), args), openIfMissing: openIfMissing);
-        public UniTask<UIRouteResult> ResetHistory() => EnqueueNavigation(Navigation.Clear);
-        public UniTask<UIRouteResult> SyncFromCurrentUI(Type currentPageType, params object[] args) =>
-            EnqueueNavigation(Navigation.Sync, currentPageType == null ? null : CreateEntry(currentPageType, args));
-        public UniTask<UIRouteResult> SyncFromCurrentUI(RuntimeTypeHandle handle, params object[] args) =>
-            SyncFromCurrentUI(handle.Value == IntPtr.Zero ? null : Type.GetTypeFromHandle(handle), args);
-
-        private UniTask<UIRouteResult> EnqueueNavigation(Navigation operation, UIRouteEntry target = null,
-            bool force = false, bool openIfMissing = false)
+        public UniTask<UIRouteResult> BackToRoot()
         {
-            if (_lifetime != UILifetime.Running) return UniTask.FromResult(UIRouteResult.From(UIRouteStatus.Cancelled));
-
-            NavigationCommand running = _running;
-            NavigationCommand pending = _pending;
-            _pending = null;
-
-            if (operation == Navigation.Back && running != null && !running.Committed && IsOpenNavigation(running.Operation))
-            {
-                // Back 打断尚未提交的打开：终止加载并立即返回 Ok。
-                CancelNavigation(pending);
-                CancelNavigation(running);
-                return UniTask.FromResult(UIRouteResult.Ok);
-            }
-
-            CancelNavigation(pending);
-            var command = new NavigationCommand(operation, target, force, openIfMissing);
-            _pending = command;
-            if (running != null && !running.Committed) CancelNavigation(running);
-            if (!_navigating && _pending != null)
-            {
-                _navigating = true;
-                DrainNavigation().Forget();
-            }
-            return command.Completion.Task;
+            if (_historyCount == 0) return Finish(UIRouteStatus.NotFound);
+            if (_historyCount > 1) return Commit(Navigation.Back, _history[0]);
+            if (!BeginNavigation()) return UniTask.FromResult(Result(UIRouteStatus.Cancelled));
+            UIWindow current = CurrentPage;
+            return UniTask.FromResult(new UIRouteResult(UIRouteStatus.Success, new UIViewTransition(current)));
         }
 
-        /// <summary>取消排队中或执行中的命令：取消其加载，并让调用方立即得到 Cancelled 结果。</summary>
-        private static void CancelNavigation(NavigationCommand command)
+        public UniTask<UIRouteResult> BackTo<T>(bool openIfMissing = true, object userData = null) where T : UIWindow
         {
-            if (command == null) return;
-            command.Cts?.Cancel();
-            command.Completion.TrySetResult(UIRouteResult.From(UIRouteStatus.Cancelled));
+            int index = FindHistoryIndex(typeof(T).TypeHandle);
+            if (index >= 0) return Commit(Navigation.Back, _history[index]);
+            return openIfMissing
+                ? Commit(Navigation.Reset, CreateEntry(typeof(T), userData))
+                : Finish(UIRouteStatus.NotFound);
         }
 
-        private async UniTaskVoid DrainNavigation()
+        /// <summary>关闭当前页面并结束历史。force 关完必拆，不进缓存。</summary>
+        public UniTask<UIRouteResult> CloseCurrent(bool force = false)
         {
-            while (_pending != null && _lifetime == UILifetime.Running)
-            {
-                NavigationCommand command = _pending;
-                _pending = null;
-                if (command.Completion.Task.Status.IsCompleted()) continue;
-
-                command.Cts = new CancellationTokenSource();
-                _running = command;
-                UIRouteResult result;
-                try
-                {
-                    result = await ExecuteNavigation(command);
-                }
-                catch (Exception error)
-                {
-                    Log.Exception(error);
-                    result = UIRouteResult.From(UIRouteStatus.OpenFailed);
-                }
-                finally
-                {
-                    command.Cts.Dispose();
-                    command.Cts = null;
-                    if (_running == command) _running = null;
-                }
-                _navigationCleanup.Clear();
-                command.Completion.TrySetResult(result);
-            }
-            _navigating = false;
+            if (!BeginNavigation()) return UniTask.FromResult(Result(UIRouteStatus.Cancelled));
+            UIWindow current = CurrentPage;
+            if (current == null) return UniTask.FromResult(Result(UIRouteStatus.NotFound));
+            ClearHistory();
+            // history 在调用时已清空，关闭本身不会被之后的导航撤销
+            return UniTask.FromResult(new UIRouteResult(UIRouteStatus.Success,
+                CloseWindow(current, force, snap: false, affectNavigation: false)));
         }
 
-        private async UniTask<UIRouteResult> ExecuteNavigation(NavigationCommand command)
+        public UniTask<UIRouteResult> ResetHistory()
         {
-            if (command.Cts.IsCancellationRequested) return UIRouteResult.From(UIRouteStatus.Cancelled);
-            switch (command.Operation)
-            {
-                case Navigation.Clear:
-                    command.Committed = true;
-                    ClearHistory();
-                    return UIRouteResult.Ok;
-                case Navigation.Sync:
-                    if (command.Target == null || !IsOpen(command.Target.TypeHandle))
-                        return UIRouteResult.From(UIRouteStatus.NotFound);
-                    command.Committed = true;
-                    ClearHistory();
-                    _history.Add(command.Target);
-                    return UIRouteResult.Ok;
-                case Navigation.Close:
-                    UIWindow current = CurrentRecord?.View;
-                    if (current == null) return UIRouteResult.From(UIRouteStatus.NotFound);
-                    command.Committed = true;
-                    try { await CloseWindow(current, command.Force).AttachExternalCancellation(command.Cts.Token); }
-                    catch (OperationCanceledException) { return UIRouteResult.From(UIRouteStatus.Cancelled); }
-                    return UIRouteResult.Ok;
-                case Navigation.Back:
-                    return _history.Count < 2 ? UIRouteResult.From(UIRouteStatus.NotFound)
-                        : await CommitTarget(command, _history[_history.Count - 2], Navigation.Back);
-                case Navigation.BackToRoot:
-                    if (_history.Count == 0) return UIRouteResult.From(UIRouteStatus.NotFound);
-                    if (_history.Count == 1)
-                        return new UIRouteResult(UIRouteStatus.Success, CurrentRecord?.View?.AwaitTransition() ?? UniTask.CompletedTask);
-                    return await CommitTarget(command, _history[0], Navigation.Back);
-                case Navigation.BackTo:
-                    int index = FindHistoryIndex(command.Target.TypeHandle);
-                    if (index >= 0) return await CommitTarget(command, _history[index], Navigation.Back);
-                    return command.OpenIfMissing
-                        ? await CommitTarget(command, command.Target, Navigation.Reset)
-                        : UIRouteResult.From(UIRouteStatus.NotFound);
-                default:
-                    return await CommitTarget(command, command.Target, command.Operation);
-            }
+            if (!BeginNavigation()) return UniTask.FromResult(Result(UIRouteStatus.Cancelled));
+            ClearHistory();
+            return UniTask.FromResult(UIRouteResult.Ok);
         }
 
-        private async UniTask<UIRouteResult> CommitTarget(NavigationCommand command, UIRouteEntry target, Navigation operation)
+        public UniTask<UIRouteResult> SyncFromCurrentUI(Type currentPageType, object userData = null)
         {
-            if (command.Cts.IsCancellationRequested) return UIRouteResult.From(UIRouteStatus.Cancelled);
-            UIWindow previous = CurrentRecord?.View;
-            int existing = FindHistoryIndex(target.TypeHandle);
-            int keep = operation == Navigation.Reset ? 0 : existing >= 0 ? existing
-                : operation == Navigation.Replace && _history.Count > 0 ? _history.Count - 1 : _history.Count;
-            if (keep >= MaxHistoryCount) return UIRouteResult.From(UIRouteStatus.RejectedLimit);
-
-            _navigationCleanup.Clear();
-            if (previous != null) _navigationCleanup.Add(previous);
-            for (int i = keep; i < _history.Count; i++)
-            {
-                UIWindow old = GetWindow(_history[i].TypeHandle);
-                if (old != null && old != previous) _navigationCleanup.Add(old);
-            }
-
-            bool targetWasOpen = IsOpen(target.TypeHandle);
-            UIOpenResult result = await RequestShow(GetWindowRecord(target.TypeHandle), target.Args,
-                command.Cts.Token, waitForClose: true);
-
-            UIWindow opened = result.View;
-            if (command.Cts.IsCancellationRequested)
-            {
-                if (!targetWasOpen && opened != null)
-                    CloseWindow(opened, skipTransition: true, affectNavigation: false).Forget();
-                return UIRouteResult.From(UIRouteStatus.Cancelled);
-            }
-            if (result.Status is UIOpenStatus.Cancelled or UIOpenStatus.Ignored)
-                return UIRouteResult.From(UIRouteStatus.Cancelled);
-            if (result.Status == UIOpenStatus.Failed || opened == null)
-                return UIRouteResult.From(UIRouteStatus.OpenFailed);
-            if (result.Status != UIOpenStatus.Opened || opened.DestroyRequested || _lifetime != UILifetime.Running)
-                return UIRouteResult.From(UIRouteStatus.Cancelled);
-
-            command.Committed = true;
-            if (keep < _history.Count) _history.RemoveRange(keep, _history.Count - keep);
-            _history.Add(target);
-            for (int i = 0; i < _navigationCleanup.Count; i++)
-            {
-                UIWindow old = _navigationCleanup[i];
-                if (old == opened || old.State is UIState.Destroyed or UIState.Destroying) continue;
-                CloseWindow(old, skipTransition: old != previous, affectNavigation: false).Forget();
-            }
-            return new UIRouteResult(UIRouteStatus.Success, opened.AwaitTransition());
+            if (!BeginNavigation()) return UniTask.FromResult(Result(UIRouteStatus.Cancelled));
+            if (currentPageType == null || !IsOpen(currentPageType.TypeHandle))
+                return UniTask.FromResult(Result(UIRouteStatus.NotFound));
+            ClearHistory();
+            _history[_historyCount++] = CreateEntry(currentPageType, userData);
+            return UniTask.FromResult(UIRouteResult.Ok);
         }
 
-        private UIRouteEntry CreateEntry(Type type, object[] args) =>
-            new(type, UIRouteEntry.CopyArgs(args), ++_sequence);
+        public UniTask<UIRouteResult> SyncFromCurrentUI(RuntimeTypeHandle handle, object userData = null) =>
+            SyncFromCurrentUI(handle.Value == IntPtr.Zero ? null : Type.GetTypeFromHandle(handle), userData);
 
-        private static bool IsOpenNavigation(Navigation operation) =>
-            operation is Navigation.Push or Navigation.Replace or Navigation.Reset;
+        private UniTask<UIRouteResult> Navigate(Navigation operation, Type type, object userData) =>
+            Commit(operation, CreateEntry(type, userData));
 
-        /// <summary>history 中同类型最多一条：导航到已存在类型时按该条截断。</summary>
+        private UniTask<UIRouteResult> Finish(UIRouteStatus status) =>
+            UniTask.FromResult(Result(BeginNavigation() ? status : UIRouteStatus.Cancelled));
+
+        /// <summary>开始一次导航：递增版本号，取代加载中的那次导航。</summary>
+        private bool BeginNavigation(RuntimeTypeHandle target = default)
+        {
+            _navigationVersion++;
+            if (_pendingHandle.Value != IntPtr.Zero && !_pendingHandle.Equals(target))
+            {
+                UIWindow pending = GetWindow(_pendingHandle);
+                _pendingHandle = default;
+                if (pending != null) CloseWindow(pending, force: false, snap: true, affectNavigation: false);
+            }
+            return _lifetime == UILifetime.Running;
+        }
+
+        /// <summary>打开目标并提交 history。目标已加载时同步完成；首次加载时挂起一次。</summary>
+        private async UniTask<UIRouteResult> Commit(Navigation operation, UIRouteEntry target)
+        {
+            if (!UIMetaRegistry.TryGet(target.TypeHandle, out UIMetaRegistry.UIMetaInfo info) || !info.IsWindow)
+                return Result(UIRouteStatus.OpenFailed);
+            if (KeepCount(operation, target.TypeHandle) >= MaxHistoryCount) return Result(UIRouteStatus.RejectedLimit);
+            if (!BeginNavigation(target.TypeHandle)) return Result(UIRouteStatus.Cancelled);
+            int version = _navigationVersion;
+            UIWindow existing = GetWindow(target.TypeHandle);
+            if (existing == null || existing.State is UIState.Closed or UIState.Closing) _pendingHandle = target.TypeHandle;
+            UIWindow window = OpenWindow(info, target.UserData, sync: false);
+            if (window == null)
+            {
+                _pendingHandle = default;
+                return Result(UIRouteStatus.OpenFailed);
+            }
+            if (window.State == UIState.Loading) await window.AwaitLoaded();
+            if (version != _navigationVersion) return Result(UIRouteStatus.Cancelled);
+            _pendingHandle = default;
+            if (window.State is not (UIState.Opening or UIState.Opened))
+                return Result(window.State == UIState.Destroyed ? UIRouteStatus.OpenFailed : UIRouteStatus.Cancelled);
+
+            // 只保留一个页面打开：被截断的页面逐条出栈后直接关闭，之前的页面播关闭转场。
+            // 先出栈再关：关闭钩子里发起的新导航看到的是完整的 history 前缀。
+            UIWindow previous = CurrentPage;
+            int keep = KeepCount(operation, target.TypeHandle);
+            for (int i = _historyCount - 1; i >= keep; i--)
+            {
+                UIWindow dropped = GetWindow(_history[i].TypeHandle);
+                _history[i] = default;
+                _historyCount = i;
+                if (dropped == null || dropped == window || dropped == previous) continue;
+                CloseWindow(dropped, force: false, snap: true, affectNavigation: false);
+                // 关闭钩子里发起了新导航：它已提交自己的 history，本次不再改动
+                if (version != _navigationVersion) return Result(UIRouteStatus.Cancelled);
+            }
+            // 栈顶的前一页面在新条目提交后再关，否则它同步销毁时会把 history 整个清掉
+            _history[_historyCount++] = target;
+            if (previous != null && previous != window)
+            {
+                CloseWindow(previous, force: false, snap: false, affectNavigation: false);
+                if (version != _navigationVersion) return Result(UIRouteStatus.Cancelled);
+            }
+            return new UIRouteResult(UIRouteStatus.Success, new UIViewTransition(window));
+        }
+
+        private UIRouteEntry CreateEntry(Type type, object userData) => new(type, userData, ++_sequence);
+
+        /// <summary>提交后保留的 history 条数（不含新条目）。O(H)。</summary>
+        private int KeepCount(Navigation operation, RuntimeTypeHandle handle)
+        {
+            if (operation == Navigation.Reset) return 0;
+            int existing = FindHistoryIndex(handle);
+            if (existing >= 0) return existing;
+            return operation == Navigation.Replace && _historyCount > 0 ? _historyCount - 1 : _historyCount;
+        }
+
+        /// <summary>O(H)，H ≤ 64。</summary>
         private int FindHistoryIndex(RuntimeTypeHandle handle)
         {
-            for (int i = 0; i < _history.Count; i++)
+            for (int i = 0; i < _historyCount; i++)
                 if (_history[i].TypeHandle.Equals(handle)) return i;
             return -1;
         }
 
-        private void ClearHistory() => _history.Clear();
+        private bool IsCurrentPage(UIWindow window) =>
+            _historyCount > 0 && _history[_historyCount - 1].TypeHandle.Equals(window.MetaInfo.Handle);
+
+        private void ClearHistory()
+        {
+            Array.Clear(_history, 0, _historyCount);
+            _historyCount = 0;
+        }
 
         private void StopNavigation()
         {
             ClearHistory();
-            var cancelled = UIRouteResult.From(UIRouteStatus.Cancelled);
-            NavigationCommand running = _running;
-            NavigationCommand pending = _pending;
-            _pending = null;
-            _running = null;
-            if (running != null)
-            {
-                running.Cts?.Cancel();
-                running.Completion.TrySetResult(cancelled);
-            }
-            if (pending != null) pending.Completion.TrySetResult(cancelled);
-            _navigating = false;
+            _navigationVersion++;
+            _pendingHandle = default;
         }
-
-#if UNITY_EDITOR
-        int IUINavigationDebug.HistoryCount => _history.Count;
-        Type IUINavigationDebug.Current => Current;
-        bool IUINavigationDebug.CanBack => CanBack;
-
-        bool IUINavigationDebug.FillHistoryInfo(int index, UIRouteDebugInfo info)
-        {
-            if (info == null || (uint)index >= (uint)_history.Count) return false;
-            UIRouteEntry entry = _history[index];
-            info.Clear();
-            info.Index = index;
-            info.UITypeName = entry.UIType.Name;
-            info.IsRoot = index == 0;
-            info.Sequence = entry.Sequence;
-            var args = new StringBuilder();
-            for (int i = 0; i < entry.Args.Length; i++)
-            {
-                if (i > 0) args.Append(", ");
-                args.Append(entry.Args[i]?.ToString() ?? "null");
-            }
-            info.ArgsPreview = args.ToString();
-            return true;
-        }
-#endif
     }
 }

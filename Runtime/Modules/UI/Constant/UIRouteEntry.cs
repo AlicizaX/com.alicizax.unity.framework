@@ -1,40 +1,23 @@
 using System;
-using System.Collections.Generic;
 
 namespace AlicizaX.UI.Runtime
 {
-    /// <summary>
-    /// 路由条目：不可变，参数数组由条目独占，查询与传递都不再复制。
-    /// history 中同类型最多一条（导航时按已存在类型截断，见 UIService.Navigation）。
-    /// </summary>
-    public sealed class UIRouteEntry
+    /// <summary>路由条目（值类型）。history 中同类型最多一条，导航到已存在类型时按该条截断。</summary>
+    public readonly struct UIRouteEntry
     {
-        private readonly object[] _args;
-        private IReadOnlyList<object> _arguments;
+        public readonly Type UIType;
+        public readonly object UserData;
+        public readonly int Sequence;
 
-        public Type UIType { get; }
-        public RuntimeTypeHandle TypeHandle { get; }
-        public int Sequence { get; }
-
-        /// <summary>参数只读视图；数组由 history 条目独占，业务不得写入。</summary>
-        public IReadOnlyList<object> Arguments => _arguments ??= Array.AsReadOnly(_args);
-
-        internal object[] Args => _args;
-
-        internal UIRouteEntry(Type uiType, object[] args, int sequence)
+        internal UIRouteEntry(Type uiType, object userData, int sequence)
         {
             UIType = uiType;
-            TypeHandle = uiType.TypeHandle;
-            _args = args;
+            UserData = userData;
             Sequence = sequence;
         }
 
-        internal static object[] CopyArgs(object[] args)
-        {
-            if (args == null || args.Length == 0) return Array.Empty<object>();
-            object[] copy = new object[args.Length];
-            Array.Copy(args, copy, args.Length);
-            return copy;
-        }
+        /// <summary>空条目（<see cref="IsValid"/> 为 false）返回默认句柄。</summary>
+        public RuntimeTypeHandle TypeHandle => UIType != null ? UIType.TypeHandle : default;
+        public bool IsValid => UIType != null;
     }
 }

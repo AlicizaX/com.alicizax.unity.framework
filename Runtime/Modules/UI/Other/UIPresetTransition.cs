@@ -1,4 +1,3 @@
-using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -28,8 +27,12 @@ namespace AlicizaX.UI.Runtime
         OutBack,
     }
 
+    /// <summary>
+    /// 预设转场：每次播放是一次逐帧推进的异步循环，被下一次 Open 或 Close 打断时在下一帧退出。
+    /// 推进不依赖节点是否激活；打断从当前外观出发。
+    /// </summary>
     [DisallowMultipleComponent]
-    public sealed class UIPresetTransition : MonoBehaviour, ITickTransitionSource
+    public sealed class UIPresetTransition : MonoBehaviour, IUITransition
     {
         private struct VisualState
         {
@@ -47,6 +50,13 @@ namespace AlicizaX.UI.Runtime
             Alpha = 4,
         }
 
+        private enum Phase : byte
+        {
+            Closed,
+            Opened,
+            Playing,
+        }
+
         [SerializeField] private UITransitionPreset openPreset = UITransitionPreset.FadeScale;
         [SerializeField] private UITransitionPreset closePreset = UITransitionPreset.FadeScale;
         [SerializeField] private UITransitionEase openEase = UITransitionEase.OutCubic;
@@ -61,18 +71,10 @@ namespace AlicizaX.UI.Runtime
         [SerializeField] [Range(0.5f, 1f)] private float closedScale = 0.94f;
 
         private bool _initialized;
-        private bool _closed = true;
+        private Phase _phase;
+        private int _version;
         private VisualState _openState;
-
-        private VisualState _fromState;
-        private VisualState _toState;
-        private VisualChannels _channels;
-        private Transform _scaleTarget;
-        private UITransitionEase _ease;
-        private float _duration;
-        private float _elapsed;
-        private bool _opening;
-        private bool _active;
+        private VisualState _closedRest;
 
 #if UNITY_EDITOR
         private bool _editorPreviewActive;
@@ -81,102 +83,86 @@ namespace AlicizaX.UI.Runtime
         private void OnDisable() => EditorStopPreview();
 #endif
 
+        public UniTask Open(bool snap)
+        {
+            EnsureBaseline();
+            if (_phase == Phase.Closed)
+            {
+                RebaseWhileClosed();
+                BuildClosedState(openPreset, in _openState, out VisualState start);
+                ApplyVisualState(in start);
+            }
+            else if (_phase == Phase.Opened)
+            {
+                CaptureCurrentState(out _openState);
+            }
+            float duration = snap || openPreset == UITransitionPreset.None ? 0f : openDuration;
+            return Play(in _openState, Phase.Opened, openEase, duration);
+        }
+
+        public UniTask Close(bool snap)
+        {
+            EnsureBaseline();
+            if (_phase == Phase.Closed) RebaseWhileClosed();
+            else if (_phase == Phase.Opened) CaptureCurrentState(out _openState);
+            BuildClosedState(closePreset, in _openState, out _closedRest);
+            float duration = snap || closePreset == UITransitionPreset.None ? 0f : closeDuration;
+            return Play(in _closedRest, Phase.Closed, closeEase, duration);
+        }
+
+        private UniTask Play(in VisualState to, Phase end, UITransitionEase ease, float duration)
+        {
+            int version = ++_version;
+            if (duration <= 0f)
+            {
+                ApplyVisualState(in to);
+                _phase = end;
+                return UniTask.CompletedTask;
+            }
+            CaptureCurrentState(out VisualState from);
+            _phase = Phase.Playing;
+            return Run(version, from, to, end, ease, duration);
+        }
+
+        private async UniTask Run(int version, VisualState from, VisualState to, Phase end, UITransitionEase ease, float duration)
+        {
+            VisualChannels channels = ResolveChannels(in from, in to);
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                await UniTask.Yield(PlayerLoopTiming.Update);
+                if (version != _version || this == null) return;
+                elapsed += useUnscaledTime ? Time.unscaledDeltaTime : Time.deltaTime;
+                Lerp(in from, in to, Evaluate(ease, Mathf.Clamp01(elapsed / duration)), out VisualState current);
+                ApplyChannels(channels, in current);
+            }
+            ApplyChannels(channels, in to);
+            _phase = end;
+        }
+
         /// <summary>
-        /// 异步播放路径：仅用于外部直接驱动（Holder 在服务存在时走 Tick 驱动）。
+        /// 关闭期间位置或缩放被改动（布局重排、业务在 OnOpen 里定位），视为新的打开位置。
         /// </summary>
-        public async UniTask Play(bool open, CancellationToken cancellationToken)
+        private void RebaseWhileClosed()
         {
-            if (!Begin(open)) return;
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (Advance(Time.deltaTime)) return;
-                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-            }
+            CaptureCurrentState(out VisualState current);
+            if (current.AnchoredPosition != _closedRest.AnchoredPosition) _openState.AnchoredPosition = current.AnchoredPosition;
+            if (current.Scale != _closedRest.Scale) _openState.Scale = current.Scale;
         }
 
-        public bool Begin(bool open)
+        private void EnsureBaseline()
         {
-            CaptureBaseline();
-            _opening = open;
-            if (open && _closed)
-            {
-                BuildClosedState(openPreset, in _openState, out VisualState closed);
-                ApplyVisualState(in closed);
-            }
-            CaptureCurrentState(out _fromState);
-            if (open) _toState = _openState;
-            else BuildClosedState(closePreset, in _openState, out _toState);
-            ResolveChannels();
-            _ease = open ? openEase : closeEase;
-            _duration = open
-                ? (openPreset == UITransitionPreset.None ? 0f : openDuration)
-                : (closePreset == UITransitionPreset.None ? 0f : closeDuration);
-            _elapsed = 0f;
-            if (_duration > 0f)
-            {
-                _active = true;
-                return true;
-            }
-
-            _active = false;
-            ApplyChannels(in _toState);
-            _closed = !open;
-            return false;
-        }
-
-        public bool Advance(float deltaTime)
-        {
-            if (!_active) return true;
-            _elapsed += GetDeltaTime(deltaTime);
-            float progress = Mathf.Clamp01(_elapsed / _duration);
-            Lerp(in _fromState, in _toState, Evaluate(_ease, progress), out VisualState current);
-            ApplyChannels(in current);
-            if (progress < 1f) return false;
-
-            ApplyChannels(in _toState);
-            _closed = !_opening;
-            _active = false;
-            return true;
-        }
-
-        public void Snap(bool open)
-        {
-            CaptureBaseline();
-            _closed = !open;
-            _active = false;
-            if (open)
-            {
-                ApplyVisualState(in _openState);
-                return;
-            }
-
-            BuildClosedState(closePreset, in _openState, out VisualState closed);
-            ApplyVisualState(in closed);
-        }
-
-        private void CaptureBaseline()
-        {
-            if (_initialized)
-            {
-                return;
-            }
-
+            if (_initialized) return;
             ResolveTargets();
-            _scaleTarget = targetRect != null ? targetRect : transform;
             CaptureCurrentState(out _openState);
+            _closedRest = _openState;
             _initialized = true;
         }
 
         private void ResolveTargets()
         {
-            if (targetRect == null)
-            {
-                targetRect = transform as RectTransform;
-            }
-
-            if (RequiresCanvasGroup() && canvasGroup == null)
-                canvasGroup = GetComponent<CanvasGroup>();
+            if (targetRect == null) targetRect = (RectTransform)transform;
+            if (RequiresCanvasGroup() && canvasGroup == null) canvasGroup = GetComponent<CanvasGroup>();
         }
 
         private bool RequiresCanvasGroup() => UsesAlpha(openPreset) || UsesAlpha(closePreset);
@@ -242,48 +228,33 @@ namespace AlicizaX.UI.Runtime
 
         private void CaptureCurrentState(out VisualState state)
         {
-            state.AnchoredPosition = targetRect != null ? targetRect.anchoredPosition : Vector2.zero;
-            state.Scale = targetRect != null ? targetRect.localScale : transform.localScale;
+            state.AnchoredPosition = targetRect.anchoredPosition;
+            state.Scale = targetRect.localScale;
             state.Alpha = canvasGroup != null ? canvasGroup.alpha : 1f;
         }
 
-        private void ResolveChannels()
+        private VisualChannels ResolveChannels(in VisualState from, in VisualState to)
         {
             VisualChannels channels = VisualChannels.None;
-            if (targetRect != null && _fromState.AnchoredPosition != _toState.AnchoredPosition)
-                channels |= VisualChannels.Position;
-            if (_fromState.Scale != _toState.Scale) channels |= VisualChannels.Scale;
-            if (canvasGroup != null && _fromState.Alpha != _toState.Alpha) channels |= VisualChannels.Alpha;
-            _channels = channels;
+            if (from.AnchoredPosition != to.AnchoredPosition) channels |= VisualChannels.Position;
+            if (from.Scale != to.Scale) channels |= VisualChannels.Scale;
+            if (canvasGroup != null && from.Alpha != to.Alpha) channels |= VisualChannels.Alpha;
+            return channels;
         }
 
-        private void ApplyChannels(in VisualState state)
+        private void ApplyChannels(VisualChannels channels, in VisualState state)
         {
-            if ((_channels & VisualChannels.Position) != 0) targetRect.anchoredPosition = state.AnchoredPosition;
-            if ((_channels & VisualChannels.Scale) != 0) _scaleTarget.localScale = state.Scale;
-            if ((_channels & VisualChannels.Alpha) != 0) canvasGroup.alpha = state.Alpha;
+            if ((channels & VisualChannels.Position) != 0) targetRect.anchoredPosition = state.AnchoredPosition;
+            if ((channels & VisualChannels.Scale) != 0) targetRect.localScale = state.Scale;
+            if ((channels & VisualChannels.Alpha) != 0) canvasGroup.alpha = state.Alpha;
         }
 
         private void ApplyVisualState(in VisualState state)
         {
-            if (targetRect != null)
-            {
-                targetRect.anchoredPosition = state.AnchoredPosition;
-                targetRect.localScale = state.Scale;
-            }
-            else
-            {
-                transform.localScale = state.Scale;
-            }
-
-            if (canvasGroup != null)
-            {
-                canvasGroup.alpha = state.Alpha;
-            }
+            targetRect.anchoredPosition = state.AnchoredPosition;
+            targetRect.localScale = state.Scale;
+            if (canvasGroup != null) canvasGroup.alpha = state.Alpha;
         }
-
-        private float GetDeltaTime(float driverDeltaTime) =>
-            useUnscaledTime ? Time.unscaledDeltaTime : driverDeltaTime;
 
         private static void Lerp(in VisualState from, in VisualState to, float t, out VisualState state)
         {
@@ -380,15 +351,8 @@ namespace AlicizaX.UI.Runtime
 
         private void OnValidate()
         {
-            if (targetRect == null)
-            {
-                targetRect = transform as RectTransform;
-            }
-
-            if (canvasGroup == null)
-            {
-                canvasGroup = GetComponent<CanvasGroup>();
-            }
+            if (targetRect == null) targetRect = transform as RectTransform;
+            if (canvasGroup == null && RequiresCanvasGroup()) canvasGroup = GetComponent<CanvasGroup>();
         }
 #endif
     }

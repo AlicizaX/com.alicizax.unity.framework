@@ -5,8 +5,9 @@ namespace AlicizaX.UI.Runtime
 {
     internal sealed partial class UIService
     {
-        int IUIDebugService.LayerCount => _layerStacks.Length;
-        int IUIDebugService.CacheWindowCount => _cache.Count;
+        int IUIDebugService.LayerCount => _layerWindows.Length;
+        int IUIDebugService.CacheWindowCount => CountCachedWindows();
+        int IUIDebugService.HistoryCount => _historyCount;
 
         void IUIDebugService.FillServiceDebugInfo(UIServiceDebugInfo info)
         {
@@ -16,15 +17,15 @@ namespace AlicizaX.UI.Runtime
             }
 
             int openWindowCount = 0;
-            for (int i = 0; i < _layerStacks.Length; i++)
+            for (int i = 0; i < _layerWindows.Length; i++)
             {
-                openWindowCount += _layerStacks[i].Count;
+                openWindowCount += _layerWindows[i].Count;
             }
             info.UpdateCount = _updateViews.Count;
             info.Initialized = _lifetime == UILifetime.Running;
             info.Orthographic = UICamera != null && UICamera.orthographic;
             info.OpenWindowCount = openWindowCount;
-            info.CacheWindowCount = _cache.Count;
+            info.CacheWindowCount = CountCachedWindows();
             info.BlockActive = _blocker != null && _blocker.IsActive;
             info.BlockRemaining = _blocker != null ? _blocker.Remaining : 0f;
             info.Camera = UICamera;
@@ -34,32 +35,31 @@ namespace AlicizaX.UI.Runtime
 
         bool IUIDebugService.FillLayerDebugInfo(int layerIndex, UILayerDebugInfo info)
         {
-            if (info == null || (uint)layerIndex >= (uint)_layerStacks.Length)
+            if (info == null || (uint)layerIndex >= (uint)_layerWindows.Length)
             {
                 return false;
             }
 
             info.Layer = (UILayer)layerIndex;
-            info.WindowCount = _layerStacks[layerIndex].Count;
+            info.WindowCount = _layerWindows[layerIndex].Count;
             return true;
         }
 
         bool IUIDebugService.FillWindowDebugInfo(int layerIndex, int windowIndex, UIWindowDebugInfo info)
         {
-            if (info == null || (uint)layerIndex >= (uint)_layerStacks.Length)
+            if (info == null || (uint)layerIndex >= (uint)_layerWindows.Length)
             {
                 return false;
             }
 
-            UIWindowRecord record = _layerStacks[layerIndex].Bottom;
-            for (int i = 0; record != null && i < windowIndex; i++) record = record.StackAbove;
-            if (windowIndex < 0 || record == null)
+            List<UIWindow> windows = _layerWindows[layerIndex];
+            if ((uint)windowIndex >= (uint)windows.Count)
             {
                 info.Clear();
                 return false;
             }
 
-            FillWindowDebugInfo(record, layerIndex, windowIndex, info);
+            FillWindowDebugInfo(windows[windowIndex], layerIndex, windowIndex, 0UL, info);
             return true;
         }
 
@@ -71,8 +71,13 @@ namespace AlicizaX.UI.Runtime
             }
 
             int index = 0;
-            for (int i = 0; i < _cache.Count; i++)
+            foreach (UIWindow window in _windows.Values)
             {
+                if (!IsCached(window))
+                {
+                    continue;
+                }
+
                 if (index >= capacity || index >= infos.Length)
                 {
                     break;
@@ -81,8 +86,7 @@ namespace AlicizaX.UI.Runtime
                 UIWindowDebugInfo info = infos[index];
                 if (info != null)
                 {
-                    UIWindowRecord record = _cache.Get(i);
-                    FillWindowDebugInfo(record, record.MetaInfo.UILayer, index, info);
+                    FillWindowDebugInfo(window, (int)window.MetaInfo.Layer, index, window.CacheTimer, info);
                 }
 
                 index++;
@@ -91,45 +95,47 @@ namespace AlicizaX.UI.Runtime
             return index;
         }
 
-        private void FillWindowDebugInfo(UIWindowRecord record, int layerIndex, int orderIndex, UIWindowDebugInfo info)
+        private int CountCachedWindows()
         {
-            if (record == null)
+            int count = 0;
+            foreach (UIWindow window in _windows.Values)
             {
-                info.Clear();
-                return;
+                if (IsCached(window)) count++;
             }
 
-            UIWindow view = record.View;
-            UIHolderObjectBase holder = view?.Holder;
-            info.LayerIndex = layerIndex;
-            info.OrderIndex = orderIndex;
-            info.LogicTypeName = record.Metadata.UILogicTypeName;
-            info.HolderTypeName = record.Metadata.UIHolderTypeName;
-            info.State = record.State;
-            info.Visible = view != null && view.Visible;
-            info.Processing = record.Flight != null || record.State == UIState.Opening || record.State == UIState.Closing;
-            info.Updating = view != null && view.IsUpdating;
-            info.Depth = view != null ? view.Depth : 0;
-            info.CacheTime = record.MetaInfo.CacheTime;
-            info.CacheRemaining = GetTimerRemaining(record.CacheTimer);
-            info.HolderTransform = holder != null ? holder.transform : null;
+            return count;
         }
 
-        internal UIWindowRecord FindRecord(System.RuntimeTypeHandle handle) => TryGetWindowRecord(handle);
-        internal UITickList UpdateViews => _updateViews;
-        internal UITickList TransitionViews => _transitionViews;
-        internal UILayerStack LayerStack(int layer) => _layerStacks[layer];
-        internal uint CurrentTick => _tick;
-        internal Dictionary<System.RuntimeTypeHandle, UIWindowRecord>.ValueCollection Records => _windows.Values;
+        private static bool IsCached(UIWindow window) => window.State == UIState.Closed && window.LayerIndex < 0;
 
-        private float GetTimerRemaining(ulong timerHandle)
+        bool IUIDebugService.FillHistoryInfo(int index, UIRouteDebugInfo info)
         {
-            if (timerHandle == 0UL || _timerService == null)
-            {
-                return 0f;
-            }
+            if (info == null || (uint)index >= (uint)_historyCount) return false;
+            UIRouteEntry entry = _history[index];
+            info.Clear();
+            info.Index = index;
+            info.UITypeName = entry.UIType.Name;
+            info.IsRoot = index == 0;
+            info.Sequence = entry.Sequence;
+            info.ArgsPreview = entry.UserData?.ToString() ?? "null";
+            return true;
+        }
 
-            return _timerService.GetLeftTime(timerHandle);
+        private void FillWindowDebugInfo(UIWindow window, int layerIndex, int orderIndex, ulong cacheTimer, UIWindowDebugInfo info)
+        {
+            UIHolderObjectBase holder = window.Holder;
+            info.LayerIndex = layerIndex;
+            info.OrderIndex = orderIndex;
+            info.LogicTypeName = window.MetaInfo.Name;
+            info.HolderTypeName = window.MetaInfo.HolderType.Name;
+            info.State = window.State;
+            info.Visible = window.Visible;
+            info.Processing = window.State is UIState.Loading or UIState.Opening or UIState.Closing;
+            info.Updating = window.MetaInfo.HasUpdate && window.IsEnabled;
+            info.Depth = window.Depth;
+            info.CacheTime = window.MetaInfo.CacheTime;
+            info.CacheRemaining = cacheTimer == 0UL ? 0f : _timerService.GetLeftTime(cacheTimer);
+            info.HolderTransform = holder != null ? holder.transform : null;
         }
     }
 }

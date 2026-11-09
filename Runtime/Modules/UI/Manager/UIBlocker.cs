@@ -7,7 +7,7 @@ namespace AlicizaX.UI.Runtime
 {
     /// <summary>
     /// 全屏输入遮挡层：显示时拦截点击，倒计时结束或强制退出时隐藏。
-    /// 生命周期由 <see cref="UIService.Initialize"/> 创建、<see cref="UIService.DestroyAllManagedUI"/> 释放。
+    /// 生命周期由 <see cref="UIService.Initialize"/> 创建、<see cref="UIService.Shutdown"/> 释放。
     /// </summary>
     internal sealed class UIBlocker
     {
@@ -46,7 +46,7 @@ namespace AlicizaX.UI.Runtime
         {
             RemoveTimer();
             _root.SetActive(true);
-            _timer = _timers.AddTimer(_onExpired, duration);
+            _timer = _timers.AddTimer(_onExpired, duration, isUnscaled: true);
             if (_timer == 0) _root.SetActive(false);
         }
 

@@ -1,5 +1,3 @@
-using System;
-using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -7,51 +5,33 @@ namespace AlicizaX.UI.Runtime
 {
     public abstract class UIWindow : UIBase
     {
-        internal UIWindowRecord Record;
         private Canvas _canvas;
         private GraphicRaycaster _raycaster;
-        private int _depth;
+        private int _layerIndex = -1;
+        internal ulong CacheTimer;
 
-        protected UIWindow() => RootWindow = this;
+        protected UIViewTransition CloseSelf(bool force = false, bool snap = false) =>
+            Service.CloseWindow(this, force, snap);
 
-        protected UniTask CloseSelf(bool force = false, bool skipTransition = false) =>
-            Service.CloseWindow(this, force, skipTransition);
+        internal int Depth => (int)MetaInfo.Layer * UIService.LAYER_DEEP + _layerIndex * UIService.WINDOW_DEEP;
 
-        internal override void OnClosed() => Service.FinalizeAfterClosed(Record);
-        internal override void OnDestroyStarted() => Service.ReleaseRecord(Record);
-
-        internal Canvas Canvas => _canvas;
-
-        /// <summary>层级深度。资源尚未绑定 Holder 时只记录，待 Canvas 创建后一次应用。</summary>
-        internal int Depth
+        /// <summary>层级内的位置，-1 表示不在层级中。节点尚未绑定时只记录，绑定时一次应用。</summary>
+        internal int LayerIndex
         {
-            get => _depth;
+            get => _layerIndex;
             set
             {
-                if (_depth == value) return;
-                _depth = value;
-                if (_canvas != null) _canvas.sortingOrder = value;
+                if (_layerIndex == value) return;
+                _layerIndex = value;
+                if (value >= 0 && _canvas != null) _canvas.sortingOrder = Depth;
             }
         }
 
-        private protected override void ApplyVisible(bool value)
-        {
-            Holder.gameObject.layer = value ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
-            if (State != UIState.Initializing) _canvas.enabled = value;
-        }
+        internal sealed override void DestroySelf() => Service.DestroyWindow(this);
 
-        private protected override void SetInteractable(bool value)
-        {
-            _raycaster.enabled = value;
-        }
+        private protected sealed override void ReleaseClosed(bool destroy) => Service.ReleaseClosedWindow(this, destroy);
 
-        private protected override void ReleaseVisuals()
-        {
-            _canvas = null;
-            _raycaster = null;
-        }
-
-        internal void BindWindowHolder(UIHolderObjectBase holder)
+        private protected sealed override void BindVisuals(UIHolderObjectBase holder)
         {
             RectTransform rect = holder.RectTransform;
             rect.localPosition = Vector3.zero;
@@ -61,21 +41,26 @@ namespace AlicizaX.UI.Runtime
             rect.offsetMin = Vector2.zero;
             rect.offsetMax = Vector2.zero;
             rect.localScale = Vector3.one;
-            _canvas = holder.GetComponent<Canvas>();
-            if (_canvas == null) _canvas = holder.gameObject.AddComponent<Canvas>();
+            if (!holder.TryGetComponent(out _canvas)) _canvas = holder.gameObject.AddComponent<Canvas>();
             _canvas.overrideSorting = true;
-            _canvas.sortingOrder = _depth;
-            _raycaster = holder.GetComponent<GraphicRaycaster>();
-            if (_raycaster == null) _raycaster = holder.gameObject.AddComponent<GraphicRaycaster>();
+            _canvas.sortingOrder = Depth;
+            if (!holder.TryGetComponent(out _raycaster)) _raycaster = holder.gameObject.AddComponent<GraphicRaycaster>();
             _raycaster.enabled = false;
-            if (!DestroyRequested) BindHolderCommon(holder);
+            // 初始化阶段只用层隐藏、保持 Canvas 启用，OnInitialize 里仍可读取布局
+            holder.gameObject.layer = UIComponent.UIHideLayer;
         }
+
+        private protected sealed override void ApplyVisible(bool visible)
+        {
+            Holder.gameObject.layer = visible ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
+            _canvas.enabled = visible;
+        }
+
+        private protected sealed override void SetInteractable(bool interactable) => _raycaster.enabled = interactable;
     }
 
     public abstract class UIWindow<T> : UIWindow where T : UIHolderObjectBase
     {
         protected T baseui => (T)Holder;
-        internal sealed override Type UIHolderType => typeof(T);
-        internal sealed override void BindUIHolder(UIHolderObjectBase holder) => BindWindowHolder(holder);
     }
 }

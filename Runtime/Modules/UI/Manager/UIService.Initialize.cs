@@ -8,9 +8,9 @@ namespace AlicizaX.UI.Runtime
     internal sealed partial class UIService
     {
         public Camera UICamera { get; private set; }
-        public Canvas UICanvas;
+        public Canvas UICanvas { get; private set; }
         public Transform UICanvasRoot { get; private set; }
-        public Transform UIRoot;
+        public Transform UIRoot { get; private set; }
 
         private const int UI_ROOT_OFFSET = 1000;
 
@@ -19,34 +19,35 @@ namespace AlicizaX.UI.Runtime
 
         private readonly RectTransform[] _layers = new RectTransform[(int)UILayer.All];
 
-        public void Initialize(Transform root, bool isOrthographic)
+        /// <summary>初始化 UI 根节点与层级；失败时记录原因并返回 false，服务不可用。</summary>
+        public bool Initialize(Transform root, bool isOrthographic)
         {
             if (_lifetime != UILifetime.Created)
             {
                 Log.Error("[UI] UIService is already initialized or stopped.");
-                return;
+                return false;
             }
             if (root == null)
             {
                 Log.Error("[UI] UI root is missing.");
-                return;
+                return false;
             }
             Canvas canvas = root.GetComponentInChildren<Canvas>(true);
             if (canvas == null)
             {
                 Log.Error("[UI] UI root must contain a Canvas.");
-                return;
+                return false;
             }
             Camera camera = canvas.worldCamera;
             if (camera == null)
             {
                 Log.Error("[UI] UI Canvas must have a worldCamera.");
-                return;
+                return false;
             }
             if (!AppServices.TryGet(out _timerService))
             {
                 Log.Error("[UI] Timer service is unavailable.");
-                return;
+                return false;
             }
             UICanvas = canvas;
             UICamera = camera;
@@ -61,11 +62,11 @@ namespace AlicizaX.UI.Runtime
 
             for (var i = (int)UILayer.All - 1; i >= 0; i--) AddLayer(i);
 
-            _cache = new UIWindowCache(_timerService);
             _blocker = new UIBlocker(_timerService, canvas, camera, UICanvasRoot);
             root.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
             UIRoot = root;
             _lifetime = UILifetime.Running;
+            return true;
         }
 
         public RectTransform GetLayer(UILayer layer)
@@ -106,6 +107,5 @@ namespace AlicizaX.UI.Runtime
             _layers[layer] = rect;
         }
 
-        private RectTransform GetLayerRect(int layer) => _layers[layer];
     }
 }

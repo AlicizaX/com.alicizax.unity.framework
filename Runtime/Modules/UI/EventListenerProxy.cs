@@ -1,8 +1,13 @@
-﻿using System;
+using System;
 
 namespace AlicizaX
 {
-    public class EventListenerProxy : MemoryObject
+    /// <summary>
+    /// UI 事件订阅代理：视图启用时订阅、停用时退订。视图首次需要事件时从内存池取出，
+    /// 视图销毁时归还（归还即退订并清空），销毁重建的窗口复用同一批代理与订阅数组。
+    /// 订阅函数按事件类型缓存为静态委托，重订阅不分配。
+    /// </summary>
+    public sealed class EventListenerProxy : MemoryObject
     {
         private const int InitialCapacity = 4;
 
@@ -39,29 +44,29 @@ namespace AlicizaX
 
         private void AddSubscription(Delegate handler, SubscribeHandler subscribe)
         {
-            EventRuntimeHandle handle = _suspended ? default : subscribe(handler);
             if (_count == _subscriptions.Length)
                 Array.Resize(ref _subscriptions, _count == 0 ? InitialCapacity : _count * 2);
             ref Subscription subscription = ref _subscriptions[_count++];
             subscription.Handler = handler;
             subscription.Subscribe = subscribe;
-            subscription.Handle = handle;
+            subscription.Handle = _suspended ? default : subscribe(handler);
         }
-
-#if UNITY_EDITOR
-        internal bool IsSuspended => _suspended;
-        internal int SubscriptionCount => _count;
-        internal int SubscriptionCapacity => _subscriptions.Length;
-#endif
 
         internal void Suspend()
         {
+            if (_suspended) return;
             _suspended = true;
-            for (int i = _count - 1; i >= 0; i--) _subscriptions[i].Handle.Dispose();
+            for (int i = _count - 1; i >= 0; i--)
+            {
+                ref Subscription subscription = ref _subscriptions[i];
+                subscription.Handle.Dispose();
+                subscription.Handle = default;
+            }
         }
 
         internal void Resume()
         {
+            if (!_suspended) return;
             _suspended = false;
             for (int i = 0; i < _count; i++)
             {
@@ -70,6 +75,7 @@ namespace AlicizaX
             }
         }
 
+        /// <summary>退订并清空，回到新建时的状态；归还内存池时由池调用。保留订阅数组容量供复用。</summary>
         public override void Clear()
         {
             Suspend();

@@ -30,8 +30,7 @@ namespace AlicizaX.UI.Runtime
             obj.name = "------UI Root------";
             Transform instanceRoot = obj.transform;
             var service = new UIService();
-            service.Initialize(instanceRoot, _isOrthographic);
-            if (service.UIRoot == null)
+            if (!service.Initialize(instanceRoot, _isOrthographic))
             {
                 Destroy(obj);
                 return;

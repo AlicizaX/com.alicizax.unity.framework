@@ -1,83 +1,71 @@
-using System;
-using System.Threading;
-using Cysharp.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace AlicizaX.UI.Runtime
 {
     public abstract class UIWidget : UIBase
     {
         internal UIBase Parent;
-        internal UIWidget PreviousSibling;
-        internal UIWidget NextSibling;
+        private Canvas _canvas;
+        private GraphicRaycaster _raycaster;
         private CanvasGroup _canvasGroup;
         private float _shownAlpha = 1f;
-        private CancellationTokenSource _loadCts;
 
-        internal override bool ParentEffective => Parent.Effective;
-        public override bool IsVisible => Visible && Parent.IsVisible;
+        private protected override bool ParentEnabled => Parent.IsEnabled;
 
-        /// <summary>本 Widget 资源加载的取消源：由 Widget 自身拥有，创建期间有效，加载结束或销毁时释放。</summary>
-        internal CancellationToken LoadToken => (_loadCts ??= new CancellationTokenSource()).Token;
+        public void Open(object userData = null) => OpenView(userData);
 
-        internal static readonly Action<object> CancelLoadCallback = static state => ((UIWidget)state).CancelLoad();
+        public void Close() => CloseView(false, false);
 
-        /// <summary>请求取消加载；源由 EndLoad 释放，避免加载方仍在观察 token 时被提前 Dispose。</summary>
-        internal void CancelLoad()
+        /// <summary>播放关闭转场后销毁。</summary>
+        public UIViewTransition Destroy()
         {
-            _loadCts?.Cancel();
+            CloseView(false, true);
+            if (State == UIState.Closed) Parent.DestroyWidget(this);
+            return new UIViewTransition(this);
         }
 
-        internal void EndLoad()
+        internal sealed override void DestroySelf() => Parent.DestroyWidget(this);
+
+        private protected sealed override void ReleaseClosed(bool destroy)
         {
-            CancellationTokenSource cancellation = _loadCts;
-            if (cancellation == null) return;
-            _loadCts = null;
-            cancellation.Dispose();
+            if (destroy) Parent.DestroyWidget(this);
         }
 
-        public void Open(params object[] userDatas) => InternalOpen(userDatas);
-
-        public void Close()
+        private protected sealed override void BindVisuals(UIHolderObjectBase holder)
         {
-            if (DestroyRequested || State == UIState.Initialized) return;
-            BeginClose(false, false);
+            if (holder.TryGetComponent(out _canvas))
+            {
+                holder.TryGetComponent(out _raycaster);
+            }
+            else
+            {
+                if (!holder.TryGetComponent(out _canvasGroup)) _canvasGroup = holder.gameObject.AddComponent<CanvasGroup>();
+                if (_canvasGroup.alpha > 0f) _shownAlpha = _canvasGroup.alpha;
+            }
+            SetInteractable(false);
         }
 
-        public UniTask Destroy() => InternalDestroy();
-        internal override void OnDestroyed() => Parent.DetachWidget(this);
-        internal override void OnDestroyStarted() => CancelLoad();
-
-        private protected sealed override void ApplyVisible(bool value) =>
-            _canvasGroup.alpha = value ? _shownAlpha : 0f;
-
-        private protected override void SetInteractable(bool value)
+        private protected sealed override void ApplyVisible(bool visible)
         {
-            _canvasGroup.blocksRaycasts = value;
-            _canvasGroup.interactable = value;
+            if (_canvas != null) _canvas.enabled = visible;
+            else _canvasGroup.alpha = visible ? _shownAlpha : 0f;
         }
 
-        private protected sealed override void ReleaseVisuals()
+        private protected sealed override void SetInteractable(bool interactable)
         {
-            CancelLoad();
-            _canvasGroup = null;
-        }
-
-        internal void BindWidgetHolder(UIHolderObjectBase holder)
-        {
-            _canvasGroup = holder.GetComponent<CanvasGroup>();
-            if (_canvasGroup == null) _canvasGroup = holder.gameObject.AddComponent<CanvasGroup>();
-            if (_canvasGroup.alpha > 0f) _shownAlpha = _canvasGroup.alpha;
-            if (DestroyRequested) return;
-            BindHolderCommon(holder);
-            if (Holder.HasTransition) Holder.ApplyTransitionState(false);
+            if (_canvas != null)
+            {
+                if (_raycaster != null) _raycaster.enabled = interactable;
+                return;
+            }
+            _canvasGroup.blocksRaycasts = interactable;
+            _canvasGroup.interactable = interactable;
         }
     }
 
     public abstract class UIWidget<T> : UIWidget where T : UIHolderObjectBase
     {
         protected T baseui => (T)Holder;
-        internal sealed override Type UIHolderType => typeof(T);
-        internal sealed override void BindUIHolder(UIHolderObjectBase holder) => BindWidgetHolder(holder);
     }
 }

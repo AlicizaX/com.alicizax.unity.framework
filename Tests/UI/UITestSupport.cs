@@ -1,8 +1,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using AlicizaX.Resource.Runtime;
 using AlicizaX.Timer.Runtime;
 using AlicizaX.UI.Runtime;
 using Cysharp.Threading.Tasks;
@@ -24,65 +26,45 @@ namespace AlicizaX.UI.Tests
     internal sealed class UIProbeWindow : UIWindow<UIWindowHolder>
     {
         internal static Action<UIProbeWindow> Initializing;
-        internal int Initializes, Opens, Closes, Destroys, Refreshes, Updates, Events, Registrations;
-        internal Action Opening, Closing, Updating, Destroying, Refreshing, Registering;
+        internal int Initializes, Opens, Closes, Destroys, Refreshes, Updates, Events;
+        internal Action Opening, Closing, Updating, Destroying, Refreshing;
         internal object Argument => UserData;
-        private Action _eventHandler;
-        internal UISecondWidget CreatePlain() => CreateWidgetSync<UISecondWidget>(baseui.RectTransform);
-        internal UIProbeWidget Create(bool open = true) => CreateWidgetSync<UIProbeWidget>(baseui != null ? baseui.RectTransform : null, open);
+        internal UIProbeWidget Create(bool open = true) => CreateWidgetSync<UIProbeWidget>(baseui.RectTransform, open);
+        internal UIProbeWidget CreateUnder(Transform parent, bool open = true) => CreateWidgetSync<UIProbeWidget>(parent, open);
         internal UniTask<UIProbeWidget> CreateAsync(bool open = true, CancellationToken token = default) =>
             CreateWidgetAsync<UIProbeWidget>(baseui.RectTransform, open, token);
-        internal UIProbeWidget Borrow(UIWidgetHolder holder, bool destroyHolder = true) => CreateWidgetSync<UIProbeWidget>(holder, destroyHolder);
-        protected override void OnInitialize() { Initializes++; Initializing?.Invoke(this); }
+        internal UIProbeWidget Borrow(UIWidgetHolder holder, bool open = true) => CreateWidgetSync<UIProbeWidget>(holder, open);
+        internal UIViewTransition CloseThis(bool force = false, bool snap = false) => CloseSelf(force, snap);
+        internal EventListenerProxy Proxy => EventProxy;
+        internal UIWidget CreateByName(string typeName) => CreateWidgetSync(typeName, baseui.RectTransform);
+        internal UniTask<UIWidget> CreateByNameAsync(string typeName) => CreateWidgetAsync(typeName, baseui.RectTransform);
+
+        protected override void OnInitialize()
+        {
+            Initializes++;
+            EventProxy.AddUIEvent<UIProbeWindowEvent>(Receive);
+            Initializing?.Invoke(this);
+        }
+
         protected override void OnOpen() { Opens++; Opening?.Invoke(); }
         protected override void OnClose() { Closes++; Closing?.Invoke(); }
         protected override void OnDestroy() { Destroys++; Destroying?.Invoke(); }
         protected override void OnRefresh() { Refreshes++; Refreshing?.Invoke(); }
         protected override void OnUpdate(float deltaTime) { Updates++; Updating?.Invoke(); }
-        protected override void OnRegisterEvent(EventListenerProxy proxy)
-        {
-            Registrations++;
-            proxy.AddUIEvent<UIProbeWindowEvent>(_eventHandler ??= () => Events++);
-            Registering?.Invoke();
-        }
-        internal UniTask CloseThis(bool force = false, bool skipTransition = false) => CloseSelf(force, skipTransition);
+        private void Receive() => Events++;
     }
 
     internal sealed class UISecondWindow : UIWindow<UIWindowHolder> { }
     internal sealed class UIThirdWindow : UIWindow<UIWindowHolder> { }
+    internal sealed class UIPopupWindow : UIWindow<UIWindowHolder> { }
 
     internal sealed class UIZeroCacheWindow : UIWindow<UIWindowHolder>
     {
-        internal UIProbeWidget Create() => CreateWidgetSync<UIProbeWidget>(baseui.RectTransform);
-        internal UniTask CloseThis() => CloseSelf();
+        internal int Destroys;
+        protected override void OnDestroy() => Destroys++;
     }
 
-    internal sealed class UIThrowingWindow : UIWindow<UIWindowHolder>
-    {
-        public UIThrowingWindow() => throw new InvalidOperationException("expected constructor failure");
-    }
-
-    internal sealed class UIThrowingWidget : UIWidget<UIWidgetHolder>
-    {
-        public UIThrowingWidget() => throw new InvalidOperationException("expected constructor failure");
-    }
-
-    internal sealed class UIThrowingTabWindow : UITabWindow<UIWindowHolder>
-    {
-        protected override void OnInitialize() => InitTabVirtuallyView<UIThrowingWidget>();
-    }
-
-    internal sealed class UIMethodGroupEventWindow : UIWindow<UIWindowHolder>
-    {
-        internal int Events;
-        protected override void OnRegisterEvent(EventListenerProxy proxy) => proxy.AddUIEvent<UIProbeWindowEvent>(Receive);
-        private void Receive() => Events++;
-    }
-
-    internal sealed class UITimedCacheWindow : UIWindow<UIWindowHolder>
-    {
-        internal UIProbeWidget Create() => CreateWidgetSync<UIProbeWidget>(baseui.RectTransform);
-    }
+    internal sealed class UITimedCacheWindow : UIWindow<UIWindowHolder> { }
 
     internal sealed class UIProbeTabWindow : UITabWindow<UIWindowHolder>
     {
@@ -97,86 +79,75 @@ namespace AlicizaX.UI.Tests
 
     internal sealed class UIProbeWidget : UIWidget<UIWidgetHolder>
     {
-        internal static Action<UIProbeWidget> Initializing;
-        internal int Initializes, Opens, Closes, Destroys, Refreshes, Updates, Events, Registrations;
-        internal Action Opening, Closing, Registering, Updating, Destroying, Refreshing, Receiving;
+        internal int Initializes, Opens, Closes, Destroys, Refreshes, Updates, Events;
+        internal Action Opening, Closing;
         internal object Argument => UserData;
-        private Action _eventHandler;
         internal UIProbeWidget Create(bool open = true) => CreateWidgetSync<UIProbeWidget>(baseui.RectTransform, open);
-        internal UniTask<UIProbeWidget> CreateAsync(bool open = true, CancellationToken token = default) =>
-            CreateWidgetAsync<UIProbeWidget>(baseui.RectTransform, open, token);
-        protected override void OnInitialize() { Initializes++; Initializing?.Invoke(this); }
+
+        protected override void OnInitialize()
+        {
+            Initializes++;
+            EventProxy.AddUIEvent<UIProbeEvent>(Receive);
+        }
+
         protected override void OnOpen() { Opens++; Opening?.Invoke(); }
         protected override void OnClose() { Closes++; Closing?.Invoke(); }
-        protected override void OnDestroy() { Destroys++; Destroying?.Invoke(); }
-        protected override void OnRefresh() { Refreshes++; Refreshing?.Invoke(); }
-        protected override void OnUpdate(float deltaTime) { Updates++; Updating?.Invoke(); }
-        protected override void OnRegisterEvent(EventListenerProxy proxy)
-        {
-            Registrations++;
-            proxy.AddUIEvent<UIProbeEvent>(_eventHandler ??= Receive);
-            Registering?.Invoke();
-        }
-        private void Receive() { Events++; Receiving?.Invoke(); }
+        protected override void OnDestroy() => Destroys++;
+        protected override void OnRefresh() => Refreshes++;
+        protected override void OnUpdate(float deltaTime) => Updates++;
+        private void Receive() => Events++;
     }
 
-    internal sealed class UIControlledLoader : IUIResourceLoader
+    internal sealed class UIControlledLoader : ServiceBase, IResourceService
     {
-        internal readonly List<GameObject> Objects = new();
-        internal bool Deferred, Fail;
-        internal int Loads;
-        private readonly List<LoadRequest> _pending = new();
-        internal UniTaskCompletionSource<GameObject> Pending => _pending.Count == 0 ? null : _pending[0].Completion;
-        internal CancellationToken PendingToken => _pending[0].Token;
-        internal int PendingCount => _pending.Count;
-        internal Action<UIHolderObjectBase> Bound;
-        internal Exception Failure;
-
         private sealed class LoadRequest
         {
             internal readonly UniTaskCompletionSource<GameObject> Completion = new();
-            internal UIResRegistry.UIResInfo Resource;
+            internal string Location;
             internal Transform Parent;
-            internal CancellationToken Token;
         }
 
-        public GameObject Load(UIResRegistry.UIResInfo resource, Transform parent)
+        internal readonly List<GameObject> Objects = new();
+        internal bool Deferred, Fail, IgnoreCancellation;
+        internal int Loads;
+        internal Action<UIHolderObjectBase> Bound;
+        private readonly List<LoadRequest> _pending = new();
+
+        internal int PendingCount => _pending.Count;
+
+        public GameObject Instantiate(string location, Transform parent = null, string packageName = null)
         {
             Loads++;
-            if (Failure != null) throw Failure;
-            return Fail ? null : Make(resource, parent);
+            return Fail ? null : Make(location, parent).gameObject;
         }
 
-        public UniTask<GameObject> LoadAsync(UIResRegistry.UIResInfo resource, Transform parent, CancellationToken token)
+        public UniTask<GameObject> InstantiateAsync(string location, Transform parent = null,
+            CancellationToken token = default, string packageName = null)
         {
-            if (!Deferred) return UniTask.FromResult(Load(resource, parent));
+            if (!Deferred) return UniTask.FromResult(Instantiate(location, parent));
             Loads++;
-            var request = new LoadRequest { Resource = resource, Parent = parent, Token = token };
+            var request = new LoadRequest { Location = location, Parent = parent };
             _pending.Add(request);
+            if (!IgnoreCancellation) token.Register(() => request.Completion.TrySetCanceled(token));
             return request.Completion.Task;
         }
 
-        internal GameObject Deliver(int index = 0)
+        internal UIHolderObjectBase Deliver(int index = 0)
         {
             LoadRequest request = _pending[index];
             _pending.RemoveAt(index);
-            if (Failure != null)
-            {
-                request.Completion.TrySetException(Failure);
-                return null;
-            }
-            GameObject obj = Fail ? null : Make(request.Resource, request.Parent);
-            request.Completion.TrySetResult(obj);
-            return obj;
+            UIHolderObjectBase holder = Fail ? null : Make(request.Location, request.Parent);
+            request.Completion.TrySetResult(holder != null ? holder.gameObject : null);
+            return holder;
         }
 
-        private GameObject Make(UIResRegistry.UIResInfo resource, Transform parent)
+        private UIHolderObjectBase Make(string location, Transform parent)
         {
-            var obj = new GameObject(resource.Location, typeof(RectTransform));
+            var obj = new GameObject(location, typeof(RectTransform));
             Objects.Add(obj);
             obj.transform.SetParent(parent, false);
             UIHolderObjectBase holder;
-            if (resource.Location == "UIProbeWindow")
+            if (location == nameof(UIWindowHolder))
             {
                 obj.AddComponent<Canvas>();
                 obj.AddComponent<GraphicRaycaster>();
@@ -184,61 +155,92 @@ namespace AlicizaX.UI.Tests
             }
             else holder = obj.AddComponent<UIWidgetHolder>();
             Bound?.Invoke(holder);
-            return obj;
+            return holder;
         }
+
+        bool IResourceService.CanLoadResources => throw new NotSupportedException();
+
+        float IResourceService.IdleAssetExpireTime
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        int IResourceService.IdleAssetCapacity
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        int IResourceService.IdleReleaseCountPerTick
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        ResourceScope IResourceService.App => throw new NotSupportedException();
+
+        ResourceScope IResourceService.CreateScope(string debugName) => throw new NotSupportedException();
+
+        AssetRef<T> IResourceService.Key<T>(string location, string packageName) => throw new NotSupportedException();
+
+        AssetLease<T> IResourceService.LoadLease<T>(AssetRef<T> key) => throw new NotSupportedException();
+
+        AssetLease<T> IResourceService.LoadLease<T>(string location, string packageName) => throw new NotSupportedException();
+
+        UniTask<AssetLease<T>> IResourceService.LoadLeaseAsync<T>(AssetRef<T> key, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        UniTask<AssetLease<T>> IResourceService.LoadLeaseAsync<T>(string location, CancellationToken cancellationToken,
+            string packageName) => throw new NotSupportedException();
+
+        void IResourceService.UnloadUnusedAssets(bool releaseIdleAssets) => throw new NotSupportedException();
+
+        void IResourceService.ForceUnloadAllAssets() => throw new NotSupportedException();
+
+        void IResourceService.ForceUnloadUnusedAssets(bool performGCCollect) => throw new NotSupportedException();
+
+        void IResourceService.SetForceUnloadUnusedAssetsAction(Action<bool> action) => throw new NotSupportedException();
+
+        void IResourceService.OnLowMemory() => throw new NotSupportedException();
     }
 
-    internal sealed class UIGateTransition : IUITransitionSource
+    internal sealed class UIThrowingTransition : IUITransition
     {
-        internal int OpenPlays, ClosePlays, Snaps;
-        internal bool LastSnap;
-        internal UniTaskCompletionSource Pending;
-        internal Action PlayAction, SnapAction, CancelAction;
-        public UniTask Play(bool open, CancellationToken token)
-        {
-            if (open) OpenPlays++; else ClosePlays++;
-            Pending = new UniTaskCompletionSource();
-            if (CancelAction != null) token.Register(CancelAction);
-            PlayAction?.Invoke();
-            return Pending.Task.AttachExternalCancellation(token);
-        }
-        public void Snap(bool open) { Snaps++; LastSnap = open; SnapAction?.Invoke(); }
-        internal void Finish() => Pending.TrySetResult();
+        public UniTask Open(bool snap) => throw new InvalidOperationException("transition failure");
+
+        public UniTask Close(bool snap) => throw new InvalidOperationException("transition failure");
     }
 
-    internal sealed class UITickGateTransition : ITickTransitionSource
+    internal sealed class UIGateTransition : IUITransition
     {
-        internal int Begins, Advances, Snaps;
-        internal bool Finished;
+        internal int Opens, Closes;
         internal bool LastSnap;
-        internal bool BeginResult = true;
-        internal Action BeginAction, AdvanceAction, SnapAction;
+        private AutoResetUniTaskCompletionSource _completion;
 
-        public bool Begin(bool open)
+        internal bool Playing => _completion != null;
+
+        public UniTask Open(bool snap) => Play(true, snap);
+
+        public UniTask Close(bool snap) => Play(false, snap);
+
+        internal void Finish()
         {
-            Begins++;
-            Finished = false;
-            LastSnap = open;
-            BeginAction?.Invoke();
-            return BeginResult;
+            AutoResetUniTaskCompletionSource completion = _completion;
+            _completion = null;
+            completion?.TrySetResult();
         }
 
-        public bool Advance(float deltaTime)
+        private UniTask Play(bool open, bool snap)
         {
-            Advances++;
-            AdvanceAction?.Invoke();
-            return Finished;
+            if (open) Opens++;
+            else Closes++;
+            LastSnap = snap;
+            Finish();
+            if (snap) return UniTask.CompletedTask;
+            _completion = AutoResetUniTaskCompletionSource.Create();
+            return _completion.Task;
         }
-
-        public void Snap(bool open)
-        {
-            Snaps++;
-            LastSnap = open;
-            SnapAction?.Invoke();
-        }
-
-        public UniTask Play(bool open, CancellationToken token) =>
-            throw new InvalidOperationException("Tick transition must be driven by UIService.Tick.");
     }
 
     internal sealed class UIFixture : IDisposable
@@ -255,18 +257,16 @@ namespace AlicizaX.UI.Tests
             AppServices.GetOrCreateRegistry();
             Timer = new TimerService(256);
             AppServices.Register<ITimerService>(Timer);
-            Register<UIProbeWindow, UIWindowHolder>("UIProbeWindow", -1, true);
-            Register<UISecondWindow, UIWindowHolder>("UIProbeWindow", -1, false);
-            Register<UIThirdWindow, UIWindowHolder>("UIProbeWindow", -1, false);
-            Register<UIZeroCacheWindow, UIWindowHolder>("UIProbeWindow", 0, false);
-            Register<UITimedCacheWindow, UIWindowHolder>("UIProbeWindow", 1, false);
-            Register<UIProbeTabWindow, UIWindowHolder>("UIProbeWindow", -1, false);
-            Register<UIMethodGroupEventWindow, UIWindowHolder>("UIProbeWindow", -1, false);
-            Register<UIThrowingWindow, UIWindowHolder>("UIProbeWindow", -1, false);
-            Register<UIThrowingTabWindow, UIWindowHolder>("UIProbeWindow", -1, false);
-            Register<UIThrowingWidget, UIWidgetHolder>("UIProbeWidget", 0, false);
-            Register<UIProbeWidget, UIWidgetHolder>("UIProbeWidget", 0, true);
-            Register<UISecondWidget, UIWidgetHolder>("UIProbeWidget", 0, false);
+            AppServices.Register<IResourceService>(Loader);
+            Register<UIProbeWindow, UIWindowHolder>(UICacheTime.Forever, true);
+            Register<UISecondWindow, UIWindowHolder>(UICacheTime.Forever, false);
+            Register<UIThirdWindow, UIWindowHolder>(UICacheTime.Forever, false);
+            Register<UIZeroCacheWindow, UIWindowHolder>(UICacheTime.None, false);
+            Register<UITimedCacheWindow, UIWindowHolder>(1, false);
+            Register<UIProbeTabWindow, UIWindowHolder>(UICacheTime.Forever, false);
+            Register<UIPopupWindow, UIWindowHolder>(UICacheTime.Forever, false, UILayer.Popup);
+            Register<UIProbeWidget, UIWidgetHolder>(UICacheTime.None, true);
+            Register<UISecondWidget, UIWidgetHolder>(UICacheTime.None, false);
             Root = new GameObject("UIRefactorTestRoot", typeof(RectTransform), typeof(Canvas));
             var camera = new GameObject("UIRefactorTestCamera", typeof(Camera));
             camera.transform.SetParent(Root.transform);
@@ -275,29 +275,83 @@ namespace AlicizaX.UI.Tests
             canvas.renderMode = RenderMode.ScreenSpaceCamera;
             canvas.worldCamera = camera.GetComponent<Camera>();
             canvas.worldCamera.cullingMask = 1 << UIComponent.UIShowLayer;
-            Service = new UIService(Loader);
+            Service = new UIService();
             Service.Initialize(Root.transform, true);
             AppServices.Register<IUIService>(Service);
         }
 
-        private static void Register<T, THolder>(string resource, int cacheTime, bool update)
+        private static void Register<T, THolder>(int cacheTime, bool update, UILayer layer = UILayer.UI)
         {
-            UIMetaRegistry.Register(typeof(T), typeof(THolder), UILayer.UI, cacheTime, update);
-            UIResRegistry.Register(typeof(THolder), resource, EUIResLoadType.Resources);
+            UIMetaRegistry.Register(typeof(T), typeof(THolder), layer, cacheTime, update);
+            UIResRegistry.Register(typeof(THolder), typeof(THolder).Name, EUIResLoadType.AssetBundle);
         }
 
-        internal UIProbeWindow Open(params object[] args) => Service.ShowUISync<UIProbeWindow>(args);
+        internal UIProbeWindow Open(object userData = null) => Service.ShowUISync<UIProbeWindow>(userData);
+
+        internal UIGateTransition Gate(UIBase view)
+        {
+            var gate = new UIGateTransition();
+            view.Holder.SetTransition(gate);
+            return gate;
+        }
+
         internal void Tick() => ((IServiceTickable)Service).Tick(0.016f);
+
         internal static void Publish() => EventBus.Publish<UIProbeEvent>();
+
         internal static void PublishWindow() => EventBus.Publish<UIProbeWindowEvent>();
+
+        internal static void ConfigurePreset(UIPresetTransition transition, UITransitionPreset preset, float duration)
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(UIPresetTransition).GetField("openPreset", flags).SetValue(transition, preset);
+            typeof(UIPresetTransition).GetField("closePreset", flags).SetValue(transition, preset);
+            typeof(UIPresetTransition).GetField("openDuration", flags).SetValue(transition, duration);
+            typeof(UIPresetTransition).GetField("closeDuration", flags).SetValue(transition, duration);
+        }
+
 #if UNITY_EDITOR
         internal void Verify() => UIInvariantChecker.Verify(Service);
 #endif
 
+        private const float SettleSeconds = 5f;
+
+        internal IEnumerator Wait(UniTask task)
+        {
+            var awaiter = task.GetAwaiter();
+            for (float deadline = Time.realtimeSinceStartup + SettleSeconds; !awaiter.IsCompleted && Time.realtimeSinceStartup < deadline;)
+            {
+                Tick();
+                yield return null;
+            }
+            Assert.That(awaiter.IsCompleted, Is.True, "UI operation did not settle.");
+            awaiter.GetResult();
+        }
+
+        internal IEnumerator Wait<T>(UniTask<T> task, Action<T> result)
+        {
+            var awaiter = task.GetAwaiter();
+            for (float deadline = Time.realtimeSinceStartup + SettleSeconds; !awaiter.IsCompleted && Time.realtimeSinceStartup < deadline;)
+            {
+                Tick();
+                yield return null;
+            }
+            Assert.That(awaiter.IsCompleted, Is.True, "UI operation did not settle.");
+            result(awaiter.GetResult());
+        }
+
+        internal IEnumerator Frames(int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                Tick();
+                yield return null;
+            }
+        }
+
         public void Dispose()
         {
             UIProbeWindow.Initializing = null;
-            UIProbeWidget.Initializing = null;
             int probeSubscribers, windowSubscribers, leasedProxies;
             try
             {
@@ -308,7 +362,7 @@ namespace AlicizaX.UI.Tests
             finally
             {
                 AppServices.Shutdown();
-                while (Loader.Pending != null) Loader.Deliver();
+                while (Loader.PendingCount > 0) Loader.Deliver();
                 foreach (GameObject obj in Loader.Objects)
                     if (obj != null) Object.DestroyImmediate(obj);
                 if (Root != null) Object.DestroyImmediate(Root);
@@ -321,19 +375,6 @@ namespace AlicizaX.UI.Tests
             Assert.That(probeSubscribers, Is.Zero, "Widget event subscribers left after shutdown.");
             Assert.That(windowSubscribers, Is.Zero, "Window event subscribers left after shutdown.");
             Assert.That(leasedProxies, Is.Zero, "Event listener proxies left after shutdown.");
-        }
-
-        internal IEnumerator Wait(UniTask task)
-        {
-            var awaiter = task.GetAwaiter();
-            for (int i = 0; !awaiter.IsCompleted && i < 180; i++)
-            {
-                // 转场由 UIService.Tick 驱动；测试环境没有 AppServiceRoot，这里显式推进。
-                Tick();
-                yield return null;
-            }
-            Assert.That(awaiter.IsCompleted, Is.True, "UI operation did not settle.");
-            awaiter.GetResult();
         }
     }
 }
