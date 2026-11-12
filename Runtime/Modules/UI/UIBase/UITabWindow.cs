@@ -32,15 +32,8 @@ namespace AlicizaX.UI.Runtime
         protected void InitTabVirtuallyView<TTab>(Transform parent = null) where TTab : UIWidget =>
             AddTab(UIMetaRegistry.Require(typeof(TTab)), parent);
 
-        protected void InitTabVirtuallyView(string typeName, Transform parent = null)
-        {
-            if (!UIMetaRegistry.TryGet(typeName, out UIMetaRegistry.UIMetaInfo info) || info.IsWindow)
-            {
-                Log.Error("[UI] Unknown or invalid Tab type: {0}.", typeName);
-                return;
-            }
-            AddTab(info, parent);
-        }
+        protected void InitTabVirtuallyView(string typeName, Transform parent = null) =>
+            AddTab(RequireWidget(typeName), parent);
 
         /// <summary>
         /// 切到指定页签；结果为本次切换生效后的页签。已加载页签之间切换同步完成且不分配。
@@ -70,10 +63,7 @@ namespace AlicizaX.UI.Runtime
 
         private void AddTab(UIMetaRegistry.UIMetaInfo info, Transform parent)
         {
-            if (info == null) return;
-            for (int i = 0; i < _tabs.Count; i++)
-                if (_tabs[i].Info.Handle.Equals(info.Handle)) return;
-            _tabs.Add(new TabEntry(info, parent != null ? parent : baseui.RectTransform));
+            if (info != null) _tabs.Add(new TabEntry(info, parent != null ? parent : baseui.RectTransform));
         }
     }
 }

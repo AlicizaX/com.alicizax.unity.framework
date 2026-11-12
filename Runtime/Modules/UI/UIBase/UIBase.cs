@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Threading;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
@@ -54,7 +55,8 @@ namespace AlicizaX.UI.Runtime
             get
             {
                 if (_events != null) return _events;
-                if (_state == UIState.Destroyed) throw new InvalidOperationException($"[UI] {MetaInfo.Name} is destroyed.");
+                if (_state == UIState.Destroyed)
+                    throw new InvalidOperationException($"[UI] {MetaInfo.Name} is destroyed.");
                 _events = MemoryPool.Acquire<EventListenerProxy>();
                 if (!IsEnabled) _events.Suspend();
                 return _events;
@@ -66,8 +68,9 @@ namespace AlicizaX.UI.Runtime
             get
             {
                 if (_resources.Service != null) return _resources;
-                if (_state == UIState.Destroyed) throw new InvalidOperationException($"[UI] {MetaInfo.Name} is destroyed.");
-                _resources = AppServices.Require<IResourceService>().CreateScope(GetType().Name);
+                if (_state == UIState.Destroyed)
+                    throw new InvalidOperationException($"[UI] {MetaInfo.Name} is destroyed.");
+                _resources = AppServices.Require<IResourceService>().CreateScope(MetaInfo.Name);
                 return _resources;
             }
         }
@@ -91,18 +94,42 @@ namespace AlicizaX.UI.Runtime
 
         internal UniTask AwaitLoaded(CancellationToken cancellationToken = default) =>
             _state == UIState.Loading
-                ? UniTask.WaitUntil(this, static view => view._state != UIState.Loading, PlayerLoopTiming.Update, cancellationToken)
+                ? UniTask.WaitUntil(this, static view => view._state != UIState.Loading, PlayerLoopTiming.Update,
+                    cancellationToken)
                 : UniTask.CompletedTask;
 
-        protected virtual void OnInitialize() { }
-        protected virtual void OnOpen() { }
-        protected virtual void OnRefresh() { }
-        protected virtual void OnUpdate(float deltaTime) { }
-        protected virtual void OnClose() { }
-        protected virtual void OnDestroy() { }
+        protected virtual void OnInitialize()
+        {
+        }
+
+        protected virtual void OnOpen()
+        {
+        }
+
+        protected virtual void OnRefresh()
+        {
+        }
+
+        protected virtual void OnUpdate(float deltaTime)
+        {
+        }
+
+        protected virtual void OnClose()
+        {
+        }
+
+        protected virtual void OnDestroy()
+        {
+        }
+
+        /// <summary>视图类型是否重写了 <see cref="OnUpdate"/>；反射补注册据此决定是否驱动 Update。</summary>
+        internal static bool OverridesUpdate(Type viewType) =>
+            viewType.GetMethod(nameof(OnUpdate), BindingFlags.Instance | BindingFlags.NonPublic, null, new[] { typeof(float) }, null)
+                .DeclaringType != typeof(UIBase);
 
         /// <summary>绑定节点时准备外观组件。</summary>
         private protected abstract void BindVisuals(UIHolderObjectBase holder);
+
         private protected abstract void ApplyVisible(bool visible);
         private protected abstract void SetInteractable(bool interactable);
         private protected abstract void ReleaseClosed(bool destroy);
@@ -120,19 +147,21 @@ namespace AlicizaX.UI.Runtime
             {
                 try
                 {
-                    holder = await UIHolderFactory.LoadAsync(MetaInfo.HolderType, parent, DestroyCancellationToken);
+                    holder = await UIHolderFactory.LoadAsync<UIHolderObjectBase>(MetaInfo.HolderType, parent, DestroyCancellationToken);
                 }
                 catch (OperationCanceledException) when (_state == UIState.Destroyed)
                 {
                     return;
                 }
             }
+
             // 加载期间视图已被销毁：迟到的节点直接回收
             if (_state == UIState.Destroyed)
             {
-                if (holder != null) UIHolderFactory.DestroyNode(holder.gameObject);
+                if (holder != null) holder.gameObject.SafeDestroySelf();
                 return;
             }
+
             AttachHolder(holder, open);
         }
 
@@ -143,6 +172,7 @@ namespace AlicizaX.UI.Runtime
                 DestroySelf();
                 return;
             }
+
             _holder = holder;
             holder.Bind(this);
             _state = UIState.Closed;
@@ -191,25 +221,39 @@ namespace AlicizaX.UI.Runtime
             _lifecycleVersion++;
             if (wasEnabled) SetEnabled(false);
             _destroyCancellation?.Cancel();
-            if (previous is UIState.Opening or UIState.Opened) InvokeLifecycle(UILifecycle.Close);
-            if (previous != UIState.Loading) InvokeLifecycle(UILifecycle.Destroy);
-            DestroyWidgets();
             if (previous != UIState.Loading)
             {
-                if (_holder.TryUnbind() && destroyNode) UIHolderFactory.DestroyNode(_holder.gameObject);
+                if (previous is UIState.Opening or UIState.Opened) InvokeLifecycle(UILifecycle.Close);
+                InvokeLifecycle(UILifecycle.Destroy);
+                DestroyWidgets();
+                if (_holder.TryUnbind() && destroyNode) _holder.gameObject.SafeDestroySelf();
                 _holder = null;
             }
+
             if (_events != null)
             {
                 MemoryPool.Release(_events);
                 _events = null;
             }
+
             _resources.Dispose();
             _resources = default;
             _userData = null;
         }
 
-        internal bool InvokeLifecycle(UILifecycle stage, float deltaTime = 0f)
+        internal void Update(float deltaTime)
+        {
+            try
+            {
+                OnUpdate(deltaTime);
+            }
+            catch (Exception error)
+            {
+                Log.Exception(error);
+            }
+        }
+
+        private bool InvokeLifecycle(UILifecycle stage)
         {
             int version = _lifecycleVersion;
             _holder.Raise(stage);
@@ -221,7 +265,6 @@ namespace AlicizaX.UI.Runtime
                     case UILifecycle.Initialize: OnInitialize(); break;
                     case UILifecycle.Open: OnOpen(); break;
                     case UILifecycle.Refresh: OnRefresh(); break;
-                    case UILifecycle.Update: OnUpdate(deltaTime); break;
                     case UILifecycle.Close: OnClose(); break;
                     case UILifecycle.Destroy: OnDestroy(); break;
                 }
@@ -230,6 +273,7 @@ namespace AlicizaX.UI.Runtime
             {
                 Log.Exception(error);
             }
+
             return version == _lifecycleVersion;
         }
 
@@ -239,7 +283,6 @@ namespace AlicizaX.UI.Runtime
         {
             if (_state == UIState.Closed) SetVisible(true);
             _state = UIState.Opening;
-            _destroyOnClosed = false;
             bool parentEnabled = ParentEnabled;
             if (parentEnabled) SetEnabled(true);
             if (InvokeLifecycle(UILifecycle.Open)) PlayTransition(true, !parentEnabled).Forget();
@@ -260,6 +303,7 @@ namespace AlicizaX.UI.Runtime
                     if (error is not OperationCanceledException) Log.Exception(error);
                 }
             }
+
             if (version != _lifecycleVersion) return;
             if (open)
             {
@@ -267,6 +311,7 @@ namespace AlicizaX.UI.Runtime
                 SetInteractable(true);
                 return;
             }
+
             _state = UIState.Closed;
             SetVisible(false);
             ReleaseClosed(_destroyOnClosed);
@@ -279,11 +324,13 @@ namespace AlicizaX.UI.Runtime
                 if (enabled) Service.AddUpdate(this);
                 else Service.RemoveUpdate(this);
             }
+
             if (_events != null)
             {
                 if (enabled) _events.Resume();
                 else _events.Suspend();
             }
+
             SetWidgetsEnabled(enabled);
         }
 

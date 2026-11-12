@@ -15,6 +15,9 @@ namespace AlicizaX.UI.Runtime
         private RectTransform _rectTransform;
         private UIBase _owner;
 
+        /// <summary>绑定的逻辑视图及其父级是否启用，与 MonoBehaviour.enabled 无关。</summary>
+        public bool IsEnabled => _owner != null && _owner.IsEnabled;
+
         public event Action OnInitEvent;
 
         public event Action OnShowEvent;

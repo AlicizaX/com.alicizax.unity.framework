@@ -6,14 +6,12 @@ using UnityEngine;
 namespace AlicizaX.UI.Runtime
 {
     /// <summary>
-    /// UI 模块门面：根节点与层级、面板开关与查询、输入遮挡层，以及页面导航（<see cref="IUINavigationService"/>）。
+    /// UI 模块门面：根节点与层级、面板开关与查询、输入遮挡层；页面导航见 <see cref="Navigation"/>。
     /// </summary>
-    public interface IUIService : IService, IUINavigationService
+    public interface IUIService : IService
     {
-        /// <summary>初始化 UI 根节点与层级；失败时记录原因并返回 false，服务不可用。</summary>
-        /// <param name="root">UI 根节点（需包含带 worldCamera 的 Canvas）</param>
-        /// <param name="isOrthographic">摄像机是否正交模式</param>
-        bool Initialize(Transform root, bool isOrthographic);
+        /// <summary>页面导航。</summary>
+        IUINavigationService Navigation { get; }
 
         /// <summary>UI 摄像机。</summary>
         Camera UICamera { get; }
@@ -68,10 +66,12 @@ namespace AlicizaX.UI.Runtime
         /// <summary>是否逻辑打开（Opening 或 Opened）。</summary>
         bool IsOpen(RuntimeTypeHandle handle);
 
-        /// <summary>从最高层开始关闭第一个逻辑打开且满足谓词的窗口；它是导航当前页时会清空导航历史。</summary>
+        /// <summary>
+        /// 从最高层开始关闭第一个逻辑打开且满足谓词的窗口，predicate 为 null 表示不过滤；它是导航当前页时会清空导航历史。
+        /// </summary>
         UniTask<bool> TryCloseTopAsync(Predicate<RuntimeTypeHandle> predicate, bool force = false);
 
-        /// <summary>从最高层开始查找第一个逻辑打开（不含正在关闭）且满足谓词的窗口 Holder。</summary>
+        /// <summary>从最高层开始查找第一个逻辑打开（不含正在关闭）且满足谓词的窗口 Holder，predicate 为 null 表示不过滤。</summary>
         bool TryGetTopVisibleHolder(Predicate<UIHolderObjectBase> predicate, out UIHolderObjectBase holder);
 
         /// <summary>获取打开中或缓存中的指定类型窗口；加载中、正在关闭或已销毁时返回 null。</summary>

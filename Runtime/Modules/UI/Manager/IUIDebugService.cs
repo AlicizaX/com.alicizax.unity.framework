@@ -11,7 +11,7 @@ namespace AlicizaX.UI.Runtime
         void FillServiceDebugInfo(UIServiceDebugInfo info);
         bool FillLayerDebugInfo(int layerIndex, UILayerDebugInfo info);
         bool FillWindowDebugInfo(int layerIndex, int windowIndex, UIWindowDebugInfo info);
-        int FillCacheDebugInfo(UIWindowDebugInfo[] infos, int capacity);
+        int FillCacheDebugInfo(UIWindowDebugInfo[] infos);
         bool FillHistoryInfo(int index, UIRouteDebugInfo info);
     }
 
@@ -78,7 +78,6 @@ namespace AlicizaX.UI.Runtime
         public int Index;
         public string UITypeName;
         public bool IsRoot;
-        public int Sequence;
         public string ArgsPreview;
 
         public void Clear()
@@ -86,7 +85,6 @@ namespace AlicizaX.UI.Runtime
             Index = 0;
             UITypeName = null;
             IsRoot = false;
-            Sequence = 0;
             ArgsPreview = null;
         }
     }

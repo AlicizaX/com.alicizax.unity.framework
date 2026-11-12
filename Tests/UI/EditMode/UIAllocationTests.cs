@@ -67,9 +67,9 @@ namespace AlicizaX.UI.Tests
         [UnityTest]
         public IEnumerator NavigatingBetweenLoadedPagesIsAllocationFree()
         {
-            _fixture.Service.NavigateTo<UIProbeWindow>().GetAwaiter().GetResult();
-            _fixture.Service.NavigateTo<UISecondWindow>().GetAwaiter().GetResult();
-            _fixture.Service.Back().GetAwaiter().GetResult();
+            _fixture.Service.Navigation.NavigateTo<UIProbeWindow>().GetAwaiter().GetResult();
+            _fixture.Service.Navigation.NavigateTo<UISecondWindow>().GetAwaiter().GetResult();
+            _fixture.Service.Navigation.Back().GetAwaiter().GetResult();
             UIGateTransition probe = _fixture.Gate(_fixture.Service.GetUI<UIProbeWindow>());
             UIGateTransition second = _fixture.Gate(_fixture.Service.GetUI<UISecondWindow>());
             for (int i = 0; i < 3; i++) NavigationCycle(probe, second);
@@ -77,7 +77,7 @@ namespace AlicizaX.UI.Tests
             {
                 for (int i = 0; i < Iterations; i++) NavigationCycle(probe, second);
             }, AssertZero);
-            Assert.That(_fixture.Service.Current, Is.EqualTo(typeof(UIProbeWindow)));
+            Assert.That(_fixture.Service.Navigation.CurrentEntry.UIType, Is.EqualTo(typeof(UIProbeWindow)));
         }
 
         [UnityTest]
@@ -149,10 +149,10 @@ namespace AlicizaX.UI.Tests
 
         private void NavigationCycle(UIGateTransition probe, UIGateTransition second)
         {
-            _fixture.Service.NavigateTo<UISecondWindow>().GetAwaiter().GetResult();
+            _fixture.Service.Navigation.NavigateTo<UISecondWindow>().GetAwaiter().GetResult();
             second.Finish();
             probe.Finish();
-            _fixture.Service.Back().GetAwaiter().GetResult();
+            _fixture.Service.Navigation.Back().GetAwaiter().GetResult();
             probe.Finish();
             second.Finish();
         }

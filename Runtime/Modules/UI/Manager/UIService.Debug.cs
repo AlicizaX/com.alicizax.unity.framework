@@ -7,7 +7,7 @@ namespace AlicizaX.UI.Runtime
     {
         int IUIDebugService.LayerCount => _layerWindows.Length;
         int IUIDebugService.CacheWindowCount => CountCachedWindows();
-        int IUIDebugService.HistoryCount => _historyCount;
+        int IUIDebugService.HistoryCount => _navigator.History.Count;
 
         void IUIDebugService.FillServiceDebugInfo(UIServiceDebugInfo info)
         {
@@ -22,12 +22,12 @@ namespace AlicizaX.UI.Runtime
                 openWindowCount += _layerWindows[i].Count;
             }
             info.UpdateCount = _updateViews.Count;
-            info.Initialized = _lifetime == UILifetime.Running;
+            info.Initialized = !_stopped;
             info.Orthographic = UICamera != null && UICamera.orthographic;
             info.OpenWindowCount = openWindowCount;
             info.CacheWindowCount = CountCachedWindows();
-            info.BlockActive = _blocker != null && _blocker.IsActive;
-            info.BlockRemaining = _blocker != null ? _blocker.Remaining : 0f;
+            info.BlockActive = _blocker.IsActive;
+            info.BlockRemaining = _blocker.Remaining;
             info.Camera = UICamera;
             info.Canvas = UICanvas;
             info.Root = UIRoot;
@@ -59,13 +59,13 @@ namespace AlicizaX.UI.Runtime
                 return false;
             }
 
-            FillWindowDebugInfo(windows[windowIndex], layerIndex, windowIndex, 0UL, info);
+            FillWindowDebugInfo(windows[windowIndex], layerIndex, windowIndex, info);
             return true;
         }
 
-        int IUIDebugService.FillCacheDebugInfo(UIWindowDebugInfo[] infos, int capacity)
+        int IUIDebugService.FillCacheDebugInfo(UIWindowDebugInfo[] infos)
         {
-            if (infos == null || capacity <= 0)
+            if (infos == null)
             {
                 return 0;
             }
@@ -78,7 +78,7 @@ namespace AlicizaX.UI.Runtime
                     continue;
                 }
 
-                if (index >= capacity || index >= infos.Length)
+                if (index >= infos.Length)
                 {
                     break;
                 }
@@ -86,7 +86,7 @@ namespace AlicizaX.UI.Runtime
                 UIWindowDebugInfo info = infos[index];
                 if (info != null)
                 {
-                    FillWindowDebugInfo(window, (int)window.MetaInfo.Layer, index, window.CacheTimer, info);
+                    FillWindowDebugInfo(window, (int)window.MetaInfo.Layer, index, info);
                 }
 
                 index++;
@@ -110,18 +110,18 @@ namespace AlicizaX.UI.Runtime
 
         bool IUIDebugService.FillHistoryInfo(int index, UIRouteDebugInfo info)
         {
-            if (info == null || (uint)index >= (uint)_historyCount) return false;
-            UIRouteEntry entry = _history[index];
+            List<UIRouteEntry> history = _navigator.History;
+            if (info == null || (uint)index >= (uint)history.Count) return false;
+            UIRouteEntry entry = history[index];
             info.Clear();
             info.Index = index;
             info.UITypeName = entry.UIType.Name;
             info.IsRoot = index == 0;
-            info.Sequence = entry.Sequence;
             info.ArgsPreview = entry.UserData?.ToString() ?? "null";
             return true;
         }
 
-        private void FillWindowDebugInfo(UIWindow window, int layerIndex, int orderIndex, ulong cacheTimer, UIWindowDebugInfo info)
+        private void FillWindowDebugInfo(UIWindow window, int layerIndex, int orderIndex, UIWindowDebugInfo info)
         {
             UIHolderObjectBase holder = window.Holder;
             info.LayerIndex = layerIndex;
@@ -134,7 +134,7 @@ namespace AlicizaX.UI.Runtime
             info.Updating = window.MetaInfo.HasUpdate && window.IsEnabled;
             info.Depth = window.Depth;
             info.CacheTime = window.MetaInfo.CacheTime;
-            info.CacheRemaining = cacheTimer == 0UL ? 0f : _timerService.GetLeftTime(cacheTimer);
+            info.CacheRemaining = window.CacheTimer == 0UL ? 0f : _timerService.GetLeftTime(window.CacheTimer);
             info.HolderTransform = holder != null ? holder.transform : null;
         }
     }

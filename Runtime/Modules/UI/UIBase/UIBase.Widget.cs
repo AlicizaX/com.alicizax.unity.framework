@@ -15,13 +15,13 @@ namespace AlicizaX.UI.Runtime
             widget.DestroyView(true);
         }
 
-        protected async UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true,
+        protected UniTask<T> CreateWidgetAsync<T>(Transform parent, bool visible = true,
             CancellationToken cancellationToken = default) where T : UIWidget =>
-            (T)await CreateWidgetAsync(UIMetaRegistry.Require(typeof(T)), parent, visible, cancellationToken);
+            CreateWidgetAsync<T>(UIMetaRegistry.Require(typeof(T)), parent, visible, cancellationToken);
 
         protected UniTask<UIWidget> CreateWidgetAsync(string typeName, Transform parent, bool visible = true,
             CancellationToken cancellationToken = default) =>
-            CreateWidgetAsync(RequireWidget(typeName), parent, visible, cancellationToken);
+            CreateWidgetAsync<UIWidget>(RequireWidget(typeName), parent, visible, cancellationToken);
 
         protected T CreateWidgetSync<T>(Transform parent, bool visible = true) where T : UIWidget =>
             (T)CreateWidgetSync(UIMetaRegistry.Require(typeof(T)), parent, visible);
@@ -55,19 +55,18 @@ namespace AlicizaX.UI.Runtime
                 return null;
             }
             var widget = (UIWidget)Service.CreateView(info);
-            if (widget == null) return null;
             widget.Parent = this;
             (_widgets ??= new List<UIWidget>(4)).Add(widget);
             return widget;
         }
 
-        private async UniTask<UIWidget> CreateWidgetAsync(UIMetaRegistry.UIMetaInfo info, Transform parent, bool visible,
-            CancellationToken cancellationToken)
+        private async UniTask<T> CreateWidgetAsync<T>(UIMetaRegistry.UIMetaInfo info, Transform parent, bool visible,
+            CancellationToken cancellationToken) where T : UIWidget
         {
             UIWidget widget = AddWidget(info, parent);
             if (widget == null) return null;
             await widget.LoadHolderAsync(parent, visible, cancellationToken);
-            return widget.State == UIState.Destroyed ? null : widget;
+            return widget.State == UIState.Destroyed ? null : (T)widget;
         }
 
         private UIWidget CreateWidgetSync(UIMetaRegistry.UIMetaInfo info, Transform parent, bool visible)
@@ -78,7 +77,7 @@ namespace AlicizaX.UI.Runtime
             return widget.State == UIState.Destroyed ? null : widget;
         }
 
-        private static UIMetaRegistry.UIMetaInfo RequireWidget(string typeName)
+        private protected static UIMetaRegistry.UIMetaInfo RequireWidget(string typeName)
         {
             UIMetaRegistry.UIMetaInfo info = UIMetaRegistry.Require(typeName);
             if (info == null || !info.IsWindow) return info;
@@ -96,11 +95,17 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
+        /// <summary>逐个出列再销毁：销毁钩子里再销毁兄弟 Widget 时，列表里不会留下已销毁的条目。</summary>
         private void DestroyWidgets()
         {
             if (_widgets == null) return;
-            for (int i = _widgets.Count - 1; i >= 0; i--) _widgets[i].DestroyView(false);
-            _widgets.Clear();
+            while (_widgets.Count > 0)
+            {
+                int last = _widgets.Count - 1;
+                UIWidget widget = _widgets[last];
+                _widgets.RemoveAt(last);
+                widget.DestroyView(false);
+            }
         }
     }
 }

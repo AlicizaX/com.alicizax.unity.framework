@@ -7,17 +7,14 @@ namespace AlicizaX.UI.Runtime
     {
         public readonly Type UIType;
         public readonly object UserData;
-        public readonly int Sequence;
 
-        internal UIRouteEntry(Type uiType, object userData, int sequence)
+        internal UIRouteEntry(Type uiType, object userData)
         {
             UIType = uiType;
             UserData = userData;
-            Sequence = sequence;
         }
 
-        /// <summary>空条目（<see cref="IsValid"/> 为 false）返回默认句柄。</summary>
-        public RuntimeTypeHandle TypeHandle => UIType != null ? UIType.TypeHandle : default;
+        /// <summary>history 为空时取到的是空条目，此值为 false。</summary>
         public bool IsValid => UIType != null;
     }
 }

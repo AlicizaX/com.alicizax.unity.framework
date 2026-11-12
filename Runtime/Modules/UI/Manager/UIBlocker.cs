@@ -1,13 +1,12 @@
 using AlicizaX.Timer.Runtime;
 using UnityEngine;
 using UnityEngine.UI;
-using Object = UnityEngine.Object;
 
 namespace AlicizaX.UI.Runtime
 {
     /// <summary>
     /// 全屏输入遮挡层：显示时拦截点击，倒计时结束或强制退出时隐藏。
-    /// 生命周期由 <see cref="UIService.Initialize"/> 创建、<see cref="UIService.Shutdown"/> 释放。
+    /// 随 <see cref="UIService"/> 构造而创建、随其释放而停用。
     /// </summary>
     internal sealed class UIBlocker
     {
@@ -18,7 +17,7 @@ namespace AlicizaX.UI.Runtime
         private readonly TimerHandlerNoArgs _onExpired;
         private ulong _timer;
 
-        internal UIBlocker(ITimerService timers, Canvas canvas, Camera camera, Transform canvasRoot)
+        internal UIBlocker(ITimerService timers, Transform canvasRoot)
         {
             _timers = timers;
             _onExpired = OnExpired;
@@ -26,10 +25,8 @@ namespace AlicizaX.UI.Runtime
             var rect = _root.AddComponent<RectTransform>();
             rect.SetParent(canvasRoot);
             rect.SetAsLastSibling();
+            // 嵌套 Canvas：渲染模式与相机沿用根 Canvas，只需要自己的排序
             Canvas blockCanvas = _root.AddComponent<Canvas>();
-            blockCanvas.renderMode = canvas.renderMode;
-            blockCanvas.worldCamera = camera;
-            blockCanvas.planeDistance = canvas.planeDistance;
             blockCanvas.overrideSorting = true;
             blockCanvas.sortingOrder = SortingOrder;
             _root.AddComponent<GraphicRaycaster>();
@@ -38,7 +35,7 @@ namespace AlicizaX.UI.Runtime
             _root.SetActive(false);
         }
 
-        internal bool IsActive => _root != null && _root.activeSelf;
+        internal bool IsActive => _root.activeSelf;
 
         internal float Remaining => _timer == 0 ? 0f : _timers.GetLeftTime(_timer);
 
@@ -47,7 +44,6 @@ namespace AlicizaX.UI.Runtime
             RemoveTimer();
             _root.SetActive(true);
             _timer = _timers.AddTimer(_onExpired, duration, isUnscaled: true);
-            if (_timer == 0) _root.SetActive(false);
         }
 
         internal void Hide()
@@ -56,13 +52,8 @@ namespace AlicizaX.UI.Runtime
             _root.SetActive(false);
         }
 
-        internal void Dispose()
-        {
-            RemoveTimer();
-            if (_root == null) return;
-            if (Application.isPlaying) Object.Destroy(_root);
-            else Object.DestroyImmediate(_root);
-        }
+        /// <summary>节点挂在 UI 根节点下，随根节点一起销毁；这里只撤掉定时器。</summary>
+        internal void Dispose() => RemoveTimer();
 
         private void OnExpired()
         {

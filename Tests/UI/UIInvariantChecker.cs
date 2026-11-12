@@ -23,7 +23,7 @@ namespace AlicizaX.UI.Tests
                     Assert.That(Window.Depth, Is.EqualTo(layer * UIService.LAYER_DEEP + index * UIService.WINDOW_DEEP), "I4 " + name);
                 }
             }
-            int cached = debug.FillCacheDebugInfo(Cached, CacheCapacity);
+            int cached = debug.FillCacheDebugInfo(Cached);
             Assert.That(cached, Is.EqualTo(debug.CacheWindowCount), "I5 count");
             for (int i = 0; i < cached; i++)
             {

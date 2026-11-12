@@ -76,24 +76,25 @@ namespace AlicizaX.Resource.Tests
             f.Text(Config);
             f.Sprite(Icon);
 
-            UIMetaRegistry.Register(typeof(ResUIWindow), typeof(ResUIWindowHolder), UILayer.UI, 0, false);
-            UIMetaRegistry.Register(typeof(ResUICachedWindow), typeof(ResUIWindowHolder), UILayer.UI, -1, false);
-            UIMetaRegistry.Register(typeof(ResUIWidget), typeof(ResUIWidgetHolder), UILayer.UI, 0, false);
+            UIMetaRegistry.RegisterWindow<ResUIWindow, ResUIWindowHolder>(() => new ResUIWindow(), UILayer.UI, UICacheTime.None, false);
+            UIMetaRegistry.RegisterWindow<ResUICachedWindow, ResUIWindowHolder>(() => new ResUICachedWindow(), UILayer.UI, UICacheTime.Forever, false);
+            UIMetaRegistry.RegisterWidget<ResUIWidget, ResUIWidgetHolder>(() => new ResUIWidget(), false);
             UIResRegistry.Register(typeof(ResUIWindowHolder), WindowLocation, EUIResLoadType.AssetBundle);
             UIResRegistry.Register(typeof(ResUIWidgetHolder), WidgetLocation, EUIResLoadType.AssetBundle);
 
             MemoryPoolRegistry.InitializeMainThread();
             AppServices.GetOrCreateRegistry();
             AppServices.Register<IResourceService>(f.Service);
-            AppServices.Register<ITimerService>(new TimerService(256));
+            var timer = new TimerService(256);
+            AppServices.Register<ITimerService>(timer);
             uiRoot = f.Keep(new GameObject("ResourceUIRoot", typeof(RectTransform), typeof(Canvas)));
             Canvas canvas = uiRoot.GetComponent<Canvas>();
             var camera = new GameObject("ResourceUICamera", typeof(Camera));
             camera.transform.SetParent(uiRoot.transform);
             canvas.renderMode = RenderMode.ScreenSpaceCamera;
             canvas.worldCamera = camera.GetComponent<Camera>();
-            ui = new UIService();
-            ui.Initialize(uiRoot.transform, true);
+            canvas.worldCamera.orthographic = true;
+            ui = new UIService(uiRoot.transform, timer);
             AppServices.Register<IUIService>(ui);
         }
 

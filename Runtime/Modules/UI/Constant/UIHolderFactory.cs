@@ -16,8 +16,8 @@ namespace AlicizaX.UI.Runtime
         private static IResourceService ResourceService => AppServices.Require<IResourceService>();
 
         /// <summary>异步实例化 T 的资源并返回 Holder；失败时记录错误并返回 null。</summary>
-        public static async UniTask<T> CreateUIHolderAsync<T>(Transform parent) where T : UIHolderObjectBase =>
-            (T)await LoadAsync(typeof(T), parent, CancellationToken.None);
+        public static UniTask<T> CreateUIHolderAsync<T>(Transform parent) where T : UIHolderObjectBase =>
+            LoadAsync<T>(typeof(T), parent, CancellationToken.None);
 
         /// <summary>同步实例化 T 的资源并返回 Holder；失败时记录错误并返回 null。</summary>
         public static T CreateUIHolderSync<T>(Transform parent) where T : UIHolderObjectBase =>
@@ -41,8 +41,9 @@ namespace AlicizaX.UI.Runtime
             return ResolveHolder(node, holderType, resource.Location);
         }
 
-        internal static async UniTask<UIHolderObjectBase> LoadAsync(Type holderType, Transform parent,
-            CancellationToken cancellationToken)
+        /// <param name="holderType">要解析的 Holder 类型，必须是 T 或其子类。</param>
+        internal static async UniTask<T> LoadAsync<T>(Type holderType, Transform parent, CancellationToken cancellationToken)
+            where T : UIHolderObjectBase
         {
             if (!TryGetResource(holderType, out UIResRegistry.UIResInfo resource)) return null;
             GameObject node;
@@ -57,14 +58,7 @@ namespace AlicizaX.UI.Runtime
                 Log.Error("[UI] Failed to load {0}: {1}", resource.Location, error);
                 return null;
             }
-            return ResolveHolder(node, holderType, resource.Location);
-        }
-
-        internal static void DestroyNode(GameObject node)
-        {
-            if (node == null) return;
-            if (Application.isPlaying) Object.Destroy(node);
-            else Object.DestroyImmediate(node);
+            return (T)ResolveHolder(node, holderType, resource.Location);
         }
 
         private static bool TryGetResource(Type holderType, out UIResRegistry.UIResInfo resource)
@@ -84,7 +78,7 @@ namespace AlicizaX.UI.Runtime
             var holder = (UIHolderObjectBase)node.GetComponent(holderType);
             if (holder != null) return holder;
             Log.Error("[UI] UI resource {0} is missing holder {1}.", location, holderType.FullName);
-            DestroyNode(node);
+            node.SafeDestroySelf();
             return null;
         }
 

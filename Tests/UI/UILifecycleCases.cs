@@ -332,15 +332,19 @@ namespace AlicizaX.UI.Tests
             UIFixture.Publish();
             _fixture.Tick();
             Assert.That(widget.State, Is.EqualTo(UIState.Opened));
+            Assert.That(widget.Holder.IsEnabled, Is.True);
             Assert.That(widget.Events, Is.EqualTo(1));
             Assert.That(widget.Updates, Is.EqualTo(1));
             _fixture.Service.CloseUI<UIProbeWindow>();
+            Assert.That(window.Holder.IsEnabled, Is.False);
+            Assert.That(widget.Holder.IsEnabled, Is.False);
             UIFixture.Publish();
             _fixture.Tick();
             Assert.That(widget.State, Is.EqualTo(UIState.Opened));
             Assert.That(widget.Events, Is.EqualTo(1));
             Assert.That(widget.Updates, Is.EqualTo(1));
             _fixture.Open();
+            Assert.That(widget.Holder.IsEnabled, Is.True);
             UIFixture.Publish();
             _fixture.Tick();
             Assert.That(widget.Events, Is.EqualTo(2));
@@ -355,10 +359,52 @@ namespace AlicizaX.UI.Tests
             UIProbeWidget widget = window.Create();
             _fixture.Tick();
             Assert.That(widget.State, Is.EqualTo(UIState.Opened));
+            Assert.That(widget.Holder.IsEnabled, Is.False);
             Assert.That(widget.Updates, Is.Zero);
             _fixture.Open();
+            Assert.That(widget.Holder.IsEnabled, Is.True);
             _fixture.Tick();
             Assert.That(widget.Updates, Is.EqualTo(1));
+        }
+
+        [UnityTest]
+        public IEnumerator HolderEnabledTracksOpeningAndClosingBeforeVisibilityChanges()
+        {
+            UIProbeWindow window = _fixture.Open();
+            UIProbeWidget widget = window.Create();
+            UIGateTransition gate = _fixture.Gate(window);
+            UniTask close = _fixture.Service.CloseUI<UIProbeWindow>().AwaitTransition();
+            Assert.That(window.State, Is.EqualTo(UIState.Closing));
+            Assert.That(window.Visible, Is.True);
+            Assert.That(window.Holder.gameObject.activeInHierarchy, Is.True);
+            Assert.That(window.Holder.IsEnabled, Is.False);
+            Assert.That(widget.Holder.IsEnabled, Is.False);
+            gate.Finish();
+            yield return _fixture.Wait(close);
+            Assert.That(window.Holder.IsEnabled, Is.False);
+
+            UniTask<UIProbeWindow> open = _fixture.Service.ShowUI<UIProbeWindow>();
+            Assert.That(window.State, Is.EqualTo(UIState.Opening));
+            Assert.That(window.Holder.IsEnabled, Is.True);
+            Assert.That(widget.Holder.IsEnabled, Is.True);
+            gate.Finish();
+            yield return _fixture.Wait(open, _ => { });
+            Assert.That(window.Holder.IsEnabled, Is.True);
+
+            UIProbeWidget closed = window.Create(open: false);
+            Assert.That(closed.Holder.IsEnabled, Is.False);
+            var borrowedObject = new GameObject("unbound-holder", typeof(RectTransform), typeof(UIWidgetHolder));
+            borrowedObject.transform.SetParent(window.Holder.transform, false);
+            var borrowedHolder = borrowedObject.GetComponent<UIWidgetHolder>();
+            try
+            {
+                Assert.That(borrowedHolder.IsEnabled, Is.False);
+                UIProbeWidget borrowed = window.Borrow(borrowedHolder);
+                Assert.That(borrowedHolder.IsEnabled, Is.True);
+                borrowed.Destroy();
+                Assert.That(borrowedHolder.IsEnabled, Is.False);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(borrowedObject); }
         }
 
         [Test]

@@ -16,41 +16,41 @@ namespace AlicizaX.UI.Runtime
             public readonly Type ViewType;
             public readonly Type HolderType;
             public readonly RuntimeTypeHandle Handle;
+            public readonly string Name;
             public readonly UILayer Layer;
             public readonly int CacheTime;
             public readonly bool HasUpdate;
             public readonly bool IsWindow;
+            internal readonly Func<UIBase> Create;
 
-            internal UIMetaInfo(Type viewType, Type holderType, UILayer layer, int cacheTime, bool hasUpdate)
+            internal UIMetaInfo(Type viewType, Type holderType, Func<UIBase> create, bool isWindow, UILayer layer, int cacheTime,
+                bool hasUpdate)
             {
                 ViewType = viewType;
                 HolderType = holderType;
                 Handle = viewType.TypeHandle;
+                Name = viewType.Name;
+                Create = create;
+                IsWindow = isWindow;
                 Layer = layer;
                 CacheTime = cacheTime;
                 HasUpdate = hasUpdate;
-                IsWindow = typeof(UIWindow).IsAssignableFrom(viewType);
             }
-
-            public string Name => ViewType.Name;
         }
 
         private static readonly Dictionary<RuntimeTypeHandle, UIMetaInfo> _byHandle = new(RuntimeTypeHandleComparer.Instance);
         private static readonly Dictionary<string, UIMetaInfo> _byName = new();
         private static readonly HashSet<string> _unknownNames = new();
 
-        /// <summary>注册 UI 类型。非法注册直接抛异常（冷路径 fail fast）。</summary>
-        public static void Register(Type uiType, Type holderType, UILayer layer = UILayer.UI, int cacheTime = UICacheTime.None,
-            bool needUpdate = false)
-        {
-            Validate(uiType, holderType, layer);
-            var info = new UIMetaInfo(uiType, holderType, layer, cacheTime, needUpdate);
-            _byHandle[info.Handle] = info;
-            string fullName = uiType.FullName;
-            if (string.IsNullOrEmpty(fullName)) return;
-            _byName[fullName] = info;
-            _unknownNames.Remove(fullName);
-        }
+        /// <summary>注册窗口类型。类型关系由泛型约束保证，create 直接构造实例。</summary>
+        public static void RegisterWindow<TView, THolder>(Func<TView> create, UILayer layer, int cacheTime, bool hasUpdate)
+            where TView : UIWindow<THolder> where THolder : UIHolderObjectBase =>
+            Add(new UIMetaInfo(typeof(TView), typeof(THolder), create, true, layer, cacheTime, hasUpdate));
+
+        /// <summary>注册 Widget 类型。类型关系由泛型约束保证，create 直接构造实例。</summary>
+        public static void RegisterWidget<TView, THolder>(Func<TView> create, bool hasUpdate)
+            where TView : UIWidget<THolder> where THolder : UIHolderObjectBase =>
+            Add(new UIMetaInfo(typeof(TView), typeof(THolder), create, false, UILayer.UI, UICacheTime.None, hasUpdate));
 
         /// <summary>按类型句柄取注册信息；未预注册时反射补注册。</summary>
         public static bool TryGet(RuntimeTypeHandle handle, out UIMetaInfo info)
@@ -98,20 +98,18 @@ namespace AlicizaX.UI.Runtime
             return null;
         }
 
-        private static void Validate(Type uiType, Type holderType, UILayer layer)
+        private static void Add(UIMetaInfo info)
         {
-            if (uiType == null) throw new ArgumentNullException(nameof(uiType));
-            if (holderType == null) throw new ArgumentNullException(nameof(holderType));
-            if (!typeof(UIBase).IsAssignableFrom(uiType))
-                throw new ArgumentException($"[UI] {uiType.FullName} must inherit UIBase.", nameof(uiType));
-            if (uiType.IsAbstract || uiType.ContainsGenericParameters)
-                throw new ArgumentException($"[UI] {uiType.FullName} must be a concrete type.", nameof(uiType));
-            if (!typeof(UIHolderObjectBase).IsAssignableFrom(holderType))
-                throw new ArgumentException($"[UI] {holderType.FullName} must inherit UIHolderObjectBase.", nameof(holderType));
-            if ((uint)layer >= (uint)UILayer.All)
-                throw new ArgumentOutOfRangeException(nameof(layer), layer, "[UI] UILayer.All is not a display layer.");
+            string fullName = info.ViewType.FullName;
+            _byHandle[info.Handle] = info;
+            _byName[fullName] = info;
+            _unknownNames.Remove(fullName);
         }
 
+        /// <summary>
+        /// 生成器没有覆盖到的类型（它引用不到的类型等）在这里按反射补注册：
+        /// Holder 取自 UIWindow&lt;&gt;/UIWidget&lt;&gt; 的类型实参，是否需要 Update 看是否重写了 OnUpdate。
+        /// </summary>
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static bool TryReflectAndRegister(Type uiType, out UIMetaInfo info)
         {
@@ -130,40 +128,33 @@ namespace AlicizaX.UI.Runtime
                 Log.Error($"[UI] Failed to register UI type {uiType.FullName}: holder type not found.");
                 return false;
             }
-            if (!typeof(UIHolderObjectBase).IsAssignableFrom(holderType))
+
+            ConstructorInfo constructor = uiType.GetConstructor(Type.EmptyTypes);
+            if (constructor == null)
             {
-                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: holder type is not a UIHolderObjectBase.");
+                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: public parameterless constructor not found.");
                 return false;
             }
 
+            bool isWindow = typeof(UIWindow).IsAssignableFrom(uiType);
             UILayer layer = UILayer.UI;
             int cacheTime = UICacheTime.None;
-            bool needUpdate = false;
-
-            IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(uiType);
-            for (int i = 0; i < attributes.Count; i++)
+            if (isWindow)
             {
-                CustomAttributeData attribute = attributes[i];
-                if (attribute.AttributeType == typeof(WindowAttribute) && typeof(UIWindow).IsAssignableFrom(uiType))
+                IList<CustomAttributeData> attributes = CustomAttributeData.GetCustomAttributes(uiType);
+                for (int i = 0; i < attributes.Count; i++)
                 {
+                    CustomAttributeData attribute = attributes[i];
+                    if (attribute.AttributeType != typeof(WindowAttribute)) continue;
                     IList<CustomAttributeTypedArgument> args = attribute.ConstructorArguments;
                     layer = (UILayer)Convert.ToInt32(args[0].Value);
                     cacheTime = (int)args[1].Value;
                 }
-                else if (attribute.AttributeType == typeof(UIUpdateAttribute))
-                {
-                    needUpdate = true;
-                }
             }
 
-            if ((uint)layer >= (uint)UILayer.All)
-            {
-                Log.Error($"[UI] Failed to register UI type {uiType.FullName}: invalid layer {layer}.");
-                return false;
-            }
-
-            Register(uiType, holderType, layer, cacheTime, needUpdate);
-            info = _byHandle[uiType.TypeHandle];
+            info = new UIMetaInfo(uiType, holderType, () => (UIBase)constructor.Invoke(null), isWindow, layer, cacheTime,
+                UIBase.OverridesUpdate(uiType));
+            Add(info);
             return true;
         }
 

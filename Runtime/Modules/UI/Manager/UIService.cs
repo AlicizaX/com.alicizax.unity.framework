@@ -4,7 +4,6 @@ using System.Threading;
 using AlicizaX.Timer.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
-using Object = UnityEngine.Object;
 
 namespace AlicizaX.UI.Runtime
 {
@@ -14,22 +13,45 @@ namespace AlicizaX.UI.Runtime
 #endif
         IServiceTickable
     {
-        private enum UILifetime : byte { Created, Running, Stopped }
-
         private readonly Dictionary<RuntimeTypeHandle, UIWindow> _windows = new(RuntimeTypeHandleComparer.Instance);
         private readonly List<UIBase> _updateViews = new(16);
         private readonly Action<UIWindow> _onCacheExpired;
+        private readonly ITimerService _timerService;
+        private readonly UIBlocker _blocker;
+        private readonly Navigator _navigator;
         private UIBase[] _updateBuffer = new UIBase[16];
-        private UIBlocker _blocker;
-        private ITimerService _timerService;
-        private UILifetime _lifetime;
+        private bool _stopped;
 
-        public UIService()
+        /// <summary>在 UI 根节点上建立层级与输入遮挡层；根节点下没有带 worldCamera 的 Canvas 时抛出异常。</summary>
+        internal UIService(Transform root, ITimerService timerService)
         {
+            Canvas canvas = root.GetComponentInChildren<Canvas>(true);
+            if (canvas == null) throw new InvalidOperationException("[UI] UI root must contain a Canvas.");
+            if (canvas.worldCamera == null) throw new InvalidOperationException("[UI] UI Canvas must have a worldCamera.");
+            UIRoot = root;
+            UICanvas = canvas;
+            UICamera = canvas.worldCamera;
+            UICanvasRoot = canvas.transform;
+            root.position = new Vector3(UI_ROOT_OFFSET, UI_ROOT_OFFSET, 0);
+            for (int i = LayerCount - 1; i >= 0; i--) _layers[i] = CreateLayer(i);
+            _timerService = timerService;
             _onCacheExpired = OnCacheExpired;
+            _blocker = new UIBlocker(timerService, UICanvasRoot);
+            _navigator = new Navigator(this);
         }
 
-        protected override void OnDispose() => Shutdown();
+        /// <summary>结束进行中的导航，销毁全部窗口与 UI 根节点。销毁钩子里再打开窗口会被拒绝。</summary>
+        protected override void OnDispose()
+        {
+            _stopped = true;
+            _navigator.Stop();
+            var windows = new UIWindow[_windows.Count];
+            _windows.Values.CopyTo(windows, 0);
+            for (int i = 0; i < windows.Length; i++)
+                if (windows[i].State != UIState.Destroyed) DestroyWindow(windows[i]);
+            _blocker.Dispose();
+            if (UIRoot != null) UIRoot.gameObject.SafeDestroySelf();
+        }
 
         internal void AddUpdate(UIBase view) => _updateViews.Add(view);
 
@@ -45,7 +67,7 @@ namespace AlicizaX.UI.Runtime
             {
                 UIBase view = _updateBuffer[i];
                 _updateBuffer[i] = null;
-                if (view.IsEnabled) view.InvokeLifecycle(UILifecycle.Update, deltaTime);
+                if (view.IsEnabled) view.Update(deltaTime);
             }
         }
 
@@ -100,34 +122,5 @@ namespace AlicizaX.UI.Runtime
 
         internal UIWindow GetWindow(RuntimeTypeHandle handle) =>
             _windows.TryGetValue(handle, out UIWindow window) ? window : null;
-
-        private void Shutdown()
-        {
-            bool running = _lifetime == UILifetime.Running;
-            _lifetime = UILifetime.Stopped;
-            if (!running) return;
-            StopNavigation();
-            var windows = new UIWindow[_windows.Count];
-            _windows.Values.CopyTo(windows, 0);
-            for (int i = 0; i < windows.Length; i++)
-                if (windows[i].State != UIState.Destroyed) DestroyWindow(windows[i]);
-            _blocker.Dispose();
-            _blocker = null;
-            DestroyUIRoot();
-        }
-
-        private void DestroyUIRoot()
-        {
-            if (UIRoot != null)
-            {
-                if (Application.isPlaying) Object.Destroy(UIRoot.gameObject);
-                else Object.DestroyImmediate(UIRoot.gameObject);
-            }
-            UIRoot = null;
-            UICanvas = null;
-            UICanvasRoot = null;
-            UICamera = null;
-            for (int i = 0; i < _layers.Length; i++) _layers[i] = null;
-        }
     }
 }

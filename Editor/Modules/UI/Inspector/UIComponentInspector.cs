@@ -25,6 +25,8 @@ namespace AlicizaX.UI.Editor
 
         private SerializedProperty _uiRootProperty;
         private SerializedProperty _isOrthographicProperty;
+        private SerializedProperty _nearClipPlaneProperty;
+        private SerializedProperty _farClipPlaneProperty;
 
         private VisualElement _settingsBody;
         private VisualElement _runtimeControls;
@@ -36,6 +38,8 @@ namespace AlicizaX.UI.Editor
         private ObjectField _uiRootField;
         private Button _defaultRootButton;
         private VisualElement _uiRootWarning;
+        private AlicizaRow _nearClipPlaneRow;
+        private AlicizaRow _farClipPlaneRow;
 
         private bool _showRuntimeDebug;
         private bool _showNavigationRuntimeDebug;
@@ -49,6 +53,8 @@ namespace AlicizaX.UI.Editor
         {
             _uiRootProperty = serializedObject.FindProperty("uiRoot");
             _isOrthographicProperty = serializedObject.FindProperty("_isOrthographic");
+            _nearClipPlaneProperty = serializedObject.FindProperty("_nearClipPlane");
+            _farClipPlaneProperty = serializedObject.FindProperty("_farClipPlane");
 
             for (int i = 0; i < _cacheInfos.Length; i++)
             {
@@ -134,7 +140,12 @@ namespace AlicizaX.UI.Editor
                 var orthographic = new AlicizaPillToggle();
                 orthographic.BindProperty(_isOrthographicProperty);
                 AlicizaEditorUI.AddRow(section.Body, "Orthographic", orthographic);
+                section.Body.TrackPropertyValue(_isOrthographicProperty, _ => RefreshSettingsState());
             }
+
+            // 裁剪面只作用于透视相机，正交时隐藏
+            _nearClipPlaneRow = AlicizaEditorUI.AddPropertyRow(section.Body, "Near Clip Plane", _nearClipPlaneProperty);
+            _farClipPlaneRow = AlicizaEditorUI.AddPropertyRow(section.Body, "Far Clip Plane", _farClipPlaneProperty);
 
             RefreshSettingsState();
         }
@@ -173,6 +184,13 @@ namespace AlicizaX.UI.Editor
             if (_defaultRootButton != null)
             {
                 _defaultRootButton.style.display = missing ? DisplayStyle.Flex : DisplayStyle.None;
+            }
+
+            if (_nearClipPlaneRow != null && _farClipPlaneRow != null)
+            {
+                DisplayStyle clipPlanes = _isOrthographicProperty.boolValue ? DisplayStyle.None : DisplayStyle.Flex;
+                _nearClipPlaneRow.style.display = clipPlanes;
+                _farClipPlaneRow.style.display = clipPlanes;
             }
         }
 
@@ -386,7 +404,7 @@ namespace AlicizaX.UI.Editor
                 }
             }
 
-            int cacheCount = debugService.FillCacheDebugInfo(_cacheInfos, _cacheInfos.Length);
+            int cacheCount = debugService.FillCacheDebugInfo(_cacheInfos);
             for (int i = 0; i < cacheCount; i++)
             {
                 UIWindowDebugInfo info = _cacheInfos[i];
@@ -500,7 +518,7 @@ namespace AlicizaX.UI.Editor
             AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Cached Windows");
             _runtimeContent.Add(section);
 
-            int count = debugService.FillCacheDebugInfo(_cacheInfos, _cacheInfos.Length);
+            int count = debugService.FillCacheDebugInfo(_cacheInfos);
             section.Header.Add(AlicizaEditorUI.CreateBadge(
                 count.ToString(),
                 count > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted));
@@ -616,16 +634,16 @@ namespace AlicizaX.UI.Editor
             SetCardMeta(_navigationCard, "History " + debug.HistoryCount);
             ShowControls(_navigationControls);
 
-            BuildNavigationSummary(uiService, debug);
+            BuildNavigationSummary(uiService.Navigation, debug);
             BuildNavigationHistory(debug);
         }
 
-        private void BuildNavigationSummary(IUIService uiService, IUIDebugService debug)
+        private void BuildNavigationSummary(IUINavigationService navigation, IUIDebugService debug)
         {
             AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Navigation Summary");
             _navigationContent.Add(section);
 
-            System.Type current = uiService.Current;
+            System.Type current = navigation.CurrentEntry.UIType;
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Current",
@@ -634,8 +652,8 @@ namespace AlicizaX.UI.Editor
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Can Back",
-                uiService.CanBack ? "Yes" : "No",
-                uiService.CanBack ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
+                navigation.CanBack ? "Yes" : "No",
+                navigation.CanBack ? AlicizaValueTone.Default : AlicizaValueTone.Muted);
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "History",
@@ -697,10 +715,9 @@ namespace AlicizaX.UI.Editor
             title.style.marginLeft = 8f;
             content.Add(title);
 
-            string summary = GetRouteSummary(info);
-            if (!string.IsNullOrEmpty(summary))
+            if (info.IsRoot)
             {
-                var summaryLabel = new Label(summary);
+                var summaryLabel = new Label("Root");
                 summaryLabel.AddToClassList("alicia-value");
                 summaryLabel.AddToClassList("alicia-tone--muted");
                 summaryLabel.style.flexGrow = 0f;
@@ -868,16 +885,6 @@ namespace AlicizaX.UI.Editor
             }
 
             return cached ? "alicia-tone--muted" : null;
-        }
-
-        private static string GetRouteSummary(UIRouteDebugInfo info)
-        {
-            if (info.Sequence > 0)
-            {
-                return "Root " + info.IsRoot + " | Seq " + info.Sequence;
-            }
-
-            return string.Empty;
         }
     }
 }

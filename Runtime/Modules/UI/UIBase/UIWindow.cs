@@ -27,34 +27,23 @@ namespace AlicizaX.UI.Runtime
             }
         }
 
-        internal sealed override void DestroySelf() => Service.DestroyWindow(this);
+        internal sealed override void DestroySelf() => Service.DestroyLostWindow(this);
 
         private protected sealed override void ReleaseClosed(bool destroy) => Service.ReleaseClosedWindow(this, destroy);
 
         private protected sealed override void BindVisuals(UIHolderObjectBase holder)
         {
-            RectTransform rect = holder.RectTransform;
-            rect.localPosition = Vector3.zero;
-            rect.pivot = new Vector2(0.5f, 0.5f);
-            rect.anchorMin = Vector2.zero;
-            rect.anchorMax = Vector2.one;
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
-            rect.localScale = Vector3.one;
+            holder.RectTransform.ResetToFullScreen();
+            // 根节点统一到 UI 层：UI 相机按层裁剪，显隐只靠 Canvas 开关
+            holder.gameObject.layer = UIComponent.UIShowLayer;
             if (!holder.TryGetComponent(out _canvas)) _canvas = holder.gameObject.AddComponent<Canvas>();
             _canvas.overrideSorting = true;
             _canvas.sortingOrder = Depth;
             if (!holder.TryGetComponent(out _raycaster)) _raycaster = holder.gameObject.AddComponent<GraphicRaycaster>();
             _raycaster.enabled = false;
-            // 初始化阶段只用层隐藏、保持 Canvas 启用，OnInitialize 里仍可读取布局
-            holder.gameObject.layer = UIComponent.UIHideLayer;
         }
 
-        private protected sealed override void ApplyVisible(bool visible)
-        {
-            Holder.gameObject.layer = visible ? UIComponent.UIShowLayer : UIComponent.UIHideLayer;
-            _canvas.enabled = visible;
-        }
+        private protected sealed override void ApplyVisible(bool visible) => _canvas.enabled = visible;
 
         private protected sealed override void SetInteractable(bool interactable) => _raycaster.enabled = interactable;
     }

@@ -312,15 +312,20 @@ namespace AlicizaX.UI.Tests
             UIProbeWindow window = _fixture.Open();
             UIProbeWidget middle = window.Create();
             UIProbeWidget leaf = middle.Create();
+            Assert.That(leaf.Holder.IsEnabled, Is.True);
             middle.Close();
+            Assert.That(leaf.Holder.IsEnabled, Is.False);
             _fixture.Tick();
             Assert.That(leaf.State, Is.EqualTo(UIState.Opened));
             Assert.That(leaf.Updates, Is.Zero);
             middle.Open();
+            Assert.That(leaf.Holder.IsEnabled, Is.True);
             _fixture.Service.CloseUI<UIProbeWindow>();
+            Assert.That(leaf.Holder.IsEnabled, Is.False);
             _fixture.Tick();
             Assert.That(leaf.Updates, Is.Zero);
             _fixture.Open();
+            Assert.That(leaf.Holder.IsEnabled, Is.True);
             _fixture.Tick();
             Assert.That(leaf.Updates, Is.EqualTo(1));
         }

@@ -5,7 +5,6 @@ namespace AlicizaX.UI.Runtime
     public enum UIRouteStatus : byte
     {
         Success = 0,
-        RejectedLimit,
         NotFound,
         OpenFailed,
         Cancelled,
@@ -27,8 +26,6 @@ namespace AlicizaX.UI.Runtime
         public bool Success => Status == UIRouteStatus.Success;
 
         public static UIRouteResult Ok { get; } = new(UIRouteStatus.Success);
-
-        public static UIRouteResult From(UIRouteStatus status) => new(status);
 
         public static implicit operator bool(UIRouteResult result) => result.Success;
     }

@@ -258,15 +258,15 @@ namespace AlicizaX.UI.Tests
             Timer = new TimerService(256);
             AppServices.Register<ITimerService>(Timer);
             AppServices.Register<IResourceService>(Loader);
-            Register<UIProbeWindow, UIWindowHolder>(UICacheTime.Forever, true);
-            Register<UISecondWindow, UIWindowHolder>(UICacheTime.Forever, false);
-            Register<UIThirdWindow, UIWindowHolder>(UICacheTime.Forever, false);
-            Register<UIZeroCacheWindow, UIWindowHolder>(UICacheTime.None, false);
-            Register<UITimedCacheWindow, UIWindowHolder>(1, false);
-            Register<UIProbeTabWindow, UIWindowHolder>(UICacheTime.Forever, false);
-            Register<UIPopupWindow, UIWindowHolder>(UICacheTime.Forever, false, UILayer.Popup);
-            Register<UIProbeWidget, UIWidgetHolder>(UICacheTime.None, true);
-            Register<UISecondWidget, UIWidgetHolder>(UICacheTime.None, false);
+            RegisterWindow<UIProbeWindow>(UICacheTime.Forever, true);
+            RegisterWindow<UISecondWindow>(UICacheTime.Forever, false);
+            RegisterWindow<UIThirdWindow>(UICacheTime.Forever, false);
+            RegisterWindow<UIZeroCacheWindow>(UICacheTime.None, false);
+            RegisterWindow<UITimedCacheWindow>(1, false);
+            RegisterWindow<UIProbeTabWindow>(UICacheTime.Forever, false);
+            RegisterWindow<UIPopupWindow>(UICacheTime.Forever, false, UILayer.Popup);
+            RegisterWidget<UIProbeWidget>(true);
+            RegisterWidget<UISecondWidget>(false);
             Root = new GameObject("UIRefactorTestRoot", typeof(RectTransform), typeof(Canvas));
             var camera = new GameObject("UIRefactorTestCamera", typeof(Camera));
             camera.transform.SetParent(Root.transform);
@@ -275,15 +275,22 @@ namespace AlicizaX.UI.Tests
             canvas.renderMode = RenderMode.ScreenSpaceCamera;
             canvas.worldCamera = camera.GetComponent<Camera>();
             canvas.worldCamera.cullingMask = 1 << UIComponent.UIShowLayer;
-            Service = new UIService();
-            Service.Initialize(Root.transform, true);
+            canvas.worldCamera.orthographic = true;
+            Service = new UIService(Root.transform, Timer);
             AppServices.Register<IUIService>(Service);
         }
 
-        private static void Register<T, THolder>(int cacheTime, bool update, UILayer layer = UILayer.UI)
+        internal static void RegisterWindow<T>(int cacheTime, bool update, UILayer layer = UILayer.UI)
+            where T : UIWindow<UIWindowHolder>, new()
         {
-            UIMetaRegistry.Register(typeof(T), typeof(THolder), layer, cacheTime, update);
-            UIResRegistry.Register(typeof(THolder), typeof(THolder).Name, EUIResLoadType.AssetBundle);
+            UIMetaRegistry.RegisterWindow<T, UIWindowHolder>(() => new T(), layer, cacheTime, update);
+            UIResRegistry.Register(typeof(UIWindowHolder), nameof(UIWindowHolder), EUIResLoadType.AssetBundle);
+        }
+
+        private static void RegisterWidget<T>(bool update) where T : UIWidget<UIWidgetHolder>, new()
+        {
+            UIMetaRegistry.RegisterWidget<T, UIWidgetHolder>(() => new T(), update);
+            UIResRegistry.Register(typeof(UIWidgetHolder), nameof(UIWidgetHolder), EUIResLoadType.AssetBundle);
         }
 
         internal UIProbeWindow Open(object userData = null) => Service.ShowUISync<UIProbeWindow>(userData);

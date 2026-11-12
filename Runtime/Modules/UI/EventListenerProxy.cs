@@ -52,9 +52,9 @@ namespace AlicizaX
             subscription.Handle = _suspended ? default : subscribe(handler);
         }
 
+        /// <summary>退订全部事件。与 <see cref="Resume"/> 由视图的启停成对调用。</summary>
         internal void Suspend()
         {
-            if (_suspended) return;
             _suspended = true;
             for (int i = _count - 1; i >= 0; i--)
             {
@@ -66,7 +66,6 @@ namespace AlicizaX
 
         internal void Resume()
         {
-            if (!_suspended) return;
             _suspended = false;
             for (int i = 0; i < _count; i++)
             {
@@ -78,7 +77,7 @@ namespace AlicizaX
         /// <summary>退订并清空，回到新建时的状态；归还内存池时由池调用。保留订阅数组容量供复用。</summary>
         public override void Clear()
         {
-            Suspend();
+            if (!_suspended) Suspend();
             Array.Clear(_subscriptions, 0, _count);
             _count = 0;
             _suspended = false;

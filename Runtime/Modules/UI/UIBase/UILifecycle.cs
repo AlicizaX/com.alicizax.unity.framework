@@ -5,7 +5,6 @@ namespace AlicizaX.UI.Runtime
         Initialize,
         Open,
         Refresh,
-        Update,
         Close,
         Destroy,
     }

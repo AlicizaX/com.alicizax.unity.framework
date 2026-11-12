@@ -28,15 +28,6 @@ namespace AlicizaX.UI.Runtime
     }
 
     [AttributeUsage(AttributeTargets.Class)]
-    public class UIUpdateAttribute : Attribute
-    {
-        public UIUpdateAttribute()
-        {
-        }
-    }
-
-
-    [AttributeUsage(AttributeTargets.Class)]
     public class UIResAttribute : Attribute
     {
         public readonly string ResLocation;

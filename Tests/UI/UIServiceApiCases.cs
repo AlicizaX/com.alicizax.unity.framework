@@ -88,11 +88,11 @@ namespace AlicizaX.UI.Tests
             Assert.That(popup.State, Is.EqualTo(UIState.Closed));
             yield return _fixture.Wait(_fixture.Service.TryCloseTopAsync(h => h.Equals(typeof(UIThirdWindow).TypeHandle)), value => closed = value);
             Assert.That(closed, Is.False);
-            yield return _fixture.Wait(_fixture.Service.TryCloseTopAsync(null), value => closed = value);
-            Assert.That(closed, Is.False);
-            yield return _fixture.Wait(_fixture.Service.TryCloseTopAsync(_ => true, force: true), value => closed = value);
+            yield return _fixture.Wait(_fixture.Service.TryCloseTopAsync(null, force: true), value => closed = value);
             Assert.That(closed, Is.True);
             Assert.That(probe.State, Is.EqualTo(UIState.Destroyed));
+            yield return _fixture.Wait(_fixture.Service.TryCloseTopAsync(null), value => closed = value);
+            Assert.That(closed, Is.False);
         }
 
         [Test]
@@ -113,23 +113,12 @@ namespace AlicizaX.UI.Tests
         }
 
         [Test]
-        public void BlockAfterShutdownIsRejected()
-        {
-            AppServices.Shutdown();
-            LogAssert.Expect(LogType.Error, new Regex("not running"));
-            _fixture.Service.SetUIBlock(1f);
-            _fixture.Service.ForceExitBlock();
-        }
-
-        [Test]
-        public void GetLayerReturnsTheLayerRootAndRejectsInvalidLayers()
+        public void GetLayerReturnsTheLayerRoot()
         {
             RectTransform layer = _fixture.Service.GetLayer(UILayer.UI);
             Assert.That(layer, Is.Not.Null);
             Assert.That(_fixture.Open().Holder.transform.parent, Is.SameAs(layer));
             Assert.That(_fixture.Service.ShowUISync<UIPopupWindow>().Holder.transform.parent, Is.SameAs(_fixture.Service.GetLayer(UILayer.Popup)));
-            LogAssert.Expect(LogType.Error, new Regex("Invalid layer"));
-            Assert.That(_fixture.Service.GetLayer(UILayer.All), Is.Null);
         }
 
         [UnityTest]
@@ -244,27 +233,22 @@ namespace AlicizaX.UI.Tests
         }
 
         [Test]
-        public void InitializeRejectsInvalidSetups()
+        public void ConstructorRejectsRootsWithoutCanvasOrCamera()
         {
-            var service = new UIService();
-            LogAssert.Expect(LogType.Error, new Regex("UI root is missing"));
-            Assert.That(service.Initialize(null, true), Is.False);
             var noCanvas = new GameObject("NoCanvas");
             var noCamera = new GameObject("NoCamera", typeof(RectTransform), typeof(Canvas));
             try
             {
-                LogAssert.Expect(LogType.Error, new Regex("must contain a Canvas"));
-                Assert.That(service.Initialize(noCanvas.transform, true), Is.False);
-                LogAssert.Expect(LogType.Error, new Regex("worldCamera"));
-                Assert.That(service.Initialize(noCamera.transform, true), Is.False);
+                Assert.That(() => new UIService(noCanvas.transform, _fixture.Timer),
+                    Throws.InvalidOperationException.With.Message.Contains("must contain a Canvas"));
+                Assert.That(() => new UIService(noCamera.transform, _fixture.Timer),
+                    Throws.InvalidOperationException.With.Message.Contains("worldCamera"));
             }
             finally
             {
                 Object.DestroyImmediate(noCanvas);
                 Object.DestroyImmediate(noCamera);
             }
-            LogAssert.Expect(LogType.Error, new Regex("already initialized"));
-            Assert.That(_fixture.Service.Initialize(_fixture.Root.transform, true), Is.False);
         }
     }
 }
