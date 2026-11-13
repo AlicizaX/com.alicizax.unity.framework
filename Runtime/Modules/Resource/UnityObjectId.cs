@@ -1,7 +1,7 @@
 using UnityEngine;
 using Object = UnityEngine.Object;
 
-namespace AlicizaX
+namespace UnityEngine
 {
     public static class UnityObjectId
     {

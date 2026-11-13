@@ -199,7 +199,7 @@ namespace AlicizaX.GameObjectPool.Tests
             var instances = new List<GameObject>();
             if (Service != null)
             {
-                foreach (GameObjectPoolHandle handle in UnityEngine.Object.FindObjectsOfType<GameObjectPoolHandle>(true))
+                foreach (GameObjectPoolHandle handle in UnityObjectQuery.FindAllIncludingInactive<GameObjectPoolHandle>())
                 {
                     var owner = Read<RuntimeGameObjectPool>(handle, "_owner");
                     if (owner != null && ReferenceEquals(Read<GameObjectPoolService>(owner, "_service"), Service))

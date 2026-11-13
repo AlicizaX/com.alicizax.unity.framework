@@ -37,28 +37,53 @@ namespace AlicizaX.UI.Editor
                 {
                     case ObjectChangeKind.ChangeGameObjectStructure:
                         stream.GetChangeGameObjectStructureEvent(i, out ChangeGameObjectStructureEventArgs structure);
+#if UNITY_6000_5_OR_NEWER
+                        RefreshOwnerOf(structure.entityId);
+#else
                         RefreshOwnerOf(structure.instanceId);
+#endif
                         break;
                     case ObjectChangeKind.ChangeGameObjectStructureHierarchy:
                         stream.GetChangeGameObjectStructureHierarchyEvent(i, out ChangeGameObjectStructureHierarchyEventArgs hierarchy);
+#if UNITY_6000_5_OR_NEWER
+                        RefreshOwnerOf(hierarchy.entityId);
+#else
                         RefreshOwnerOf(hierarchy.instanceId);
+#endif
                         break;
                     case ObjectChangeKind.CreateGameObjectHierarchy:
                         stream.GetCreateGameObjectHierarchyEvent(i, out CreateGameObjectHierarchyEventArgs created);
+#if UNITY_6000_5_OR_NEWER
+                        RefreshOwnerOf(created.entityId);
+#else
                         RefreshOwnerOf(created.instanceId);
+#endif
                         break;
                     case ObjectChangeKind.ChangeGameObjectParent:
                         stream.GetChangeGameObjectParentEvent(i, out ChangeGameObjectParentEventArgs moved);
+#if UNITY_6000_5_OR_NEWER
+                        RefreshOwnerOf(moved.newParentEntityId);
+                        RefreshOwnerOf(moved.previousParentEntityId);
+#else
                         RefreshOwnerOf(moved.newParentInstanceId);
                         RefreshOwnerOf(moved.previousParentInstanceId);
+#endif
                         break;
                     case ObjectChangeKind.DestroyGameObjectHierarchy:
                         stream.GetDestroyGameObjectHierarchyEvent(i, out DestroyGameObjectHierarchyEventArgs destroyed);
+#if UNITY_6000_5_OR_NEWER
+                        RefreshOwnerOf(destroyed.parentEntityId);
+#else
                         RefreshOwnerOf(destroyed.parentInstanceId);
+#endif
                         break;
                     case ObjectChangeKind.ChangeChildrenOrder:
                         stream.GetChangeChildrenOrderEvent(i, out ChangeChildrenOrderEventArgs reordered);
+#if UNITY_6000_5_OR_NEWER
+                        RefreshOwnerOf(reordered.entityId);
+#else
                         RefreshOwnerOf(reordered.instanceId);
+#endif
                         break;
                 }
             }
@@ -68,9 +93,21 @@ namespace AlicizaX.UI.Editor
         /// 受影响的是节点所属的 Holder（自身或最近的祖先）；节点自身新增了 Holder 时，
         /// 外层 Holder 的查找会在这里截断，也要重新解析。
         /// </summary>
+#if UNITY_6000_5_OR_NEWER
+        private static void RefreshOwnerOf(EntityId entityId)
+        {
+            RefreshOwner(EditorUtility.EntityIdToObject(entityId) as GameObject);
+        }
+#else
         private static void RefreshOwnerOf(int instanceId)
         {
-            if (EditorUtility.InstanceIDToObject(instanceId) is not GameObject node) return;
+            RefreshOwner(EditorUtility.InstanceIDToObject(instanceId) as GameObject);
+        }
+#endif
+
+        private static void RefreshOwner(GameObject node)
+        {
+            if (node == null) return;
             Refresh(node.GetComponentInParent<UIHolderObjectBase>(true));
             Transform parent = node.transform.parent;
             if (parent != null) Refresh(parent.GetComponentInParent<UIHolderObjectBase>(true));

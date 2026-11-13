@@ -4,7 +4,6 @@ using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
-using Scene = UnityEngine.SceneManagement.Scene;
 #if UNITY_6000_3_OR_NEWER
 using UnityEditor.Toolbars;
 #else
@@ -48,8 +47,11 @@ namespace AlicizaX.Editor.Toolbar
         public static MainToolbarElement CreateElement() => new MainToolbarDropdown(
             new MainToolbarContent(GetLabel(), SceneIcon, Tooltip), rect => CreateMenu().DropDown(rect));
 
-        private static void OnSceneOpened(Scene scene, OpenSceneMode mode) => MainToolbar.Refresh(ElementPath);
-        private static void OnActiveSceneChanged(Scene previous, Scene next) => MainToolbar.Refresh(ElementPath);
+        // 这里必须写全限定名：外层命名空间已存在 AlicizaX.Scene（Scene 模块），在 AlicizaX.* 下的文件里
+        // 简单名 Scene 会优先解析成那个命名空间（CS0118）；using 别名同样不行，它只在编译单元层级生效，
+        // 优先级低于外层命名空间成员。
+        private static void OnSceneOpened(UnityEngine.SceneManagement.Scene scene, OpenSceneMode mode) => MainToolbar.Refresh(ElementPath);
+        private static void OnActiveSceneChanged(UnityEngine.SceneManagement.Scene previous, UnityEngine.SceneManagement.Scene next) => MainToolbar.Refresh(ElementPath);
 #else
         private static VisualElement CreateLegacyDropdown() => new IMGUIContainer(() =>
         {

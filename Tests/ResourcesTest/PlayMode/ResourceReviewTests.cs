@@ -89,7 +89,7 @@ namespace AlicizaX.Resource.Tests
                 Assert.That(f.Service.Instantiate("prefab"), Is.Null);
                 yield return null;
                 Assert.That(f.Loader.LiveHandles, Is.Zero);
-                Assert.That(Object.FindObjectsOfType<AwakeResourceProbe>().Length, Is.EqualTo(1));
+                Assert.That(UnityObjectQuery.FindAll<AwakeResourceProbe>().Length, Is.EqualTo(1));
                 f.AssertInvariants();
             }
             finally { AwakeResourceProbe.OnAwake = null; }

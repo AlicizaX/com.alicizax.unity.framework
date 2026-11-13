@@ -217,8 +217,8 @@ namespace AlicizaX.Resource.Tests
             Assert.That(stats.ReferenceCount, Is.Zero);
             Assert.That(stats.ScopeCount, Is.EqualTo(1), "Only the App scope may remain.");
             Assert.That(stats.BindingCount, Is.Zero);
-            Assert.That(Object.FindObjectsOfType<ResUIWindowHolder>().Length, Is.Zero);
-            Assert.That(Object.FindObjectsOfType<ResUIWidgetHolder>().Length, Is.Zero);
+            Assert.That(UnityObjectQuery.FindAll<ResUIWindowHolder>().Length, Is.Zero);
+            Assert.That(UnityObjectQuery.FindAll<ResUIWidgetHolder>().Length, Is.Zero);
             f.AssertInvariants();
         }
 

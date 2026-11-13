@@ -32,10 +32,13 @@ namespace AlicizaX.Audio.Tests
                 yield return AudioFixture.Frames();
                 yield return UnityEngine.Resources.UnloadUnusedAssets();
                 GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
-                var survivors = new HashSet<int>();
+                var survivors = new HashSet<ulong>();
                 long retainedBytes = 0;
                 foreach (var clip in UnityEngine.Resources.FindObjectsOfTypeAll<AudioClip>())
-                    if (ids.Contains(clip.GetInstanceID())) { survivors.Add(clip.GetInstanceID()); retainedBytes += Profiler.GetRuntimeMemorySizeLong(clip); }
+                {
+                    ulong clipId = UnityObjectId.Get(clip);
+                    if (ids.Contains(clipId)) { survivors.Add(clipId); retainedBytes += Profiler.GetRuntimeMemorySizeLong(clip); }
+                }
                 Assert.That(survivors, Is.Empty, "Imported native clips survived unload wave " + wave);
                 Assert.That(retainedBytes, Is.Zero);
                 f.Audio.Shutdown();
@@ -50,9 +53,9 @@ namespace AlicizaX.Audio.Tests
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static HashSet<int> LoadAndRelease(AudioFixture f, string path, AudioCachePolicy policy, out long nativeBytes, out double milliseconds)
+        private static HashSet<ulong> LoadAndRelease(AudioFixture f, string path, AudioCachePolicy policy, out long nativeBytes, out double milliseconds)
         {
-            var ids = new HashSet<int>();
+            var ids = new HashSet<ulong>();
             var watch = Stopwatch.StartNew();
             var bundle = AssetBundle.LoadFromFile(path);
             Assert.That(bundle, Is.Not.Null);
@@ -66,7 +69,7 @@ namespace AlicizaX.Audio.Tests
                     var clip = bundle.LoadAsset<AudioClip>(name);
                     Assert.That(clip, Is.Not.Null);
                     Assert.That(clip.loadType, Is.EqualTo((AudioClipLoadType)mode));
-                    ids.Add(clip.GetInstanceID());
+                    ids.Add(UnityObjectId.Get(clip));
                     nativeBytes += Profiler.GetRuntimeMemorySizeLong(clip);
                     // These objects come from a real bundle and are not added to the fixture's destruction list.
                     f.Loader.Assets.Add(name, clip);

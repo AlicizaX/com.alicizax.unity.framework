@@ -132,10 +132,10 @@ namespace AlicizaX.Audio.Tests
             }
         }
 
-        private static HashSet<int> SourceIds()
+        private static HashSet<ulong> SourceIds()
         {
-            var ids = new HashSet<int>();
-            foreach (var source in UnityEngine.Resources.FindObjectsOfTypeAll<AudioSource>()) ids.Add(source.GetInstanceID());
+            var ids = new HashSet<ulong>();
+            foreach (var source in UnityEngine.Resources.FindObjectsOfTypeAll<AudioSource>()) ids.Add(UnityObjectId.Get(source));
             return ids;
         }
     }

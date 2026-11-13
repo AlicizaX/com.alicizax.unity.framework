@@ -5,6 +5,7 @@ using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
 using UnityEngine.SceneManagement;
 using YooAsset;
+using SceneHandle = YooAsset.SceneHandle;
 
 namespace AlicizaX.Scene.Runtime
 {

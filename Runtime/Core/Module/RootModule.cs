@@ -20,7 +20,7 @@ namespace AlicizaX
             {
                 if (_instance == null)
                 {
-                    _instance = FindObjectOfType<RootModule>();
+                    _instance = UnityObjectQuery.FindFirst<RootModule>();
                 }
 
                 return _instance;
