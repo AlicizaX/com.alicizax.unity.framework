@@ -6,7 +6,7 @@ using System.Runtime.CompilerServices;
 namespace AlicizaX.UI.Runtime
 {
     /// <summary>
-    /// UI 视图类型的注册表。源生成器在启动时注册所有视图；未注册的类型在首次使用时反射补注册。
+    /// UI 视图类型的注册表。首次查询未命中时调用程序集的生成注册入口，再按需反射补注册。
     /// </summary>
     public static class UIMetaRegistry
     {
@@ -40,7 +40,6 @@ namespace AlicizaX.UI.Runtime
 
         private static readonly Dictionary<RuntimeTypeHandle, UIMetaInfo> _byHandle = new(RuntimeTypeHandleComparer.Instance);
         private static readonly Dictionary<string, UIMetaInfo> _byName = new();
-        private static readonly HashSet<string> _unknownNames = new();
 
         /// <summary>注册窗口类型。类型关系由泛型约束保证，create 直接构造实例。</summary>
         public static void RegisterWindow<TView, THolder>(Func<TView> create, UILayer layer, int cacheTime, bool hasUpdate)
@@ -52,25 +51,25 @@ namespace AlicizaX.UI.Runtime
             where TView : UIWidget<THolder> where THolder : UIHolderObjectBase =>
             Add(new UIMetaInfo(typeof(TView), typeof(THolder), create, false, UILayer.UI, UICacheTime.None, hasUpdate));
 
-        /// <summary>按类型句柄取注册信息；未预注册时反射补注册。</summary>
+        /// <summary>按类型句柄取注册信息；未命中时先调用生成注册入口，再反射补注册。</summary>
         public static bool TryGet(RuntimeTypeHandle handle, out UIMetaInfo info)
         {
             if (_byHandle.TryGetValue(handle, out info)) return true;
-            return handle.Value != IntPtr.Zero && TryReflectAndRegister(Type.GetTypeFromHandle(handle), out info);
+            if (handle.Value == IntPtr.Zero) return false;
+
+            Type type = Type.GetTypeFromHandle(handle);
+            UIGeneratedRegistryLoader.EnsureRegistered(type.Assembly);
+            return _byHandle.TryGetValue(handle, out info) || TryReflectAndRegister(type, out info);
         }
 
-        /// <summary>按类型全名取注册信息；查不到的名字只反射一次。</summary>
+        /// <summary>按类型全名取注册信息；未找到的类型允许在程序集加载后重新查询。</summary>
         public static bool TryGet(string typeName, out UIMetaInfo info)
         {
             info = null;
             if (string.IsNullOrEmpty(typeName)) return false;
             if (_byName.TryGetValue(typeName, out info)) return true;
-            if (_unknownNames.Contains(typeName)) return false;
-            if (!TryReflectAndRegister(AlicizaX.Utility.Assembly.GetType(typeName), out info))
-            {
-                _unknownNames.Add(typeName);
-                return false;
-            }
+            Type type = AlicizaX.Utility.Assembly.GetType(typeName);
+            if (type == null || !TryGet(type.TypeHandle, out info)) return false;
             _byName[typeName] = info;
             return true;
         }
@@ -103,7 +102,6 @@ namespace AlicizaX.UI.Runtime
             string fullName = info.ViewType.FullName;
             _byHandle[info.Handle] = info;
             _byName[fullName] = info;
-            _unknownNames.Remove(fullName);
         }
 
         /// <summary>

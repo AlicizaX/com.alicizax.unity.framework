@@ -86,9 +86,9 @@ namespace AlicizaX
                     return type;
                 }
 
-                foreach (System.Reflection.Assembly assembly in s_Assemblies)
+                foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
                 {
-                    type = Type.GetType(Text.Format("{0}, {1}", typeName, assembly.FullName));
+                    type = assembly.GetType(typeName);
                     if (type != null)
                     {
                         s_CachedTypes.Add(typeName, type);

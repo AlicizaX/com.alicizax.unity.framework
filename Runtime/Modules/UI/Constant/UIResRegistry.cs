@@ -36,7 +36,11 @@ namespace AlicizaX.UI.Runtime
                 return true;
             }
 
-            return TryReflectAndRegister(Type.GetTypeFromHandle(handle), out info);
+            if (handle.Value == IntPtr.Zero) return false;
+
+            Type holderType = Type.GetTypeFromHandle(handle);
+            UIGeneratedRegistryLoader.EnsureRegistered(holderType.Assembly);
+            return _typeHandleMap.TryGetValue(handle, out info) || TryReflectAndRegister(holderType, out info);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
