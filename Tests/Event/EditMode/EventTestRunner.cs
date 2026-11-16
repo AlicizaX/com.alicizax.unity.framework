@@ -46,7 +46,6 @@ namespace AlicizaX.EventTests.Editor
             }
             const string root = "Packages/com.alicizax.unity.framework/";
             if (File.GetLastWriteTimeUtc(typeof(EventBus).Assembly.Location) < Directory.GetFiles(root + "Runtime/Modules/Event", "*.cs").Max(File.GetLastWriteTimeUtc) ||
-                File.GetLastWriteTimeUtc(typeof(EventBus).Assembly.Location) < File.GetLastWriteTimeUtc(root + "Plugins/SourceGenerators/Event/EventSourceGenerator.dll") ||
                 File.GetLastWriteTimeUtc(typeof(EventTestRunner).Assembly.Location) < Directory.GetFiles(root + "Tests/Event/EditMode", "*.cs").Max(File.GetLastWriteTimeUtc) ||
                 File.GetLastWriteTimeUtc(typeof(EventFixture).Assembly.Location) < Directory.GetFiles(root + "Tests/Event", "*.cs").Concat(Directory.GetFiles(root + "Tests/Event/PlayMode", "*.cs")).Max(File.GetLastWriteTimeUtc)) return;
             Directory.CreateDirectory(Path.GetDirectoryName(request.output));

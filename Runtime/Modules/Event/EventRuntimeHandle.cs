@@ -1,11 +1,9 @@
 ﻿using System;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using Unity.IL2CPP.CompilerServices;
 
 namespace AlicizaX
 {
-
+    [Obsolete("Event channels grow on demand. Call EventBus.ReservePayloadCapacity or EventBus.ReserveEmptyCapacity to preallocate.")]
     [AttributeUsage(AttributeTargets.Struct)]
     public sealed class PrewarmAttribute : Attribute
     {
@@ -13,31 +11,23 @@ namespace AlicizaX
         public PrewarmAttribute(int capacity) => Capacity = capacity;
     }
 
-    [Il2CppSetOption(Option.NullChecks, false)]
-    [Il2CppSetOption(Option.DivideByZeroChecks, false)]
-    [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
-    [StructLayout(LayoutKind.Sequential)]
     public readonly struct EventRuntimeHandle : IDisposable
     {
-        private readonly long _data; // 高32位=index, 低32位=version
-        private readonly int _typeId; // 类型ID，避免泛型委托
+        private readonly EventChannel _channel;
+        private readonly int _slot;
+        private readonly int _version;
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal EventRuntimeHandle(int typeId, int index, int version)
+        internal EventRuntimeHandle(EventChannel channel, int slot, int version)
         {
-            _typeId = typeId;
-            _data = ((long)index << 32) | (uint)version;
+            _channel = channel;
+            _slot = slot;
+            _version = version;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Dispose()
         {
-            if (_typeId != 0)
-            {
-                int index = (int)(_data >> 32);
-                int version = (int)_data;
-                UnsubscribeRegistry.Invoke(_typeId, index, version);
-            }
+            if (_channel != null) _channel.Unsubscribe(_slot, _version);
         }
     }
 }

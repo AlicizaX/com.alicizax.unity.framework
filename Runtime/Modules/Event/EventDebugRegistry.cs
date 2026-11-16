@@ -1,6 +1,5 @@
 #if UNITY_EDITOR
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace AlicizaX
@@ -9,73 +8,39 @@ namespace AlicizaX
     {
         Subscribe,
         Unsubscribe,
-        Publish,
         Resize,
         Clear,
-        HandlerException,
-        DeferredMutation,
-        Flush
+        HandlerException
+    }
+
+    internal struct EventDebugCounters
+    {
+        internal long PublishCount;
+        internal long SubscribeCount;
+        internal long UnsubscribeCount;
+        internal long HandlerExceptionCount;
+        internal int ResizeCount;
+        internal int ClearCount;
+        internal int PeakSubscriberCount;
+        internal int LastOperationFrame;
+        internal long LastOperationTicksUtc;
     }
 
     internal readonly struct EventDebugSummary
     {
         internal readonly Type EventType;
-        internal readonly bool Initialized;
+        internal readonly bool Parameterless;
         internal readonly int SubscriberCount;
-        internal readonly int PeakSubscriberCount;
         internal readonly int Capacity;
-        internal readonly int EmptySubscriberCount;
-        internal readonly int InSubscriberCount;
-        internal readonly long PublishCount;
-        internal readonly long SubscribeCount;
-        internal readonly long UnsubscribeCount;
-        internal readonly int ResizeCount;
-        internal readonly int ClearCount;
-        internal readonly long HandlerExceptionCount;
-        internal readonly long DeferredMutationCount;
-        internal readonly int FlushCount;
-        internal readonly int PeakPendingCount;
-        internal readonly int LastOperationFrame;
-        internal readonly long LastOperationTicksUtc;
+        internal readonly EventDebugCounters Counters;
 
-        internal EventDebugSummary(
-            Type eventType,
-            bool initialized,
-            int subscriberCount,
-            int peakSubscriberCount,
-            int capacity,
-            int emptySubscriberCount,
-            int inSubscriberCount,
-            long publishCount,
-            long subscribeCount,
-            long unsubscribeCount,
-            int resizeCount,
-            int clearCount,
-            long handlerExceptionCount,
-            long deferredMutationCount,
-            int flushCount,
-            int peakPendingCount,
-            int lastOperationFrame,
-            long lastOperationTicksUtc)
+        internal EventDebugSummary(Type eventType, bool parameterless, int subscriberCount, int capacity, EventDebugCounters counters)
         {
             EventType = eventType;
-            Initialized = initialized;
+            Parameterless = parameterless;
             SubscriberCount = subscriberCount;
-            PeakSubscriberCount = peakSubscriberCount;
             Capacity = capacity;
-            EmptySubscriberCount = emptySubscriberCount;
-            InSubscriberCount = inSubscriberCount;
-            PublishCount = publishCount;
-            SubscribeCount = subscribeCount;
-            UnsubscribeCount = unsubscribeCount;
-            ResizeCount = resizeCount;
-            ClearCount = clearCount;
-            HandlerExceptionCount = handlerExceptionCount;
-            DeferredMutationCount = deferredMutationCount;
-            FlushCount = flushCount;
-            PeakPendingCount = peakPendingCount;
-            LastOperationFrame = lastOperationFrame;
-            LastOperationTicksUtc = lastOperationTicksUtc;
+            Counters = counters;
         }
     }
 
@@ -150,138 +115,65 @@ namespace AlicizaX
     {
         private const int HistoryCapacity = 128;
 
-        private sealed class State
-        {
-            internal readonly Type EventType;
-            internal bool Parameterless;
-            internal Func<int> SubscriberCountProvider;
-            internal Func<int> CapacityProvider;
-            internal Func<EventDebugSubscriberInfo[]> SubscribersProvider;
-
-            internal int PeakSubscriberCount;
-            internal long PublishCount;
-            internal long SubscribeCount;
-            internal long UnsubscribeCount;
-            internal int ResizeCount;
-            internal int ClearCount;
-            internal long HandlerExceptionCount;
-            internal long DeferredMutationCount;
-            internal int FlushCount;
-            internal int PeakPendingCount;
-            internal int LastOperationFrame;
-            internal long LastOperationTicksUtc;
-
-            internal State(Type eventType)
-            {
-                EventType = eventType;
-            }
-        }
-
-        private static readonly Dictionary<Type, State> _states = new();
-        private static readonly List<Type> _registrationOrder = new();
         private static readonly EventDebugOperationRecord[] _history = new EventDebugOperationRecord[HistoryCapacity];
-        private static int _detailedHistoryRequestCount;
+        private static int _recordingRequestCount;
         private static int _historyWriteIndex;
         private static int _historyCount;
 
-        internal static bool BackgroundFullHistoryEnabled { get; set; }
+        internal static bool Recording => _recordingRequestCount > 0;
 
-        internal static bool BenchmarkReleaseLikeMode { get; set; }
-
-        internal static bool DetailedHistoryEnabled => _detailedHistoryRequestCount > 0 || BackgroundFullHistoryEnabled;
-
-        internal static void BeginDetailedHistory()
+        internal static void BeginRecording()
         {
-            _detailedHistoryRequestCount++;
+            _recordingRequestCount++;
         }
 
-        internal static void EndDetailedHistory()
+        internal static void EndRecording()
         {
-            if (_detailedHistoryRequestCount > 0)
-            {
-                _detailedHistoryRequestCount--;
-            }
+            _recordingRequestCount--;
         }
 
-        internal static void RegisterContainer<T>(bool parameterless, Func<int> count, Func<int> capacity,
-            Func<EventDebugSubscriberInfo[]> subscribers) where T : struct
+        internal static void RecordSubscribe(EventChannel channel, int subscriberCount, int capacity)
         {
-            State state = GetOrCreateState(typeof(T));
-            state.Parameterless = parameterless;
-            state.SubscriberCountProvider = count;
-            state.CapacityProvider = capacity;
-            state.SubscribersProvider = subscribers;
+            channel.Counters.SubscribeCount++;
+            channel.Counters.PeakSubscriberCount = Math.Max(channel.Counters.PeakSubscriberCount, subscriberCount);
+            Record(channel, EventDebugOperationKind.Subscribe, subscriberCount, capacity);
         }
 
-        internal static void RecordSubscribe<T>(int subscriberCount, int capacity) where T : struct
+        internal static void RecordUnsubscribe(EventChannel channel, int subscriberCount, int capacity)
         {
-            State state = GetState<T>();
-            state.SubscribeCount++;
-            state.PeakSubscriberCount = Math.Max(state.PeakSubscriberCount, subscriberCount);
-            MarkOperation(state, EventDebugOperationKind.Subscribe, subscriberCount, capacity, DetailedHistoryEnabled);
+            channel.Counters.UnsubscribeCount++;
+            Record(channel, EventDebugOperationKind.Unsubscribe, subscriberCount, capacity);
         }
 
-        internal static void RecordUnsubscribe<T>(int subscriberCount, int capacity) where T : struct
+        internal static void RecordPublish(EventChannel channel)
         {
-            State state = GetState<T>();
-            state.UnsubscribeCount++;
-            MarkOperation(state, EventDebugOperationKind.Unsubscribe, subscriberCount, capacity, DetailedHistoryEnabled);
+            channel.Counters.PublishCount++;
         }
 
-        internal static void RecordPublish<T>(int subscriberCount, int capacity) where T : struct
+        internal static void RecordResize(EventChannel channel, int subscriberCount, int capacity)
         {
-            State state = GetState<T>();
-            state.PublishCount++;
-            if (DetailedHistoryEnabled)
-            {
-                MarkOperation(state, EventDebugOperationKind.Publish, subscriberCount, capacity, true);
-            }
+            channel.Counters.ResizeCount++;
+            Record(channel, EventDebugOperationKind.Resize, subscriberCount, capacity);
         }
 
-        internal static void RecordResize<T>(int subscriberCount, int capacity) where T : struct
+        internal static void RecordClear(EventChannel channel, int subscriberCount, int capacity)
         {
-            State state = GetState<T>();
-            state.ResizeCount++;
-            MarkOperation(state, EventDebugOperationKind.Resize, subscriberCount, capacity, true);
+            channel.Counters.ClearCount++;
+            Record(channel, EventDebugOperationKind.Clear, subscriberCount, capacity);
         }
 
-        internal static void RecordClear<T>(int subscriberCount, int capacity) where T : struct
+        internal static void RecordHandlerException(EventChannel channel, int subscriberCount, int capacity)
         {
-            State state = GetState<T>();
-            state.ClearCount++;
-            MarkOperation(state, EventDebugOperationKind.Clear, subscriberCount, capacity, true);
-        }
-
-        internal static void RecordHandlerException<T>(int subscriberCount, int capacity) where T : struct
-        {
-            State state = GetState<T>();
-            state.HandlerExceptionCount++;
-            MarkOperation(state, EventDebugOperationKind.HandlerException, subscriberCount, capacity, true);
-        }
-
-        internal static void RecordDeferredMutation<T>(int pendingCount, int subscriberCount, int capacity) where T : struct
-        {
-            State state = GetState<T>();
-            state.DeferredMutationCount++;
-            state.PeakPendingCount = Math.Max(state.PeakPendingCount, pendingCount);
-            MarkOperation(state, EventDebugOperationKind.DeferredMutation, subscriberCount, capacity, DetailedHistoryEnabled);
-        }
-
-        internal static void RecordFlush<T>(int flushedCount, int subscriberCount, int capacity) where T : struct
-        {
-            State state = GetState<T>();
-            state.FlushCount++;
-            state.PeakPendingCount = Math.Max(state.PeakPendingCount, flushedCount);
-            MarkOperation(state, EventDebugOperationKind.Flush, subscriberCount, capacity, DetailedHistoryEnabled);
+            channel.Counters.HandlerExceptionCount++;
+            Record(channel, EventDebugOperationKind.HandlerException, subscriberCount, capacity);
         }
 
         internal static EventDebugSummary[] GetSummaries()
         {
-            int count = _registrationOrder.Count;
-            EventDebugSummary[] summaries = new EventDebugSummary[count];
-            for (int i = 0; i < count; i++)
+            var summaries = new EventDebugSummary[EventChannel.Channels.Count];
+            for (int i = 0; i < summaries.Length; i++)
             {
-                summaries[i] = BuildSummary(_states[_registrationOrder[i]]);
+                summaries[i] = EventChannel.Channels[i].CreateDebugSummary();
             }
 
             return summaries;
@@ -289,10 +181,11 @@ namespace AlicizaX
 
         internal static bool TryGetDetails(Type eventType, out EventDebugSummary summary, out EventDebugSubscriberInfo[] subscribers)
         {
-            if (_states.TryGetValue(eventType, out State state))
+            foreach (EventChannel channel in EventChannel.Channels)
             {
-                summary = BuildSummary(state);
-                subscribers = BuildSubscribers(state);
+                if (channel.EventType != eventType) continue;
+                summary = channel.CreateDebugSummary();
+                subscribers = channel.CreateDebugSubscribers();
                 return true;
             }
 
@@ -303,11 +196,10 @@ namespace AlicizaX
 
         internal static EventDebugOperationRecord[] GetRecentOperations()
         {
-            EventDebugOperationRecord[] result = new EventDebugOperationRecord[_historyCount];
+            var result = new EventDebugOperationRecord[_historyCount];
             for (int i = 0; i < _historyCount; i++)
             {
-                int index = (_historyWriteIndex - 1 - i + _history.Length) % _history.Length;
-                result[i] = _history[index];
+                result[i] = _history[(_historyWriteIndex - 1 - i + HistoryCapacity) % HistoryCapacity];
             }
 
             return result;
@@ -315,110 +207,25 @@ namespace AlicizaX
 
         internal static void ResetStats()
         {
-            foreach (Type eventType in _registrationOrder)
+            foreach (EventChannel channel in EventChannel.Channels)
             {
-                State state = _states[eventType];
-                state.PeakSubscriberCount = GetSubscriberCount(state);
-                state.PublishCount = 0;
-                state.SubscribeCount = 0;
-                state.UnsubscribeCount = 0;
-                state.ResizeCount = 0;
-                state.ClearCount = 0;
-                state.HandlerExceptionCount = 0;
-                state.DeferredMutationCount = 0;
-                state.FlushCount = 0;
-                state.PeakPendingCount = 0;
-                state.LastOperationFrame = 0;
-                state.LastOperationTicksUtc = 0;
+                channel.Counters = default;
+                channel.Counters.PeakSubscriberCount = channel.CreateDebugSummary().SubscriberCount;
             }
 
             _historyWriteIndex = 0;
             _historyCount = 0;
         }
 
-        private static State GetState<T>() where T : struct
-        {
-            Type eventType = typeof(T);
-            if (_states.TryGetValue(eventType, out State state))
-            {
-                return state;
-            }
-
-            throw new InvalidOperationException($"Event debug state is not registered for {eventType.FullName}.");
-        }
-
-        private static State GetOrCreateState(Type eventType)
-        {
-            if (!_states.TryGetValue(eventType, out State state))
-            {
-                state = new State(eventType);
-                _states.Add(eventType, state);
-                _registrationOrder.Add(eventType);
-            }
-
-            return state;
-        }
-
-        private static EventDebugSummary BuildSummary(State state)
-        {
-            int subscriberCount = GetSubscriberCount(state);
-            int capacity = GetCapacity(state);
-            int emptySubscriberCount = state.Parameterless ? subscriberCount : 0;
-            int inSubscriberCount = state.Parameterless ? 0 : subscriberCount;
-
-            return new EventDebugSummary(
-                state.EventType,
-                state.SubscriberCountProvider != null,
-                subscriberCount,
-                state.PeakSubscriberCount,
-                capacity,
-                emptySubscriberCount,
-                inSubscriberCount,
-                state.PublishCount,
-                state.SubscribeCount,
-                state.UnsubscribeCount,
-                state.ResizeCount,
-                state.ClearCount,
-                state.HandlerExceptionCount,
-                state.DeferredMutationCount,
-                state.FlushCount,
-                state.PeakPendingCount,
-                state.LastOperationFrame,
-                state.LastOperationTicksUtc);
-        }
-
-        private static int GetSubscriberCount(State state) => state.SubscriberCountProvider();
-
-        private static int GetCapacity(State state) => state.CapacityProvider();
-
-        private static EventDebugSubscriberInfo[] BuildSubscribers(State state) => state.SubscribersProvider();
-
-        private static void MarkOperation(State state, EventDebugOperationKind kind, int subscriberCount, int capacity, bool recordHistory)
+        private static void Record(EventChannel channel, EventDebugOperationKind kind, int subscriberCount, int capacity)
         {
             int frame = Time.frameCount;
             long ticksUtc = DateTime.UtcNow.Ticks;
-
-            state.LastOperationFrame = frame;
-            state.LastOperationTicksUtc = ticksUtc;
-
-            if (!recordHistory)
-            {
-                return;
-            }
-
-            _history[_historyWriteIndex] = new EventDebugOperationRecord(
-                state.EventType,
-                kind,
-                frame,
-                ticksUtc,
-                subscriberCount,
-                capacity);
-
-            _historyWriteIndex = (_historyWriteIndex + 1) % _history.Length;
-            if (_historyCount < _history.Length)
-            {
-                _historyCount++;
-            }
+            channel.Counters.LastOperationFrame = frame;
+            channel.Counters.LastOperationTicksUtc = ticksUtc;
+            _history[_historyWriteIndex] = new EventDebugOperationRecord(channel.EventType, kind, frame, ticksUtc, subscriberCount, capacity);
+            _historyWriteIndex = (_historyWriteIndex + 1) % HistoryCapacity;
+            if (_historyCount < HistoryCapacity) _historyCount++;
         }
     }
 }

@@ -73,14 +73,9 @@ namespace AlicizaX.EventTests
                 Action add = () => { for (int i = 0; i < capacity; i++) handles[i] = payload ? EventBus.Subscribe<PayloadProbe>(handlers[i]) : EventBus.Subscribe<EmptyProbe>(empty[i]); };
                 add(); foreach (var h in handles) h.Dispose();
                 yield return AllocationCapture.Measure("new-listeners-within-capacity-" + payload, capacity, add, s => Assert.That(s.Bytes, Is.Zero));
-                EventDebugRegistry.BenchmarkReleaseLikeMode = true;
-                try
-                {
-                    yield return AllocationCapture.Measure("capacity-growth-without-diagnostics-" + payload, 1,
-                        () => handles[capacity] = payload ? EventBus.Subscribe<PayloadProbe>(handlers[capacity]) : EventBus.Subscribe<EmptyProbe>(empty[capacity]),
-                        s => Assert.That(s.Bytes, Is.GreaterThan(0)), true);
-                }
-                finally { EventDebugRegistry.BenchmarkReleaseLikeMode = false; }
+                yield return AllocationCapture.Measure("capacity-growth-without-diagnostics-" + payload, 1,
+                    () => handles[capacity] = payload ? EventBus.Subscribe<PayloadProbe>(handlers[capacity]) : EventBus.Subscribe<EmptyProbe>(empty[capacity]),
+                    s => Assert.That(s.Bytes, Is.GreaterThan(0)), true);
                 yield return AllocationCapture.Measure("dispose-all-" + payload, handles.Length, () => { foreach (var h in handles) h.Dispose(); }, s => Assert.That(s.Bytes, Is.Zero));
                 yield return AllocationCapture.Measure("grown-storage-reuse-" + payload, 10000, cachedCycle, s => Assert.That(s.Bytes, Is.Zero));
                 f.VerifyLedger(0);
@@ -162,7 +157,6 @@ namespace AlicizaX.EventTests
             {
                 Action add = () => { for (int i = 0; i < handles.Length; i++) handles[i] = hasPayload ? EventBus.Subscribe<NaturalPayload>(payload[i]) : EventBus.Subscribe<NaturalEmpty>(empty[i]); };
                 Action release = () => { foreach (var handle in handles) handle.Dispose(); };
-                EventDebugRegistry.BenchmarkReleaseLikeMode = true;
                 try
                 {
                     yield return AllocationCapture.Measure("natural-first-and-growth-" + hasPayload, 32, add, s => Assert.That(s.Bytes, Is.GreaterThan(0)), true);
@@ -182,7 +176,6 @@ namespace AlicizaX.EventTests
                 {
                     release();
                     if (hasPayload) EventBus.ClearPayload<NaturalPayload>(); else EventBus.ClearEmpty<NaturalEmpty>();
-                    EventDebugRegistry.BenchmarkReleaseLikeMode = false;
                 }
             }
         }
@@ -195,7 +188,6 @@ namespace AlicizaX.EventTests
             var handle = EventBus.Subscribe<LargePayload>(LargeHandler);
             try
             {
-                EventDebugRegistry.BenchmarkReleaseLikeMode = true;
                 Action[] controls = {
                     () => { for (int i = 0; i < count; i++) ReadReference(in payload); },
                     () => { for (int i = 0; i < count; i++) ReadValue(payload); },
@@ -214,7 +206,7 @@ namespace AlicizaX.EventTests
                     TestContext.WriteLine($"COPY_TIME,{names[index]},1024,{count},{string.Join(",", times)}");
                 }
             }
-            finally { handle.Dispose(); EventDebugRegistry.BenchmarkReleaseLikeMode = false; }
+            finally { handle.Dispose(); }
         }
     }
 }

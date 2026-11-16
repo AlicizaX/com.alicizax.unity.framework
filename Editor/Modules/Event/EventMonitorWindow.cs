@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
@@ -17,7 +16,6 @@ namespace AlicizaX.Editor
         private const float SplitterWidth = 5f;
 
         private static readonly List<Type> s_KnownEventTypes = new();
-        private static readonly Dictionary<Type, int> s_InitialCapacityCache = new();
 
         private Vector2 _eventListScroll;
         private Vector2 _subscriberScroll;
@@ -37,14 +35,12 @@ namespace AlicizaX.Editor
             internal readonly Type EventType;
             internal readonly bool Initialized;
             internal readonly EventDebugSummary Summary;
-            internal readonly int InitialCapacity;
 
-            internal EventRow(Type eventType, bool initialized, EventDebugSummary summary, int initialCapacity)
+            internal EventRow(Type eventType, bool initialized, EventDebugSummary summary)
             {
                 EventType = eventType;
                 Initialized = initialized;
                 Summary = summary;
-                InitialCapacity = initialCapacity;
             }
         }
 
@@ -84,14 +80,14 @@ namespace AlicizaX.Editor
         private void OnEnable()
         {
             RefreshKnownEventTypes();
-            EventDebugRegistry.BeginDetailedHistory();
+            EventDebugRegistry.BeginRecording();
             EditorApplication.update += HandleEditorUpdate;
         }
 
         private void OnDisable()
         {
             EditorApplication.update -= HandleEditorUpdate;
-            EventDebugRegistry.EndDetailedHistory();
+            EventDebugRegistry.EndRecording();
         }
 
         private void OnFocus()
@@ -172,7 +168,7 @@ namespace AlicizaX.Editor
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.HelpBox(
-                "这是仅编辑器可用的事件监视器。Publish 隔离每条订阅的回调异常。退订立即停止后续调用，结构变更在该事件最外层派发结束后按序提交。",
+                "这是仅编辑器可用的事件监视器，窗口打开期间才记录统计与操作历史。Publish 隔离每条订阅的回调异常。订阅、退订、清空立即生效；一次 Publish 只调用它开始时已存在且尚未退订的订阅。",
                 MessageType.Info);
 
             if (_snapshotEntries.Count > 0)
@@ -268,12 +264,11 @@ namespace AlicizaX.Editor
                 _selectedEventType = row.EventType;
             }
 
-            string capacityText = row.Initialized ? row.Summary.Capacity.ToString() : row.InitialCapacity.ToString();
             string status = row.Initialized ? "已初始化" : "未初始化";
             EditorGUILayout.LabelField(
-                $"订阅 {row.Summary.SubscriberCount} | 无参 {row.Summary.EmptySubscriberCount} / in {row.Summary.InSubscriberCount} | 容量 {capacityText} | 发布 {row.Summary.PublishCount}",
+                $"订阅 {row.Summary.SubscriberCount} | {GetDispatchModeText(row.Summary.Parameterless)} | 容量 {row.Summary.Capacity} | 发布 {row.Summary.Counters.PublishCount}",
                 EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"{status} | 初始容量 {row.InitialCapacity}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(status, EditorStyles.miniLabel);
 
             EditorGUILayout.EndVertical();
         }
@@ -293,9 +288,7 @@ namespace AlicizaX.Editor
 
             if (!summaries.TryGetValue(_selectedEventType, out EventDebugSummary summary))
             {
-                int initialCapacity = GetInitialCapacity(_selectedEventType);
                 EditorGUILayout.HelpBox("这个事件类型在当前域中还没有被初始化。", MessageType.Info);
-                EditorGUILayout.LabelField("初始容量", initialCapacity.ToString());
                 EditorGUILayout.LabelField("当前订阅数", "0");
                 EditorGUILayout.LabelField("发布次数", "0");
                 EditorGUILayout.EndVertical();
@@ -303,7 +296,7 @@ namespace AlicizaX.Editor
             }
 
             EventDebugRegistry.TryGetDetails(_selectedEventType, out _, out EventDebugSubscriberInfo[] subscribers);
-            DrawSummary(summary, GetInitialCapacity(_selectedEventType));
+            DrawSummary(summary);
             DrawAlerts(summary, subscribers);
             DrawSnapshotDiff(_selectedEventType, summary, subscribers);
             DrawSubscribers(subscribers);
@@ -312,27 +305,23 @@ namespace AlicizaX.Editor
             EditorGUILayout.EndVertical();
         }
 
-        private static void DrawSummary(EventDebugSummary summary, int initialCapacity)
+        private static void DrawSummary(EventDebugSummary summary)
         {
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             GUILayout.Label("摘要", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField("初始容量", initialCapacity.ToString());
             EditorGUILayout.LabelField("当前订阅数", summary.SubscriberCount.ToString());
-            EditorGUILayout.LabelField("当前派发模式", $"无参 {summary.EmptySubscriberCount} | in {summary.InSubscriberCount}");
-            EditorGUILayout.LabelField("峰值订阅数", summary.PeakSubscriberCount.ToString());
+            EditorGUILayout.LabelField("当前派发模式", GetDispatchModeText(summary.Parameterless));
+            EditorGUILayout.LabelField("峰值订阅数", summary.Counters.PeakSubscriberCount.ToString());
             EditorGUILayout.LabelField("当前容量", summary.Capacity.ToString());
             EditorGUILayout.LabelField("容量利用率", FormatRatio(summary.SubscriberCount, summary.Capacity));
-            EditorGUILayout.LabelField("发布次数", summary.PublishCount.ToString());
-            EditorGUILayout.LabelField("订阅次数", summary.SubscribeCount.ToString());
-            EditorGUILayout.LabelField("取消订阅次数", summary.UnsubscribeCount.ToString());
-            EditorGUILayout.LabelField("扩容次数", summary.ResizeCount.ToString());
-            EditorGUILayout.LabelField("清空次数", summary.ClearCount.ToString());
-            EditorGUILayout.LabelField("回调异常", summary.HandlerExceptionCount.ToString());
-            EditorGUILayout.LabelField("延迟变更", summary.DeferredMutationCount.ToString());
-            EditorGUILayout.LabelField("Flush 次数", summary.FlushCount.ToString());
-            EditorGUILayout.LabelField("峰值 Pending", summary.PeakPendingCount.ToString());
-            EditorGUILayout.LabelField("最后操作帧", summary.LastOperationFrame.ToString());
-            EditorGUILayout.LabelField("最后操作时间", FormatTicks(summary.LastOperationTicksUtc));
+            EditorGUILayout.LabelField("发布次数", summary.Counters.PublishCount.ToString());
+            EditorGUILayout.LabelField("订阅次数", summary.Counters.SubscribeCount.ToString());
+            EditorGUILayout.LabelField("取消订阅次数", summary.Counters.UnsubscribeCount.ToString());
+            EditorGUILayout.LabelField("扩容次数", summary.Counters.ResizeCount.ToString());
+            EditorGUILayout.LabelField("清空次数", summary.Counters.ClearCount.ToString());
+            EditorGUILayout.LabelField("回调异常", summary.Counters.HandlerExceptionCount.ToString());
+            EditorGUILayout.LabelField("最后操作帧", summary.Counters.LastOperationFrame.ToString());
+            EditorGUILayout.LabelField("最后操作时间", FormatTicks(summary.Counters.LastOperationTicksUtc));
             EditorGUILayout.EndVertical();
         }
 
@@ -368,30 +357,17 @@ namespace AlicizaX.Editor
                 return;
             }
 
-            int subscriberDelta = currentSummary.SubscriberCount - snapshot.Summary.SubscriberCount;
-            long publishDelta = currentSummary.PublishCount - snapshot.Summary.PublishCount;
-            long subscribeDelta = currentSummary.SubscribeCount - snapshot.Summary.SubscribeCount;
-            long unsubscribeDelta = currentSummary.UnsubscribeCount - snapshot.Summary.UnsubscribeCount;
-            int resizeDelta = currentSummary.ResizeCount - snapshot.Summary.ResizeCount;
-            int capacityDelta = currentSummary.Capacity - snapshot.Summary.Capacity;
-            int emptySubscriberDelta = currentSummary.EmptySubscriberCount - snapshot.Summary.EmptySubscriberCount;
-            int inSubscriberDelta = currentSummary.InSubscriberCount - snapshot.Summary.InSubscriberCount;
-            long handlerExceptionDelta = currentSummary.HandlerExceptionCount - snapshot.Summary.HandlerExceptionCount;
-            long deferredMutationDelta = currentSummary.DeferredMutationCount - snapshot.Summary.DeferredMutationCount;
-            int flushDelta = currentSummary.FlushCount - snapshot.Summary.FlushCount;
+            EventDebugCounters current = currentSummary.Counters;
+            EventDebugCounters baseline = snapshot.Summary.Counters;
 
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            EditorGUILayout.LabelField("订阅数变化", FormatSigned(subscriberDelta));
-            EditorGUILayout.LabelField("无参订阅变化", FormatSigned(emptySubscriberDelta));
-            EditorGUILayout.LabelField("in 订阅变化", FormatSigned(inSubscriberDelta));
-            EditorGUILayout.LabelField("发布次数变化", FormatSigned(publishDelta));
-            EditorGUILayout.LabelField("订阅次数变化", FormatSigned(subscribeDelta));
-            EditorGUILayout.LabelField("取消订阅次数变化", FormatSigned(unsubscribeDelta));
-            EditorGUILayout.LabelField("扩容次数变化", FormatSigned(resizeDelta));
-            EditorGUILayout.LabelField("容量变化", FormatSigned(capacityDelta));
-            EditorGUILayout.LabelField("异常变化", FormatSigned(handlerExceptionDelta));
-            EditorGUILayout.LabelField("延迟变更变化", FormatSigned(deferredMutationDelta));
-            EditorGUILayout.LabelField("Flush 变化", FormatSigned(flushDelta));
+            EditorGUILayout.LabelField("订阅数变化", FormatSigned(currentSummary.SubscriberCount - snapshot.Summary.SubscriberCount));
+            EditorGUILayout.LabelField("发布次数变化", FormatSigned(current.PublishCount - baseline.PublishCount));
+            EditorGUILayout.LabelField("订阅次数变化", FormatSigned(current.SubscribeCount - baseline.SubscribeCount));
+            EditorGUILayout.LabelField("取消订阅次数变化", FormatSigned(current.UnsubscribeCount - baseline.UnsubscribeCount));
+            EditorGUILayout.LabelField("扩容次数变化", FormatSigned(current.ResizeCount - baseline.ResizeCount));
+            EditorGUILayout.LabelField("容量变化", FormatSigned(currentSummary.Capacity - snapshot.Summary.Capacity));
+            EditorGUILayout.LabelField("异常变化", FormatSigned(current.HandlerExceptionCount - baseline.HandlerExceptionCount));
 
             List<string> addedSubscribers = GetSubscriberDiff(currentSubscribers, snapshot.Subscribers);
             List<string> removedSubscribers = GetSubscriberDiff(snapshot.Subscribers, currentSubscribers);
@@ -463,15 +439,11 @@ namespace AlicizaX.Editor
                 }
 
                 if (summary.SubscriberCount != snapshot.Summary.SubscriberCount ||
-                    summary.EmptySubscriberCount != snapshot.Summary.EmptySubscriberCount ||
-                    summary.InSubscriberCount != snapshot.Summary.InSubscriberCount ||
-                    summary.PublishCount != snapshot.Summary.PublishCount ||
-                    summary.SubscribeCount != snapshot.Summary.SubscribeCount ||
-                    summary.UnsubscribeCount != snapshot.Summary.UnsubscribeCount ||
-                    summary.ResizeCount != snapshot.Summary.ResizeCount ||
-                    summary.HandlerExceptionCount != snapshot.Summary.HandlerExceptionCount ||
-                    summary.DeferredMutationCount != snapshot.Summary.DeferredMutationCount ||
-                    summary.FlushCount != snapshot.Summary.FlushCount ||
+                    summary.Counters.PublishCount != snapshot.Summary.Counters.PublishCount ||
+                    summary.Counters.SubscribeCount != snapshot.Summary.Counters.SubscribeCount ||
+                    summary.Counters.UnsubscribeCount != snapshot.Summary.Counters.UnsubscribeCount ||
+                    summary.Counters.ResizeCount != snapshot.Summary.Counters.ResizeCount ||
+                    summary.Counters.HandlerExceptionCount != snapshot.Summary.Counters.HandlerExceptionCount ||
                     summary.Capacity != snapshot.Summary.Capacity)
                 {
                     changedCount++;
@@ -489,7 +461,7 @@ namespace AlicizaX.Editor
             EditorGUILayout.LabelField("版本", subscriber.Version.ToString());
             EditorGUILayout.LabelField("目标", subscriber.TargetTypeName);
             EditorGUILayout.LabelField("类型", subscriber.IsStatic ? "静态方法" : "实例方法");
-            EditorGUILayout.LabelField("派发方式", GetSubscriberDispatchModeText(subscriber));
+            EditorGUILayout.LabelField("派发方式", GetDispatchModeText(subscriber.IsParameterless));
 
             if (subscriber.IsUnityObjectDestroyed)
             {
@@ -561,9 +533,9 @@ namespace AlicizaX.Editor
                 bool initialized = summaries.TryGetValue(eventType, out EventDebugSummary summary);
                 EventDebugSummary rowSummary = initialized
                     ? summary
-                    : new EventDebugSummary(eventType, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                    : new EventDebugSummary(eventType, typeof(IEmptyEventArgs).IsAssignableFrom(eventType), 0, 0, default);
 
-                EventRow row = new EventRow(eventType, initialized, rowSummary, GetInitialCapacity(eventType));
+                EventRow row = new EventRow(eventType, initialized, rowSummary);
                 if (MatchesFilter(row))
                 {
                     rows.Add(row);
@@ -627,7 +599,7 @@ namespace AlicizaX.Editor
                 return activeCompare;
             }
 
-            int publishCompare = y.Summary.PublishCount.CompareTo(x.Summary.PublishCount);
+            int publishCompare = y.Summary.Counters.PublishCount.CompareTo(x.Summary.Counters.PublishCount);
             if (publishCompare != 0)
             {
                 return publishCompare;
@@ -639,7 +611,6 @@ namespace AlicizaX.Editor
         private static void RefreshKnownEventTypes()
         {
             s_KnownEventTypes.Clear();
-            s_InitialCapacityCache.Clear();
             AddKnownEventTypes(TypeCache.GetTypesDerivedFrom<IPayloadEventArgs>());
             AddKnownEventTypes(TypeCache.GetTypesDerivedFrom<IEmptyEventArgs>());
 
@@ -660,31 +631,6 @@ namespace AlicizaX.Editor
                     s_KnownEventTypes.Add(eventType);
                 }
             }
-        }
-
-        private static int GetInitialCapacity(Type eventType)
-        {
-            if (s_InitialCapacityCache.TryGetValue(eventType, out int cachedCapacity))
-            {
-                return cachedCapacity;
-            }
-
-            try
-            {
-                Type initialSizeType = typeof(EventInitialSize<>).MakeGenericType(eventType);
-                FieldInfo sizeField = initialSizeType.GetField("Size", BindingFlags.Public | BindingFlags.Static);
-                if (sizeField != null && sizeField.GetValue(null) is int size)
-                {
-                    s_InitialCapacityCache[eventType] = size;
-                    return size;
-                }
-            }
-            catch
-            {
-            }
-
-            s_InitialCapacityCache[eventType] = 0;
-            return 0;
         }
 
         private static string FormatTicks(long ticksUtc)
@@ -752,24 +698,9 @@ namespace AlicizaX.Editor
             }
 
 
-            if (summary.HandlerExceptionCount > 0)
+            if (summary.Counters.HandlerExceptionCount > 0)
             {
-                alerts.Add(new EventAlert(MessageType.Warning, $"Publish 捕获了 {summary.HandlerExceptionCount} 次回调异常，请检查对应订阅者。"));
-            }
-
-            if (summary.DeferredMutationCount > 0)
-            {
-                alerts.Add(new EventAlert(MessageType.Info, $"Publish 延迟处理了 {summary.DeferredMutationCount} 次派发期变更，峰值 Pending 为 {summary.PeakPendingCount}。"));
-            }
-
-            if (summary.ResizeCount > 0)
-            {
-                alerts.Add(new EventAlert(MessageType.Warning, $"容器已经扩容 {summary.ResizeCount} 次，当前事件的 Prewarm 可能偏小。"));
-            }
-
-            if (summary.PeakSubscriberCount > 0 && summary.Capacity >= summary.PeakSubscriberCount * 4)
-            {
-                alerts.Add(new EventAlert(MessageType.Info, $"当前容量 {summary.Capacity} 远大于峰值订阅数 {summary.PeakSubscriberCount}，Prewarm 可能偏大。"));
+                alerts.Add(new EventAlert(MessageType.Warning, $"Publish 捕获了 {summary.Counters.HandlerExceptionCount} 次回调异常，请检查对应订阅者。"));
             }
 
             if (compilerGeneratedCount > 0)
@@ -777,8 +708,8 @@ namespace AlicizaX.Editor
                 alerts.Add(new EventAlert(MessageType.Info, $"检测到 {compilerGeneratedCount} 个编译器生成的订阅者，通常意味着 lambda 或闭包。"));
             }
 
-            long churn = summary.SubscribeCount + summary.UnsubscribeCount;
-            long totalPublishCount = summary.PublishCount;
+            long churn = summary.Counters.SubscribeCount + summary.Counters.UnsubscribeCount;
+            long totalPublishCount = summary.Counters.PublishCount;
             if (churn > 0 && totalPublishCount == 0)
             {
                 alerts.Add(new EventAlert(MessageType.Info, $"这个事件在当前域中发生了 {churn} 次订阅/取消订阅操作，但从未被发布。"));
@@ -788,7 +719,7 @@ namespace AlicizaX.Editor
                 alerts.Add(new EventAlert(MessageType.Info, $"检测到较高的订阅抖动：订阅变更 {churn} 次，发布次数 {totalPublishCount} 次。"));
             }
 
-            if (summary.SubscriberCount > 0 && totalPublishCount == 0 && summary.LastOperationFrame > 0)
+            if (summary.SubscriberCount > 0 && totalPublishCount == 0 && summary.Counters.LastOperationFrame > 0)
             {
                 alerts.Add(new EventAlert(MessageType.Info, "这个事件当前已有订阅者，但在当前域中还没有被发布过。"));
             }
@@ -854,14 +785,9 @@ namespace AlicizaX.Editor
             return builder.ToString();
         }
 
-        private static string GetSubscriberDispatchModeText(EventDebugSubscriberInfo subscriber)
+        private static string GetDispatchModeText(bool parameterless)
         {
-            if (subscriber.IsParameterless)
-            {
-                return "无参";
-            }
-
-            return "in";
+            return parameterless ? "无参" : "in";
         }
 
         private static string GetOperationKindText(EventDebugOperationKind kind)
@@ -870,12 +796,9 @@ namespace AlicizaX.Editor
             {
                 EventDebugOperationKind.Subscribe => "订阅",
                 EventDebugOperationKind.Unsubscribe => "取消订阅",
-                EventDebugOperationKind.Publish => "发布",
                 EventDebugOperationKind.Resize => "扩容",
                 EventDebugOperationKind.Clear => "清空",
                 EventDebugOperationKind.HandlerException => "回调异常",
-                EventDebugOperationKind.DeferredMutation => "延迟变更",
-                EventDebugOperationKind.Flush => "Flush",
                 _ => kind.ToString()
             };
         }

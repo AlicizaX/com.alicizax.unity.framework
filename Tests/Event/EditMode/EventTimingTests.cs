@@ -18,11 +18,11 @@ namespace AlicizaX.EventTests.Editor
         public void DefaultPublishTimingsAtBaselineLoads()
         {
             var payload = new Payload(7);
-            try
+            foreach (bool diagnostics in new[] { true, false })
             {
-                foreach (bool diagnostics in new[] { true, false })
+                if (diagnostics) EventDebugRegistry.BeginRecording();
+                try
                 {
-                    EventDebugRegistry.BenchmarkReleaseLikeMode = !diagnostics;
                     foreach (int count in new[] { 0, 1, 16, 256, 1024 })
                     {
                         EventBus.ReserveEmptyCapacity<Empty>(count);
@@ -41,8 +41,12 @@ namespace AlicizaX.EventTests.Editor
                         EventBus.ClearEmpty<Empty>(); EventBus.ClearPayload<Payload>();
                     }
                 }
+                finally
+                {
+                    EventBus.ClearEmpty<Empty>(); EventBus.ClearPayload<Payload>();
+                    if (diagnostics) EventDebugRegistry.EndRecording();
+                }
             }
-            finally { EventBus.ClearEmpty<Empty>(); EventBus.ClearPayload<Payload>(); EventDebugRegistry.BenchmarkReleaseLikeMode = false; }
         }
 
         private static void Measure(string name, bool diagnostics, int count, int iterations, Action action)

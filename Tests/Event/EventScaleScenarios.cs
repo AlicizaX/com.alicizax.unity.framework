@@ -2,7 +2,6 @@
 using System;
 using System.Collections;
 using System.Globalization;
-using System.Reflection;
 using NUnit.Framework;
 
 namespace AlicizaX.EventTests
@@ -38,20 +37,17 @@ namespace AlicizaX.EventTests
             public readonly bool Payload;
             public readonly Listener[] Listeners;
             public readonly EventRuntimeHandle[] Handles;
-            private readonly Type container;
-            private bool[] seen = Array.Empty<bool>();
+            private readonly EventLedger ledger;
             public Population(bool payload, int count)
             {
                 Payload = payload;
-                container = payload ? typeof(EventContainer<Payload, InEventHandler<Payload>>) : typeof(EventContainer<Empty, Action>);
+                ledger = new EventLedger(payload ? EventContainer<Payload, InEventHandler<Payload>>.Channel : EventContainer<Empty, Action>.Channel);
                 Clear();
                 Listeners = new Listener[count]; Handles = new EventRuntimeHandle[count];
                 for (int i = 0; i < count; i++) Listeners[i] = new Listener();
             }
             public int Count => Payload ? EventBus.GetPayloadSubscriberCount<Payload>() : EventBus.GetEmptySubscriberCount<Empty>();
-            public int Capacity => ((Array)Field("_callbacks")).Length;
-            public int PendingCapacity => ((Array)Field("_pending")).Length;
-            public object Field(string name) => container.GetField(name, BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+            public int Capacity => ledger.Capacity;
             public EventRuntimeHandle Subscribe(int index) => Payload ? EventBus.Subscribe<Payload>(Listeners[index].PayloadHandler) : EventBus.Subscribe<Empty>(Listeners[index].EmptyHandler);
             public void AddAll() { for (int i = 0; i < Handles.Length; i++) Handles[i] = Subscribe(i); }
             public void RemoveAll() { for (int i = 0; i < Handles.Length; i++) Handles[i].Dispose(); }
@@ -71,32 +67,7 @@ namespace AlicizaX.EventTests
             public void Ledger(int expected)
             {
                 Assert.That(Count, Is.EqualTo(expected));
-                Assert.That((int)Field("_publishDepth"), Is.Zero);
-                Assert.That((int)Field("_pendingCount"), Is.Zero);
-                var callbacks = (Delegate[])Field("_callbacks"); var packedCallbacks = (Delegate[])Field("_packedCallbacks");
-                var versions = (int[])Field("_versions"); var cancelled = (bool[])Field("_cancelled");
-                var indices = (int[])Field("_packedIndices"); var packed = (int[])Field("_packedSlots");
-                var free = (int[])Field("_freeSlots"); int freeCount = (int)Field("_freeCount");
-                if (seen.Length != callbacks.Length) seen = new bool[callbacks.Length];
-                else Array.Clear(seen, 0, seen.Length);
-                Assert.That(expected + freeCount, Is.EqualTo(callbacks.Length));
-                for (int i = 0; i < expected; i++)
-                {
-                    int slot = packed[i];
-                    if ((uint)slot >= (uint)seen.Length || seen[slot] || indices[slot] != i || versions[slot] == 0 || cancelled[slot] || callbacks[slot] == null || !ReferenceEquals(callbacks[slot], packedCallbacks[i]))
-                        Assert.Fail($"packed invariant at {i}");
-                    seen[slot] = true;
-                }
-                for (int i = 0; i < freeCount; i++)
-                {
-                    int slot = free[i];
-                    if ((uint)slot >= (uint)seen.Length || seen[slot] || versions[slot] != 0 || callbacks[slot] != null || cancelled[slot])
-                        Assert.Fail($"free invariant at {i}");
-                    seen[slot] = true;
-                }
-                for (int i = expected; i < packedCallbacks.Length; i++)
-                    if (packedCallbacks[i] != null) Assert.Fail($"retained packed delegate at {i}");
-                Assert.That(((IDictionary)Field("Subscriptions")).Count, Is.EqualTo(expected));
+                ledger.Verify(expected);
             }
             public void Dispose() { Clear(); Ledger(0); }
         }
@@ -117,7 +88,7 @@ namespace AlicizaX.EventTests
                 population.AddAll();
                 for (int i = 0; i < population.Handles.Length; i += 2) population.Handles[i].Dispose();
                 Peak = 1 + population.Handles.Length + (population.Handles.Length + 1) / 2;
-                if (population.Count != 1) Assert.Fail("pending changed committed count");
+                if (population.Count != population.Handles.Length / 2) Assert.Fail("mutations inside publish must be live");
                 population.Publish();
             }
         }
@@ -177,148 +148,135 @@ namespace AlicizaX.EventTests
             TestContext.WriteLine($"SCALE_SUMMARY,{name},{operations},{times[2]:F4},{times[0]:F4},{times[4]:F4},0,{collections}");
         }
 
+        private static IEnumerator RecordedRounds(bool diagnostics, string name, int operations, Action prepare, Action action, Action verify)
+        {
+            if (diagnostics) EventDebugRegistry.BeginRecording();
+            try
+            {
+                yield return Rounds(name, operations, prepare, action, verify);
+            }
+            finally
+            {
+                if (diagnostics) EventDebugRegistry.EndRecording();
+            }
+        }
+
         public static IEnumerator PublisherSources(int count)
         {
             yield return Calibrate();
             var sources = new Publisher[count];
             for (int i = 0; i < count; i++) sources[i] = new Publisher(i + 1);
             TestContext.WriteLine($"SCALE_SETUP,publishers,{count},outside-framework-sample");
-            bool previous = EventDebugRegistry.BenchmarkReleaseLikeMode;
-            try
+            foreach (bool payload in new[] { false, true })
+            foreach (int listeners in new[] { 0, 1, 8, 32 })
             {
-                foreach (bool payload in new[] { false, true })
-                foreach (int listeners in new[] { 0, 1, 8, 32 })
+                using var p = new Population(payload, listeners);
+                p.AddAll(); p.Publish(); p.ResetCalls();
+                Action publish = payload
+                    ? () => { for (int i = 0; i < sources.Length; i++) sources[i].Payload(); }
+                    : () => { for (int i = 0; i < sources.Length; i++) sources[i].Empty(); };
+                foreach (bool diagnostics in new[] { false, true })
                 {
-                    using var p = new Population(payload, listeners);
-                    EventDebugRegistry.BenchmarkReleaseLikeMode = true;
-                    p.AddAll(); p.Publish(); p.ResetCalls();
-                    Action publish = payload
-                        ? () => { for (int i = 0; i < sources.Length; i++) sources[i].Payload(); }
-                        : () => { for (int i = 0; i < sources.Length; i++) sources[i].Empty(); };
-                    foreach (bool diagnostics in new[] { false, true })
+                    string name = $"sources-{count}-payload-{payload}-listeners-{listeners}-diagnostics-{diagnostics}";
+                    TestContext.WriteLine($"SCALE_WORK,{name},publishers,{count},publishes,{count},callbacks,{(long)count * listeners}");
+                    yield return RecordedRounds(diagnostics, name, count, p.ResetCalls, publish, () =>
                     {
-                        EventDebugRegistry.BenchmarkReleaseLikeMode = !diagnostics;
-                        string name = $"sources-{count}-payload-{payload}-listeners-{listeners}-diagnostics-{diagnostics}";
-                        TestContext.WriteLine($"SCALE_WORK,{name},publishers,{count},publishes,{count},callbacks,{(long)count * listeners}");
-                        yield return Rounds(name, count, p.ResetCalls, publish, () =>
-                        {
-                            p.CheckCalls(count, (long)count * (count + 1) / 2); p.Ledger(listeners);
-                        });
-                    }
+                        p.CheckCalls(count, (long)count * (count + 1) / 2); p.Ledger(listeners);
+                    });
                 }
             }
-            finally { EventDebugRegistry.BenchmarkReleaseLikeMode = previous; }
         }
 
         public static IEnumerator LiveSubscriptions(int count)
         {
             yield return Calibrate();
-            bool previous = EventDebugRegistry.BenchmarkReleaseLikeMode;
-            try
+            foreach (bool payload in new[] { false, true })
             {
-                foreach (bool payload in new[] { false, true })
+                using var p = new Population(payload, count);
+                TestContext.WriteLine($"SCALE_SETUP,listeners-{payload},{count},outside-framework-sample");
+                int before = p.Capacity;
+                yield return AllocationCapture.Measure($"growth-{count}-payload-{payload}-from-{before}", count, p.AddAll,
+                    sample => { if (before < count) Assert.That(sample.Bytes, Is.GreaterThan(0)); });
+                p.Ledger(count); p.RemoveAll(); p.Ledger(0);
+                TestContext.WriteLine($"SCALE_STORAGE,live-{count}-payload-{payload},{before},{p.Capacity}");
+                foreach (bool diagnostics in new[] { false, true })
                 {
-                    EventDebugRegistry.BenchmarkReleaseLikeMode = true;
-                    using var p = new Population(payload, count);
-                    TestContext.WriteLine($"SCALE_SETUP,listeners-{payload},{count},outside-framework-sample");
-                    int before = p.Capacity;
-                    yield return AllocationCapture.Measure($"growth-{count}-payload-{payload}-from-{before}", count, p.AddAll,
-                        sample => { if (before < count) Assert.That(sample.Bytes, Is.GreaterThan(0)); });
-                    p.Ledger(count); p.RemoveAll(); p.Ledger(0);
-                    TestContext.WriteLine($"SCALE_STORAGE,live-{count}-payload-{payload},{before},{p.Capacity},{p.PendingCapacity}");
-                    foreach (bool diagnostics in new[] { false, true })
-                    {
-                        EventDebugRegistry.BenchmarkReleaseLikeMode = !diagnostics;
-                        string suffix = $"-{count}-payload-{payload}-diagnostics-{diagnostics}";
-                        yield return Rounds("subscribe" + suffix, count, null, p.AddAll, () => { p.Ledger(count); p.RemoveAll(); });
-                        yield return Rounds("dispose" + suffix, count, p.AddAll, p.RemoveAll, () => p.Ledger(0));
-                        p.AddAll();
-                        TestContext.WriteLine($"SCALE_WORK,fanout{suffix},publishes,32,callbacks,{32L * count}");
-                        yield return Rounds("fanout" + suffix, 32, p.ResetCalls,
-                            () => { for (int i = 0; i < 32; i++) p.Publish(7); },
-                            () => { p.CheckCalls(32, 224); p.Ledger(count); });
-                        p.RemoveAll(); p.Ledger(0);
-                    }
+                    string suffix = $"-{count}-payload-{payload}-diagnostics-{diagnostics}";
+                    yield return RecordedRounds(diagnostics, "subscribe" + suffix, count, null, p.AddAll, () => { p.Ledger(count); p.RemoveAll(); });
+                    yield return RecordedRounds(diagnostics, "dispose" + suffix, count, p.AddAll, p.RemoveAll, () => p.Ledger(0));
+                    p.AddAll();
+                    TestContext.WriteLine($"SCALE_WORK,fanout{suffix},publishes,32,callbacks,{32L * count}");
+                    yield return RecordedRounds(diagnostics, "fanout" + suffix, 32, p.ResetCalls,
+                        () => { for (int i = 0; i < 32; i++) p.Publish(7); },
+                        () => { p.CheckCalls(32, 224); p.Ledger(count); });
+                    p.RemoveAll(); p.Ledger(0);
                 }
             }
-            finally { EventDebugRegistry.BenchmarkReleaseLikeMode = previous; }
         }
 
         public static IEnumerator InterleavedOperations(int count)
         {
             yield return Calibrate();
-            bool previous = EventDebugRegistry.BenchmarkReleaseLikeMode;
-            try
+            foreach (bool payload in new[] { false, true })
             {
-                foreach (bool payload in new[] { false, true })
+                using var p = new Population(payload, 32);
+                p.AddAll();
+                Action mixed = () =>
                 {
-                    using var p = new Population(payload, 32);
-                    EventDebugRegistry.BenchmarkReleaseLikeMode = true;
-                    p.AddAll();
-                    Action mixed = () =>
+                    for (int i = 0; i < count; i++)
                     {
-                        for (int i = 0; i < count; i++)
-                        {
-                            int slot = i & 31;
-                            var old = p.Handles[slot]; old.Dispose(); p.Handles[slot] = p.Subscribe(slot); old.Dispose();
-                            p.Publish(i + 1);
-                        }
-                    };
-                    foreach (bool diagnostics in new[] { false, true })
-                    {
-                        EventDebugRegistry.BenchmarkReleaseLikeMode = !diagnostics;
-                        string name = $"mixed-{count}-payload-{payload}-diagnostics-{diagnostics}";
-                        TestContext.WriteLine($"SCALE_WORK,{name},publishes,{count},subscribes,{count},dispose,{2L * count},callbacks,{32L * count}");
-                        yield return Rounds(name, count, p.ResetCalls, mixed, () => { p.CheckCalls(count, (long)count * (count + 1) / 2); p.Ledger(32); });
+                        int slot = i & 31;
+                        var old = p.Handles[slot]; old.Dispose(); p.Handles[slot] = p.Subscribe(slot); old.Dispose();
+                        p.Publish(i + 1);
                     }
+                };
+                foreach (bool diagnostics in new[] { false, true })
+                {
+                    string name = $"mixed-{count}-payload-{payload}-diagnostics-{diagnostics}";
+                    TestContext.WriteLine($"SCALE_WORK,{name},publishes,{count},subscribes,{count},dispose,{2L * count},callbacks,{32L * count}");
+                    yield return RecordedRounds(diagnostics, name, count, p.ResetCalls, mixed, () => { p.CheckCalls(count, (long)count * (count + 1) / 2); p.Ledger(32); });
                 }
             }
-            finally { EventDebugRegistry.BenchmarkReleaseLikeMode = previous; }
         }
 
         public static IEnumerator PendingMutations(int count)
         {
             yield return Calibrate();
-            bool previous = EventDebugRegistry.BenchmarkReleaseLikeMode;
-            try
+            foreach (bool payload in new[] { false, true })
             {
-                foreach (bool payload in new[] { false, true })
+                using var p = new Population(payload, count);
+                var driver = new PendingDriver(p);
+                Action prepare = () => { p.Clear(); p.ResetCalls(); driver.Bind(); };
+                Action publish = () => p.Publish();
+                Action verify = () =>
                 {
-                    EventDebugRegistry.BenchmarkReleaseLikeMode = true;
-                    using var p = new Population(payload, count);
-                    var driver = new PendingDriver(p);
-                    Action prepare = () => { p.Clear(); p.ResetCalls(); driver.Bind(); };
-                    Action publish = () => p.Publish();
-                    Action verify = () =>
-                    {
-                        p.CheckCalls(0, 0); p.Ledger(count / 2);
-                        p.Publish(7);
-                        for (int i = 0; i < count; i++)
-                            if (p.Listeners[i].Calls != (i % 2 == 0 ? 0 : 1) || p.Listeners[i].Sum != (payload && i % 2 != 0 ? 7 : 0))
-                                Assert.Fail($"pending listener {i}");
-                        p.Clear(); p.Ledger(0);
-                    };
-                    prepare();
-                    int pendingBefore = p.PendingCapacity;
-                    yield return AllocationCapture.Measure($"pending-growth-{count}-payload-{payload}", count, publish,
-                        sample => { if (pendingBefore < driver.Peak) Assert.That(sample.Bytes, Is.GreaterThan(0)); });
-                    verify();
-                    TestContext.WriteLine($"SCALE_STORAGE,pending-{count}-payload-{payload},slots,{p.Capacity},queue,{p.PendingCapacity},expected-peak,{driver.Peak}");
-                    foreach (bool diagnostics in new[] { false, true })
-                    {
-                        EventDebugRegistry.BenchmarkReleaseLikeMode = !diagnostics;
-                        string name = $"pending-{count}-payload-{payload}-diagnostics-{diagnostics}";
-                        yield return Rounds(name, driver.Peak, prepare, publish, verify);
-                        if (diagnostics)
-                        {
-                            EventDebugRegistry.TryGetDetails(payload ? typeof(Payload) : typeof(Empty), out var summary, out _);
-                            Assert.That(summary.PeakPendingCount, Is.GreaterThanOrEqualTo(driver.Peak));
-                            TestContext.WriteLine($"SCALE_PENDING_OBSERVED,{name},lifetime-peak,{summary.PeakPendingCount},expected-operation-peak,{driver.Peak}");
-                        }
-                    }
+                    CheckMutatedCalls(p, 1, 1); p.Ledger(count / 2);
+                    p.Publish(7);
+                    CheckMutatedCalls(p, 2, 8);
+                    p.Clear(); p.Ledger(0);
+                };
+                prepare();
+                int capacityBefore = p.Capacity;
+                yield return AllocationCapture.Measure($"pending-growth-{count}-payload-{payload}", count, publish,
+                    sample => { if (capacityBefore <= count) Assert.That(sample.Bytes, Is.GreaterThan(0)); });
+                verify();
+                TestContext.WriteLine($"SCALE_STORAGE,pending-{count}-payload-{payload},slots,{p.Capacity},expected-peak,{driver.Peak}");
+                foreach (bool diagnostics in new[] { false, true })
+                {
+                    string name = $"pending-{count}-payload-{payload}-diagnostics-{diagnostics}";
+                    yield return RecordedRounds(diagnostics, name, driver.Peak, prepare, publish, verify);
                 }
             }
-            finally { EventDebugRegistry.BenchmarkReleaseLikeMode = previous; }
+        }
+
+        private static void CheckMutatedCalls(Population p, long calls, long sum)
+        {
+            for (int i = 0; i < p.Listeners.Length; i++)
+            {
+                bool live = i % 2 != 0;
+                if (p.Listeners[i].Calls != (live ? calls : 0) || p.Listeners[i].Sum != (p.Payload && live ? sum : 0))
+                    Assert.Fail($"mutated listener {i}: calls {p.Listeners[i].Calls}, sum {p.Listeners[i].Sum}");
+            }
         }
     }
 }

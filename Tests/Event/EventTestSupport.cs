@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 
 namespace AlicizaX.EventTests
@@ -15,9 +16,11 @@ namespace AlicizaX.EventTests
     {
         public readonly bool Payload;
         public readonly List<int> Calls = new List<int>();
+        private readonly EventLedger ledger;
         public EventFixture(bool payload)
         {
             Payload = payload;
+            ledger = new EventLedger(Channel);
             Clear(); Reserve(64);
         }
         public EventRuntimeHandle Subscribe(Action action)
@@ -30,10 +33,9 @@ namespace AlicizaX.EventTests
             else EventBus.Publish<EmptyProbe>();
         }
         public int Count => Payload ? EventBus.GetPayloadSubscriberCount<PayloadProbe>() : EventBus.GetEmptySubscriberCount<EmptyProbe>();
-        public Type Container => typeof(EventBus).Assembly.GetType("AlicizaX.EventContainer`2").MakeGenericType(
-            Payload ? typeof(PayloadProbe) : typeof(EmptyProbe), Payload ? typeof(InEventHandler<PayloadProbe>) : typeof(Action));
-        public object Field(string name) => Container.GetField(name, BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
-        public int Capacity => ((Array)Field("_callbacks")).Length;
+        public object Channel => Payload ? EventContainer<PayloadProbe, InEventHandler<PayloadProbe>>.Channel : EventContainer<EmptyProbe, Action>.Channel;
+        public object Field(string name) => ledger.Field(name);
+        public int Capacity => ledger.Capacity;
         public void Reserve(int capacity)
         {
             if (Payload) EventBus.ReservePayloadCapacity<PayloadProbe>(capacity);
@@ -46,39 +48,64 @@ namespace AlicizaX.EventTests
         public void VerifyLedger(int expected)
         {
             Assert.That(Count, Is.EqualTo(expected));
-            Assert.That((int)Field("_publishDepth"), Is.Zero);
-            Assert.That((int)Field("_pendingCount"), Is.Zero);
-            var callbacks = (Array)Field("_callbacks");
-            var versions = (int[])Field("_versions");
-            var cancelled = (bool[])Field("_cancelled");
-            var indices = (int[])Field("_packedIndices");
-            var packed = (int[])Field("_packedSlots");
-            var packedCallbacks = (Array)Field("_packedCallbacks");
-            var free = (int[])Field("_freeSlots");
-            int freeCount = (int)Field("_freeCount");
-            var slots = new HashSet<int>();
-            for (int i = 0; i < expected; i++)
-            {
-                int slot = packed[i];
-                Assert.That(slots.Add(slot), Is.True);
-                Assert.That(indices[slot], Is.EqualTo(i));
-                Assert.That(versions[slot], Is.Not.Zero);
-                Assert.That(cancelled[slot], Is.False);
-                Assert.That(callbacks.GetValue(slot), Is.SameAs(packedCallbacks.GetValue(i)));
-            }
-            for (int i = 0; i < freeCount; i++)
-            {
-                int slot = free[i];
-                Assert.That(slots.Add(slot), Is.True);
-                Assert.That(versions[slot], Is.Zero);
-                Assert.That(callbacks.GetValue(slot), Is.Null);
-            }
-            for (int i = expected; i < packedCallbacks.Length; i++) Assert.That(packedCallbacks.GetValue(i), Is.Null);
-            Assert.That(slots.Count, Is.EqualTo(callbacks.Length));
-            var subscriptions = Field("Subscriptions");
-            Assert.That((int)subscriptions.GetType().GetProperty("Count").GetValue(subscriptions), Is.EqualTo(expected));
+            ledger.Verify(expected);
         }
         public void Dispose() { Clear(); VerifyLedger(0); }
+    }
+    internal sealed class EventLedger
+    {
+        private const BindingFlags InstanceFields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        private readonly object channel;
+        private int[] slotWords = Array.Empty<int>();
+        private bool[] seen = Array.Empty<bool>();
+        public EventLedger(object channel) { this.channel = channel; }
+        public object Field(string name) => channel.GetType().GetField(name, InstanceFields).GetValue(channel);
+        public int Capacity => ((Array)Field("Handlers")).Length;
+        public void Verify(int expected)
+        {
+            Assert.That((int)Field("_publishDepth"), Is.Zero);
+            Assert.That((int)Field("_holeCount"), Is.Zero);
+            Assert.That((int)Field("_count"), Is.EqualTo(expected));
+            var handlers = (Delegate[])Field("Handlers");
+            var handlerSlots = (int[])Field("_handlerSlots");
+            var slots = (Array)Field("_slots");
+            Assert.That(handlerSlots.Length, Is.EqualTo(handlers.Length));
+            Assert.That(slots.Length, Is.EqualTo(handlers.Length));
+            ReadSlotWords(slots);
+            if (seen.Length != slots.Length) seen = new bool[slots.Length];
+            else Array.Clear(seen, 0, seen.Length);
+            for (int i = 0; i < expected; i++)
+            {
+                int slot = handlerSlots[i];
+                if (handlers[i] == null || (uint)slot >= (uint)seen.Length || seen[slot] || slotWords[slot * 2] != i)
+                    Assert.Fail($"live invariant at {i}");
+                seen[slot] = true;
+            }
+            for (int i = expected; i < handlers.Length; i++)
+                if (handlers[i] != null) Assert.Fail($"retained delegate at {i}");
+            int free = 0;
+            for (int slot = (int)Field("_freeSlot"); slot != -1; slot = slotWords[slot * 2])
+            {
+                if ((uint)slot >= (uint)seen.Length || seen[slot]) Assert.Fail($"free invariant at {slot}");
+                seen[slot] = true;
+                free++;
+            }
+            Assert.That(expected + free, Is.EqualTo(slots.Length));
+            object subscribed = Field("_subscribedHandlers");
+            Assert.That((int)subscribed.GetType().GetProperty("Count").GetValue(subscribed), Is.EqualTo(expected));
+        }
+        private void ReadSlotWords(Array slots)
+        {
+            Type slotType = slots.GetType().GetElementType();
+            Assert.That(Marshal.SizeOf(slotType), Is.EqualTo(8));
+            Assert.That((int)Marshal.OffsetOf(slotType, "Index"), Is.Zero);
+            Assert.That((int)Marshal.OffsetOf(slotType, "Version"), Is.EqualTo(4));
+            if (slotWords.Length != slots.Length * 2) slotWords = new int[slots.Length * 2];
+            if (slots.Length == 0) return;
+            GCHandle handle = GCHandle.Alloc(slots, GCHandleType.Pinned);
+            try { Marshal.Copy(handle.AddrOfPinnedObject(), slotWords, 0, slotWords.Length); }
+            finally { handle.Free(); }
+        }
     }
     public sealed class Listener
     {

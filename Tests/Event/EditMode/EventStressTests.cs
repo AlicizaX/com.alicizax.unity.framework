@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Reflection;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
@@ -36,12 +35,11 @@ namespace AlicizaX.EventTests.Editor
                 for (int i = 0; i < count; i += 2) { handles[i].Dispose(); handles[i].Dispose(); }
                 foreach (var type in types) publish.MakeGenericMethod(type).Invoke(null, null);
                 Assert.That(calls, Is.EqualTo(count / 2));
-                int nextId = (int)typeof(UnsubscribeRegistry).GetField("_nextId", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
-                new EventRuntimeHandle(nextId, 0, 1).Dispose();
+                foreach (var type in types) Assert.That(EventChannel.Channels.FindAll(channel => channel.EventType == type).Count, Is.EqualTo(1));
                 foreach (var h in handles) h.Dispose();
                 foreach (var type in types) publish.MakeGenericMethod(type).Invoke(null, null);
                 Assert.That(calls, Is.EqualTo(count / 2));
-                TestContext.WriteLine($"REGISTRY,{count},{nextId}");
+                TestContext.WriteLine($"REGISTRY,{count},{EventChannel.Channels.Count}");
             }
             finally { foreach (var h in handles) h.Dispose(); }
         }
@@ -61,8 +59,8 @@ namespace AlicizaX.EventTests.Editor
                 driver.Dispose();
                 for (int i = 0; i < count; i++) handles[i] = f.Subscribe(listeners[i]);
                 for (int i = 0; i < count; i += 2) handles[i].Dispose();
-                Assert.That(f.Count, Is.EqualTo(1));
-                TestContext.WriteLine($"PENDING,{payload},{count},{f.Field("_pendingCount")}");
+                Assert.That(f.Count, Is.EqualTo(count / 2));
+                TestContext.WriteLine($"PENDING,{payload},{count},{f.Field("_holeCount")}");
             });
             var watch = Stopwatch.StartNew(); f.Publish(); watch.Stop();
             f.VerifyLedger(count / 2); f.Publish(29);
