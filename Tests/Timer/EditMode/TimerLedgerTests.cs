@@ -8,15 +8,26 @@ namespace AlicizaX.Timer.Tests
 {
     public sealed class TimerLedgerTests
     {
-        [TestCase(-1, 256)]
         [TestCase(0, 256)]
         [TestCase(1, 256)]
         [TestCase(256, 256)]
         [TestCase(257, 512)]
         [TestCase(1025, 1280)]
-        public void CapacityAlignsToPages(int requested, int expected)
+        public void CapacityStartsWithOnePageAndGrowsOnePageAtATime(int timers, int expected)
         {
-            using var f = new TimerFixture(requested);
+            using var f = new TimerFixture();
+            TimerProbe.Statistics(f.Service, 0, 0, capacity: 256);
+            var handles = new ulong[timers];
+            for (int i = 0; i < handles.Length; i++)
+            {
+                handles[i] = f.Service.AddTimer(TimerProbe.NoOp, 3600);
+                ((ITimerDebugService)f.Service).GetStatistics(out _, out int capacity, out _, out _);
+                Assert.That(capacity, Is.EqualTo(((i >> 8) + 1) * 256), "a page is added only when the previous one is full");
+            }
+
+            TimerProbe.Statistics(f.Service, timers, timers, capacity: expected);
+            TimerProbe.Ledger(f.Service);
+            foreach (ulong handle in handles) f.Service.RemoveTimer(handle);
             TimerProbe.Statistics(f.Service, 0, 0, capacity: expected);
             TimerProbe.Ledger(f.Service);
         }
@@ -41,13 +52,6 @@ namespace AlicizaX.Timer.Tests
             TimerProbe.Ledger(f.Service);
         }
 
-        [Test]
-        public void CapacityNormalizationCannotOverflow()
-        {
-            using var f = new TimerFixture(int.MaxValue);
-            TimerProbe.Statistics(f.Service, 0, 0, capacity: 1048576);
-        }
-
         [TestCase(false)]
         [TestCase(true)]
         public void ReusedSlotRejectsEveryOperationOnOldHandle(bool generic)
@@ -56,8 +60,8 @@ namespace AlicizaX.Timer.Tests
             ulong first = f.Service.AddTimer(TimerProbe.NoOp, 5);
             f.Service.RemoveTimer(first);
             ulong second = generic ? f.Service.AddTimer(TimerProbe.CountArg, new TimerArg(), 5) : f.Service.AddTimer(TimerProbe.NoOp, 5);
-            Assert.That((uint)second, Is.EqualTo((uint)first));
-            Assert.That(second >> 32, Is.EqualTo((first >> 32) + 1));
+            Assert.That(TimerProbe.Slot(second), Is.EqualTo(TimerProbe.Slot(first)));
+            Assert.That(TimerProbe.Generation(second), Is.EqualTo(TimerProbe.Generation(first) + 1));
             f.Service.RemoveTimer(first);
             f.Service.Stop(first);
             f.Service.Resume(first);
@@ -70,19 +74,99 @@ namespace AlicizaX.Timer.Tests
         }
 
         [Test]
-        public void VersionWrapSkipsReservedZero()
+        public void HandleGenerationIsServiceWideAndMonotonic()
         {
             using var f = new TimerFixture();
-            ulong old = f.Service.AddTimer(TimerProbe.NoOp, 10);
-            f.Service.RemoveTimer(old);
-            TimerProbe.SlotArray<uint>(f.Service, old, "Versions")[TimerProbe.Offset(old)] = uint.MaxValue;
-            ulong next = f.Service.AddTimer(TimerProbe.NoOp, 10);
-            Assert.That(next >> 32, Is.EqualTo(1));
+            ulong a = f.Service.AddTimer(TimerProbe.NoOp, 10);
+            ulong b = f.Service.AddTimer(TimerProbe.CountArg, new TimerArg(), 10);
+            Assert.That(TimerProbe.Slot(b), Is.Not.EqualTo(TimerProbe.Slot(a)));
+            Assert.That(TimerProbe.Generation(b), Is.EqualTo(TimerProbe.Generation(a) + 1));
+            f.Service.RemoveTimer(a);
+            ulong c = f.Service.AddTimer(TimerProbe.NoOp, 10);
+            Assert.That(TimerProbe.Slot(c), Is.EqualTo(TimerProbe.Slot(a)));
+            Assert.That(TimerProbe.Generation(c), Is.EqualTo(TimerProbe.Generation(b) + 1));
+            Assert.That(f.Service.IsRunning(a), Is.False);
+            Assert.That(f.Service.IsRunning(c), Is.True);
+            TimerProbe.Ledger(f.Service);
+        }
+
+        [Test]
+        public void HandlesStayUniqueAcrossServiceInstances()
+        {
+            ulong old;
+            using (var first = new TimerFixture())
+            {
+                old = first.Service.AddTimer(TimerProbe.NoOp, 60);
+            }
+
+            using var second = new TimerFixture();
+            ulong current = second.Service.AddTimer(TimerProbe.NoOp, 60);
+            Assert.That(TimerProbe.Slot(current), Is.EqualTo(TimerProbe.Slot(old)));
+            Assert.That(current, Is.Not.EqualTo(old));
+            second.Service.RemoveTimer(old);
+            second.Service.Stop(old);
+            Assert.That(second.Service.IsRunning(old), Is.False);
+            Assert.That(second.Service.IsRunning(current), Is.True);
+            TimerProbe.Ledger(second.Service);
+        }
+
+        [TestCase(256)]
+        [TestCase(1024)]
+        [TestCase(4096)]
+        public void TrimmedAndRegrownPagesNeverReissueOldHandles(int count)
+        {
+            using var f = new TimerFixture();
+            var old = new ulong[count];
+            for (int i = 0; i < count; i++) old[i] = f.Service.AddTimer(TimerProbe.NoOp, 3600, (i & 1) != 0, (i & 2) != 0);
+            foreach (ulong handle in old) f.Service.RemoveTimer(handle);
+            f.Service.TrimExcess();
+            TimerProbe.Statistics(f.Service, 0, 0, capacity: 0);
+
+            var issued = new System.Collections.Generic.HashSet<ulong>(old);
+            var fresh = new ulong[count];
+            for (int i = 0; i < count; i++)
+            {
+                fresh[i] = f.Service.AddTimer(TimerProbe.NoOp, 3600, (i & 1) != 0, (i & 2) != 0);
+                Assert.That(issued.Add(fresh[i]), Is.True, "trimmed page reissued a handle");
+            }
+
+            foreach (ulong handle in old)
+            {
+                f.Service.RemoveTimer(handle);
+                f.Service.Stop(handle);
+                f.Service.Restart(handle);
+                Assert.That(f.Service.IsRunning(handle), Is.False);
+            }
+
+            foreach (ulong handle in fresh) Assert.That(f.Service.IsRunning(handle), Is.True);
+            TimerProbe.Statistics(f.Service, count, count);
+            TimerProbe.Ledger(f.Service);
+        }
+
+        [Test]
+        public void GenerationAdvancesOnEveryAcquireRegardlessOfSlotReuse()
+        {
+            using var f = new TimerFixture();
+            ulong first = f.Service.AddTimer(TimerProbe.NoOp, 10);
+            for (int i = 0; i < 1000; i++)
+            {
+                ulong h = f.Service.AddTimer(TimerProbe.NoOp, 10);
+                f.Service.RemoveTimer(h);
+            }
+
+            ulong last = f.Service.AddTimer(TimerProbe.NoOp, 10);
+            Assert.That(TimerProbe.Generation(last), Is.EqualTo(TimerProbe.Generation(first) + 1001));
+            Assert.That(TimerProbe.Slot(last), Is.Not.EqualTo(TimerProbe.Slot(first)));
+            TimerProbe.Statistics(f.Service, 2, 2);
             TimerProbe.Ledger(f.Service);
         }
 
         [TestCase(0UL)]
         [TestCase(1UL)]
+        [TestCase(0x1fffffUL)]
+        [TestCase(0x200000UL)]
+        [TestCase(0x200001UL)]
+        [TestCase(0x200101UL)]
         [TestCase(0xffffffffUL)]
         [TestCase(0x100000000UL)]
         [TestCase(0x100000101UL)]
@@ -188,7 +272,7 @@ namespace AlicizaX.Timer.Tests
         [TestCase(1000)]
         [TestCase(4096)]
         [TestCase(10000)]
-        public void GrowthCancellationAndDenseActiveListReconcile(int count)
+        public void GrowthCancellationAndLedgerReconcile(int count)
         {
             using var f = new TimerFixture();
             var handles = new ulong[count];

@@ -9,7 +9,6 @@ namespace AlicizaX.Audio.Runtime
         public AudioLoadRequest Prev;
         public AudioLoadRequest Next;
         public AudioAgent Agent;
-        public int Generation;
         public Action<bool> Completed;
 
         public override void Clear()
@@ -18,7 +17,6 @@ namespace AlicizaX.Audio.Runtime
             Prev = null;
             Next = null;
             Agent = null;
-            Generation = 0;
             Completed = null;
         }
     }

@@ -1,7 +1,10 @@
 ﻿using System;
+using System.Text.RegularExpressions;
 using AlicizaX.Audio.Runtime;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
+using AudioType = AlicizaX.Audio.Runtime.AudioType;
 
 namespace AlicizaX.Audio.Tests
 {
@@ -76,6 +79,25 @@ namespace AlicizaX.Audio.Tests
             Assert.That(f.Debug.ClipCacheCount, Is.Zero);
             f.Loader.ThrowOnLoad = false;
             Assert.That(f.Audio.Preload("a"), Is.True);
+        }
+
+        [Test]
+        public void SyncPlayLoaderExceptionReturnsZeroAndReleasesTheVoice()
+        {
+            using var f = new AudioFixture(1);
+            f.Clip("a");
+            f.Loader.ThrowOnLoad = true;
+            LogAssert.Expect(LogType.Exception, new Regex("InvalidOperationException: controlled load failure"));
+            Assert.That(f.Audio.Play(AudioType.Sound, "a"), Is.Zero);
+            Assert.That(f.Debug.ClipCacheCount, Is.Zero);
+            f.CheckActive(AudioType.Sound, 0);
+            f.CheckOwnership();
+            f.Loader.ThrowOnLoad = false;
+            ulong handle = f.Audio.Play(AudioType.Sound, "a");
+            Assert.That(handle, Is.Not.Zero);
+            Assert.That(f.Audio.IsPlaying(handle), Is.True);
+            f.CheckActive(AudioType.Sound, 1);
+            f.CheckOwnership();
         }
 
         [TestCase(null)]

@@ -43,7 +43,9 @@ namespace AlicizaX.Audio.Tests
             f.Clip("a");
             Assert.That(f.Audio.Preload("a", AudioCachePolicy.Default), Is.True);
             var normalized = policy == (AudioCachePolicy)999 ? AudioCachePolicy.Ttl : policy;
-            Assert.That(f.Debug.DefaultCachePolicy, Is.EqualTo(normalized));
+            var info = new AudioServiceDebugInfo();
+            f.Debug.FillServiceDebugInfo(info);
+            Assert.That(info.DefaultCachePolicy, Is.EqualTo(normalized));
             Assert.That(f.Debug.ClipCacheCount, Is.EqualTo(normalized == AudioCachePolicy.None ? 0 : 1));
         }
 
@@ -78,17 +80,27 @@ namespace AlicizaX.Audio.Tests
         }
 
         [Test]
-        public void InitializationFailureReleasesOldStateAndCanBeRetried()
+        public void ConstructionRejectsInvalidArgumentsBeforeCreatingAnyState()
         {
             using var f = new AudioFixture();
-            f.Clip("a"); f.Audio.Preload("a");
-            Assert.Throws<GameFrameworkException>(() => f.Audio.Initialize(f.Groups, f.Listener, f.Root.transform, null, f.Config));
-            Assert.That(f.Debug.Initialized, Is.False);
-            Assert.That(f.Debug.ClipCacheCount, Is.Zero);
-            Assert.That(f.Loader.LiveHandles, Is.Zero);
-            Assert.That(f.Root.transform.childCount, Is.Zero);
-            f.Reinitialize();
+            f.Clip("a");
             Assert.That(f.Audio.Preload("a"), Is.True);
+            int children = f.Root.transform.childCount;
+            var duplicate = (AudioGroupConfig[])f.Groups.Clone();
+            duplicate[1] = f.Groups[0];
+            var missing = new AudioGroupConfig[f.Groups.Length - 1];
+            Array.Copy(f.Groups, missing, missing.Length);
+            Assert.Throws<GameFrameworkException>(() => new AudioService(f.Groups, f.Listener, f.Root.transform, null, f.Config));
+            Assert.Throws<GameFrameworkException>(() => new AudioService(f.Groups, null, f.Root.transform, f.Mixer, f.Config));
+            Assert.Throws<GameFrameworkException>(() => new AudioService(f.Groups, f.Listener, null, f.Mixer, f.Config));
+            Assert.Throws<GameFrameworkException>(() => new AudioService(null, f.Listener, f.Root.transform, f.Mixer, f.Config));
+            Assert.Throws<GameFrameworkException>(() => new AudioService(Array.Empty<AudioGroupConfig>(), f.Listener, f.Root.transform, f.Mixer, f.Config));
+            Assert.Throws<GameFrameworkException>(() => new AudioService(duplicate, f.Listener, f.Root.transform, f.Mixer, f.Config));
+            Assert.Throws<GameFrameworkException>(() => new AudioService(missing, f.Listener, f.Root.transform, f.Mixer, f.Config));
+            Assert.That(f.Root.transform.childCount, Is.EqualTo(children));
+            Assert.That(f.Debug.ClipCacheCount, Is.EqualTo(1));
+            Assert.That(f.Audio.Preload("a"), Is.True);
+            Assert.That(AppServices.Require<IAudioService>(), Is.SameAs(f.Audio));
         }
 
         [Test]
@@ -102,10 +114,24 @@ namespace AlicizaX.Audio.Tests
                 requests[i] = MemoryPool.Acquire<AudioLoadRequest>();
                 entry.AddPending(requests[i]);
             }
+            var remaining = new System.Collections.Generic.List<AudioLoadRequest>(requests);
             foreach (int index in new[] { 2, 0, 4, 1, 3 })
             {
-                Assert.That(entry.RemovePending(requests[index]), Is.True);
-                Assert.That(entry.RemovePending(requests[index]), Is.False);
+                entry.RemovePending(requests[index]);
+                remaining.Remove(requests[index]);
+                Assert.That(requests[index].Entry, Is.Null);
+                Assert.That(requests[index].Prev, Is.Null);
+                Assert.That(requests[index].Next, Is.Null);
+                AudioLoadRequest previous = null;
+                int position = 0;
+                for (var request = entry.PendingHead; request != null; request = request.Next)
+                {
+                    Assert.That(request, Is.SameAs(remaining[position++]));
+                    Assert.That(request.Prev, Is.SameAs(previous));
+                    previous = request;
+                }
+                Assert.That(position, Is.EqualTo(remaining.Count));
+                Assert.That(entry.PendingTail, Is.SameAs(previous));
                 MemoryPool.Release(requests[index]);
             }
             Assert.That(entry.PendingHead, Is.Null);

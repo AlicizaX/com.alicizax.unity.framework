@@ -50,7 +50,7 @@ namespace AlicizaX.Timer.Tests
             double deadline = Time.realtimeSinceStartupAsDouble + 5;
             while (calls == 0 && Time.realtimeSinceStartupAsDouble < deadline) yield return null;
             Assert.That(calls, Is.EqualTo(1));
-            TimerProbe.Statistics(service, 0, 0, capacity: 1024);
+            TimerProbe.Statistics(service, 0, 0, capacity: 256);
             TimerProbe.Ledger(service);
         }
 

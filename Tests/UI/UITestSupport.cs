@@ -255,7 +255,7 @@ namespace AlicizaX.UI.Tests
             Assert.That(AppServices.IsAvailable, Is.False, "UI tests require an isolated service registry.");
             MemoryPoolRegistry.InitializeMainThread();
             AppServices.GetOrCreateRegistry();
-            Timer = new TimerService(256);
+            Timer = new TimerService();
             AppServices.Register<ITimerService>(Timer);
             AppServices.Register<IResourceService>(Loader);
             RegisterWindow<UIProbeWindow>(UICacheTime.Forever, true);

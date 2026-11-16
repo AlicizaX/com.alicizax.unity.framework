@@ -9,13 +9,12 @@ namespace AlicizaX.Audio.Runtime
     /// </summary>
     internal sealed class AudioClipCacheTable
     {
-        private int[] _buckets = Array.Empty<int>();
-        private AudioClipCacheEntry[] _entries = Array.Empty<AudioClipCacheEntry>();
-        private int[] _freeSlots = Array.Empty<int>();
-        private int _bucketMask;
+        private readonly int[] _buckets;
+        private readonly AudioClipCacheEntry[] _entries;
+        private readonly int[] _freeSlots;
+        private readonly int _bucketMask;
         private int _freeCount;
         private int _count;
-        private int _capacity;
         private AudioClipCacheEntry _lruHead;
         private AudioClipCacheEntry _lruTail;
         private AudioClipCacheEntry _allHead;
@@ -23,7 +22,7 @@ namespace AlicizaX.Audio.Runtime
 
         internal int Count => _count;
 
-        internal int Capacity => _capacity;
+        internal int Capacity => _entries.Length;
 
         internal AudioClipCacheEntry LruHead => _lruHead;
 
@@ -41,9 +40,8 @@ namespace AlicizaX.Audio.Runtime
 
         internal int FreeCount => _freeCount;
 
-        internal void Initialize(int capacity)
+        internal AudioClipCacheTable(int capacity)
         {
-            _capacity = capacity;
             int bucketCount = NextPowerOfTwo(capacity << 1);
             if (bucketCount < 16)
                 bucketCount = 16;
@@ -59,46 +57,21 @@ namespace AlicizaX.Audio.Runtime
 
             _freeCount = _freeSlots.Length;
             _bucketMask = bucketCount - 1;
-            _count = 0;
-            _lruHead = null;
-            _lruTail = null;
-            _allHead = null;
-            _allTail = null;
-        }
-
-        internal void Clear()
-        {
-            _buckets = Array.Empty<int>();
-            _entries = Array.Empty<AudioClipCacheEntry>();
-            _freeSlots = Array.Empty<int>();
-            _freeCount = 0;
-            _count = 0;
-            _capacity = 0;
-            _lruHead = null;
-            _lruTail = null;
-            _allHead = null;
-            _allTail = null;
         }
 
         internal bool TryGet(string address, int hash, out AudioClipCacheEntry entry)
         {
-            if (_buckets.Length == 0)
-            {
-                entry = null;
-                return false;
-            }
-
             int slotIndex = _buckets[hash & _bucketMask];
             while (slotIndex >= 0)
             {
                 AudioClipCacheEntry current = _entries[slotIndex];
-                if (current != null && current.AddressHash == hash && string.Equals(current.Address, address, StringComparison.Ordinal))
+                if (current.AddressHash == hash && string.Equals(current.Address, address, StringComparison.Ordinal))
                 {
                     entry = current;
                     return true;
                 }
 
-                slotIndex = current?.HashNextIndex ?? -1;
+                slotIndex = current.HashNextIndex;
             }
 
             entry = null;
@@ -136,7 +109,7 @@ namespace AlicizaX.Audio.Runtime
                 }
 
                 previousIndex = currentIndex;
-                currentIndex = current?.HashNextIndex ?? -1;
+                currentIndex = current.HashNextIndex;
             }
         }
 

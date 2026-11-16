@@ -13,17 +13,22 @@ namespace AlicizaX.Audio.Tests
     public sealed class AudioServiceLifecycleTests : AudioTestBase
     {
         [UnityTest]
-        public IEnumerator SwitchingFromOwnedToBorrowedRootDestroysOnlyOwnedHierarchy()
+        public IEnumerator DisposingDestroysOnlyTheServiceHierarchyAndKeepsTheBorrowedRoot()
         {
             using var f = new AudioFixture(initialVoices: 2);
-            f.Audio.Initialize(f.Groups, f.Listener, null, f.Mixer, f.Config);
-            var owned = f.Audio.InstanceRoot;
-            Assert.That(owned, Is.Not.SameAs(f.Root.transform));
+            var previous = new Transform[f.Root.transform.childCount];
+            for (int i = 0; i < previous.Length; i++) previous[i] = f.Root.transform.GetChild(i);
+            Assert.That(previous.Length, Is.EqualTo((int)AudioType.Max));
+            Assert.That(f.Audio.InstanceRoot, Is.SameAs(f.Root.transform));
             f.Reinitialize();
             yield return null;
-            Assert.That(owned == null, Is.True);
+            foreach (var root in previous) Assert.That(root == null, Is.True);
             Assert.That(f.Root != null, Is.True);
             Assert.That(f.Root.transform.childCount, Is.EqualTo((int)AudioType.Max));
+            f.Shutdown();
+            yield return null;
+            Assert.That(f.Root != null, Is.True);
+            Assert.That(f.Root.transform.childCount, Is.Zero);
         }
 
         [UnityTest]
@@ -68,9 +73,9 @@ namespace AlicizaX.Audio.Tests
             using var f = new AudioFixture();
             f.Clip("a"); f.Clip("b"); f.Loader.CompleteImmediately = false;
             int callbacks = 0;
-            f.Audio.PreloadAsync("a", AudioCachePolicy.Pin, success => { Assert.That(success, Is.False); f.Audio.Shutdown(); callbacks++; });
+            f.Audio.PreloadAsync("a", AudioCachePolicy.Pin, success => { Assert.That(success, Is.False); f.Shutdown(); callbacks++; });
             f.Audio.PreloadAsync("b", AudioCachePolicy.Pin, success => { Assert.That(success, Is.False); callbacks++; });
-            f.Audio.Shutdown();
+            f.Shutdown();
             Assert.That(callbacks, Is.EqualTo(2));
             yield return AudioFixture.Frames();
             Assert.That(f.Loader.LiveHandles, Is.Zero);
@@ -97,7 +102,7 @@ namespace AlicizaX.Audio.Tests
                 Assert.That(success, Is.False);
                 callbacks++;
             });
-            f.Audio.Shutdown();
+            f.Shutdown();
             Assert.That(callbacks, Is.EqualTo(2));
             Assert.That(f.Debug.ClipCacheCount, Is.Zero);
             yield return AudioFixture.Frames();
@@ -130,7 +135,8 @@ namespace AlicizaX.Audio.Tests
             ulong handle = f.Audio.PlayAsync(AudioType.Sound, "a", true);
             var entry = f.Entry("a");
             bool detached = false;
-            using var registration = entry.Cancellation.Token.Register(() => detached = entry.Owner == null && f.Debug.ClipCacheCount == 0);
+            ulong version = entry.Version;
+            using var registration = entry.Cancellation.Token.Register(() => detached = entry.Version != version && f.Debug.ClipCacheCount == 0);
             f.Audio.Stop(handle);
             Assert.That(detached, Is.True);
             yield return AudioFixture.Frames();

@@ -23,15 +23,16 @@ namespace AlicizaX.Timer.Tests
             long due = TimerProbe.Due(f.Service, first);
             Assert.That(TimerProbe.Due(f.Service, second), Is.EqualTo(due));
             f.Service.RemoveTimer(canceled);
-            var advance = (Action<bool, double>)Delegate.CreateDelegate(typeof(Action<bool, double>), f.Service,
-                typeof(TimerService).GetMethod("AdvanceQueue", BindingFlags.Instance | BindingFlags.NonPublic));
+            object wheel = TimerProbe.Wheel(f.Service, unscaled);
+            MethodInfo advanceQueue = typeof(TimerService).GetMethod("AdvanceQueue", BindingFlags.Instance | BindingFlags.NonPublic);
+            Action<double> advance = time => advanceQueue.Invoke(f.Service, new object[] { wheel, time });
             long start = TimerProbe.Cursor(f.Service, unscaled);
             int steps = (int)((due - start + 63) / 64);
-            for (int i = 0; i < steps; i++) advance(unscaled, (due - 0.5d) / 1000d);
+            for (int i = 0; i < steps; i++) advance((due - 0.5d) / 1000d);
             Assert.That(TimerProbe.Cursor(f.Service, unscaled), Is.EqualTo(due));
             Assert.That(calls, Is.Empty);
             TimerProbe.Ledger(f.Service);
-            advance(unscaled, (due + 0.5d) / 1000d);
+            advance((due + 0.5d) / 1000d);
             Assert.That(calls, Is.EqualTo(new[] { 1, 3 }));
             Assert.That(f.Service.IsRunning(future), Is.True);
             TimerProbe.Statistics(f.Service, 1, 1);
@@ -72,7 +73,7 @@ namespace AlicizaX.Timer.Tests
             for (int i = 0; i < handles.Length; i++) handles[i] = f.Service.AddTimer(TimerProbe.NoOp, delay, isUnscaled: unscaled);
             long due = TimerProbe.Due(f.Service, handles[0]);
             long boundary = due & ~((1L << (level * 8)) - 1);
-            TimerProbe.Invoke(f.Service, "CascadeWheelLevel", unscaled, boundary, level);
+            TimerProbe.Invoke(f.Service, "CascadeWheelLevel", TimerProbe.Wheel(f.Service, unscaled), boundary, level);
             TimerProbe.Statistics(f.Service, 1000, 1000);
             TimerProbe.Ledger(f.Service);
             for (int i = 0; i < handles.Length; i++)
@@ -88,10 +89,10 @@ namespace AlicizaX.Timer.Tests
         {
             using var f = new TimerFixture();
             ulong h = f.Service.AddTimer(TimerProbe.NoOp, 60, isUnscaled: true);
-            TimerProbe.Invoke(f.Service, "RemoveFromQueue", TimerProbe.Slot(h), true);
+            TimerProbe.Invoke(f.Service, "RemoveFromQueue", TimerProbe.Slot(h), TimerProbe.Wheel(f.Service));
             long cursor = TimerProbe.Cursor(f.Service);
             TimerProbe.SlotArray<double>(f.Service, h, "TriggerTimes")[TimerProbe.Offset(h)] = (cursor - 2) / 1000d;
-            TimerProbe.Invoke(f.Service, "AddToQueue", TimerProbe.Slot(h), true);
+            TimerProbe.Invoke(f.Service, "AddToQueue", TimerProbe.Slot(h), TimerProbe.Wheel(f.Service));
             Assert.That(TimerProbe.Due(f.Service, h), Is.EqualTo(cursor));
             TimerProbe.Statistics(f.Service, 1, 1);
             TimerProbe.Ledger(f.Service);
@@ -104,7 +105,7 @@ namespace AlicizaX.Timer.Tests
             ulong handle = f.Service.AddTimer(TimerProbe.NoOp, 5000000, isUnscaled: true);
             long due = TimerProbe.Due(f.Service, handle);
             long boundary = (due & ~((1L << 24) - 1)) - (1L << 32);
-            TimerProbe.Invoke(f.Service, "CascadeWheelLevel", true, boundary, 3);
+            TimerProbe.Invoke(f.Service, "CascadeWheelLevel", TimerProbe.Wheel(f.Service), boundary, 3);
             Assert.That(TimerProbe.Due(f.Service, handle), Is.EqualTo(due));
             TimerProbe.Statistics(f.Service, 1, 1);
             TimerProbe.Ledger(f.Service);

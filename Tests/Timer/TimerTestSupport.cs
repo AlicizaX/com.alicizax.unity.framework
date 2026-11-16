@@ -16,10 +16,13 @@ namespace AlicizaX.Timer.Tests
         internal readonly TimerService Service;
         internal readonly ServiceRegistry Registry = new ServiceRegistry();
 
-        internal TimerFixture(int capacity = 256)
+        internal TimerFixture(int capacity = 0)
         {
-            Service = new TimerService(capacity);
+            Service = new TimerService();
             Registry.Register<ITimerService>(Service);
+            var handles = new ulong[capacity];
+            for (int i = 0; i < handles.Length; i++) handles[i] = Service.AddTimer(TimerProbe.NoOp, 3600);
+            for (int i = handles.Length - 1; i >= 0; i--) Service.RemoveTimer(handles[i]);
         }
 
         internal void Tick(float delta = 0) => ((IServiceTickable)Service).Tick(delta);
@@ -34,6 +37,8 @@ namespace AlicizaX.Timer.Tests
 
     internal static class TimerProbe
     {
+        internal const int IndexBits = 21;
+        internal const ulong IndexMask = (1UL << IndexBits) - 1UL;
         internal static readonly TimerHandlerNoArgs NoOp = Empty;
         internal static readonly Action<TimerArg> CountArg = Count;
         internal static int Calls;
@@ -49,16 +54,15 @@ namespace AlicizaX.Timer.Tests
             => target.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic).Invoke(target, args);
 
         internal static T[] SlotArray<T>(TimerService service, ulong handle, string field)
-        {
-            int slot = (int)(uint)handle - 1;
-            return Read<T[]>(Read<Array>(service, "_pages").GetValue(slot >> 8), field);
-        }
+            => Read<T[]>(Read<Array>(service, "_pages").GetValue(Slot(handle) >> 8), field);
 
-        internal static int Slot(ulong handle) => (int)(uint)handle - 1;
+        internal static int Slot(ulong handle) => (int)(handle & IndexMask) - 1;
+        internal static ulong Generation(ulong handle) => handle >> IndexBits;
         internal static int Offset(ulong handle) => Slot(handle) & 255;
+        internal static object Wheel(TimerService service, bool unscaled = true) => Read<object>(service, unscaled ? "_unscaledWheel" : "_scaledWheel");
         internal static long Due(TimerService service, ulong handle) => SlotArray<long>(service, handle, "DueTicks")[Offset(handle)];
-        internal static long Cursor(TimerService service, bool unscaled = true) => Read<long>(service, unscaled ? "_unscaledCurrentTick" : "_scaledCurrentTick");
-        internal static int Queued(TimerService service) => Read<int>(service, "_scaledQueueCount") + Read<int>(service, "_unscaledQueueCount");
+        internal static long Cursor(TimerService service, bool unscaled = true) => Read<long>(Wheel(service, unscaled), "CursorTick");
+        internal static int Queued(TimerService service) => Read<int>(Wheel(service, false), "Count") + Read<int>(Wheel(service), "Count");
 
         internal static void Statistics(TimerService service, int active, int queue, int pending = 0, int capacity = -1)
         {
@@ -74,41 +78,41 @@ namespace AlicizaX.Timer.Tests
         {
             ((ITimerDebugService)service).GetStatistics(out int active, out int capacity, out _, out int free);
             var membership = new byte[capacity];
-            Array freePages = Read<Array>(service, "_freeSlotPages"), activePages = Read<Array>(service, "_activeSlotPages");
-            for (int i = 0; i < free; i++)
+            Array pages = Read<Array>(service, "_pages");
+            int freeLinked = 0;
+            for (int slot = Read<int>(service, "_freeHead"); slot >= 0; slot = Read<int[]>(pages.GetValue(slot >> 8), "NextIndices")[slot & 255])
             {
-                int slot = Read<int[]>(freePages.GetValue(i >> 8), "Values")[i & 255];
                 Assert.That(slot, Is.InRange(0, capacity - 1));
                 Assert.That(membership[slot], Is.Zero, "duplicate free slot");
                 membership[slot] = 1;
+                freeLinked++;
             }
-            for (int i = 0; i < active; i++)
-            {
-                int slot = Read<int[]>(activePages.GetValue(i >> 8), "Values")[i & 255];
-                Assert.That(membership[slot], Is.Zero, "active/free overlap");
-                membership[slot] = 2;
-                Assert.That(SlotArray<int>(service, (ulong)(slot + 1), "ActiveIndices")[slot & 255], Is.EqualTo(i));
-            }
-            int pending = 0, running = 0;
-            Array pages = Read<Array>(service, "_pages");
+
+            Assert.That(freeLinked, Is.EqualTo(free), "free list length");
+            int[] pageActiveCounts = Read<int[]>(service, "_pageActiveCounts");
+            int pending = 0, running = 0, activeSeen = 0;
             for (int p = 0; p < capacity / 256; p++)
             {
                 object page = pages.GetValue(p);
                 byte[] states = Read<byte[]>(page, "States");
                 ulong[] handles = Read<ulong[]>(page, "Handles");
                 int[] queues = Read<int[]>(page, "QueueIndices");
-                var noArgs = Read<TimerHandlerNoArgs[]>(page, "NoArgsHandlers");
-                var invokers = Read<TimerGenericInvoker[]>(page, "GenericInvokers");
-                var handlers = Read<object[]>(page, "GenericHandlers");
-                var args = Read<object[]>(page, "GenericArgs");
+                var invokers = Read<TimerGenericInvoker[]>(page, "Invokers");
+                var handlers = Read<object[]>(page, "Handlers");
+                var args = Read<object[]>(page, "Args");
+                int pageActive = 0;
                 for (int i = 0; i < 256; i++)
                 {
                     int slot = p * 256 + i;
                     if ((states[i] & 1) != 0)
                     {
-                        Assert.That(membership[slot], Is.EqualTo(2));
-                        Assert.That((uint)handles[i], Is.EqualTo(slot + 1));
-                        Assert.That(handles[i] >> 32, Is.Not.Zero);
+                        Assert.That(membership[slot], Is.Zero, "active/free overlap");
+                        membership[slot] = 2;
+                        activeSeen++;
+                        pageActive++;
+                        Assert.That(Slot(handles[i]), Is.EqualTo(slot));
+                        Assert.That(Generation(handles[i]), Is.Not.Zero);
+                        Assert.That(invokers[i] != null || handlers[i] is TimerHandlerNoArgs, Is.True, "callback representation");
                         if (queues[i] >= 0) { Assert.That(states[i] & 2, Is.Not.Zero); running++; }
                     }
                     else
@@ -117,20 +121,24 @@ namespace AlicizaX.Timer.Tests
                         else Assert.That(membership[slot], Is.EqualTo(1));
                         Assert.That(handles[i], Is.Zero);
                         Assert.That(queues[i], Is.EqualTo(-1));
-                        Assert.That(noArgs[i], Is.Null);
                         Assert.That(invokers[i], Is.Null);
                         Assert.That(handlers[i], Is.Null);
                         Assert.That(args[i], Is.Null);
                     }
                 }
+
+                Assert.That(pageActiveCounts[p], Is.EqualTo(pageActive), "page active count");
             }
+
+            Assert.That(activeSeen, Is.EqualTo(active));
             Assert.That(active + free + pending, Is.EqualTo(capacity));
             int total = 0;
             var linked = new bool[capacity];
-            foreach (string prefix in new[] { "_scaled", "_unscaled" })
+            foreach (bool unscaled in new[] { false, true })
             {
+                object wheel = Wheel(service, unscaled);
                 int count = 0;
-                int[] heads = Read<int[]>(service, prefix + "WheelHeads"), tails = Read<int[]>(service, prefix + "WheelTails");
+                int[] heads = Read<int[]>(wheel, "Heads"), tails = Read<int[]>(wheel, "Tails");
                 for (int bucket = 0; bucket < 1024; bucket++)
                 {
                     int previous = -1;
@@ -142,14 +150,14 @@ namespace AlicizaX.Timer.Tests
                         int offset = slot & 255;
                         Assert.That(Read<int[]>(page, "QueueIndices")[offset], Is.EqualTo(bucket));
                         Assert.That(Read<int[]>(page, "QueuePrevIndices")[offset], Is.EqualTo(previous));
-                        Assert.That((Read<byte[]>(page, "States")[offset] & 8) != 0, Is.EqualTo(prefix == "_unscaled"));
+                        Assert.That((Read<byte[]>(page, "States")[offset] & 8) != 0, Is.EqualTo(unscaled));
                         previous = slot;
-                        slot = Read<int[]>(page, "QueueNextIndices")[offset];
+                        slot = Read<int[]>(page, "NextIndices")[offset];
                         count++;
                     }
                     Assert.That(tails[bucket], Is.EqualTo(previous));
                 }
-                Assert.That(count, Is.EqualTo(Read<int>(service, prefix + "QueueCount")));
+                Assert.That(count, Is.EqualTo(Read<int>(wheel, "Count")));
                 total += count;
             }
             Assert.That(total, Is.EqualTo(running));

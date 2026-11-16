@@ -41,8 +41,8 @@ namespace AlicizaX.Timer.Tests
         public IEnumerator ColdConstructionFirstCallNewGenericAndDemandGrowthAreSeparated()
         {
             TimerService service = null;
-            yield return AllocationCapture.Measure("new-service-256", 1, () => service = new TimerService(256),
-                s => Assert.That(s.Bytes, Is.InRange(40000, 60000)), true);
+            yield return AllocationCapture.Measure("new-service-256", 1, () => service = new TimerService(),
+                s => Assert.That(s.Bytes, Is.InRange(35000, 45000)), true);
             ulong handle = 0;
             yield return AllocationCapture.Measure("first-no-args-add-remove", 1, () =>
             {
@@ -59,11 +59,11 @@ namespace AlicizaX.Timer.Tests
             var handles = new ulong[4096];
             for (int i = 0; i < 256; i++) handles[i] = service.AddTimer(TimerProbe.NoOp, 60);
             yield return AllocationCapture.Measure("single-new-page", 1, () => handles[256] = service.AddTimer(TimerProbe.NoOp, 60),
-                s => Assert.That(s.Bytes, Is.EqualTo(28968)), true);
+                s => Assert.That(s.Bytes, Is.EqualTo(22296)), true);
             yield return AllocationCapture.Measure("continued-growth-to-4096", 3839, () =>
             {
                 for (int i = 257; i < handles.Length; i++) handles[i] = service.AddTimer(TimerProbe.NoOp, 60);
-            }, s => Assert.That(s.Bytes, Is.InRange(14 * 28968, 14 * 28968 + 4096))); // 页分配 + 页目录增长
+            }, s => Assert.That(s.Bytes, Is.InRange(14 * 22296, 14 * 22296 + 4096))); // 页分配 + 页目录增长
             TimerProbe.Statistics(service, 4096, 4096, capacity: 4096);
             foreach (ulong h in handles) service.RemoveTimer(h);
             yield return AllocationCapture.Measure("demand-grown-reuse-10000", 10000, () =>

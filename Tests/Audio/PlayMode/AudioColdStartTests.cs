@@ -24,11 +24,10 @@ namespace AlicizaX.Audio.Tests
             }
             MemoryPool.TrimAll();
             TestContext.WriteLine($"COLD_EXISTING_TYPE_REGISTRATIONS,{existingTypes}");
-            AudioService service = null;
-            yield return AllocationCapture.Measure("cold-service-construction", 1, () => service = new AudioService(),
-                sample => Assert.That(sample.Bytes, Is.InRange(1, 8192)));
-            service.Shutdown();
             using var f = new AudioFixture(32, voices: 64, initialize: false);
+            yield return AllocationCapture.Measure("cold-service-construction", 1,
+                () => new AudioService(f.Groups, f.Listener, f.Root.transform, f.Mixer, f.Config),
+                sample => Assert.That(sample.Bytes, Is.InRange(1, 8192)));
             yield return AllocationCapture.Measure("cold-service-initialize", 1, () => f.Reinitialize(),
                 sample => Assert.That(sample.Bytes, Is.InRange(1, 128 * 1024)), true);
             f.Clip("cold-a");

@@ -15,6 +15,7 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("AlicizaX.Framework.UI.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.UI.Editor.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Scene.Editor.Tests")]
+[assembly: InternalsVisibleTo("AlicizaX.Framework.Scene.Tests")]
 
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Event.Tests")]
 [assembly: InternalsVisibleTo("AlicizaX.Framework.Event.Editor.Tests")]

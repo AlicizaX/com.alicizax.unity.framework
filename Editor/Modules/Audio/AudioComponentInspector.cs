@@ -856,7 +856,7 @@ namespace AlicizaX.Audio.Editor
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Sources",
-                _serviceInfo.ActiveSourceCount + " / " + _serviceInfo.TotalSourceCount);
+                _serviceInfo.ActiveAgentCount + " / " + _serviceInfo.TotalSourceCount);
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Active Agents",
@@ -873,7 +873,7 @@ namespace AlicizaX.Audio.Editor
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Cache Loading/Pinned",
-                _serviceInfo.LoadingClipCount + " / " + _serviceInfo.PinnedClipCount);
+                _serviceInfo.LoadingClipCount + " / " + _serviceInfo.CachePolicyPinCount);
             AlicizaEditorUI.AddValueRow(
                 section.Body,
                 "Cache Policies",
@@ -897,10 +897,7 @@ namespace AlicizaX.Audio.Editor
             bool any = false;
             for (int i = 0; i < debugService.CategoryCount; i++)
             {
-                if (!debugService.FillCategoryDebugInfo(i, _categoryInfo))
-                {
-                    continue;
-                }
+                debugService.FillCategoryDebugInfo(i, _categoryInfo);
 
                 any = true;
                 section.Body.Add(CreateRuntimeGroupCard());
@@ -940,7 +937,6 @@ namespace AlicizaX.Audio.Editor
                 _categoryInfo.ActiveCount.ToString(),
                 _categoryInfo.ActiveCount > 0 ? AlicizaValueTone.Warning : AlicizaValueTone.Muted);
             AlicizaEditorUI.AddValueRow(card.Body, "Free", _categoryInfo.FreeCount.ToString(), AlicizaValueTone.Muted);
-            AlicizaEditorUI.AddValueRow(card.Body, "Heap", _categoryInfo.HeapCount.ToString(), AlicizaValueTone.Muted);
             return card;
         }
 
@@ -956,10 +952,7 @@ namespace AlicizaX.Audio.Editor
             int shown = 0;
             for (int typeIndex = 0; typeIndex < debugService.CategoryCount; typeIndex++)
             {
-                if (!debugService.FillCategoryDebugInfo(typeIndex, _categoryInfo))
-                {
-                    continue;
-                }
+                debugService.FillCategoryDebugInfo(typeIndex, _categoryInfo);
 
                 for (int agentIndex = 0; agentIndex < _categoryInfo.Capacity; agentIndex++)
                 {
@@ -1013,39 +1006,29 @@ namespace AlicizaX.Audio.Editor
                 return;
             }
 
-            int shown = 0;
             while (entry != null)
             {
                 AudioClipCacheEntry next = entry.AllNext;
-                if (debugService.FillClipCacheDebugInfo(entry, _clipCacheInfo))
-                {
-                    shown++;
-                    string address = string.IsNullOrEmpty(_clipCacheInfo.Address) ? "<No Address>" : _clipCacheInfo.Address;
-                    AlicizaValueTone tone = _clipCacheInfo.Loading
-                        ? AlicizaValueTone.Warning
-                        : _clipCacheInfo.IsLoaded
-                            ? AlicizaValueTone.Default
-                            : AlicizaValueTone.Muted;
+                debugService.FillClipCacheDebugInfo(entry, _clipCacheInfo);
+                string address = string.IsNullOrEmpty(_clipCacheInfo.Address) ? "<No Address>" : _clipCacheInfo.Address;
+                AlicizaValueTone tone = _clipCacheInfo.Loading
+                    ? AlicizaValueTone.Warning
+                    : _clipCacheInfo.IsLoaded
+                        ? AlicizaValueTone.Default
+                        : AlicizaValueTone.Muted;
 
-                    AlicizaEditorUI.AddValueRow(
-                        section.Body,
-                        address,
-                        "Ref " + _clipCacheInfo.RefCount +
-                        " | Pending " + _clipCacheInfo.PendingCount +
-                        " | Loaded " + _clipCacheInfo.IsLoaded +
-                        " | Policy " + _clipCacheInfo.CachePolicy +
-                        " | Loading " + _clipCacheInfo.Loading +
-                        " | Pinned " + _clipCacheInfo.Pinned +
-                        " | LRU " + _clipCacheInfo.InLru,
-                        tone);
-                }
-
+                AlicizaEditorUI.AddValueRow(
+                    section.Body,
+                    address,
+                    "Ref " + _clipCacheInfo.RefCount +
+                    " | Pending " + _clipCacheInfo.PendingCount +
+                    " | Loaded " + _clipCacheInfo.IsLoaded +
+                    " | Policy " + _clipCacheInfo.CachePolicy +
+                    " | Loading " + _clipCacheInfo.Loading +
+                    " | Pinned " + _clipCacheInfo.Pinned +
+                    " | LRU " + _clipCacheInfo.InLru,
+                    tone);
                 entry = next;
-            }
-
-            if (shown == 0)
-            {
-                section.Body.Add(AlicizaEditorUI.CreateEmptyState("Clip cache is empty."));
             }
         }
 

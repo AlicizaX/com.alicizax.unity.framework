@@ -1,4 +1,3 @@
-using System;
 using UnityEngine;
 using UnityEngine.Audio;
 
@@ -6,32 +5,54 @@ namespace AlicizaX.Audio.Runtime
 {
     internal sealed class AudioCategory
     {
-        private readonly AudioService _service;
-        private readonly AudioAgent[] _agents;
-        private readonly AudioAgent[] _activeAgents;
+        private const float MinVolume = 0.0001f;
+        private const float MutedDecibels = -80f;
+        internal const int MaxPlaybackPriority = 256;
+
+        private static readonly string[] DefaultVolumeParameters =
+        {
+            "SoundVolume",
+            "UISoundVolume",
+            "MusicVolume",
+            "VoiceVolume",
+            "AmbientVolume"
+        };
+
+        private static readonly string[] RootNames =
+        {
+            "Audio Category - Sound",
+            "Audio Category - UISound",
+            "Audio Category - Music",
+            "Audio Category - Voice",
+            "Audio Category - Ambient"
+        };
+
         private static readonly byte[] BitIndices =
         {
             0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
             31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
         };
 
-        private readonly AudioAgent[] _priorityTails = new AudioAgent[257];
-        private readonly uint[] _priorityMasks = new uint[9];
-        private uint _priorityGroups;
-        private readonly int[] _freeStack;
+        private readonly AudioService _service;
+        private readonly AudioMixer _mixer;
+        private readonly string _volumeParameter;
+        private readonly AudioAgent[] _agents;
+        private readonly AudioAgent[] _priorityTails = new AudioAgent[MaxPlaybackPriority + 1];
+        private readonly uint[] _priorityMasks = new uint[(MaxPlaybackPriority >> 5) + 1];
         private readonly int _globalIndexOffset;
+        private uint _priorityGroups;
         private int _createdCount;
         private int _activeCount;
-        private int _freeCount;
+        private float _volume;
         private bool _enabled;
 
         internal AudioType Type { get; }
-        internal int TypeIndex { get; }
         internal Transform InstanceRoot { get; private set; }
-        internal AudioMixerGroup MixerGroup { get; }
         internal AudioGroupConfig Config { get; }
         internal int CreatedCount => _createdCount;
         internal int ActiveCount => _activeCount;
+        internal float Volume => _volume;
+
         internal bool Enabled
         {
             get => _enabled;
@@ -43,144 +64,107 @@ namespace AlicizaX.Audio.Runtime
                 }
 
                 _enabled = value;
-                if (!_enabled)
+                ApplyMixerVolume();
+                if (!value)
                 {
                     Stop(false);
                 }
             }
         }
 
-        internal AudioCategory(AudioService service, AudioGroupConfig config, int globalIndexOffset)
+        internal AudioCategory(AudioService service, AudioGroupConfig config, AudioMixer mixer, Transform serviceRoot, int globalIndexOffset)
         {
             _service = service;
+            _mixer = mixer;
             Config = config;
             Type = config.AudioType;
-            TypeIndex = (int)config.AudioType;
+            _volumeParameter = string.IsNullOrEmpty(config.ExposedVolumeParameter)
+                ? DefaultVolumeParameters[(int)config.AudioType]
+                : config.ExposedVolumeParameter;
             _enabled = !config.Mute;
             _globalIndexOffset = globalIndexOffset;
-
-            MixerGroup = config.MixerGroup;
-            InstanceRoot = new GameObject(AudioService.GetCategoryRootName(config.AudioType)).transform;
-            InstanceRoot.SetParent(service.InstanceRoot, false);
-
-            int capacity = config.MaxSourceCount;
-            _agents = new AudioAgent[capacity];
-            _activeAgents = new AudioAgent[capacity];
-            _freeStack = new int[capacity];
+            InstanceRoot = new GameObject(RootNames[(int)config.AudioType]).transform;
+            InstanceRoot.SetParent(serviceRoot, false);
+            _agents = new AudioAgent[config.MaxSourceCount];
+            SetVolume(config.Volume);
 
             int initialCount = config.InitialSourceCount;
             for (int i = 0; i < initialCount; i++)
             {
-                AudioAgent agent = CreateAgent();
-                agent.IsFreeListed = true;
-                _freeStack[_freeCount++] = agent.Index;
+                CreateAgent();
             }
         }
 
-        internal ulong Play(AudioPlayRequest request)
+        internal void SetVolume(float value)
+        {
+            _volume = Mathf.Clamp(value, MinVolume, 1f);
+            ApplyMixerVolume();
+        }
+
+        internal ulong Play(in AudioPlayRequest request)
         {
             if (!_enabled)
             {
                 return 0UL;
             }
 
-            AudioAgent agent;
-            try
-            {
-                agent = AcquireAgent(request);
-            }
-            catch (Exception exception)
-            {
-                AlicizaX.Log.Exception(exception);
-                return 0UL;
-            }
-
-            if (agent == null)
-            {
-                return 0UL;
-            }
-
-            try
-            {
-                return agent.Play(request);
-            }
-            catch (Exception exception)
-            {
-                // Play() 在操作 source 前已进入 Loading，因此 Stop() 会走正常拆除路径，
-                // 且 MarkFree 幂等；对外契约是失败返回 0。
-                AlicizaX.Log.Exception(exception);
-                agent.Stop(false);
-                return 0UL;
-            }
+            int priority = request.Options.Priority > 0
+                ? Mathf.Min(request.Options.Priority, MaxPlaybackPriority)
+                : Mathf.Clamp(MaxPlaybackPriority - Config.SourcePriority, 0, MaxPlaybackPriority);
+            AudioAgent agent = AcquireAgent(priority);
+            return agent != null ? agent.Play(in request, priority) : 0UL;
         }
 
         internal void Stop(bool fadeout)
         {
             for (int i = _activeCount - 1; i >= 0; i--)
             {
-                _activeAgents[i].Stop(fadeout);
+                _agents[i].Stop(fadeout);
             }
         }
 
         internal void Warmup(int count)
         {
-            int targetCount = Mathf.Clamp(count, 0, _agents.Length);
+            int targetCount = Mathf.Min(count, _agents.Length);
             while (_createdCount < targetCount)
             {
-                AudioAgent agent = CreateAgent();
-                agent.IsFreeListed = true;
-                _freeStack[_freeCount++] = agent.Index;
+                CreateAgent();
             }
         }
 
-        internal void Update(float deltaTime)
+        internal void Update(float deltaTime, float now, Transform listener)
         {
-            int i = 0;
-            while (i < _activeCount)
+            for (int i = _activeCount - 1; i >= 0; i--)
             {
-                AudioAgent agent = _activeAgents[i];
-                agent.Update(deltaTime);
-                if (i < _activeCount && _activeAgents[i] == agent)
-                {
-                    i++;
-                }
+                _agents[i].Update(deltaTime, now, listener);
             }
         }
 
         internal bool TryGetAgent(int index, out AudioAgent agent)
         {
-            if ((uint)index >= (uint)_agents.Length)
+            if ((uint)index >= (uint)_createdCount)
             {
                 agent = null;
                 return false;
             }
 
             agent = _agents[index];
-            return agent != null;
+            return true;
         }
 
-        internal void FillDebugInfo(float volume, AudioCategoryDebugInfo info)
+        internal void FillDebugInfo(AudioCategoryDebugInfo info)
         {
-            if (info == null)
-            {
-                return;
-            }
-
             info.Type = Type;
             info.Enabled = _enabled;
-            info.Volume = volume;
+            info.Volume = _volume;
             info.Capacity = _agents.Length;
             info.CreatedCount = _createdCount;
             info.ActiveCount = _activeCount;
-            info.FreeCount = _freeCount;
-            info.HeapCount = _activeCount;
+            info.FreeCount = _createdCount - _activeCount;
         }
 
         internal void MarkOccupied(AudioAgent agent)
         {
-            agent.IsFreeListed = false;
-            agent.ActiveIndex = _activeCount;
-            _activeAgents[_activeCount++] = agent;
             int priority = agent.PlaybackPriority;
             AudioAgent tail = _priorityTails[priority];
             if (tail == null)
@@ -204,116 +188,77 @@ namespace AlicizaX.Audio.Runtime
 
         internal void MarkFree(AudioAgent agent)
         {
-            if (agent.IsFreeListed)
-                return;
-
-            RemoveActive(agent);
             RemovePriority(agent);
-            _freeStack[_freeCount++] = agent.Index;
-            agent.IsFreeListed = true;
+            int lastIndex = --_activeCount;
+            int index = agent.Index;
+            AudioAgent last = _agents[lastIndex];
+            _agents[index] = last;
+            last.Index = index;
+            _agents[lastIndex] = agent;
+            agent.Index = lastIndex;
         }
 
         internal void Shutdown()
         {
             Stop(false);
-
-            for (int i = 0; i < _agents.Length; i++)
-            {
-                AudioAgent agent = _agents[i];
-                if (agent != null)
-                {
-                    agent.Shutdown();
-                    MemoryPool.Release(agent);
-                    _agents[i] = null;
-                }
-            }
-
-            _activeCount = 0;
-            _freeCount = 0;
+            System.Array.Clear(_agents, 0, _createdCount);
             _createdCount = 0;
-
             if (InstanceRoot != null)
             {
                 if (Application.isPlaying)
                 {
-                    UnityEngine.Object.Destroy(InstanceRoot.gameObject);
+                    Object.Destroy(InstanceRoot.gameObject);
                 }
                 else
                 {
-                    UnityEngine.Object.DestroyImmediate(InstanceRoot.gameObject);
+                    Object.DestroyImmediate(InstanceRoot.gameObject);
                 }
-                InstanceRoot = null;
             }
+
+            InstanceRoot = null;
         }
 
-        private AudioAgent AcquireAgent(AudioPlayRequest request)
+        private AudioAgent AcquireAgent(int priority)
         {
-            if (_freeCount > 0)
+            if (_activeCount == _createdCount)
             {
-                int index = _freeStack[--_freeCount];
-                AudioAgent free = _agents[index];
-                free.IsFreeListed = false;
-                return free;
+                if (_createdCount == _agents.Length)
+                {
+                    return StealAgent(priority);
+                }
+
+                CreateAgent();
             }
 
-            if (_createdCount < _agents.Length)
-            {
-                return CreateAgent();
-            }
+            return _agents[_activeCount++];
+        }
 
+        private AudioAgent StealAgent(int priority)
+        {
             int group = LowestSetBit(_priorityGroups);
-            int priority = (group << 5) + LowestSetBit(_priorityMasks[group]);
-            AudioAgent candidate = _priorityTails[priority].PriorityNext;
-            if (priority > AudioAgent.ResolvePlaybackPriority(request, Config))
+            int lowestPriority = (group << 5) + LowestSetBit(_priorityMasks[group]);
+            if (lowestPriority > priority)
             {
                 return null;
             }
 
-            RemoveActive(candidate);
+            AudioAgent candidate = _priorityTails[lowestPriority].PriorityNext;
             RemovePriority(candidate);
-            candidate.IsFreeListed = false;
             return candidate;
         }
 
-        private AudioAgent CreateAgent()
+        private void CreateAgent()
         {
-            int index = _createdCount;
-            AudioAgent agent = MemoryPool.Acquire<AudioAgent>();
-            agent.Initialize(_service, this, index, _globalIndexOffset + index);
+            int index = _createdCount++;
+            var agent = new AudioAgent();
             _agents[index] = agent;
-            _createdCount++;
-            return agent;
-        }
-
-        private void RemoveActive(AudioAgent agent)
-        {
-            int index = agent.ActiveIndex;
-            if (index < 0)
-            {
-                return;
-            }
-
-            int lastIndex = --_activeCount;
-            AudioAgent last = _activeAgents[lastIndex];
-            _activeAgents[lastIndex] = null;
-            if (index != lastIndex)
-            {
-                _activeAgents[index] = last;
-                last.ActiveIndex = index;
-            }
-
-            agent.ActiveIndex = -1;
+            agent.Initialize(_service, this, index, _globalIndexOffset + index);
         }
 
         private void RemovePriority(AudioAgent agent)
         {
-            AudioAgent next = agent.PriorityNext;
-            if (next == null)
-            {
-                return;
-            }
-
             int priority = agent.PlaybackPriority;
+            AudioAgent next = agent.PriorityNext;
             if (ReferenceEquals(next, agent))
             {
                 _priorityTails[priority] = null;
@@ -337,6 +282,11 @@ namespace AlicizaX.Audio.Runtime
 
             agent.PriorityPrev = null;
             agent.PriorityNext = null;
+        }
+
+        private void ApplyMixerVolume()
+        {
+            _mixer.SetFloat(_volumeParameter, _enabled ? Mathf.Log10(_volume) * 20f : MutedDecibels);
         }
 
         private static int LowestSetBit(uint mask)

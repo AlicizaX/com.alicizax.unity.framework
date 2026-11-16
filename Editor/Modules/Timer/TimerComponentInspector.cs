@@ -1,7 +1,6 @@
 using AlicizaX.Editor.UIToolkit;
 using AlicizaX.Timer.Runtime;
 using UnityEditor;
-using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -11,26 +10,13 @@ namespace AlicizaX.Timer.Editor
     internal sealed class TimerComponentInspector : AlicizaUIEditor
     {
         private const int DISPLAY_COUNT = 32;
-        private const int MIN_INITIAL_CAPACITY = 256;
-        private const int MAX_INITIAL_CAPACITY = 16384;
-        private const int CAPACITY_STEP = 256;
 
         private readonly TimerDebugInfo[] _timerBuffer = new TimerDebugInfo[DISPLAY_COUNT];
         private readonly TimerDebugInfo[] _staleBuffer = new TimerDebugInfo[DISPLAY_COUNT];
-        private SerializedProperty _initialCapacityProperty;
         private VisualElement _runtimeRoot;
-
-        private void OnEnable()
-        {
-            _initialCapacityProperty = serializedObject.FindProperty("_initialCapacity");
-        }
 
         protected override void BuildInspector(VisualElement root)
         {
-            AlicizaPanel configPanel = AlicizaEditorUI.CreatePanel(null);
-            root.Add(configPanel);
-            BuildConfiguration(configPanel.Body);
-
             AlicizaPanel runtimePanel = AlicizaEditorUI.CreatePanel(null);
             runtimePanel.Body.style.paddingBottom = 0f;
             root.Add(runtimePanel);
@@ -40,34 +26,6 @@ namespace AlicizaX.Timer.Editor
 
             RefreshRuntime();
             AlicizaEditorUI.RefreshEvery(root, RefreshRuntime, 250);
-        }
-
-        private void BuildConfiguration(VisualElement parent)
-        {
-            AlicizaSection section = AlicizaEditorUI.CreateStaticSection("Configuration");
-            parent.Add(section);
-
-            if (_initialCapacityProperty != null)
-            {
-                var slider = new AlicizaIntSliderField(
-                    MIN_INITIAL_CAPACITY,
-                    MAX_INITIAL_CAPACITY);
-                slider.BindProperty(_initialCapacityProperty);
-                slider.SetEnabled(!Application.isPlaying);
-                slider.RegisterValueChangedCallback(evt =>
-                {
-                    int aligned = AlignCapacity(evt.newValue);
-                    if (aligned != evt.newValue)
-                    {
-                        _initialCapacityProperty.intValue = aligned;
-                        _initialCapacityProperty.serializedObject.ApplyModifiedProperties();
-                    }
-                });
-
-                AlicizaEditorUI.AddRow(section.Body, "Initial Capacity", slider);
-                section.Body.Add(AlicizaEditorUI.CreateHint(
-                    $"Rounded to {CAPACITY_STEP} steps, from {MIN_INITIAL_CAPACITY} to {MAX_INITIAL_CAPACITY}."));
-            }
         }
 
         private void RefreshRuntime()
@@ -202,17 +160,6 @@ namespace AlicizaX.Timer.Editor
                 parent,
                 label,
                 AlicizaEditorUI.CreateProgressBar(Mathf.Clamp01(ratio), ratio.ToString("P1")));
-        }
-
-        private static int AlignCapacity(int value)
-        {
-            int aligned = ((value + CAPACITY_STEP - 1) / CAPACITY_STEP) * CAPACITY_STEP;
-            if (aligned < MIN_INITIAL_CAPACITY)
-            {
-                return MIN_INITIAL_CAPACITY;
-            }
-
-            return aligned > MAX_INITIAL_CAPACITY ? MAX_INITIAL_CAPACITY : aligned;
         }
     }
 }

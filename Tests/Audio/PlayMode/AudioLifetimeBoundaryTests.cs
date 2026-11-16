@@ -167,7 +167,7 @@ namespace AlicizaX.Audio.Tests
                 for (int i = 0; i < count; i++) f.Audio.PreloadAsync("batch", policy, completed);
                 Assert.That(f.Loader.Loads, Is.EqualTo(1));
                 Assert.That(f.Entry("batch").CountPending(), Is.EqualTo(count));
-                if (outcome == 2) f.Audio.Shutdown();
+                if (outcome == 2) f.Shutdown();
                 else f.Loader.Complete("batch", outcome == 0);
                 yield return AudioFixture.Frames();
                 Assert.That(callbacks, Is.EqualTo(count));

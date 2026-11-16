@@ -22,7 +22,7 @@ namespace AlicizaX.Timer.Tests
             Assert.That(f.Service.GetLeftTime(old), Is.Zero);
             TimerProbe.Statistics(f.Service, 0, 0);
             ulong next = f.Service.AddTimer(() => calls++, 0.02f, isUnscaled: true);
-            Assert.That((uint)next, Is.EqualTo((uint)old));
+            Assert.That(TimerProbe.Slot(next), Is.EqualTo(TimerProbe.Slot(old)));
             f.Service.RemoveTimer(old);
             f.Service.Restart(old);
             yield return TimerProbe.Until(f, () => calls == 2);
@@ -53,7 +53,7 @@ namespace AlicizaX.Timer.Tests
             Assert.That(siblingCalls, Is.Zero);
             Assert.That(activeDuring, Is.Zero);
             Assert.That(freeDuring, Is.EqualTo(capacityDuring - 1));
-            Assert.That((uint)added, Is.Not.EqualTo((uint)self));
+            Assert.That(TimerProbe.Slot(added), Is.Not.EqualTo(TimerProbe.Slot(self)));
             TimerProbe.Statistics(f.Service, 0, 0);
             TimerProbe.Ledger(f.Service);
         }
@@ -202,7 +202,7 @@ namespace AlicizaX.Timer.Tests
             f.Service.AddTimer(() => siblingCalls++, 0.001f, isUnscaled: true);
             yield return TimerProbe.Until(f, () => calls == 1 && siblingCalls == 1);
             Assert.That(observedInside, Is.Zero, "nested Tick must not overwrite callback ownership");
-            Assert.That((uint)added, Is.Not.EqualTo((uint)self));
+            Assert.That(TimerProbe.Slot(added), Is.Not.EqualTo(TimerProbe.Slot(self)));
             TimerProbe.Statistics(f.Service, 1, 1);
             TimerProbe.Ledger(f.Service);
         }
@@ -301,6 +301,53 @@ namespace AlicizaX.Timer.Tests
             yield return TimerProbe.Until(f, () => order.Count == 4096);
             for (int i = 0; i < order.Count; i++) Assert.That(order[i], Is.EqualTo(i));
             TimerProbe.Statistics(f.Service, 0, 0);
+            TimerProbe.Ledger(f.Service);
+        }
+
+        [UnityTest]
+        public IEnumerator TrimInsideCallbackReleasesTrailingPagesAndRetainsExecutingPage([Values(false, true)] bool removeSelf)
+        {
+            using var f = new TimerFixture();
+            var fillers = new ulong[768];
+            ulong self = 0;
+            int calls = 0, capacityInside = -1, freeInside = -1;
+            self = f.Service.AddTimer(() =>
+            {
+                calls++;
+                if (removeSelf) f.Service.RemoveTimer(self);
+                foreach (ulong filler in fillers) f.Service.RemoveTimer(filler);
+                f.Service.TrimExcess();
+                ((ITimerDebugService)f.Service).GetStatistics(out _, out capacityInside, out _, out freeInside);
+            }, 0.001f, isUnscaled: true);
+            for (int i = 0; i < fillers.Length; i++) fillers[i] = f.Service.AddTimer(TimerProbe.NoOp, 3600, isUnscaled: true);
+            Assert.That(TimerProbe.Slot(self) >> 8, Is.Zero);
+            TimerProbe.Statistics(f.Service, 769, 769, capacity: 1024);
+            yield return TimerProbe.Until(f, () => calls == 1);
+            Assert.That(capacityInside, Is.EqualTo(256), "trailing pages are trimmed while the executing page survives");
+            Assert.That(freeInside, Is.EqualTo(255));
+            TimerProbe.Statistics(f.Service, 0, 0, capacity: 256);
+            TimerProbe.Ledger(f.Service);
+            Assert.That(f.Service.AddTimer(TimerProbe.NoOp, 1), Is.Not.Zero);
+            TimerProbe.Ledger(f.Service);
+        }
+
+        [UnityTest]
+        public IEnumerator PeriodicTrimTimerShrinksCapacityAfterBurst()
+        {
+            using var f = new TimerFixture();
+            int trims = 0;
+            ulong trimmer = f.Service.AddTimer(() => { trims++; f.Service.TrimExcess(); }, 0.01f, true, true);
+            Assert.That(TimerProbe.Slot(trimmer), Is.Zero);
+            var burst = new ulong[2048];
+            for (int i = 0; i < burst.Length; i++) burst[i] = f.Service.AddTimer(TimerProbe.NoOp, 3600, isUnscaled: true);
+            TimerProbe.Statistics(f.Service, 2049, 2049, capacity: 2304);
+            yield return TimerProbe.Until(f, () => trims >= 1);
+            TimerProbe.Statistics(f.Service, 2049, 2049, capacity: 2304);
+            foreach (ulong handle in burst) f.Service.RemoveTimer(handle);
+            int before = trims;
+            yield return TimerProbe.Until(f, () => trims > before);
+            TimerProbe.Statistics(f.Service, 1, 1, capacity: 256);
+            Assert.That(f.Service.IsRunning(trimmer), Is.True);
             TimerProbe.Ledger(f.Service);
         }
     }

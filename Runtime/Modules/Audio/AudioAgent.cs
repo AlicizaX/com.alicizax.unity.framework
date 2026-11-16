@@ -3,12 +3,50 @@ using UnityEngine;
 
 namespace AlicizaX.Audio.Runtime
 {
-    internal sealed class AudioAgent : MemoryObject
+    internal sealed class AudioAgent
     {
         private const float DefaultFadeOutSeconds = 0.15f;
-        private const float MinFadeOutSeconds = 0.0001f;
-        private const float MaxCutoffFrequency = 22000f;
         private const string SourceObjectName = "AudioSource";
+
+        private struct Ramp
+        {
+            public float Value;
+            public float Target;
+            public float Rate;
+
+            public Ramp(float value, float target, float rate)
+            {
+                Value = value;
+                Target = target;
+                Rate = rate;
+            }
+
+            public bool Advance(float deltaTime)
+            {
+                if (Rate <= 0f)
+                {
+                    return false;
+                }
+
+                float step = Rate * deltaTime;
+                float remaining = Target - Value;
+                if (remaining > step)
+                {
+                    Value += step;
+                }
+                else if (remaining < -step)
+                {
+                    Value -= step;
+                }
+                else
+                {
+                    Value = Target;
+                    Rate = 0f;
+                }
+
+                return true;
+            }
+        }
 
         private AudioService _service;
         private AudioCategory _category;
@@ -25,32 +63,20 @@ namespace AlicizaX.Audio.Runtime
         private bool _spatial;
         private bool _occluded;
         private bool _loop;
-        private int _generation;
         private ulong _handle;
-        private float _baseVolume;
-        private float _volumeFadeStart;
-        private float _volumeFadeTarget;
-        private float _volumeFadeTimer;
-        private float _volumeFadeDuration;
-        private float _fadeInTimer;
-        private float _fadeInDuration;
-        private float _fadeTimer;
-        private float _fadeDuration;
-        private float _startedAt;
+        private Ramp _volume;
+        private Ramp _envelope;
+        private float _fadeOutSeconds;
         private float _nextOcclusionCheckTime;
         private int _playbackPriority;
 
-        internal int Index { get; private set; }
+        internal int Index;
         internal int GlobalIndex { get; private set; }
         internal AudioAgent PriorityPrev;
         internal AudioAgent PriorityNext;
-        internal int ActiveIndex { get; set; }
         internal ulong Handle => _handle;
-        internal bool IsPlayingState => _state == AudioAgentRuntimeState.Playing || _state == AudioAgentRuntimeState.Loading || _state == AudioAgentRuntimeState.FadingIn || _state == AudioAgentRuntimeState.FadingOut;
+        internal bool IsPlayingState => _state != AudioAgentRuntimeState.Free;
         internal int PlaybackPriority => _playbackPriority;
-        internal bool IsFreeListed;
-
-        public AudioAgent() { }
 
         internal void Initialize(AudioService service, AudioCategory category, int index, int globalIndex)
         {
@@ -58,88 +84,69 @@ namespace AlicizaX.Audio.Runtime
             _category = category;
             Index = index;
             GlobalIndex = globalIndex;
-            PriorityPrev = null;
-            PriorityNext = null;
-            ActiveIndex = -1;
             CreateSource();
-            ResetState();
         }
 
-        internal ulong Play(AudioPlayRequest request)
+        internal ulong Play(in AudioPlayRequest request, int playbackPriority)
         {
-            StopImmediate(false);
-            _generation++;
-            if (_generation == int.MaxValue)
+            if (_state != AudioAgentRuntimeState.Free)
             {
-                _generation = 1;
+                StopImmediate(false);
             }
 
-            _handle = _service.AllocateHandle(this);
+            _handle = _service.Handles.Allocate(this);
             _state = AudioAgentRuntimeState.Loading;
 
-            // 先进入 Loading 再绑定：此后任何失败都由 AudioCategory.Play 的 catch
-            // 走正常 Stop/MarkFree 路径清理。
             if (_source == null)
             {
                 _host.SafeDestroySelf();
                 CreateSource();
             }
+            else if (!_source.isActiveAndEnabled)
+            {
+                _host.SetActive(true);
+                _source.enabled = true;
+            }
 
-            _startedAt = Time.realtimeSinceStartup;
-            _baseVolume = Mathf.Clamp01(request.Volume);
-            _volumeFadeStart = _baseVolume;
-            _volumeFadeTarget = _baseVolume;
-            _volumeFadeTimer = 0f;
-            _volumeFadeDuration = 0f;
-            _fadeInDuration = request.FadeInSeconds > 0f ? request.FadeInSeconds : 0f;
-            _fadeInTimer = 0f;
-            _fadeDuration = request.FadeOutSeconds > 0f ? request.FadeOutSeconds : DefaultFadeOutSeconds;
+            float volume = Mathf.Clamp01(request.Volume);
+            float fadeInSeconds = request.Options.FadeInSeconds;
+            _volume = new Ramp(volume, volume, 0f);
+            _envelope = fadeInSeconds > 0f ? new Ramp(0f, 1f, 1f / fadeInSeconds) : new Ramp(1f, 1f, 0f);
+            _fadeOutSeconds = request.Options.FadeOutSeconds > 0f ? request.Options.FadeOutSeconds : DefaultFadeOutSeconds;
             _loop = request.Loop;
             _spatial = request.Spatial;
             _followTarget = request.FollowTarget;
             _followOffset = request.Position;
             _nextOcclusionCheckTime = 0f;
-            _occluded = false;
+            _playbackPriority = playbackPriority;
 
-            ApplySourceSettings(request);
+            ApplySourceSettings(in request);
             _category.MarkOccupied(this);
 
-            if (request.Clip != null)
+            if (request.Address == null)
             {
                 StartClip(request.Clip);
-                return _handle;
             }
-
-            if (!_service.RequestClip(request.Address, request.Async, request.CachePolicy, this, _generation))
+            else if (!_service.RequestClip(request.Address, request.Options.Async, request.Options.CachePolicy, this))
             {
                 StopImmediate(true);
-                return 0UL;
             }
 
             return _handle;
         }
 
-        internal bool OnClipReady(AudioClipCacheEntry entry, int generation)
+        internal void OnClipReady(AudioClipCacheEntry entry)
         {
-            if (_state != AudioAgentRuntimeState.Loading || generation != _generation)
-            {
-                return false;
-            }
-
             _loadRequest = null;
             _clipEntry = entry;
             _service.RetainClip(entry);
             StartClip(entry.Clip);
-            return true;
         }
 
-        internal void OnClipLoadFailed(int generation)
+        internal void OnClipLoadFailed()
         {
-            if (_state == AudioAgentRuntimeState.Loading && generation == _generation)
-            {
-                _loadRequest = null;
-                StopImmediate(true);
-            }
+            _loadRequest = null;
+            StopImmediate(true);
         }
 
         internal void SetLoadRequest(AudioLoadRequest request)
@@ -149,65 +156,38 @@ namespace AlicizaX.Audio.Runtime
 
         internal void Stop(bool fadeout)
         {
-            if (_state == AudioAgentRuntimeState.Free)
-            {
-                return;
-            }
-
-            if (!fadeout || _state == AudioAgentRuntimeState.Loading)
-            {
-                StopImmediate(true);
-                return;
-            }
-
-            _fadeTimer = _fadeDuration;
-            _state = AudioAgentRuntimeState.FadingOut;
+            Stop(fadeout ? _fadeOutSeconds : 0f);
         }
 
         internal void Stop(float fadeOutSeconds)
         {
-            if (_state == AudioAgentRuntimeState.Free)
-            {
-                return;
-            }
-
-            if (fadeOutSeconds <= 0f || _state == AudioAgentRuntimeState.Loading)
+            if (fadeOutSeconds <= 0f || _state == AudioAgentRuntimeState.Loading || _envelope.Value <= 0f)
             {
                 StopImmediate(true);
                 return;
             }
 
-            _fadeDuration = fadeOutSeconds;
-            _fadeTimer = fadeOutSeconds;
+            _envelope = new Ramp(_envelope.Value, 0f, _envelope.Value / fadeOutSeconds);
             _state = AudioAgentRuntimeState.FadingOut;
         }
 
         internal void SetVolume(float volume, float fadeSeconds)
         {
-            if (_state == AudioAgentRuntimeState.Free)
-            {
-                return;
-            }
-
             float target = Mathf.Clamp01(volume);
-            if (fadeSeconds <= 0f || _state == AudioAgentRuntimeState.Loading)
+            if (fadeSeconds > 0f && _state != AudioAgentRuntimeState.Loading)
             {
-                _baseVolume = target;
-                _volumeFadeStart = target;
-                _volumeFadeTarget = target;
-                _volumeFadeTimer = 0f;
-                _volumeFadeDuration = 0f;
-                ApplyCurrentRuntimeVolume();
+                _volume = new Ramp(_volume.Value, target, Mathf.Abs(target - _volume.Value) / fadeSeconds);
                 return;
             }
 
-            _volumeFadeStart = _baseVolume;
-            _volumeFadeTarget = target;
-            _volumeFadeTimer = 0f;
-            _volumeFadeDuration = fadeSeconds;
+            _volume = new Ramp(target, target, 0f);
+            if (_state != AudioAgentRuntimeState.Loading && _source != null)
+            {
+                ApplyRuntimeVolume();
+            }
         }
 
-        internal void Update(float deltaTime)
+        internal void Update(float deltaTime, float now, Transform listener)
         {
             if (_source == null || !_source.isActiveAndEnabled)
             {
@@ -223,151 +203,80 @@ namespace AlicizaX.Audio.Runtime
                     return;
                 }
 
-                _transform.position = _followTarget.position + _followOffset;
-                _transform.rotation = _followTarget.rotation;
+                _transform.position = _followTarget.TransformPoint(_followOffset);
             }
 
-            if (_state != AudioAgentRuntimeState.Loading && (_playingClip == null || (!_loop && !_source.isPlaying)))
+            if (_state == AudioAgentRuntimeState.Loading)
+            {
+                return;
+            }
+
+            if (_playingClip == null || (!_loop && !_source.isPlaying))
             {
                 StopImmediate(true);
                 return;
             }
 
-            UpdateOcclusion();
-            bool volumeChanged = UpdateVolumeFade(deltaTime);
-
-            if (_state == AudioAgentRuntimeState.FadingIn)
+            bool volumeChanged = false;
+            if (_spatial && _category.Config.OcclusionEnabled && listener != null && now >= _nextOcclusionCheckTime)
             {
-                _fadeInTimer += deltaTime;
-                if (_fadeInTimer >= _fadeInDuration)
+                volumeChanged = UpdateOcclusion(now, listener);
+            }
+
+            volumeChanged |= _volume.Advance(deltaTime);
+            if (_envelope.Advance(deltaTime))
+            {
+                volumeChanged = true;
+                if (_envelope.Rate <= 0f)
                 {
+                    if (_state == AudioAgentRuntimeState.FadingOut)
+                    {
+                        StopImmediate(true);
+                        return;
+                    }
+
                     _state = AudioAgentRuntimeState.Playing;
-                    ApplyRuntimeVolume(1f);
                 }
-                else
-                {
-                    float scale = _fadeInTimer / Mathf.Max(_fadeInDuration, MinFadeOutSeconds);
-                    ApplyRuntimeVolume(scale);
-                }
-                return;
             }
 
-            if (_state == AudioAgentRuntimeState.Playing)
+            if (volumeChanged)
             {
-                if (volumeChanged)
-                {
-                    ApplyRuntimeVolume(1f);
-                }
-
-                return;
+                ApplyRuntimeVolume();
             }
-
-            if (_state != AudioAgentRuntimeState.FadingOut)
-            {
-                return;
-            }
-
-            _fadeTimer -= deltaTime;
-            if (_fadeTimer <= 0f)
-            {
-                StopImmediate(true);
-                return;
-            }
-
-            float fadeScale = _fadeTimer / Mathf.Max(_fadeDuration, MinFadeOutSeconds);
-            ApplyRuntimeVolume(fadeScale);
-        }
-
-        internal void Shutdown()
-        {
-            StopImmediate(true);
-            _host = null;
-            _source = null;
-            _lowPassFilter = null;
-            _transform = null;
-            _service = null;
-            _category = null;
-            IsFreeListed = false;
-        }
-
-        public override void Clear()
-        {
-            _service = null;
-            _category = null;
-            _host = null;
-            _source = null;
-            _lowPassFilter = null;
-            _playingClip = null;
-            _clipEntry = null;
-            _loadRequest = null;
-            _transform = null;
-            _followTarget = null;
-            _followOffset = Vector3.zero;
-            _state = AudioAgentRuntimeState.Free;
-            _spatial = false;
-            _occluded = false;
-            _loop = false;
-            Index = 0;
-            GlobalIndex = 0;
-            PriorityPrev = null;
-            PriorityNext = null;
-            ActiveIndex = -1;
-            IsFreeListed = false;
-            _generation = 0;
-            _handle = 0UL;
-            _baseVolume = 1f;
-            _volumeFadeStart = 1f;
-            _volumeFadeTarget = 1f;
-            _volumeFadeTimer = 0f;
-            _volumeFadeDuration = 0f;
-            _fadeInTimer = 0f;
-            _fadeInDuration = 0f;
-            _fadeTimer = 0f;
-            _fadeDuration = 0f;
-            _startedAt = 0f;
-            _nextOcclusionCheckTime = 0f;
-            _playbackPriority = 0;
         }
 
         internal void FillDebugInfo(AudioAgentDebugInfo info)
         {
-            if (info == null)
-            {
-                return;
-            }
-
-            info.Type = _category != null ? _category.Type : AudioType.Sound;
+            info.Type = _category.Type;
             info.State = _state;
             info.Index = Index;
-            info.GlobalIndex = GlobalIndex;
-            info.ActiveIndex = ActiveIndex;
             info.Handle = _handle;
             info.Address = _clipEntry != null ? _clipEntry.Address : null;
-            info.Clip = _source != null ? _source.clip : null;
-            info.FollowTarget = _followTarget;
-            info.Position = _transform != null ? _transform.position : Vector3.zero;
-            info.Loop = _loop;
             info.Spatial = _spatial;
             info.Occluded = _occluded;
-            info.Volume = _source != null ? _source.volume : 0f;
-            info.Pitch = _source != null ? _source.pitch : 0f;
-            info.SpatialBlend = _source != null ? _source.spatialBlend : 0f;
-            info.MinDistance = _source != null ? _source.minDistance : 0f;
-            info.MaxDistance = _source != null ? _source.maxDistance : 0f;
-            info.StartedAt = _startedAt;
-            info.Priority = _playbackPriority;
+            bool hasSource = _source != null;
+            info.Clip = hasSource ? _source.clip : null;
+            info.Volume = hasSource ? _source.volume : 0f;
+            info.MinDistance = hasSource ? _source.minDistance : 0f;
+            info.MaxDistance = hasSource ? _source.maxDistance : 0f;
         }
 
         private void CreateSource()
         {
+            AudioGroupConfig config = _category.Config;
             _host = new GameObject(SourceObjectName);
             _transform = _host.transform;
             _transform.SetParent(_category.InstanceRoot, false);
             _source = _host.AddComponent<AudioSource>();
             _source.playOnAwake = false;
-            if (_category.Config.OcclusionEnabled)
+            _source.outputAudioMixerGroup = config.MixerGroup;
+            _source.dopplerLevel = config.DopplerLevel;
+            _source.spread = config.Spread;
+            _source.reverbZoneMix = config.ReverbZoneMix;
+            if (config.OcclusionEnabled)
             {
                 _lowPassFilter = _host.AddComponent<AudioLowPassFilter>();
+                _lowPassFilter.cutoffFrequency = config.OcclusionLowPassCutoff;
                 _lowPassFilter.enabled = false;
             }
         }
@@ -383,35 +292,13 @@ namespace AlicizaX.Audio.Runtime
             _playingClip = clip;
             _source.clip = clip;
             _source.loop = _loop;
-
-            if (_fadeInDuration > 0f)
-            {
-                _fadeInTimer = 0f;
-                _state = AudioAgentRuntimeState.FadingIn;
-                ApplyRuntimeVolume(0f);
-            }
-            else
-            {
-                _state = AudioAgentRuntimeState.Playing;
-                ApplyRuntimeVolume(1f);
-            }
-
+            _state = _envelope.Rate > 0f ? AudioAgentRuntimeState.FadingIn : AudioAgentRuntimeState.Playing;
+            ApplyRuntimeVolume();
             _source.Play();
         }
 
         private void StopImmediate(bool notifyCategory)
         {
-            if (_state == AudioAgentRuntimeState.Free)
-            {
-                return;
-            }
-
-            _generation++;
-            if (_generation == int.MaxValue)
-            {
-                _generation = 1;
-            }
-
             if (_source != null)
             {
                 _source.Stop();
@@ -420,15 +307,22 @@ namespace AlicizaX.Audio.Runtime
 
             CancelLoadRequest();
             ReleaseClip();
-
-            _service.ReleaseHandle(this);
+            _service.Handles.Release(this);
 
             if (notifyCategory)
             {
                 _category.MarkFree(this);
             }
 
-            ResetState();
+            _state = AudioAgentRuntimeState.Free;
+            _handle = 0UL;
+            _playingClip = null;
+            _followTarget = null;
+            if (_occluded)
+            {
+                _occluded = false;
+                _lowPassFilter.enabled = false;
+            }
         }
 
         private void ReleaseClip()
@@ -453,206 +347,61 @@ namespace AlicizaX.Audio.Runtime
             _service.CancelLoadRequest(request);
         }
 
-        private void ResetState()
+        private void ApplySourceSettings(in AudioPlayRequest request)
         {
-            _state = AudioAgentRuntimeState.Free;
-            _playingClip = null;
-            _followTarget = null;
-            _followOffset = Vector3.zero;
-            _spatial = false;
-            _occluded = false;
-            _loop = false;
-            _handle = 0;
-            _baseVolume = 1f;
-            _volumeFadeStart = 1f;
-            _volumeFadeTarget = 1f;
-            _volumeFadeTimer = 0f;
-            _volumeFadeDuration = 0f;
-            _fadeInTimer = 0f;
-            _fadeInDuration = 0f;
-            _fadeTimer = 0f;
-            _fadeDuration = 0f;
-            _startedAt = 0f;
-            _nextOcclusionCheckTime = 0f;
-            _playbackPriority = 0;
-
-            if (_source != null)
+            _source.priority = AudioCategory.MaxPlaybackPriority - _playbackPriority;
+            _source.pitch = request.Options.Pitch > 0f ? request.Options.Pitch : 1f;
+            if (!_spatial)
             {
-                _source.volume = 1f;
-                _source.pitch = 1f;
-                _source.loop = false;
+                _source.spatialBlend = 0f;
+                return;
             }
 
-            if (_lowPassFilter != null)
-            {
-                _lowPassFilter.enabled = false;
-                _lowPassFilter.cutoffFrequency = MaxCutoffFrequency;
-            }
-        }
-
-        private void ApplySourceSettings(AudioPlayRequest request)
-        {
             AudioGroupConfig config = _category.Config;
-            _source.gameObject.SetActive(true);
-            _source.enabled = true;
-            _source.playOnAwake = false;
-            _source.mute = false;
-            _source.bypassEffects = false;
-            _source.bypassListenerEffects = false;
-            _source.bypassReverbZones = false;
-            _playbackPriority = ResolvePlaybackPriority(request, config);
-            _source.priority = ResolveUnitySourcePriority(_playbackPriority);
-            _source.pitch = request.Pitch;
-            _source.rolloffMode = request.OverrideSpatialSettings ? request.RolloffMode : config.RolloffMode;
-            _source.minDistance = request.OverrideSpatialSettings ? request.MinDistance : config.MinDistance;
-            _source.maxDistance = request.OverrideSpatialSettings ? request.MaxDistance : config.MaxDistance;
-            _source.dopplerLevel = config.DopplerLevel;
-            _source.spread = config.Spread;
-            _source.reverbZoneMix = config.ReverbZoneMix;
-            _source.outputAudioMixerGroup = _category.MixerGroup;
-            _source.spatialBlend = _spatial ? ResolveSpatialBlend(request, config) : 0f;
-
-            Transform transform = _transform;
-            if (_followTarget != null)
+            if (request.SpatialOptions.Override)
             {
-                transform.position = _followTarget.position + _followOffset;
-                transform.rotation = _followTarget.rotation;
+                float minDistance = Mathf.Max(0f, request.SpatialOptions.MinDistance);
+                _source.rolloffMode = request.SpatialOptions.RolloffMode;
+                _source.minDistance = minDistance;
+                _source.maxDistance = Mathf.Max(minDistance, request.SpatialOptions.MaxDistance);
+                _source.spatialBlend = Mathf.Clamp01(request.SpatialOptions.SpatialBlend);
             }
             else
             {
-                if (request.UseWorldPosition)
-                {
-                    transform.position = request.Position;
-                }
-                else
-                {
-                    transform.localPosition = Vector3.zero;
-                }
-            }
-        }
-
-        private static float ResolveSpatialBlend(AudioPlayRequest request, AudioGroupConfig config)
-        {
-            if (request.SpatialBlend >= 0f)
-            {
-                return Mathf.Clamp01(request.SpatialBlend);
+                _source.rolloffMode = config.RolloffMode;
+                _source.minDistance = config.MinDistance;
+                _source.maxDistance = config.MaxDistance;
+                _source.spatialBlend = config.SpatialBlend;
             }
 
-            return config.SpatialBlend;
+            _transform.position = ReferenceEquals(_followTarget, null)
+                ? request.Position
+                : _followTarget.TransformPoint(_followOffset);
         }
 
-        internal static int ResolvePlaybackPriority(AudioPlayRequest request, AudioGroupConfig config)
-        {
-            if (request.Priority > 0)
-            {
-                return Mathf.Clamp(request.Priority, 0, 256);
-            }
-
-            return Mathf.Clamp(256 - config.SourcePriority, 0, 256);
-        }
-
-        private static int ResolveUnitySourcePriority(int playbackPriority)
-        {
-            return Mathf.Clamp(256 - playbackPriority, 0, 256);
-        }
-
-        private void UpdateOcclusion()
+        private bool UpdateOcclusion(float now, Transform listener)
         {
             AudioGroupConfig config = _category.Config;
-            if (!_spatial || !config.OcclusionEnabled)
-            {
-                return;
-            }
-
-            Transform listener = _service.ListenerTransform;
-            if (listener == null)
-            {
-                return;
-            }
-
-            float now = Time.realtimeSinceStartup;
-            if (now < _nextOcclusionCheckTime)
-            {
-                return;
-            }
-
             _nextOcclusionCheckTime = now + config.OcclusionCheckInterval;
             Vector3 origin = _transform.position;
-            Vector3 target = listener.position;
-            Vector3 direction = target - origin;
+            Vector3 direction = listener.position - origin;
             float distance = direction.magnitude;
-            if (distance <= 0.01f)
-            {
-                SetOccluded(false, config);
-                return;
-            }
-
-            bool occluded = Physics.Raycast(origin, direction / distance, distance, config.OcclusionMask, QueryTriggerInteraction.Ignore);
-            SetOccluded(occluded, config);
-        }
-
-        private void SetOccluded(bool occluded, AudioGroupConfig config)
-        {
+            bool occluded = distance > 0.01f
+                && Physics.Raycast(origin, direction / distance, distance, config.OcclusionMask, QueryTriggerInteraction.Ignore);
             if (_occluded == occluded)
-            {
-                return;
-            }
-
-            _occluded = occluded;
-            if (_lowPassFilter != null)
-            {
-                _lowPassFilter.enabled = occluded;
-                _lowPassFilter.cutoffFrequency = occluded ? config.OcclusionLowPassCutoff : MaxCutoffFrequency;
-            }
-
-            ApplyCurrentRuntimeVolume();
-        }
-
-        private bool UpdateVolumeFade(float deltaTime)
-        {
-            if (_volumeFadeDuration <= 0f)
             {
                 return false;
             }
 
-            _volumeFadeTimer += deltaTime;
-            if (_volumeFadeTimer >= _volumeFadeDuration)
-            {
-                _baseVolume = _volumeFadeTarget;
-                _volumeFadeTimer = 0f;
-                _volumeFadeDuration = 0f;
-                return true;
-            }
-
-            float t = _volumeFadeTimer / Mathf.Max(_volumeFadeDuration, MinFadeOutSeconds);
-            _baseVolume = Mathf.Lerp(_volumeFadeStart, _volumeFadeTarget, t);
+            _occluded = occluded;
+            _lowPassFilter.enabled = occluded;
             return true;
         }
 
-        private void ApplyCurrentRuntimeVolume()
+        private void ApplyRuntimeVolume()
         {
-            float fadeScale = 1f;
-            if (_state == AudioAgentRuntimeState.FadingIn)
-            {
-                fadeScale = _fadeInDuration > 0f ? _fadeInTimer / Mathf.Max(_fadeInDuration, MinFadeOutSeconds) : 1f;
-            }
-            else if (_state == AudioAgentRuntimeState.FadingOut)
-            {
-                fadeScale = _fadeTimer / Mathf.Max(_fadeDuration, MinFadeOutSeconds);
-            }
-
-            ApplyRuntimeVolume(fadeScale);
-        }
-
-        private void ApplyRuntimeVolume(float fadeScale)
-        {
-            if (_source == null)
-            {
-                return;
-            }
-
             float occlusionScale = _occluded ? _category.Config.OcclusionVolumeMultiplier : 1f;
-            _source.volume = _baseVolume * occlusionScale * fadeScale;
+            _source.volume = _volume.Value * _envelope.Value * occlusionScale;
         }
     }
 }

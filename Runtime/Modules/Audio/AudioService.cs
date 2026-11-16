@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using AlicizaX.Resource.Runtime;
 using Cysharp.Threading.Tasks;
@@ -10,64 +9,34 @@ namespace AlicizaX.Audio.Runtime
 {
     internal sealed class AudioService : ServiceBase, IAudioService, IAudioDebugService, IServiceTickable
     {
-        private const string InstanceRootName = "[AudioService Instances]";
-        private const int DefaultCacheCapacity = AudioServiceConfig.DefaultClipCacheCapacity;
-        private const float DefaultClipTtl = AudioServiceConfig.DefaultClipCacheTtl;
+        private static readonly AudioSpatialOptions DefaultSpatialOptions = default;
+        private static readonly AudioPlayOptions DefaultPlayOptions = default;
+        private static readonly AudioPlayOptions AsyncPlayOptions = new AudioPlayOptions { Async = true };
 
-        private static readonly string[] VolumeParameterNames =
-        {
-            "SoundVolume",
-            "UISoundVolume",
-            "MusicVolume",
-            "VoiceVolume",
-            "AmbientVolume"
-        };
-
-        private static readonly string[] CategoryRootNames =
-        {
-            "Audio Category - Sound",
-            "Audio Category - UISound",
-            "Audio Category - Music",
-            "Audio Category - Voice",
-            "Audio Category - Ambient"
-        };
-
+        private readonly AudioGroupConfig[] _configs;
         private readonly AudioCategory[] _categories = new AudioCategory[(int)AudioType.Max];
-        private readonly float[] _categoryVolumes = new float[(int)AudioType.Max];
-        private readonly bool[] _categoryEnables = new bool[(int)AudioType.Max];
-        private readonly AudioGroupConfig[] _configByType = new AudioGroupConfig[(int)AudioType.Max];
-
+        private readonly AudioHandleTable _handleTable;
+        private readonly AudioClipCacheTable _clipTable;
+        private readonly AudioMixer _audioMixer;
+        private readonly AudioListener _listener;
+        private readonly Transform _instanceRoot;
+        private readonly float _clipTtl;
+        private readonly AudioCachePolicy _defaultCachePolicy;
         private IResourceService _resourceService;
-        private AudioMixer _audioMixer;
-        private Transform _instanceRoot;
-        private readonly AudioHandleTable _handleTable = new AudioHandleTable();
-        private readonly AudioClipCacheTable _clipTable = new AudioClipCacheTable();
-        private AudioListener _listenerCache;
-        private int _clipCacheCapacity = DefaultCacheCapacity;
-        private float _clipTtl = DefaultClipTtl;
-        private AudioCachePolicy _defaultCachePolicy = AudioCachePolicy.Ttl;
         private float _volume = 1f;
         private bool _enable = true;
-        private bool _initialized;
-        private bool _isShuttingDown;
-        private bool _ownsInstanceRoot;
-        private bool _lowMemoryCallbackRegistered;
+        private bool _disposed;
 
         internal Transform InstanceRoot => _instanceRoot;
-        internal Transform ListenerTransform => _listenerCache != null && _listenerCache.enabled && _listenerCache.gameObject.activeInHierarchy
-            ? _listenerCache.transform
+        internal Transform ListenerTransform => _listener != null && _listener.enabled && _listener.gameObject.activeInHierarchy
+            ? _listener.transform
             : null;
+        internal AudioHandleTable Handles => _handleTable;
+        internal AudioClipCacheTable ClipTable => _clipTable;
         int IAudioDebugService.CategoryCount => _categories.Length;
         int IAudioDebugService.ClipCacheCount => _clipTable.Count;
-        internal AudioClipCacheTable ClipTable => _clipTable;
-        int IAudioDebugService.ClipCacheCapacity => _clipCacheCapacity;
-        float IAudioDebugService.ClipCacheTtl => _clipTtl;
-        AudioCachePolicy IAudioDebugService.DefaultCachePolicy => _defaultCachePolicy;
-        int IAudioDebugService.HandleCapacity => _handleTable.Capacity;
-        internal AudioAgent[] HandleAgents => _handleTable.Agents;
-        bool IAudioDebugService.Initialized => _initialized;
+        int IAudioDebugService.ClipCacheCapacity => _clipTable.Capacity;
         AudioClipCacheEntry IAudioDebugService.FirstClipCacheEntry => _clipTable.AllHead;
-        public int Priority => 0;
 
         public float Volume
         {
@@ -89,292 +58,129 @@ namespace AlicizaX.Audio.Runtime
             }
         }
 
+        internal AudioService(AudioGroupConfig[] groupConfigs, AudioListener listener, Transform instanceRoot, AudioMixer audioMixer,
+            AudioServiceConfig serviceConfig)
+        {
+            if (audioMixer == null)
+            {
+                throw new GameFrameworkException("AudioMixer is not assigned. Please assign an AudioMixer in the inspector.");
+            }
 
-        protected override void OnInitialize() { }
+            if (listener == null)
+            {
+                throw new GameFrameworkException("AudioListener is not assigned. Please assign an AudioListener in the inspector.");
+            }
+
+            if (instanceRoot == null)
+            {
+                throw new GameFrameworkException("Audio instance root is invalid.");
+            }
+
+            _configs = BuildConfigMap(groupConfigs);
+            int totalSourceCount = 0;
+            for (int i = 0; i < _configs.Length; i++)
+            {
+                totalSourceCount += _configs[i].MaxSourceCount;
+            }
+
+            _handleTable = new AudioHandleTable(totalSourceCount);
+            _clipTable = new AudioClipCacheTable(Mathf.Max(1, serviceConfig.ClipCacheCapacity));
+            _listener = listener;
+            _instanceRoot = instanceRoot;
+            _audioMixer = audioMixer;
+            _clipTtl = Mathf.Max(0f, serviceConfig.ClipCacheTtl);
+            _defaultCachePolicy = ResolveCachePolicy(serviceConfig.DefaultClipCachePolicy, AudioCachePolicy.Ttl);
+        }
+
+        protected override void OnInitialize()
+        {
+            _resourceService = Require<IResourceService>();
+            _instanceRoot.localScale = Vector3.one;
+            int globalIndexOffset = 0;
+            for (int i = 0; i < _categories.Length; i++)
+            {
+                _categories[i] = new AudioCategory(this, _configs[i], _audioMixer, _instanceRoot, globalIndexOffset);
+                globalIndexOffset += _configs[i].MaxSourceCount;
+            }
+
+            Application.lowMemory += OnLowMemory;
+        }
 
         protected override void OnDispose()
         {
-            Shutdown();
-        }
-
-        internal void Initialize(AudioGroupConfig[] audioGroupConfigs, AudioListener audioListener, Transform instanceRoot = null, AudioMixer audioMixer = null, AudioServiceConfig serviceConfig = null)
-        {
-            if (audioGroupConfigs == null || audioGroupConfigs.Length == 0)
+            _disposed = true;
+            Application.lowMemory -= OnLowMemory;
+            for (int i = 0; i < _categories.Length; i++)
             {
-                throw new GameFrameworkException("AudioGroupConfig[] is invalid.");
+                _categories[i].Shutdown();
             }
 
-            if (audioListener == null)
+            while (_clipTable.AllHead != null)
             {
-                throw new GameFrameworkException("AudioListener is invalid. Please provide a valid AudioListener.");
-            }
-
-            if (_isShuttingDown)
-            {
-                throw new InvalidOperationException("Audio service is shutting down.");
-            }
-
-            Shutdown();
-
-            try
-            {
-                ApplyServiceConfig(serviceConfig);
-                _listenerCache = audioListener;
-                BuildConfigMap(audioGroupConfigs);
-                InitializeAudioMixer(audioMixer);
-                _resourceService = AppServices.Require<IResourceService>();
-                InitializeInstanceRoot(instanceRoot);
-                InitializeHandleSystem();
-                InitializeCategories();
-                _initialized = true;
-                RegisterLowMemoryCallback();
-            }
-            catch
-            {
-                Shutdown();
-                throw;
-            }
-        }
-
-        private void ApplyServiceConfig(AudioServiceConfig config)
-        {
-            if (config == null)
-            {
-                _clipCacheCapacity = DefaultCacheCapacity;
-                _clipTtl = DefaultClipTtl;
-                _defaultCachePolicy = AudioCachePolicy.Ttl;
-                return;
-            }
-
-            _clipCacheCapacity = Mathf.Max(1, config.ClipCacheCapacity);
-            _clipTtl = Mathf.Max(0f, config.ClipCacheTtl);
-            _defaultCachePolicy = NormalizeDefaultCachePolicy(config.DefaultClipCachePolicy);
-        }
-
-        private void InitializeInstanceRoot(Transform instanceRoot)
-        {
-            if (instanceRoot != null)
-            {
-                _instanceRoot = instanceRoot;
-                _ownsInstanceRoot = false;
-            }
-            else
-            {
-                _instanceRoot = new GameObject(InstanceRootName).transform;
-                _ownsInstanceRoot = true;
-            }
-
-            _instanceRoot.localScale = Vector3.one;
-
-            if (_ownsInstanceRoot)
-            {
-                UnityEngine.Object.DontDestroyOnLoad(_instanceRoot.gameObject);
-            }
-        }
-
-        private void InitializeAudioMixer(AudioMixer audioMixer)
-        {
-            _audioMixer = audioMixer;
-            if (_audioMixer == null)
-            {
-                throw new GameFrameworkException("AudioMixer is invalid. Please provide a valid AudioMixer.");
-            }
-        }
-
-        private void InitializeHandleSystem()
-        {
-            int totalHandleCount = 0;
-            for (int i = 0; i < (int)AudioType.Max; i++)
-            {
-                AudioGroupConfig config = _configByType[i];
-                totalHandleCount += config.MaxSourceCount;
-            }
-
-            _handleTable.Initialize(totalHandleCount);
-            InitializeClipCacheTable();
-        }
-
-        private void InitializeCategories()
-        {
-            int globalIndexOffset = 0;
-            for (int i = 0; i < (int)AudioType.Max; i++)
-            {
-                AudioGroupConfig config = _configByType[i];
-                _categoryVolumes[i] = Mathf.Clamp(config.Volume, 0.0001f, 1f);
-                _categoryEnables[i] = !config.Mute;
-                _categories[i] = new AudioCategory(this, config, globalIndexOffset);
-                globalIndexOffset += config.MaxSourceCount;
-                ApplyMixerVolume(config, _categoryVolumes[i], _categoryEnables[i]);
+                RemoveClipEntry(_clipTable.AllHead);
             }
         }
 
         public ulong Play(AudioType type, string path, bool loop = false, float volume = 1f)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set2D(type, path, loop, volume, false, true);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, path, null, null, Vector3.zero, loop, false, volume, DefaultSpatialOptions, DefaultPlayOptions));
 
         public ulong PlayAsync(AudioType type, string path, bool loop = false, float volume = 1f)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set2D(type, path, loop, volume, true, true);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, path, null, null, Vector3.zero, loop, false, volume, DefaultSpatialOptions, AsyncPlayOptions));
 
         public ulong Play(AudioType type, string path, bool loop, float volume, in AudioPlayOptions options)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set2D(type, path, loop, volume, true, options);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, path, null, null, Vector3.zero, loop, false, volume, DefaultSpatialOptions, options));
 
         public ulong Play(AudioType type, AudioClip clip, bool loop = false, float volume = 1f)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set2D(type, clip, loop, volume);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, null, clip, null, Vector3.zero, loop, false, volume, DefaultSpatialOptions, DefaultPlayOptions));
 
         public ulong Play(AudioType type, AudioClip clip, bool loop, float volume, in AudioPlayOptions options)
-        {
-            if (clip == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set2D(type, clip, loop, volume, options);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, null, clip, null, Vector3.zero, loop, false, volume, DefaultSpatialOptions, options));
 
         public ulong Play3D(AudioType type, string path, in Vector3 position, bool loop = false, float volume = 1f)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set3D(type, path, position, loop, volume, false, true);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, path, null, null, position, loop, true, volume, DefaultSpatialOptions, DefaultPlayOptions));
 
         public ulong Play3DAsync(AudioType type, string path, in Vector3 position, bool loop = false, float volume = 1f)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set3D(type, path, position, loop, volume, true, true);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, path, null, null, position, loop, true, volume, DefaultSpatialOptions, AsyncPlayOptions));
 
         public ulong Play3D(AudioType type, string path, in Vector3 position, bool loop, float volume, in AudioSpatialOptions spatial, in AudioPlayOptions options)
-        {
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set3D(type, path, position, loop, volume, true, spatial, options);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, path, null, null, position, loop, true, volume, spatial, options));
 
         public ulong Play3D(AudioType type, AudioClip clip, in Vector3 position, bool loop = false, float volume = 1f)
-        {
-            if (clip == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set3D(type, clip, position, loop, volume);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, null, clip, null, position, loop, true, volume, DefaultSpatialOptions, DefaultPlayOptions));
 
         public ulong Play3D(AudioType type, AudioClip clip, in Vector3 position, bool loop, float volume, in AudioSpatialOptions spatial, in AudioPlayOptions options)
-        {
-            if (clip == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.Set3D(type, clip, position, loop, volume, spatial, options);
-            return Play(request);
-        }
+            => Play(new AudioPlayRequest(type, null, clip, null, position, loop, true, volume, spatial, options));
 
         public ulong PlayFollow(AudioType type, string path, Transform target, in Vector3 localOffset, bool loop = false, float volume = 1f)
-        {
-            if (target == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.SetFollow(type, path, target, localOffset, loop, volume, false, true);
-            return Play(request);
-        }
+            => target == null ? 0UL : Play(new AudioPlayRequest(type, path, null, target, localOffset, loop, true, volume, DefaultSpatialOptions, DefaultPlayOptions));
 
         public ulong PlayFollowAsync(AudioType type, string path, Transform target, in Vector3 localOffset, bool loop = false, float volume = 1f)
-        {
-            if (target == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.SetFollow(type, path, target, localOffset, loop, volume, true, true);
-            return Play(request);
-        }
+            => target == null ? 0UL : Play(new AudioPlayRequest(type, path, null, target, localOffset, loop, true, volume, DefaultSpatialOptions, AsyncPlayOptions));
 
         public ulong PlayFollow(AudioType type, string path, Transform target, in Vector3 localOffset, bool loop, float volume, in AudioSpatialOptions spatial, in AudioPlayOptions options)
-        {
-            if (target == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.SetFollow(type, path, target, localOffset, loop, volume, true, spatial, options);
-            return Play(request);
-        }
+            => target == null ? 0UL : Play(new AudioPlayRequest(type, path, null, target, localOffset, loop, true, volume, spatial, options));
 
         public ulong PlayFollow(AudioType type, AudioClip clip, Transform target, in Vector3 localOffset, bool loop = false, float volume = 1f)
-        {
-            if (target == null || clip == null)
-            {
-                return 0UL;
-            }
-
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.SetFollow(type, clip, target, localOffset, loop, volume);
-            return Play(request);
-        }
+            => target == null ? 0UL : Play(new AudioPlayRequest(type, null, clip, target, localOffset, loop, true, volume, DefaultSpatialOptions, DefaultPlayOptions));
 
         public ulong PlayFollow(AudioType type, AudioClip clip, Transform target, in Vector3 localOffset, bool loop, float volume, in AudioSpatialOptions spatial, in AudioPlayOptions options)
+            => target == null ? 0UL : Play(new AudioPlayRequest(type, null, clip, target, localOffset, loop, true, volume, spatial, options));
+
+        private ulong Play(in AudioPlayRequest request)
         {
-            if (target == null || clip == null)
+            int index = (int)request.Type;
+            if (_disposed || (uint)index >= (uint)_categories.Length)
             {
                 return 0UL;
             }
 
-            AudioPlayRequest request = MemoryPool.Acquire<AudioPlayRequest>();
-            request.SetFollow(type, clip, target, localOffset, loop, volume, spatial, options);
-            return Play(request);
-        }
-
-        internal ulong Play(AudioPlayRequest request)
-        {
-            try
-            {
-                int index = (int)request.Type;
-                if (!_initialized || (uint)index >= (uint)_categories.Length ||
-                    (request.Clip == null && string.IsNullOrEmpty(request.Address)))
-                {
-                    return 0UL;
-                }
-
-                return _categories[index].Play(request);
-            }
-            finally
-            {
-                MemoryPool.Release(request);
-            }
+            bool hasSource = request.Address == null ? request.Clip != null : request.Address.Length > 0;
+            return hasSource ? _categories[index].Play(in request) : 0UL;
         }
 
         public bool Stop(ulong handle, bool fadeout = false)
         {
-            AudioAgent agent = ResolveHandle(handle);
+            AudioAgent agent = _handleTable.Resolve(handle);
             if (agent == null)
             {
                 return false;
@@ -386,7 +192,7 @@ namespace AlicizaX.Audio.Runtime
 
         public bool Stop(ulong handle, float fadeOutSeconds)
         {
-            AudioAgent agent = ResolveHandle(handle);
+            AudioAgent agent = _handleTable.Resolve(handle);
             if (agent == null)
             {
                 return false;
@@ -398,7 +204,7 @@ namespace AlicizaX.Audio.Runtime
 
         public bool SetVolume(ulong handle, float volume, float fadeSeconds = 0f)
         {
-            AudioAgent agent = ResolveHandle(handle);
+            AudioAgent agent = _handleTable.Resolve(handle);
             if (agent == null)
             {
                 return false;
@@ -410,14 +216,14 @@ namespace AlicizaX.Audio.Runtime
 
         public bool IsPlaying(ulong handle)
         {
-            AudioAgent agent = ResolveHandle(handle);
+            AudioAgent agent = _handleTable.Resolve(handle);
             return agent != null && agent.IsPlayingState;
         }
 
         public void Stop(AudioType type, bool fadeout)
         {
             int index = (int)type;
-            if ((uint)index < (uint)_categories.Length && _categories[index] != null)
+            if ((uint)index < (uint)_categories.Length)
             {
                 _categories[index].Stop(fadeout);
             }
@@ -427,28 +233,17 @@ namespace AlicizaX.Audio.Runtime
         {
             for (int i = 0; i < _categories.Length; i++)
             {
-                AudioCategory category = _categories[i];
-                if (category != null)
-                {
-                    category.Stop(fadeout);
-                }
+                _categories[i].Stop(fadeout);
             }
         }
 
         public void Warmup(AudioType type, int count)
         {
-            if (!_initialized || count <= 0)
-            {
-                return;
-            }
-
             int index = (int)type;
-            if ((uint)index >= (uint)_categories.Length)
+            if (!_disposed && (uint)index < (uint)_categories.Length)
             {
-                return;
+                _categories[index].Warmup(count);
             }
-
-            _categories[index].Warmup(count);
         }
 
         public bool Preload(string address, AudioCachePolicy policy = AudioCachePolicy.Ttl)
@@ -463,12 +258,7 @@ namespace AlicizaX.Audio.Runtime
                 return true;
             }
 
-            if (entry.Loading)
-            {
-                return false;
-            }
-
-            return BeginLoad(entry, false);
+            return !entry.Loading && BeginLoad(entry, false);
         }
 
         public void PreloadAsync(string address, AudioCachePolicy policy, Action<bool> completed = null)
@@ -497,7 +287,7 @@ namespace AlicizaX.Audio.Runtime
 
         public bool Unload(string address, bool force = false)
         {
-            if (string.IsNullOrEmpty(address) || !TryGetClipEntry(address, out AudioClipCacheEntry entry))
+            if (string.IsNullOrEmpty(address) || !_clipTable.TryGet(address, AudioClipCacheTable.Hash(address), out AudioClipCacheEntry entry))
                 return false;
 
             // force 只允许取消仅有 preload 等待者的条目，绝不摘除正在播放的 agent 依赖的资源。
@@ -518,68 +308,63 @@ namespace AlicizaX.Audio.Runtime
                 {
                     RemoveClipEntry(entry);
                 }
+
                 entry = next;
             }
         }
 
-        private void OnLowMemory()
+        public float GetCategoryVolume(AudioType type)
         {
-            if (_initialized)
+            int index = (int)type;
+            return (uint)index < (uint)_categories.Length ? _categories[index].Volume : 0f;
+        }
+
+        public void SetCategoryVolume(AudioType type, float value)
+        {
+            int index = (int)type;
+            if ((uint)index < (uint)_categories.Length)
             {
-                ClearCache();
+                _categories[index].SetVolume(value);
             }
         }
 
-        private static bool CanUnloadCacheEntry(AudioClipCacheEntry entry)
+        public bool GetCategoryEnable(AudioType type)
         {
-            return entry.RefCount == 0 && !entry.Loading && entry.PendingHead == null;
+            int index = (int)type;
+            return (uint)index < (uint)_categories.Length && _categories[index].Enabled;
         }
 
-        private static bool HasAgentWaiter(AudioClipCacheEntry entry)
+        public void SetCategoryEnable(AudioType type, bool value)
         {
-            for (AudioLoadRequest request = entry.PendingHead; request != null; request = request.Next)
+            int index = (int)type;
+            if ((uint)index < (uint)_categories.Length)
             {
-                if (request.Agent != null)
-                    return true;
+                _categories[index].Enabled = value;
             }
-
-            return false;
         }
-
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            if (!_initialized)
-            {
-                return;
-            }
+            Advance(Time.unscaledDeltaTime, Time.realtimeSinceStartup);
+        }
 
+        internal void Advance(float unscaledDeltaTime, float now)
+        {
+            Transform listener = ListenerTransform;
             for (int i = 0; i < _categories.Length; i++)
             {
-                _categories[i].Update(deltaTime);
+                _categories[i].Update(unscaledDeltaTime, now, listener);
             }
 
-            TrimClipCache();
+            while (_clipTable.LruHead != null && now - _clipTable.LruHead.LastUseTime >= _clipTtl)
+            {
+                RemoveClipEntry(_clipTable.LruHead);
+            }
         }
 
-        internal ulong AllocateHandle(AudioAgent agent)
+        internal bool RequestClip(string address, bool async, AudioCachePolicy cachePolicy, AudioAgent agent)
         {
-            return _handleTable.Allocate(agent);
-        }
-
-        internal void ReleaseHandle(AudioAgent agent)
-        {
-            _handleTable.Release(agent);
-        }
-
-        private AudioAgent ResolveHandle(ulong handle)
-        {
-            return _handleTable.Resolve(handle);
-        }
-
-        internal bool RequestClip(string address, bool async, AudioCachePolicy cachePolicy, AudioAgent agent, int generation)
-        {
-            AudioCachePolicy resolvedPolicy = ResolveCachePolicy(cachePolicy);
+            AudioCachePolicy resolvedPolicy = ResolveCachePolicy(cachePolicy, _defaultCachePolicy);
             AudioClipCacheEntry entry = GetOrCreateClipEntry(address, resolvedPolicy);
             if (entry == null)
             {
@@ -589,39 +374,26 @@ namespace AlicizaX.Audio.Runtime
             UpgradeCachePolicy(entry, resolvedPolicy);
             if (entry.IsLoaded)
             {
-                return agent.OnClipReady(entry, generation);
+                agent.OnClipReady(entry);
+                return true;
             }
 
             AudioLoadRequest request = MemoryPool.Acquire<AudioLoadRequest>();
             request.Agent = agent;
-            request.Generation = generation;
             entry.AddPending(request);
             agent.SetLoadRequest(request);
             if (!entry.Loading)
             {
-                return BeginLoad(entry, async);
+                try
+                {
+                    BeginLoad(entry, async);
+                }
+                catch (Exception exception)
+                {
+                    AlicizaX.Log.Exception(exception);
+                }
             }
 
-            return true;
-        }
-
-        private bool TryPreparePreload(string address, AudioCachePolicy policy, out AudioClipCacheEntry entry)
-        {
-            entry = null;
-            if (!_initialized || string.IsNullOrEmpty(address))
-            {
-                return false;
-            }
-
-            AudioCachePolicy resolvedPolicy = ResolveCachePolicy(policy);
-            entry = GetOrCreateClipEntry(address, resolvedPolicy);
-            if (entry == null)
-            {
-                return false;
-            }
-
-            UpgradeCachePolicy(entry, resolvedPolicy);
-            TouchClip(entry);
             return true;
         }
 
@@ -639,7 +411,7 @@ namespace AlicizaX.Audio.Runtime
         internal void RetainClip(AudioClipCacheEntry entry)
         {
             entry.RefCount++;
-            RemoveFromLru(entry);
+            _clipTable.RemoveFromLru(entry);
         }
 
         internal void ReleaseClip(AudioClipCacheEntry entry)
@@ -658,13 +430,124 @@ namespace AlicizaX.Audio.Runtime
             entry.LastUseTime = Time.realtimeSinceStartup;
             if (!entry.Pinned)
             {
-                AddToLruTail(entry);
+                _clipTable.AddToLruTail(entry);
             }
+        }
+
+        void IAudioDebugService.FillServiceDebugInfo(AudioServiceDebugInfo info)
+        {
+            info.Initialized = !_disposed;
+            info.Enable = _enable;
+            info.Volume = _volume;
+            info.CategoryCount = _categories.Length;
+            info.ActiveAgentCount = 0;
+            info.TotalSourceCount = 0;
+            for (int i = 0; i < _categories.Length; i++)
+            {
+                info.ActiveAgentCount += _categories[i].ActiveCount;
+                info.TotalSourceCount += _categories[i].CreatedCount;
+            }
+
+            info.HandleCapacity = _handleTable.Capacity;
+            info.ClipCacheCount = _clipTable.Count;
+            info.ClipCacheCapacity = _clipTable.Capacity;
+            info.ClipCacheTtl = _clipTtl;
+            info.DefaultCachePolicy = _defaultCachePolicy;
+            info.LoadingClipCount = 0;
+            info.CachePolicyNoneCount = 0;
+            info.CachePolicyTtlCount = 0;
+            info.CachePolicyPinCount = 0;
+            for (AudioClipCacheEntry entry = _clipTable.AllHead; entry != null; entry = entry.AllNext)
+            {
+                if (entry.Loading)
+                {
+                    info.LoadingClipCount++;
+                }
+
+                switch (entry.CachePolicy)
+                {
+                    case AudioCachePolicy.None:
+                        info.CachePolicyNoneCount++;
+                        break;
+                    case AudioCachePolicy.Pin:
+                        info.CachePolicyPinCount++;
+                        break;
+                    default:
+                        info.CachePolicyTtlCount++;
+                        break;
+                }
+            }
+
+            info.Listener = _listener;
+            info.InstanceRoot = _instanceRoot;
+        }
+
+        void IAudioDebugService.FillCategoryDebugInfo(int typeIndex, AudioCategoryDebugInfo info)
+        {
+            _categories[typeIndex].FillDebugInfo(info);
+        }
+
+        bool IAudioDebugService.FillAgentDebugInfo(int typeIndex, int agentIndex, AudioAgentDebugInfo info)
+        {
+            if (!_categories[typeIndex].TryGetAgent(agentIndex, out AudioAgent agent))
+            {
+                return false;
+            }
+
+            agent.FillDebugInfo(info);
+            return true;
+        }
+
+        void IAudioDebugService.FillClipCacheDebugInfo(AudioClipCacheEntry entry, AudioClipCacheDebugInfo info)
+        {
+            entry.FillDebugInfo(info);
+        }
+
+        private void OnLowMemory()
+        {
+            ClearCache();
+        }
+
+        private static bool CanUnloadCacheEntry(AudioClipCacheEntry entry)
+        {
+            return entry.RefCount == 0 && !entry.Loading && entry.PendingHead == null;
+        }
+
+        private static bool HasAgentWaiter(AudioClipCacheEntry entry)
+        {
+            for (AudioLoadRequest request = entry.PendingHead; request != null; request = request.Next)
+            {
+                if (request.Agent != null)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool TryPreparePreload(string address, AudioCachePolicy policy, out AudioClipCacheEntry entry)
+        {
+            entry = null;
+            if (_disposed || string.IsNullOrEmpty(address))
+            {
+                return false;
+            }
+
+            AudioCachePolicy resolvedPolicy = ResolveCachePolicy(policy, _defaultCachePolicy);
+            entry = GetOrCreateClipEntry(address, resolvedPolicy);
+            if (entry == null)
+            {
+                return false;
+            }
+
+            UpgradeCachePolicy(entry, resolvedPolicy);
+            entry.LastUseTime = Time.realtimeSinceStartup;
+            _clipTable.MoveLruToTail(entry);
+            return true;
         }
 
         private bool OnClipLoadCompleted(AudioClipCacheEntry entry, ulong version, AssetLease<AudioClip> lease)
         {
-            if (!ReferenceEquals(entry.Owner, this) || entry.Version != version)
+            if (entry.Version != version)
             {
                 lease.Dispose();
                 return false;
@@ -673,14 +556,16 @@ namespace AlicizaX.Audio.Runtime
             entry.Loading = false;
             AudioClip clip = lease.Asset;
             bool success = clip != null;
-            if (!success)
+            if (success)
+            {
+                entry.Lease = lease;
+                entry.Clip = clip;
+            }
+            else
             {
                 lease.Dispose();
             }
 
-            entry.Lease.Dispose();
-            entry.Lease = lease;
-            entry.Clip = clip;
             RetainClip(entry);
             AudioLoadRequest callbacks = CompleteLoadRequests(entry, success);
             ReleaseClip(entry);
@@ -705,11 +590,11 @@ namespace AlicizaX.Audio.Runtime
                 {
                     if (success)
                     {
-                        request.Agent.OnClipReady(entry, request.Generation);
+                        request.Agent.OnClipReady(entry);
                     }
                     else
                     {
-                        request.Agent.OnClipLoadFailed(request.Generation);
+                        request.Agent.OnClipLoadFailed();
                     }
                 }
 
@@ -757,151 +642,6 @@ namespace AlicizaX.Audio.Runtime
             }
         }
 
-        public float GetCategoryVolume(AudioType type)
-        {
-            int index = (int)type;
-            return (uint)index < (uint)_categoryVolumes.Length ? _categoryVolumes[index] : 0f;
-        }
-
-        public void SetCategoryVolume(AudioType type, float value)
-        {
-            int index = (int)type;
-            if ((uint)index >= (uint)_categoryVolumes.Length)
-            {
-                return;
-            }
-
-            float volume = Mathf.Clamp(value, 0.0001f, 1f);
-            _categoryVolumes[index] = volume;
-            AudioGroupConfig config = _configByType[index];
-            ApplyMixerVolume(config, volume, _categoryEnables[index]);
-        }
-
-        public bool GetCategoryEnable(AudioType type)
-        {
-            int index = (int)type;
-            return (uint)index < (uint)_categoryEnables.Length && _categoryEnables[index];
-        }
-
-        public void SetCategoryEnable(AudioType type, bool value)
-        {
-            int index = (int)type;
-            if ((uint)index >= (uint)_categoryEnables.Length)
-            {
-                return;
-            }
-
-            _categoryEnables[index] = value;
-            AudioCategory category = _categories[index];
-            if (category != null)
-            {
-                category.Enabled = value;
-            }
-
-            AudioGroupConfig config = _configByType[index];
-            ApplyMixerVolume(config, _categoryVolumes[index], value);
-        }
-
-        void IAudioDebugService.FillServiceDebugInfo(AudioServiceDebugInfo info)
-        {
-            if (info == null)
-            {
-                return;
-            }
-
-            info.Initialized = _initialized;
-            info.Enable = Enable;
-            info.Volume = Volume;
-            info.CategoryCount = _categories.Length;
-            info.ActiveAgentCount = CountActiveAgents();
-            info.ActiveSourceCount = info.ActiveAgentCount;
-            info.TotalSourceCount = CountTotalSources();
-            info.HandleCapacity = _handleTable.Capacity;
-            info.ClipCacheCount = _clipTable.Count;
-            info.ClipCacheCapacity = _clipCacheCapacity;
-            info.ClipCacheTtl = _clipTtl;
-            info.DefaultCachePolicy = _defaultCachePolicy;
-            FillCacheAggregateDebugInfo(info);
-            info.Listener = _listenerCache;
-            info.InstanceRoot = _instanceRoot;
-        }
-
-        bool IAudioDebugService.FillCategoryDebugInfo(int typeIndex, AudioCategoryDebugInfo info)
-        {
-            if (info == null || (uint)typeIndex >= (uint)_categories.Length)
-            {
-                return false;
-            }
-
-            AudioCategory category = _categories[typeIndex];
-            if (category == null)
-            {
-                info.Clear();
-                info.Type = (AudioType)typeIndex;
-                return false;
-            }
-
-            category.FillDebugInfo(_categoryVolumes[typeIndex], info);
-            return true;
-        }
-
-        bool IAudioDebugService.FillAgentDebugInfo(int typeIndex, int agentIndex, AudioAgentDebugInfo info)
-        {
-            if (info == null || (uint)typeIndex >= (uint)_categories.Length)
-            {
-                return false;
-            }
-
-            AudioCategory category = _categories[typeIndex];
-            if (category == null || !category.TryGetAgent(agentIndex, out AudioAgent agent))
-            {
-                info.Clear();
-                return false;
-            }
-
-            agent.FillDebugInfo(info);
-            return true;
-        }
-
-        bool IAudioDebugService.FillClipCacheDebugInfo(AudioClipCacheEntry entry, AudioClipCacheDebugInfo info)
-        {
-            if (entry == null || info == null)
-            {
-                return false;
-            }
-
-            entry.FillDebugInfo(info);
-            return true;
-        }
-
-        private void ApplyMixerVolume(AudioGroupConfig config, float volume, bool enabled)
-        {
-            if (_audioMixer == null || config == null)
-            {
-                return;
-            }
-
-            string parameter = string.IsNullOrEmpty(config.ExposedVolumeParameter)
-                ? VolumeParameterNames[(int)config.AudioType]
-                : config.ExposedVolumeParameter;
-            _audioMixer.SetFloat(parameter, enabled ? Mathf.Log10(volume) * 20f : -80f);
-        }
-
-        private void InitializeClipCacheTable()
-        {
-            _clipTable.Initialize(_clipCacheCapacity);
-        }
-
-        private bool TryGetClipEntry(string address, out AudioClipCacheEntry entry)
-        {
-            return _clipTable.TryGet(address, AudioClipCacheTable.Hash(address), out entry);
-        }
-
-        private bool TryGetClipEntry(string address, int hash, out AudioClipCacheEntry entry)
-        {
-            return _clipTable.TryGet(address, hash, out entry);
-        }
-
         private AudioClipCacheEntry GetOrCreateClipEntry(string address, AudioCachePolicy cachePolicy)
         {
             int hash = AudioClipCacheTable.Hash(address);
@@ -911,12 +651,12 @@ namespace AlicizaX.Audio.Runtime
             int slotIndex = AcquireClipSlot();
             if (slotIndex < 0)
             {
-                AlicizaX.Log.Warning($"Audio clip cache is full ({_clipCacheCapacity} slots, all pinned or loading); '{address}' cannot be admitted.");
+                AlicizaX.Log.Warning($"Audio clip cache is full ({_clipTable.Capacity} slots, all pinned or loading); '{address}' cannot be admitted.");
                 return null;
             }
 
             entry = MemoryPool.Acquire<AudioClipCacheEntry>();
-            entry.Initialize(this, address, hash, cachePolicy, slotIndex);
+            entry.Initialize(address, hash, cachePolicy, slotIndex);
             _clipTable.Add(entry);
             _clipTable.AddToAllList(entry);
             return entry;
@@ -938,7 +678,7 @@ namespace AlicizaX.Audio.Runtime
             if (policy == AudioCachePolicy.Pin)
             {
                 entry.CachePolicy = AudioCachePolicy.Pin;
-                RemoveFromLru(entry);
+                _clipTable.RemoveFromLru(entry);
                 return;
             }
 
@@ -948,32 +688,9 @@ namespace AlicizaX.Audio.Runtime
             }
         }
 
-        private AudioCachePolicy ResolveCachePolicy(AudioCachePolicy policy)
+        private static AudioCachePolicy ResolveCachePolicy(AudioCachePolicy policy, AudioCachePolicy fallback)
         {
-            switch (policy)
-            {
-                case AudioCachePolicy.None:
-                case AudioCachePolicy.Ttl:
-                case AudioCachePolicy.Pin:
-                    return policy;
-                case AudioCachePolicy.Default:
-                default:
-                    return _defaultCachePolicy;
-            }
-        }
-
-        private static AudioCachePolicy NormalizeDefaultCachePolicy(AudioCachePolicy policy)
-        {
-            switch (policy)
-            {
-                case AudioCachePolicy.None:
-                case AudioCachePolicy.Ttl:
-                case AudioCachePolicy.Pin:
-                    return policy;
-                case AudioCachePolicy.Default:
-                default:
-                    return AudioCachePolicy.Ttl;
-            }
+            return policy is AudioCachePolicy.None or AudioCachePolicy.Ttl or AudioCachePolicy.Pin ? policy : fallback;
         }
 
         private int AcquireClipSlot()
@@ -990,19 +707,14 @@ namespace AlicizaX.Audio.Runtime
             return _clipTable.AcquireSlot();
         }
 
-        private void ReleaseClipSlot(AudioClipCacheEntry entry)
-        {
-            _clipTable.ReleaseSlot(entry);
-        }
-
         private bool BeginLoad(AudioClipCacheEntry entry, bool async)
         {
-            RemoveFromLru(entry);
             entry.Loading = true;
+            ulong version = entry.Version;
             if (async)
             {
                 entry.Cancellation ??= new CancellationTokenSource();
-                BeginLoadAsync(entry, entry.Version, entry.Cancellation.Token).Forget();
+                LoadClipAsync(entry, version, entry.Cancellation.Token).Forget();
                 return true;
             }
 
@@ -1013,14 +725,14 @@ namespace AlicizaX.Audio.Runtime
             }
             catch
             {
-                OnClipLoadCompleted(entry, entry.Version, default);
+                OnClipLoadCompleted(entry, version, default);
                 throw;
             }
 
-            return OnClipLoadCompleted(entry, entry.Version, lease);
+            return OnClipLoadCompleted(entry, version, lease);
         }
 
-        private async UniTaskVoid BeginLoadAsync(AudioClipCacheEntry entry, ulong version, CancellationToken cancellationToken)
+        private async UniTaskVoid LoadClipAsync(AudioClipCacheEntry entry, ulong version, CancellationToken cancellationToken)
         {
             AssetLease<AudioClip> lease;
             try
@@ -1029,8 +741,6 @@ namespace AlicizaX.Audio.Runtime
             }
             catch (Exception exception)
             {
-                // 异步抛出时已没有调用方可以观察；OnClipLoadCompleted 会让所有等待者失败。
-                // 这里只记录一次并完成，避免产生未观察异常。
                 AlicizaX.Log.Exception(exception);
                 OnClipLoadCompleted(entry, version, default);
                 return;
@@ -1039,68 +749,25 @@ namespace AlicizaX.Audio.Runtime
             OnClipLoadCompleted(entry, version, lease);
         }
 
-        private void TouchClip(AudioClipCacheEntry entry)
-        {
-            entry.LastUseTime = Time.realtimeSinceStartup;
-            MoveLruToTail(entry);
-        }
-
-        private void TrimClipCache()
-        {
-            float now = Time.realtimeSinceStartup;
-            while (_clipTable.LruHead != null && now - _clipTable.LruHead.LastUseTime >= _clipTtl)
-            {
-                RemoveClipEntry(_clipTable.LruHead);
-            }
-        }
-
-        private void RegisterLowMemoryCallback()
-        {
-            if (_lowMemoryCallbackRegistered)
-            {
-                return;
-            }
-
-            Application.lowMemory += OnLowMemory;
-            _lowMemoryCallbackRegistered = true;
-        }
-
-        private void UnregisterLowMemoryCallback()
-        {
-            if (!_lowMemoryCallbackRegistered)
-            {
-                return;
-            }
-
-            Application.lowMemory -= OnLowMemory;
-            _lowMemoryCallbackRegistered = false;
-        }
-
         private void RemoveClipEntry(AudioClipCacheEntry entry)
         {
             _clipTable.Remove(entry);
             _clipTable.RemoveFromLru(entry);
             _clipTable.RemoveFromAllList(entry);
-            ReleaseClipSlot(entry);
+            _clipTable.ReleaseSlot(entry);
             AudioLoadRequest callbacks = CompleteLoadRequests(entry, false);
             MemoryPool.Release(entry);
             CompletePreloads(callbacks, false);
         }
 
-        private void AddToLruTail(AudioClipCacheEntry entry) => _clipTable.AddToLruTail(entry);
-
-        private void RemoveFromLru(AudioClipCacheEntry entry) => _clipTable.RemoveFromLru(entry);
-
-        private void MoveLruToTail(AudioClipCacheEntry entry) => _clipTable.MoveLruToTail(entry);
-
-        private void AddToAllList(AudioClipCacheEntry entry) => _clipTable.AddToAllList(entry);
-
-        private void RemoveFromAllList(AudioClipCacheEntry entry) => _clipTable.RemoveFromAllList(entry);
-
-        private void BuildConfigMap(AudioGroupConfig[] configs)
+        private static AudioGroupConfig[] BuildConfigMap(AudioGroupConfig[] configs)
         {
-            Array.Clear(_configByType, 0, _configByType.Length);
+            if (configs == null || configs.Length == 0)
+            {
+                throw new GameFrameworkException("AudioGroupConfig[] is invalid.");
+            }
 
+            var map = new AudioGroupConfig[(int)AudioType.Max];
             for (int i = 0; i < configs.Length; i++)
             {
                 AudioGroupConfig config = configs[i];
@@ -1110,185 +777,31 @@ namespace AlicizaX.Audio.Runtime
                 }
 
                 int index = (int)config.AudioType;
-                if ((uint)index < (uint)_configByType.Length)
+                if ((uint)index < (uint)map.Length)
                 {
-                    if (_configByType[index] != null)
+                    if (map[index] != null)
                     {
                         throw new GameFrameworkException("AudioGroupConfig[] contains duplicate AudioType.");
                     }
 
-                    _configByType[index] = config;
+                    map[index] = config;
                 }
             }
 
-            for (int i = 0; i < _configByType.Length; i++)
+            for (int i = 0; i < map.Length; i++)
             {
-                AudioGroupConfig config = _configByType[i];
-                if (config == null)
+                if (map[i] == null)
                 {
                     throw new GameFrameworkException("AudioGroupConfig[] must contain every AudioType.");
                 }
 
-                if (config.MixerGroup == null)
+                if (map[i].MixerGroup == null)
                 {
                     throw new GameFrameworkException("AudioGroupConfig.MixerGroup is invalid.");
                 }
             }
-        }
 
-        private int CountActiveAgents()
-        {
-            int count = 0;
-            for (int i = 0; i < _categories.Length; i++)
-            {
-                AudioCategory category = _categories[i];
-                if (category != null)
-                {
-                    count += category.ActiveCount;
-                }
-            }
-
-            return count;
-        }
-
-        private int CountTotalSources()
-        {
-            int count = 0;
-            for (int i = 0; i < _categories.Length; i++)
-            {
-                AudioCategory category = _categories[i];
-                if (category != null)
-                {
-                    count += category.CreatedCount;
-                }
-            }
-
-            return count;
-        }
-
-        private void FillCacheAggregateDebugInfo(AudioServiceDebugInfo info)
-        {
-            info.LoadingClipCount = 0;
-            info.PinnedClipCount = 0;
-            info.CachePolicyNoneCount = 0;
-            info.CachePolicyTtlCount = 0;
-            info.CachePolicyPinCount = 0;
-
-            AudioClipCacheEntry entry = _clipTable.AllHead;
-            while (entry != null)
-            {
-                if (entry.Loading)
-                {
-                    info.LoadingClipCount++;
-                }
-
-                if (entry.Pinned)
-                {
-                    info.PinnedClipCount++;
-                }
-
-                switch (entry.CachePolicy)
-                {
-                    case AudioCachePolicy.None:
-                        info.CachePolicyNoneCount++;
-                        break;
-                    case AudioCachePolicy.Pin:
-                        info.CachePolicyPinCount++;
-                        break;
-                    case AudioCachePolicy.Ttl:
-                    case AudioCachePolicy.Default:
-                    default:
-                        info.CachePolicyTtlCount++;
-                        break;
-                }
-
-                entry = entry.AllNext;
-            }
-        }
-
-        internal void Shutdown()
-        {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            _isShuttingDown = true;
-            List<Exception> errors = null;
-            try
-            {
-                try { UnregisterLowMemoryCallback(); }
-                catch (Exception exception) { (errors ??= new List<Exception>()).Add(exception); }
-
-                _initialized = false;
-                try { StopAll(false); }
-                catch (Exception exception) { (errors ??= new List<Exception>()).Add(exception); }
-
-                for (int i = 0; i < _categories.Length; i++)
-                {
-                    AudioCategory category = _categories[i];
-                    if (category == null)
-                        continue;
-                    try { category.Shutdown(); }
-                    catch (Exception exception) { (errors ??= new List<Exception>()).Add(exception); }
-                    finally { _categories[i] = null; }
-                }
-
-                while (_clipTable.AllHead != null)
-                {
-                    try { RemoveClipEntry(_clipTable.AllHead); }
-                    catch (Exception exception)
-                    {
-                        (errors ??= new List<Exception>()).Add(exception);
-                        // RemoveClipEntry 可能在摘链前失败；直接跳出，避免死循环。
-                        break;
-                    }
-                }
-            }
-            finally
-            {
-                // 字段清理必须无条件执行：抛异常的回调不能让服务永久停留在
-                // “正在关闭”状态并残留旧数组。
-                _handleTable.Clear();
-                _clipTable.Clear();
-                _clipCacheCapacity = DefaultCacheCapacity;
-                _clipTtl = DefaultClipTtl;
-                _defaultCachePolicy = AudioCachePolicy.Ttl;
-                Array.Clear(_configByType, 0, _configByType.Length);
-                _resourceService = null;
-                _audioMixer = null;
-                _listenerCache = null;
-
-                try { DestroyOwnedRoot(); }
-                catch (Exception exception) { (errors ??= new List<Exception>()).Add(exception); }
-
-                _isShuttingDown = false;
-            }
-
-            if (errors != null)
-                throw new AggregateException(errors);
-        }
-
-        private void DestroyOwnedRoot()
-        {
-            if (_ownsInstanceRoot && _instanceRoot != null)
-            {
-                if (Application.isPlaying)
-                {
-                    UnityEngine.Object.Destroy(_instanceRoot.gameObject);
-                }
-                else
-                {
-                    UnityEngine.Object.DestroyImmediate(_instanceRoot.gameObject);
-                }
-            }
-
-            _instanceRoot = null;
-            _ownsInstanceRoot = false;
-        }
-        internal static string GetCategoryRootName(AudioType type)
-        {
-            return CategoryRootNames[(int)type];
+            return map;
         }
     }
 }

@@ -15,3 +15,11 @@ jobs:
     with:
       package_json_path: package.json
     secrets: inherit
+
+  notify:
+    needs: publish-release
+    if: needs.publish-release.outputs.released == 'true'
+    uses: AlicizaX/public-github-actions-Public/.github/workflows/qq-notify.yml@main
+    with:
+      release_tag: ${{ needs.publish-release.outputs.tag }}
+    secrets: inherit

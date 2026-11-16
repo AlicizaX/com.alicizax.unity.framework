@@ -85,7 +85,7 @@ namespace AlicizaX.Resource.Tests
             MemoryPoolRegistry.InitializeMainThread();
             AppServices.GetOrCreateRegistry();
             AppServices.Register<IResourceService>(f.Service);
-            var timer = new TimerService(256);
+            var timer = new TimerService();
             AppServices.Register<ITimerService>(timer);
             uiRoot = f.Keep(new GameObject("ResourceUIRoot", typeof(RectTransform), typeof(Canvas)));
             Canvas canvas = uiRoot.GetComponent<Canvas>();

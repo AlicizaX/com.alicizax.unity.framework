@@ -18,28 +18,9 @@ namespace AlicizaX.Audio.Runtime
 
         private void Awake()
         {
-            _audioService = new AudioService();
-            if (m_AudioMixer == null)
-            {
-                throw new GameFrameworkException("AudioMixer is not assigned. Please assign an AudioMixer in the inspector.");
-            }
-
-            if (m_AudioListener == null)
-            {
-                throw new GameFrameworkException("AudioListener is not assigned. Please assign an AudioListener in the inspector.");
-            }
-
-            _audioService.Initialize(m_AudioGroupConfigs, m_AudioListener, transform, m_AudioMixer, m_ServiceConfig);
-            try
-            {
-                AppServices.Register<IAudioService>(_audioService);
-            }
-            catch
-            {
-                _audioService.Shutdown();
-                _audioService = null;
-                throw;
-            }
+            var audioService = new AudioService(m_AudioGroupConfigs, m_AudioListener, transform, m_AudioMixer, m_ServiceConfig);
+            AppServices.Register<IAudioService>(audioService);
+            _audioService = audioService;
         }
 
         private void OnDestroy()

@@ -48,7 +48,7 @@ namespace AlicizaX.Audio.Tests
                 if ((step & 31) == 31) yield return null;
                 if ((step & 255) == 255)
                 {
-                    f.Audio.Shutdown();
+                    f.Shutdown();
                     yield return AudioFixture.Frames();
                     Assert.That(f.Loader.LiveHandles, Is.Zero, "Resources service is still running.");
                     AudioFixture.CheckAudioPoolsReleased();
@@ -68,7 +68,7 @@ namespace AlicizaX.Audio.Tests
             Assert.That(f.Audio.Play(AudioType.Sound, "shared", true), Is.Not.Zero);
             f.Loader.CompleteImmediately = false;
             f.Audio.PreloadAsync("pending", AudioCachePolicy.Pin);
-            f.Audio.Shutdown();
+            f.Shutdown();
             yield return AudioFixture.Frames();
             Assert.That(AppServices.Require<IResourceService>(), Is.SameAs(f.Resources.Service));
             Assert.That(external.IsValid && borrowed != null, Is.True);
@@ -87,7 +87,7 @@ namespace AlicizaX.Audio.Tests
             using var f = new AudioFixture();
             f.Clip("pending"); f.Loader.CompleteImmediately = false;
             WeakReference callback = RegisterCallback(f);
-            f.Audio.Shutdown();
+            f.Shutdown();
             yield return AudioFixture.Frames();
             GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
             Assert.That(callback.IsAlive, Is.False);
@@ -123,7 +123,7 @@ namespace AlicizaX.Audio.Tests
                 f.Tick();
                 f.CheckIdle();
                 f.CheckOwnership();
-                f.Audio.Shutdown();
+                f.Shutdown();
                 yield return AudioFixture.Frames();
                 Assert.That(SourceIds().SetEquals(baseline), Is.True, "Global source inventory grew after scene/shutdown wave " + wave);
                 Assert.That(f.Loader.LiveHandles, Is.Zero);

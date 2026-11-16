@@ -41,7 +41,7 @@ namespace AlicizaX.Audio.Tests
                 }
                 Assert.That(survivors, Is.Empty, "Imported native clips survived unload wave " + wave);
                 Assert.That(retainedBytes, Is.Zero);
-                f.Audio.Shutdown();
+                f.Shutdown();
                 yield return AudioFixture.Frames();
                 Assert.That(f.Root.GetComponentsInChildren<AudioSource>(true), Is.Empty);
                 AudioFixture.CheckAudioPoolsReleased();

@@ -46,6 +46,8 @@ namespace AlicizaX.Timer.Runtime
         private const int PAGE_MASK = PAGE_SIZE - 1;
         private const int MAX_PAGE_COUNT = 4096;
         private const int INVALID_INDEX = -1;
+        private const int HANDLE_INDEX_BITS = 21;
+        private const ulong HANDLE_INDEX_MASK = (1UL << HANDLE_INDEX_BITS) - 1UL;
         private const int WHEEL_SHIFT = 8;
         private const int WHEEL_SIZE = 1 << WHEEL_SHIFT;
         private const int WHEEL_MASK = WHEEL_SIZE - 1;
@@ -61,10 +63,6 @@ namespace AlicizaX.Timer.Runtime
         private const double STALE_ONE_SHOT_SECONDS = 300d;
 #endif
 
-        private const byte HANDLER_NONE = 0;
-        private const byte HANDLER_NO_ARGS = 1;
-        private const byte HANDLER_GENERIC = 2;
-
         private const byte STATE_ACTIVE = 1 << 0;
         private const byte STATE_RUNNING = 1 << 1;
         private const byte STATE_LOOP = 1 << 2;
@@ -74,9 +72,7 @@ namespace AlicizaX.Timer.Runtime
         private sealed class TimerPage
         {
             public readonly ulong[] Handles = new ulong[PAGE_SIZE];
-            public readonly uint[] Versions = new uint[PAGE_SIZE];
             public readonly byte[] States = new byte[PAGE_SIZE];
-            public readonly byte[] HandlerTypes = new byte[PAGE_SIZE];
             public readonly double[] TriggerTimes = new double[PAGE_SIZE];
             public readonly double[] Durations = new double[PAGE_SIZE];
             public readonly double[] RemainingTimes = new double[PAGE_SIZE];
@@ -85,78 +81,64 @@ namespace AlicizaX.Timer.Runtime
 #endif
             public readonly long[] DueTicks = new long[PAGE_SIZE];
             public readonly int[] QueueIndices = new int[PAGE_SIZE];
-            public readonly int[] QueueNextIndices = new int[PAGE_SIZE];
+            public readonly int[] NextIndices = new int[PAGE_SIZE];
             public readonly int[] QueuePrevIndices = new int[PAGE_SIZE];
-            public readonly int[] ActiveIndices = new int[PAGE_SIZE];
-            public readonly TimerHandlerNoArgs[] NoArgsHandlers = new TimerHandlerNoArgs[PAGE_SIZE];
-            public readonly TimerGenericInvoker[] GenericInvokers = new TimerGenericInvoker[PAGE_SIZE];
-            public readonly object[] GenericHandlers = new object[PAGE_SIZE];
-            public readonly object[] GenericArgs = new object[PAGE_SIZE];
+            public readonly TimerGenericInvoker[] Invokers = new TimerGenericInvoker[PAGE_SIZE];
+            public readonly object[] Handlers = new object[PAGE_SIZE];
+            public readonly object[] Args = new object[PAGE_SIZE];
 
             public TimerPage()
             {
                 for (int i = 0; i < PAGE_SIZE; i++)
                 {
                     QueueIndices[i] = INVALID_INDEX;
-                    QueueNextIndices[i] = INVALID_INDEX;
-                    QueuePrevIndices[i] = INVALID_INDEX;
-                    ActiveIndices[i] = INVALID_INDEX;
                 }
             }
         }
 
-        private sealed class IntPage
+        private sealed class TimerWheel
         {
-            public readonly int[] Values = new int[PAGE_SIZE];
+            public readonly int[] Heads = new int[WHEEL_BUCKET_COUNT];
+            public readonly int[] Tails = new int[WHEEL_BUCKET_COUNT];
+            public int Count;
+            public long CursorTick;
+
+            public TimerWheel(long cursorTick)
+            {
+                for (int i = 0; i < WHEEL_BUCKET_COUNT; i++)
+                {
+                    Heads[i] = INVALID_INDEX;
+                    Tails[i] = INVALID_INDEX;
+                }
+
+                CursorTick = cursorTick;
+            }
         }
 
+        private static ulong s_handleGeneration;
+
+        private readonly TimerWheel _scaledWheel;
+        private readonly TimerWheel _unscaledWheel;
         private TimerPage[] _pages;
-        private IntPage[] _freeSlotPages;
-        private IntPage[] _activeSlotPages;
         private int[] _pageActiveCounts;
-        private int[] _scaledWheelHeads;
-        private int[] _scaledWheelTails;
-        private int[] _unscaledWheelHeads;
-        private int[] _unscaledWheelTails;
         private int _pageCount;
         private int _slotCapacity;
-        private int _freeCount;
+        private int _freeHead;
         private int _activeCount;
         private int _peakActiveCount;
-        private int _scaledQueueCount;
-        private int _unscaledQueueCount;
-        private long _scaledCurrentTick;
-        private long _unscaledCurrentTick;
         private int _executingSlotIndex;
         private bool _executingSlotRescheduled;
         private bool _isDestroyed;
 
-        public TimerService(int initialCapacity)
+        public TimerService()
         {
             _pages = new TimerPage[INITIAL_PAGE_DIRECTORY_CAPACITY];
-            _freeSlotPages = new IntPage[INITIAL_PAGE_DIRECTORY_CAPACITY];
-            _activeSlotPages = new IntPage[INITIAL_PAGE_DIRECTORY_CAPACITY];
             _pageActiveCounts = new int[INITIAL_PAGE_DIRECTORY_CAPACITY];
-            _scaledWheelHeads = CreateWheelHeads();
-            _scaledWheelTails = CreateWheelHeads();
-            _unscaledWheelHeads = CreateWheelHeads();
-            _unscaledWheelTails = CreateWheelHeads();
-            _scaledCurrentTick = TimeToTickFloor(Time.timeAsDouble);
-            _unscaledCurrentTick = TimeToTickFloor(Time.unscaledTimeAsDouble);
+            _scaledWheel = new TimerWheel(TimeToTickFloor(Time.timeAsDouble));
+            _unscaledWheel = new TimerWheel(TimeToTickFloor(Time.unscaledTimeAsDouble));
+            _freeHead = INVALID_INDEX;
             _executingSlotIndex = INVALID_INDEX;
-            Prewarm(initialCapacity);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void Prewarm(int capacity)
-        {
-            int targetCapacity = NormalizeCapacity(capacity);
-
-            while (_slotCapacity < targetCapacity)
-            {
-                AddPage();
-            }
-
+            AddPage();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -170,18 +152,7 @@ namespace AlicizaX.Timer.Runtime
                 return 0UL;
             }
 
-            int slotIndex = AcquireSlot(time);
-            if (slotIndex < 0)
-            {
-                return 0UL;
-            }
-
-            InitializeSlot(slotIndex, NormalizeDelay(time), isLoop, isUnscaled);
-            SetHandlerType(slotIndex, HANDLER_NO_ARGS);
-            SetNoArgsHandler(slotIndex, callback);
-            AddActive(slotIndex);
-            AddToQueue(slotIndex, isUnscaled);
-            return GetHandle(slotIndex);
+            return ScheduleTimer(null, callback, null, time, isLoop, isUnscaled);
         }
 
         /// <summary>
@@ -199,20 +170,7 @@ namespace AlicizaX.Timer.Runtime
                 return 0UL;
             }
 
-            int slotIndex = AcquireSlot(time);
-            if (slotIndex < 0)
-            {
-                return 0UL;
-            }
-
-            InitializeSlot(slotIndex, NormalizeDelay(time), isLoop, isUnscaled);
-            SetHandlerType(slotIndex, HANDLER_GENERIC);
-            SetGenericInvoker(slotIndex, TimerGenericInvokerCache<T>.Invoke);
-            SetGenericHandler(slotIndex, callback);
-            SetGenericArg(slotIndex, arg);
-            AddActive(slotIndex);
-            AddToQueue(slotIndex, isUnscaled);
-            return GetHandle(slotIndex);
+            return ScheduleTimer(TimerGenericInvokerCache<T>.Invoke, callback, arg, time, isLoop, isUnscaled);
         }
 
         /// <summary>
@@ -223,20 +181,7 @@ namespace AlicizaX.Timer.Runtime
             where TCallback : struct, ITimerCallback<TArg>
             where TArg : class
         {
-            int slotIndex = AcquireSlot(time);
-            if (slotIndex < 0)
-            {
-                return 0UL;
-            }
-
-            InitializeSlot(slotIndex, NormalizeDelay(time), isLoop, isUnscaled);
-            SetHandlerType(slotIndex, HANDLER_GENERIC);
-            SetGenericInvoker(slotIndex, TimerStructInvokerCache<TCallback, TArg>.Invoke);
-            SetGenericHandler(slotIndex, null);
-            SetGenericArg(slotIndex, arg);
-            AddActive(slotIndex);
-            AddToQueue(slotIndex, isUnscaled);
-            return GetHandle(slotIndex);
+            return ScheduleTimer(TimerStructInvokerCache<TCallback, TArg>.Invoke, null, arg, time, isLoop, isUnscaled);
         }
 
 #if UNITY_EDITOR
@@ -251,46 +196,51 @@ namespace AlicizaX.Timer.Runtime
         public void Stop(ulong timerHandle)
         {
             int slotIndex = GetSlotIndex(timerHandle);
-            if (slotIndex < 0 || (GetState(slotIndex) & STATE_RUNNING) == 0)
+            if (slotIndex < 0)
             {
                 return;
             }
 
-            bool isUnscaled = IsUnscaled(slotIndex);
+            byte state = GetState(slotIndex);
+            if ((state & STATE_RUNNING) == 0)
+            {
+                return;
+            }
+
+            bool isUnscaled = (state & STATE_UNSCALED) != 0;
             if (GetQueueIndex(slotIndex) >= 0)
             {
-                RemoveFromQueue(slotIndex, isUnscaled);
+                RemoveFromQueue(slotIndex, GetWheel(isUnscaled));
                 double leftTime = GetTriggerTime(slotIndex) - GetCurrentTime(isUnscaled);
                 SetRemainingTime(slotIndex, leftTime > MINIMUM_DELAY_SECONDS ? leftTime : MINIMUM_DELAY_SECONDS);
             }
             else
             {
-                SetRemainingTime(slotIndex, IsLoop(slotIndex) ? GetDuration(slotIndex) : MINIMUM_DELAY_SECONDS);
+                SetRemainingTime(slotIndex, (state & STATE_LOOP) != 0 ? GetDuration(slotIndex) : MINIMUM_DELAY_SECONDS);
             }
 
-            ClearState(slotIndex, STATE_RUNNING);
+            SetState(slotIndex, (byte)(state & ~STATE_RUNNING));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Resume(ulong timerHandle)
         {
             int slotIndex = GetSlotIndex(timerHandle);
-            if (slotIndex < 0 || (GetState(slotIndex) & STATE_RUNNING) != 0)
+            if (slotIndex < 0)
             {
                 return;
             }
 
-            bool isUnscaled = IsUnscaled(slotIndex);
-            double delay = GetRemainingTime(slotIndex);
-            if (delay <= MINIMUM_DELAY_SECONDS)
+            byte state = GetState(slotIndex);
+            if ((state & STATE_RUNNING) != 0)
             {
-                delay = MINIMUM_DELAY_SECONDS;
+                return;
             }
 
-            SetTriggerTime(slotIndex, GetCurrentTime(isUnscaled) + delay);
-            SetRemainingTime(slotIndex, 0d);
-            SetState(slotIndex, STATE_RUNNING);
-            AddToQueue(slotIndex, isUnscaled);
+            bool isUnscaled = (state & STATE_UNSCALED) != 0;
+            SetTriggerTime(slotIndex, GetCurrentTime(isUnscaled) + GetRemainingTime(slotIndex));
+            SetState(slotIndex, (byte)(state | STATE_RUNNING));
+            AddToQueue(slotIndex, GetWheel(isUnscaled));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -309,9 +259,10 @@ namespace AlicizaX.Timer.Runtime
                 return 0f;
             }
 
-            double leftTime = (GetState(slotIndex) & STATE_RUNNING) == 0
+            byte state = GetState(slotIndex);
+            double leftTime = (state & STATE_RUNNING) == 0
                 ? GetRemainingTime(slotIndex)
-                : GetTriggerTime(slotIndex) - GetCurrentTime(IsUnscaled(slotIndex));
+                : GetTriggerTime(slotIndex) - GetCurrentTime((state & STATE_UNSCALED) != 0);
             return leftTime > 0d ? (float)leftTime : 0f;
         }
 
@@ -324,16 +275,17 @@ namespace AlicizaX.Timer.Runtime
                 return;
             }
 
-            bool isUnscaled = IsUnscaled(slotIndex);
+            byte state = GetState(slotIndex);
+            bool isUnscaled = (state & STATE_UNSCALED) != 0;
+            TimerWheel wheel = GetWheel(isUnscaled);
             if (GetQueueIndex(slotIndex) >= 0)
             {
-                RemoveFromQueue(slotIndex, isUnscaled);
+                RemoveFromQueue(slotIndex, wheel);
             }
 
             SetTriggerTime(slotIndex, GetCurrentTime(isUnscaled) + GetDuration(slotIndex));
-            SetRemainingTime(slotIndex, 0d);
-            SetState(slotIndex, STATE_RUNNING);
-            AddToQueue(slotIndex, isUnscaled);
+            SetState(slotIndex, (byte)(state | STATE_RUNNING));
+            AddToQueue(slotIndex, wheel);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -348,13 +300,13 @@ namespace AlicizaX.Timer.Runtime
 
         void IServiceTickable.Tick(float deltaTime)
         {
-            if (_isDestroyed || _executingSlotIndex >= 0)
+            if (_executingSlotIndex >= 0)
             {
                 return;
             }
 
-            AdvanceQueue(false, Time.timeAsDouble);
-            AdvanceQueue(true, Time.unscaledTimeAsDouble);
+            AdvanceQueue(_scaledWheel, Time.timeAsDouble);
+            AdvanceQueue(_unscaledWheel, Time.unscaledTimeAsDouble);
         }
 
         protected override void OnDispose()
@@ -368,12 +320,13 @@ namespace AlicizaX.Timer.Runtime
             activeCount = _activeCount;
             poolCapacity = _slotCapacity;
             peakActiveCount = _peakActiveCount;
-            freeCount = _freeCount;
+            bool executingSlotPending = _executingSlotIndex >= 0 && (GetState(_executingSlotIndex) & STATE_RELEASE_PENDING) != 0;
+            freeCount = _slotCapacity - _activeCount - (executingSlotPending ? 1 : 0);
         }
 
         int ITimerDebugService.GetAllTimers(TimerDebugInfo[] results)
         {
-            if (results == null || results.Length == 0)
+            if (results == null)
             {
                 return 0;
             }
@@ -386,11 +339,12 @@ namespace AlicizaX.Timer.Runtime
 #else
             const double realtime = 0d;
 #endif
-            int limit = results.Length;
-            for (int i = 0; i < _activeCount && count < limit; i++)
+            for (int slotIndex = 0; slotIndex < _slotCapacity && count < results.Length; slotIndex++)
             {
-                FillDebugInfo(GetActiveSlot(i), ref results[count], scaledTime, unscaledTime, realtime);
-                count++;
+                if ((GetState(slotIndex) & STATE_ACTIVE) != 0)
+                {
+                    FillDebugInfo(slotIndex, ref results[count++], scaledTime, unscaledTime, realtime);
+                }
             }
 
             return count;
@@ -399,7 +353,7 @@ namespace AlicizaX.Timer.Runtime
 #if UNITY_EDITOR
         int ITimerEditorDebugService.GetStaleOneShotTimers(TimerDebugInfo[] results)
         {
-            if (results == null || results.Length == 0)
+            if (results == null)
             {
                 return 0;
             }
@@ -408,27 +362,56 @@ namespace AlicizaX.Timer.Runtime
             double scaledTime = Time.timeAsDouble;
             double unscaledTime = Time.unscaledTimeAsDouble;
             double realtime = Time.realtimeSinceStartupAsDouble;
-            int limit = results.Length;
-            for (int i = 0; i < _activeCount && count < limit; i++)
+            for (int slotIndex = 0; slotIndex < _slotCapacity && count < results.Length; slotIndex++)
             {
-                int slotIndex = GetActiveSlot(i);
-                if (IsLoop(slotIndex) || realtime - GetCreationTime(slotIndex) <= STALE_ONE_SHOT_SECONDS)
+                if ((GetState(slotIndex) & (STATE_ACTIVE | STATE_LOOP)) == STATE_ACTIVE
+                    && realtime - GetCreationTime(slotIndex) > STALE_ONE_SHOT_SECONDS)
                 {
-                    continue;
+                    FillDebugInfo(slotIndex, ref results[count++], scaledTime, unscaledTime, realtime);
                 }
-
-                FillDebugInfo(slotIndex, ref results[count], scaledTime, unscaledTime, realtime);
-                count++;
             }
 
             return count;
         }
 #endif
 
+        private ulong ScheduleTimer(TimerGenericInvoker invoker, object handler, object arg, float time, bool isLoop, bool isUnscaled)
+        {
+            int slotIndex = AcquireSlot(time);
+            if (slotIndex < 0)
+            {
+                return 0UL;
+            }
+
+            double duration = NormalizeDelay(time);
+            ulong handle = (++s_handleGeneration << HANDLE_INDEX_BITS) | (uint)(slotIndex + 1);
+            TimerPage page = GetPage(slotIndex);
+            int offset = GetOffset(slotIndex);
+            page.Handles[offset] = handle;
+            page.States[offset] = ComposeState(isLoop, isUnscaled);
+            page.TriggerTimes[offset] = GetCurrentTime(isUnscaled) + duration;
+            page.Durations[offset] = duration;
+#if UNITY_EDITOR
+            page.CreationTimes[offset] = Time.realtimeSinceStartupAsDouble;
+#endif
+            page.Invokers[offset] = invoker;
+            page.Handlers[offset] = handler;
+            page.Args[offset] = arg;
+
+            _pageActiveCounts[slotIndex >> PAGE_SHIFT]++;
+            if (++_activeCount > _peakActiveCount)
+            {
+                _peakActiveCount = _activeCount;
+            }
+
+            AddToQueue(slotIndex, GetWheel(isUnscaled));
+            return handle;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int AcquireSlot(float delay)
         {
-            if (_isDestroyed || float.IsNaN(delay) || float.IsInfinity(delay))
+            if (_isDestroyed || !float.IsFinite(delay))
             {
 #if UNITY_EDITOR
                 WarnAddTimerFailed("service is destroyed or delay is not finite.");
@@ -436,56 +419,43 @@ namespace AlicizaX.Timer.Runtime
                 return INVALID_INDEX;
             }
 
-            if (_freeCount <= 0)
+            if (_freeHead < 0 && !AddPage())
             {
-                AddPage();
-                if (_freeCount <= 0)
-                {
 #if UNITY_EDITOR
-                    WarnAddTimerFailed("no available timer slot.");
+                WarnAddTimerFailed("no available timer slot.");
 #endif
-                    return INVALID_INDEX;
-                }
+                return INVALID_INDEX;
             }
 
-            return GetFreeSlot(--_freeCount);
+            int slotIndex = _freeHead;
+            _freeHead = GetNextIndex(slotIndex);
+            return slotIndex;
         }
 
-        private void AddPage()
+        private bool AddPage()
         {
             if (_pageCount >= MAX_PAGE_COUNT)
             {
-                return;
+                return false;
             }
 
-            EnsurePageDirectory(_pageCount + 1);
-            _freeSlotPages[_pageCount] = new IntPage();
-            _activeSlotPages[_pageCount] = new IntPage();
-            _pageActiveCounts[_pageCount] = 0;
-
-            TimerPage page = new TimerPage();
-            _pages[_pageCount] = page;
-
-            int baseSlotIndex = _pageCount << PAGE_SHIFT;
-            for (int i = 0; i < PAGE_SIZE; i++)
+            if (_pageCount == _pages.Length)
             {
-                SetFreeSlot(_freeCount++, baseSlotIndex + i);
+                int capacity = Math.Min(MAX_PAGE_COUNT, _pages.Length << 1);
+                Array.Resize(ref _pages, capacity);
+                Array.Resize(ref _pageActiveCounts, capacity);
             }
 
+            _pages[_pageCount] = new TimerPage();
+            int baseSlotIndex = _pageCount << PAGE_SHIFT;
             _pageCount++;
             _slotCapacity += PAGE_SIZE;
-        }
+            for (int slotIndex = baseSlotIndex + PAGE_MASK; slotIndex >= baseSlotIndex; slotIndex--)
+            {
+                PushFreeSlot(slotIndex);
+            }
 
-        private void EnsurePageDirectory(int required)
-        {
-            if (_pages.Length >= required)
-                return;
-
-            int capacity = Math.Min(MAX_PAGE_COUNT, Math.Max(required, _pages.Length << 1));
-            Array.Resize(ref _pages, capacity);
-            Array.Resize(ref _freeSlotPages, capacity);
-            Array.Resize(ref _activeSlotPages, capacity);
-            Array.Resize(ref _pageActiveCounts, capacity);
+            return true;
         }
 
         /// <summary>
@@ -494,87 +464,29 @@ namespace AlicizaX.Timer.Runtime
         /// </summary>
         public void TrimExcess()
         {
-            if (_executingSlotIndex >= 0)
+            int retainedPageCount = _executingSlotIndex >= 0 ? (_executingSlotIndex >> PAGE_SHIFT) + 1 : 0;
+            int pageCount = _pageCount;
+            while (pageCount > retainedPageCount && _pageActiveCounts[pageCount - 1] == 0)
+            {
+                pageCount--;
+            }
+
+            if (pageCount == _pageCount)
+            {
                 return;
-
-            int newPageCount = _pageCount;
-            while (newPageCount > 0 && _pageActiveCounts[newPageCount - 1] == 0)
-            {
-                newPageCount--;
             }
 
-            if (newPageCount == _pageCount)
-                return;
-
-            for (int page = newPageCount; page < _pageCount; page++)
+            Array.Clear(_pages, pageCount, _pageCount - pageCount);
+            _pageCount = pageCount;
+            _slotCapacity = pageCount << PAGE_SHIFT;
+            _freeHead = INVALID_INDEX;
+            for (int slotIndex = _slotCapacity - 1; slotIndex >= 0; slotIndex--)
             {
-                _pages[page] = null;
-                _freeSlotPages[page] = null;
-                _activeSlotPages[page] = null;
-                _pageActiveCounts[page] = 0;
+                if (GetState(slotIndex) == 0)
+                {
+                    PushFreeSlot(slotIndex);
+                }
             }
-
-            _pageCount = newPageCount;
-            _slotCapacity = _pageCount << PAGE_SHIFT;
-            _freeCount = 0;
-            for (int slot = 0; slot < _slotCapacity; slot++)
-            {
-                if (GetState(slot) == 0)
-                    SetFreeSlot(_freeCount++, slot);
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetFreeSlot(int index)
-        {
-            return GetPagedInt(_freeSlotPages, index);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetFreeSlot(int index, int value)
-        {
-            SetPagedInt(_freeSlotPages, index, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetActiveSlot(int index)
-        {
-            return GetPagedInt(_activeSlotPages, index);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetActiveSlot(int index, int value)
-        {
-            SetPagedInt(_activeSlotPages, index, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int GetPagedInt(IntPage[] pages, int index)
-        {
-            return pages[index >> PAGE_SHIFT].Values[index & PAGE_MASK];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void SetPagedInt(IntPage[] pages, int index, int value)
-        {
-            pages[index >> PAGE_SHIFT].Values[index & PAGE_MASK] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void InitializeSlot(int slotIndex, double duration, bool isLoop, bool isUnscaled)
-        {
-            int pageIndex = slotIndex >> PAGE_SHIFT;
-            int offset = slotIndex & PAGE_MASK;
-            TimerPage page = _pages[pageIndex];
-            uint version = page.Versions[offset] + 1U;
-            page.Versions[offset] = version == 0U ? 1U : version;
-            page.Handles[offset] = ComposeHandle(slotIndex, page.Versions[offset]);
-            page.States[offset] = ComposeState(isLoop, isUnscaled);
-            page.TriggerTimes[offset] = GetCurrentTime(isUnscaled) + duration;
-            page.Durations[offset] = duration;
-#if UNITY_EDITOR
-            page.CreationTimes[offset] = Time.realtimeSinceStartupAsDouble;
-#endif
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -595,16 +507,10 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong ComposeHandle(int slotIndex, uint version)
-        {
-            return ((ulong)version << 32) | (uint)(slotIndex + 1);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private int GetSlotIndex(ulong timerHandle)
         {
-            int slotIndex = (int)((timerHandle & 0xffffffffUL) - 1UL);
-            if ((uint)slotIndex >= (uint)_slotCapacity || GetHandle(slotIndex) != timerHandle || (GetState(slotIndex) & STATE_ACTIVE) == 0)
+            int slotIndex = (int)(timerHandle & HANDLE_INDEX_MASK) - 1;
+            if ((uint)slotIndex >= (uint)_slotCapacity || GetHandle(slotIndex) != timerHandle)
             {
                 return INVALID_INDEX;
             }
@@ -613,104 +519,69 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AddActive(int slotIndex)
-        {
-            int activeIndex = _activeCount++;
-            SetActiveSlot(activeIndex, slotIndex);
-            SetActiveIndex(slotIndex, activeIndex);
-            _pageActiveCounts[slotIndex >> PAGE_SHIFT]++;
-            if (_activeCount > _peakActiveCount)
-            {
-                _peakActiveCount = _activeCount;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RemoveActive(int slotIndex)
-        {
-            int activeIndex = GetActiveIndex(slotIndex);
-            _pageActiveCounts[slotIndex >> PAGE_SHIFT]--;
-            int lastIndex = --_activeCount;
-            int lastSlotIndex = GetActiveSlot(lastIndex);
-            SetActiveSlot(activeIndex, lastSlotIndex);
-            SetActiveIndex(lastSlotIndex, activeIndex);
-            SetActiveSlot(lastIndex, 0);
-            SetActiveIndex(slotIndex, INVALID_INDEX);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ReleaseSlot(int slotIndex)
         {
-            byte state = GetState(slotIndex);
-            if (GetQueueIndex(slotIndex) >= 0)
+            TimerPage page = GetPage(slotIndex);
+            int offset = GetOffset(slotIndex);
+            if (page.QueueIndices[offset] >= 0)
             {
-                RemoveFromQueue(slotIndex, (state & STATE_UNSCALED) != 0);
+                RemoveFromQueue(slotIndex, GetWheel((page.States[offset] & STATE_UNSCALED) != 0));
             }
 
-            RemoveActive(slotIndex);
-            ClearHandler(slotIndex);
-            SetRemainingTime(slotIndex, 0d);
-            SetTriggerTime(slotIndex, 0d);
-            SetDuration(slotIndex, 0d);
-#if UNITY_EDITOR
-            SetCreationTime(slotIndex, 0d);
-#endif
-            SetDueTick(slotIndex, 0L);
-            SetHandle(slotIndex, 0UL);
+            _activeCount--;
+            _pageActiveCounts[slotIndex >> PAGE_SHIFT]--;
+            page.Handles[offset] = 0UL;
+            page.Invokers[offset] = null;
+            page.Handlers[offset] = null;
+            page.Args[offset] = null;
 
             if (slotIndex == _executingSlotIndex)
             {
-                SetStateRaw(slotIndex, STATE_RELEASE_PENDING);
+                page.States[offset] = STATE_RELEASE_PENDING;
                 return;
             }
 
-            SetStateRaw(slotIndex, 0);
-            SetFreeSlot(_freeCount++, slotIndex);
+            page.States[offset] = 0;
+            PushFreeSlot(slotIndex);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ClearHandler(int slotIndex)
+        private void PushFreeSlot(int slotIndex)
         {
-            SetHandlerType(slotIndex, HANDLER_NONE);
-            SetNoArgsHandler(slotIndex, null);
-            SetGenericInvoker(slotIndex, null);
-            SetGenericHandler(slotIndex, null);
-            SetGenericArg(slotIndex, null);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void FreeReleasedExecutingSlot(int slotIndex)
-        {
-            SetStateRaw(slotIndex, 0);
-            SetFreeSlot(_freeCount++, slotIndex);
+            SetNextIndex(slotIndex, _freeHead);
+            _freeHead = slotIndex;
         }
 
         private void ClearAll()
         {
-            while (_activeCount > 0)
+            for (int slotIndex = 0; slotIndex < _slotCapacity; slotIndex++)
             {
-                ReleaseSlot(GetActiveSlot(_activeCount - 1));
+                if ((GetState(slotIndex) & STATE_ACTIVE) != 0)
+                {
+                    ReleaseSlot(slotIndex);
+                }
             }
 
             TrimExcess();
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ProcessDueTimer(int slotIndex, double currentTime)
+        private void ProcessDueTimer(int slotIndex, TimerWheel wheel, double currentTime)
         {
             _executingSlotIndex = slotIndex;
             _executingSlotRescheduled = false;
 
             try
             {
-                byte handlerType = GetHandlerType(slotIndex);
-                if (handlerType == HANDLER_NO_ARGS)
+                TimerPage page = GetPage(slotIndex);
+                int offset = GetOffset(slotIndex);
+                TimerGenericInvoker invoker = page.Invokers[offset];
+                if (invoker == null)
                 {
-                    GetNoArgsHandler(slotIndex).Invoke();
+                    ((TimerHandlerNoArgs)page.Handlers[offset]).Invoke();
                 }
                 else
                 {
-                    GetGenericInvoker(slotIndex).Invoke(GetGenericHandler(slotIndex), GetGenericArg(slotIndex));
+                    invoker.Invoke(page.Handlers[offset], page.Args[offset]);
                 }
             }
             catch (Exception exception)
@@ -725,7 +596,8 @@ namespace AlicizaX.Timer.Runtime
             byte state = GetState(slotIndex);
             if ((state & STATE_RELEASE_PENDING) != 0)
             {
-                FreeReleasedExecutingSlot(slotIndex);
+                SetState(slotIndex, 0);
+                PushFreeSlot(slotIndex);
                 return;
             }
 
@@ -734,21 +606,20 @@ namespace AlicizaX.Timer.Runtime
                 return;
             }
 
-            if ((state & STATE_LOOP) != 0)
+            if ((state & STATE_LOOP) == 0)
             {
-                if ((state & STATE_RUNNING) != 0)
-                {
-                    RescheduleLoop(slotIndex, currentTime);
-                }
-
+                ReleaseSlot(slotIndex);
                 return;
             }
 
-            ReleaseSlot(slotIndex);
+            if ((state & STATE_RUNNING) != 0)
+            {
+                RescheduleLoop(slotIndex, wheel, currentTime);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RescheduleLoop(int slotIndex, double currentTime)
+        private void RescheduleLoop(int slotIndex, TimerWheel wheel, double currentTime)
         {
             double duration = GetDuration(slotIndex);
             double triggerTime = GetTriggerTime(slotIndex) + duration;
@@ -758,33 +629,33 @@ namespace AlicizaX.Timer.Runtime
             }
 
             SetTriggerTime(slotIndex, triggerTime);
-            AddToQueue(slotIndex, IsUnscaled(slotIndex));
+            AddToQueue(slotIndex, wheel);
         }
 
-        private void AdvanceQueue(bool isUnscaled, double currentTime)
+        private void AdvanceQueue(TimerWheel wheel, double currentTime)
         {
             long currentTick = TimeToTickFloor(currentTime);
-            long cursorTick = GetCurrentWheelTick(isUnscaled);
-            if (GetQueueCount(isUnscaled) == 0)
+            if (wheel.Count == 0)
             {
-                SetCurrentWheelTick(isUnscaled, currentTick + 1L);
+                wheel.CursorTick = currentTick + 1L;
                 return;
             }
 
+            long cursorTick = wheel.CursorTick;
             if (cursorTick > currentTick)
                 return;
 
             if (currentTick - cursorTick > MAX_CATCHUP_TICKS)
             {
-                RebaseWheel(isUnscaled, currentTick);
+                RebaseWheel(wheel, currentTick);
                 cursorTick = currentTick;
             }
 
             int callbackBudget = MAX_TIMERS_PER_FRAME;
-            while (cursorTick <= currentTick && callbackBudget > 0 && GetQueueCount(isUnscaled) > 0)
+            while (cursorTick <= currentTick && wheel.Count > 0)
             {
-                SetCurrentWheelTick(isUnscaled, cursorTick);
-                AdvanceWheelTick(isUnscaled, cursorTick, currentTime, ref callbackBudget);
+                wheel.CursorTick = cursorTick;
+                AdvanceWheelTick(wheel, cursorTick, currentTime, ref callbackBudget);
                 if (callbackBudget <= 0)
                 {
                     // 游标停留在处理到一半的 tick 上：剩余计时器仍留在该桶中，
@@ -795,10 +666,7 @@ namespace AlicizaX.Timer.Runtime
                 cursorTick++;
             }
 
-            if (GetQueueCount(isUnscaled) == 0)
-                SetCurrentWheelTick(isUnscaled, currentTick + 1L);
-            else if (cursorTick > currentTick)
-                SetCurrentWheelTick(isUnscaled, currentTick + 1L);
+            wheel.CursorTick = currentTick + 1L;
         }
 
         /// <summary>
@@ -806,41 +674,37 @@ namespace AlicizaX.Timer.Runtime
         /// level-0 桶（突发量仍受回调预算约束），未来计时器回到其常规轮层级。
         /// 复杂度为 O(桶数 + 计时器数)，避免挂起或长卡顿后遍历数百万个空 tick。
         /// </summary>
-        private void RebaseWheel(bool isUnscaled, long currentTick)
+        private void RebaseWheel(TimerWheel wheel, long currentTick)
         {
             for (int bucket = 0; bucket < WHEEL_BUCKET_COUNT; bucket++)
             {
-                int slotIndex = GetWheelHead(bucket, isUnscaled);
-                SetWheelHead(bucket, INVALID_INDEX, isUnscaled);
-                SetWheelTail(bucket, INVALID_INDEX, isUnscaled);
+                int slotIndex = DetachBucket(wheel, bucket);
                 while (slotIndex >= 0)
                 {
-                    int nextSlotIndex = GetQueueNextIndex(slotIndex);
-                    DetachRemovedBucketSlot(slotIndex);
+                    int nextSlotIndex = GetNextIndex(slotIndex);
                     long dueTick = GetDueTick(slotIndex);
                     long targetTick = dueTick > currentTick ? dueTick : currentTick;
-                    AddToBucket(slotIndex, GetWheelBucketIndex(targetTick, currentTick), isUnscaled);
+                    AddToBucket(slotIndex, GetWheelBucketIndex(targetTick, currentTick), wheel);
                     slotIndex = nextSlotIndex;
                 }
             }
 
-            SetCurrentWheelTick(isUnscaled, currentTick);
+            wheel.CursorTick = currentTick;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AddToQueue(int slotIndex, bool isUnscaled)
+        private void AddToQueue(int slotIndex, TimerWheel wheel)
         {
             long dueTick = TimeToTickCeiling(GetTriggerTime(slotIndex));
-            long currentTick = GetCurrentWheelTick(isUnscaled);
-            if (dueTick < currentTick)
+            long cursorTick = wheel.CursorTick;
+            if (dueTick < cursorTick)
             {
-                dueTick = currentTick;
+                dueTick = cursorTick;
             }
 
-            int bucketIndex = GetWheelBucketIndex(dueTick, currentTick);
             SetDueTick(slotIndex, dueTick);
-            AddToBucket(slotIndex, bucketIndex, isUnscaled);
-            SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) + 1);
+            AddToBucket(slotIndex, GetWheelBucketIndex(dueTick, cursorTick), wheel);
+            wheel.Count++;
             if (slotIndex == _executingSlotIndex)
             {
                 _executingSlotRescheduled = true;
@@ -848,89 +712,18 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RemoveFromQueue(int slotIndex, bool isUnscaled)
+        private void RemoveFromQueue(int slotIndex, TimerWheel wheel)
         {
             int bucketIndex = GetQueueIndex(slotIndex);
-            RemoveFromBucket(slotIndex, bucketIndex, isUnscaled);
-            SetQueueCount(isUnscaled, GetQueueCount(isUnscaled) - 1);
-        }
-
-        private void AdvanceWheelTick(bool isUnscaled, long tick, double currentTime, ref int callbackBudget)
-        {
-            for (int level = WHEEL_MAX_LEVEL; level > 0; level--)
-            {
-                CascadeWheelLevel(isUnscaled, tick, level);
-            }
-
-            ProcessBucket(isUnscaled, (int)(tick & WHEEL_MASK), currentTime, ref callbackBudget);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void CascadeWheelLevel(bool isUnscaled, long tick, int level)
-        {
-            long mask = (1L << (level * WHEEL_SHIFT)) - 1L;
-            if ((tick & mask) != 0L)
-            {
-                return;
-            }
-
-            int bucketIndex = (level << WHEEL_SHIFT) + (int)((tick >> (level * WHEEL_SHIFT)) & WHEEL_MASK);
-            int slotIndex = RemoveBucketHead(bucketIndex, isUnscaled);
-            while (slotIndex >= 0)
-            {
-                int nextSlotIndex = GetQueueNextIndex(slotIndex);
-                DetachRemovedBucketSlot(slotIndex);
-                int targetBucketIndex = GetWheelBucketIndex(GetDueTick(slotIndex), tick);
-                AddToBucket(slotIndex, targetBucketIndex, isUnscaled);
-                slotIndex = nextSlotIndex;
-            }
-        }
-
-        private void ProcessBucket(bool isUnscaled, int bucketIndex, double currentTime, ref int callbackBudget)
-        {
-            while (callbackBudget > 0)
-            {
-                int slotIndex = GetWheelHead(bucketIndex, isUnscaled);
-                if (slotIndex < 0)
-                    return;
-
-                RemoveFromQueue(slotIndex, isUnscaled);
-                callbackBudget--;
-                ProcessDueTimer(slotIndex, currentTime);
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AddToBucket(int slotIndex, int bucketIndex, bool isUnscaled)
-        {
-            int tailSlotIndex = GetWheelTail(bucketIndex, isUnscaled);
-            SetQueueIndex(slotIndex, bucketIndex);
-            SetQueuePrevIndex(slotIndex, tailSlotIndex);
-            SetQueueNextIndex(slotIndex, INVALID_INDEX);
-            if (tailSlotIndex >= 0)
-            {
-                SetQueueNextIndex(tailSlotIndex, slotIndex);
-            }
-            else
-            {
-                SetWheelHead(bucketIndex, slotIndex, isUnscaled);
-            }
-
-            SetWheelTail(bucketIndex, slotIndex, isUnscaled);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RemoveFromBucket(int slotIndex, int bucketIndex, bool isUnscaled)
-        {
             int prevSlotIndex = GetQueuePrevIndex(slotIndex);
-            int nextSlotIndex = GetQueueNextIndex(slotIndex);
+            int nextSlotIndex = GetNextIndex(slotIndex);
             if (prevSlotIndex >= 0)
             {
-                SetQueueNextIndex(prevSlotIndex, nextSlotIndex);
+                SetNextIndex(prevSlotIndex, nextSlotIndex);
             }
             else
             {
-                SetWheelHead(bucketIndex, nextSlotIndex, isUnscaled);
+                wheel.Heads[bucketIndex] = nextSlotIndex;
             }
 
             if (nextSlotIndex >= 0)
@@ -939,27 +732,84 @@ namespace AlicizaX.Timer.Runtime
             }
             else
             {
-                SetWheelTail(bucketIndex, prevSlotIndex, isUnscaled);
+                wheel.Tails[bucketIndex] = prevSlotIndex;
             }
 
-            DetachRemovedBucketSlot(slotIndex);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int RemoveBucketHead(int bucketIndex, bool isUnscaled)
-        {
-            int headSlotIndex = GetWheelHead(bucketIndex, isUnscaled);
-            SetWheelHead(bucketIndex, INVALID_INDEX, isUnscaled);
-            SetWheelTail(bucketIndex, INVALID_INDEX, isUnscaled);
-            return headSlotIndex;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void DetachRemovedBucketSlot(int slotIndex)
-        {
             SetQueueIndex(slotIndex, INVALID_INDEX);
-            SetQueueNextIndex(slotIndex, INVALID_INDEX);
-            SetQueuePrevIndex(slotIndex, INVALID_INDEX);
+            wheel.Count--;
+        }
+
+        private void AdvanceWheelTick(TimerWheel wheel, long tick, double currentTime, ref int callbackBudget)
+        {
+            if ((tick & WHEEL_MASK) == 0L)
+            {
+                for (int level = WHEEL_MAX_LEVEL; level > 0; level--)
+                {
+                    CascadeWheelLevel(wheel, tick, level);
+                }
+            }
+
+            ProcessBucket(wheel, (int)(tick & WHEEL_MASK), currentTime, ref callbackBudget);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void CascadeWheelLevel(TimerWheel wheel, long tick, int level)
+        {
+            long mask = (1L << (level * WHEEL_SHIFT)) - 1L;
+            if ((tick & mask) != 0L)
+            {
+                return;
+            }
+
+            int slotIndex = DetachBucket(wheel, (level << WHEEL_SHIFT) + (int)((tick >> (level * WHEEL_SHIFT)) & WHEEL_MASK));
+            while (slotIndex >= 0)
+            {
+                int nextSlotIndex = GetNextIndex(slotIndex);
+                AddToBucket(slotIndex, GetWheelBucketIndex(GetDueTick(slotIndex), tick), wheel);
+                slotIndex = nextSlotIndex;
+            }
+        }
+
+        private void ProcessBucket(TimerWheel wheel, int bucketIndex, double currentTime, ref int callbackBudget)
+        {
+            while (callbackBudget > 0)
+            {
+                int slotIndex = wheel.Heads[bucketIndex];
+                if (slotIndex < 0)
+                    return;
+
+                RemoveFromQueue(slotIndex, wheel);
+                callbackBudget--;
+                ProcessDueTimer(slotIndex, wheel, currentTime);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void AddToBucket(int slotIndex, int bucketIndex, TimerWheel wheel)
+        {
+            int tailSlotIndex = wheel.Tails[bucketIndex];
+            SetQueueIndex(slotIndex, bucketIndex);
+            SetQueuePrevIndex(slotIndex, tailSlotIndex);
+            SetNextIndex(slotIndex, INVALID_INDEX);
+            if (tailSlotIndex >= 0)
+            {
+                SetNextIndex(tailSlotIndex, slotIndex);
+            }
+            else
+            {
+                wheel.Heads[bucketIndex] = slotIndex;
+            }
+
+            wheel.Tails[bucketIndex] = slotIndex;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int DetachBucket(TimerWheel wheel, int bucketIndex)
+        {
+            int headSlotIndex = wheel.Heads[bucketIndex];
+            wheel.Heads[bucketIndex] = INVALID_INDEX;
+            wheel.Tails[bucketIndex] = INVALID_INDEX;
+            return headSlotIndex;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -985,112 +835,15 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetQueueCount(bool isUnscaled)
+        private TimerWheel GetWheel(bool isUnscaled)
         {
-            return isUnscaled ? _unscaledQueueCount : _scaledQueueCount;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetQueueCount(bool isUnscaled, int value)
-        {
-            if (isUnscaled)
-            {
-                _unscaledQueueCount = value;
-            }
-            else
-            {
-                _scaledQueueCount = value;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private long GetCurrentWheelTick(bool isUnscaled)
-        {
-            return isUnscaled ? _unscaledCurrentTick : _scaledCurrentTick;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetCurrentWheelTick(bool isUnscaled, long value)
-        {
-            if (isUnscaled)
-            {
-                _unscaledCurrentTick = value;
-            }
-            else
-            {
-                _scaledCurrentTick = value;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetWheelHead(int bucketIndex, bool isUnscaled)
-        {
-            return isUnscaled ? _unscaledWheelHeads[bucketIndex] : _scaledWheelHeads[bucketIndex];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetWheelHead(int bucketIndex, int value, bool isUnscaled)
-        {
-            if (isUnscaled)
-            {
-                _unscaledWheelHeads[bucketIndex] = value;
-            }
-            else
-            {
-                _scaledWheelHeads[bucketIndex] = value;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetWheelTail(int bucketIndex, bool isUnscaled)
-        {
-            return isUnscaled ? _unscaledWheelTails[bucketIndex] : _scaledWheelTails[bucketIndex];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetWheelTail(int bucketIndex, int value, bool isUnscaled)
-        {
-            if (isUnscaled)
-            {
-                _unscaledWheelTails[bucketIndex] = value;
-            }
-            else
-            {
-                _scaledWheelTails[bucketIndex] = value;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool IsUnscaled(int slotIndex)
-        {
-            return (GetState(slotIndex) & STATE_UNSCALED) != 0;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool IsLoop(int slotIndex)
-        {
-            return (GetState(slotIndex) & STATE_LOOP) != 0;
+            return isUnscaled ? _unscaledWheel : _scaledWheel;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static double GetCurrentTime(bool isUnscaled)
         {
             return isUnscaled ? Time.unscaledTimeAsDouble : Time.timeAsDouble;
-        }
-
-        private static int[] CreateWheelHeads()
-        {
-            int[] heads = new int[WHEEL_BUCKET_COUNT];
-            ClearWheelHeads(heads);
-            return heads;
-        }
-
-        private static void ClearWheelHeads(int[] heads)
-        {
-            for (int i = 0; i < heads.Length; i++)
-            {
-                heads[i] = INVALID_INDEX;
-            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1113,24 +866,6 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int NormalizeCapacity(int capacity)
-        {
-            if (capacity >= MAX_PAGE_COUNT * PAGE_SIZE)
-            {
-                return MAX_PAGE_COUNT * PAGE_SIZE;
-            }
-
-            int normalizedCapacity = capacity > PAGE_SIZE ? capacity : PAGE_SIZE;
-            int remainder = normalizedCapacity & PAGE_MASK;
-            if (remainder != 0)
-            {
-                normalizedCapacity += PAGE_SIZE - remainder;
-            }
-
-            return normalizedCapacity;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private TimerPage GetPage(int slotIndex)
         {
             return _pages[slotIndex >> PAGE_SHIFT];
@@ -1149,49 +884,15 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetHandle(int slotIndex, ulong value)
-        {
-            GetPage(slotIndex).Handles[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private byte GetState(int slotIndex)
         {
             return GetPage(slotIndex).States[GetOffset(slotIndex)];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetState(int slotIndex, byte mask)
-        {
-            TimerPage page = GetPage(slotIndex);
-            int offset = GetOffset(slotIndex);
-            page.States[offset] = (byte)(page.States[offset] | mask);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ClearState(int slotIndex, byte mask)
-        {
-            TimerPage page = GetPage(slotIndex);
-            int offset = GetOffset(slotIndex);
-            page.States[offset] = (byte)(page.States[offset] & ~mask);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetStateRaw(int slotIndex, byte value)
+        private void SetState(int slotIndex, byte value)
         {
             GetPage(slotIndex).States[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private byte GetHandlerType(int slotIndex)
-        {
-            return GetPage(slotIndex).HandlerTypes[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetHandlerType(int slotIndex, byte value)
-        {
-            GetPage(slotIndex).HandlerTypes[GetOffset(slotIndex)] = value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1213,12 +914,6 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetDuration(int slotIndex, double value)
-        {
-            GetPage(slotIndex).Durations[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private double GetRemainingTime(int slotIndex)
         {
             return GetPage(slotIndex).RemainingTimes[GetOffset(slotIndex)];
@@ -1235,12 +930,6 @@ namespace AlicizaX.Timer.Runtime
         private double GetCreationTime(int slotIndex)
         {
             return GetPage(slotIndex).CreationTimes[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetCreationTime(int slotIndex, double value)
-        {
-            GetPage(slotIndex).CreationTimes[GetOffset(slotIndex)] = value;
         }
 #endif
 
@@ -1269,15 +958,15 @@ namespace AlicizaX.Timer.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetQueueNextIndex(int slotIndex)
+        private int GetNextIndex(int slotIndex)
         {
-            return GetPage(slotIndex).QueueNextIndices[GetOffset(slotIndex)];
+            return GetPage(slotIndex).NextIndices[GetOffset(slotIndex)];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetQueueNextIndex(int slotIndex, int value)
+        private void SetNextIndex(int slotIndex, int value)
         {
-            GetPage(slotIndex).QueueNextIndices[GetOffset(slotIndex)] = value;
+            GetPage(slotIndex).NextIndices[GetOffset(slotIndex)] = value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1290,66 +979,6 @@ namespace AlicizaX.Timer.Runtime
         private void SetQueuePrevIndex(int slotIndex, int value)
         {
             GetPage(slotIndex).QueuePrevIndices[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int GetActiveIndex(int slotIndex)
-        {
-            return GetPage(slotIndex).ActiveIndices[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetActiveIndex(int slotIndex, int value)
-        {
-            GetPage(slotIndex).ActiveIndices[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private TimerHandlerNoArgs GetNoArgsHandler(int slotIndex)
-        {
-            return GetPage(slotIndex).NoArgsHandlers[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetNoArgsHandler(int slotIndex, TimerHandlerNoArgs value)
-        {
-            GetPage(slotIndex).NoArgsHandlers[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private TimerGenericInvoker GetGenericInvoker(int slotIndex)
-        {
-            return GetPage(slotIndex).GenericInvokers[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetGenericInvoker(int slotIndex, TimerGenericInvoker value)
-        {
-            GetPage(slotIndex).GenericInvokers[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private object GetGenericHandler(int slotIndex)
-        {
-            return GetPage(slotIndex).GenericHandlers[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetGenericHandler(int slotIndex, object value)
-        {
-            GetPage(slotIndex).GenericHandlers[GetOffset(slotIndex)] = value;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private object GetGenericArg(int slotIndex)
-        {
-            return GetPage(slotIndex).GenericArgs[GetOffset(slotIndex)];
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetGenericArg(int slotIndex, object value)
-        {
-            GetPage(slotIndex).GenericArgs[GetOffset(slotIndex)] = value;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

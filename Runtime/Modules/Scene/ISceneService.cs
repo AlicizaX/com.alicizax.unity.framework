@@ -23,8 +23,8 @@ namespace AlicizaX.Scene.Runtime
         /// YooAsset 不上报 0.5 以下的场景阶段进度，因此进度条呈台阶状而非连续曲线。
         /// </param>
         /// <param name="suspend">为 true 时加载停在激活前，等待 <see cref="AllowActivation"/> 放行，此时 await 不会完成。</param>
-        /// <param name="cancellationToken">取消加载；已加载的场景会被卸载，不残留。</param>
-        /// <exception cref="GameFrameworkException">另一主场景切换在途，或该 location 已在加载/挂起中，或加载失败。</exception>
+        /// <param name="cancellationToken">只停止等待：Single 加载发出后不可撤销，完成后仍会成为主场景。</param>
+        /// <exception cref="GameFrameworkException">另一主场景切换在途，或该 location 已在加载/挂起/卸载中，或加载失败。</exception>
         UniTask<Scene> LoadMainAsync(string location, IProgress<float> progress = null, bool suspend = false,
             CancellationToken cancellationToken = default);
 
@@ -34,8 +34,8 @@ namespace AlicizaX.Scene.Runtime
         /// <param name="location">YooAsset 资源定位地址。</param>
         /// <param name="progress">加载进度，语义同 <see cref="LoadMainAsync"/>。</param>
         /// <param name="suspend">为 true 时加载停在激活前，等待 <see cref="AllowActivation"/> 放行。</param>
-        /// <param name="cancellationToken">取消加载；已加载的场景会被卸载，不残留。</param>
-        /// <exception cref="GameFrameworkException">另一主场景切换在途，或该 location 已在加载/挂起中，或加载失败。</exception>
+        /// <param name="cancellationToken">只停止等待：Single 加载发出后不可撤销，完成后仍会成为主场景。</param>
+        /// <exception cref="GameFrameworkException">另一主场景切换在途，或该 location 已在加载/挂起/卸载中，或加载失败。</exception>
         UniTask<Scene> ReloadMainAsync(string location, IProgress<float> progress = null, bool suspend = false,
             CancellationToken cancellationToken = default);
 
@@ -47,7 +47,7 @@ namespace AlicizaX.Scene.Runtime
         /// <param name="progress">加载进度，语义同 <see cref="LoadMainAsync"/>。</param>
         /// <param name="suspend">为 true 时加载停在激活前，等待 <see cref="AllowActivation"/> 放行。</param>
         /// <param name="cancellationToken">取消加载；已加载的场景会被卸载，不残留。</param>
-        /// <exception cref="GameFrameworkException">主场景切换在途，或该 location 已在加载/挂起中，或加载失败。</exception>
+        /// <exception cref="GameFrameworkException">主场景切换在途，或该 location 已在加载/挂起/卸载中，或加载失败。</exception>
         UniTask<Scene> LoadAdditiveAsync(string location, IProgress<float> progress = null, bool suspend = false,
             CancellationToken cancellationToken = default);
 
@@ -57,7 +57,7 @@ namespace AlicizaX.Scene.Runtime
         /// </summary>
         /// <param name="location">YooAsset 资源定位地址。</param>
         /// <param name="cancellationToken">取消等待；不撤销卸载本身。</param>
-        /// <exception cref="GameFrameworkException">该 location 不是已加载完成的附加场景，或它是主场景，或卸载失败。</exception>
+        /// <exception cref="GameFrameworkException">该 location 不是已加载完成的附加场景，或它是主场景，或正在卸载，或卸载失败。</exception>
         UniTask UnloadAdditiveAsync(string location, CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -78,7 +78,7 @@ namespace AlicizaX.Scene.Runtime
         /// location 是否由本服务持有。
         /// </summary>
         /// <param name="location">YooAsset 资源定位地址。</param>
-        /// <returns>加载中与挂起中的场景计入；已被外部卸载（句柄失效）的不计入。</returns>
+        /// <returns>加载中、挂起中与卸载中的场景计入；已被外部卸载（句柄失效）的不计入。</returns>
         bool Contains(string location);
     }
 }

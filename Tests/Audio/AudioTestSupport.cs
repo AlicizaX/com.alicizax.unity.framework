@@ -26,7 +26,7 @@ namespace AlicizaX.Audio.Tests
     {
         internal static AudioFixture Active;
         internal readonly ResourceFixture Resources = new ResourceFixture(true);
-        internal readonly AudioService Audio = new AudioService();
+        internal AudioService Audio { get; private set; }
         internal readonly AudioGroupConfig[] Groups = new AudioGroupConfig[(int)AudioType.Max];
         internal readonly AudioMixer Mixer;
         internal readonly GameObject Root;
@@ -61,13 +61,20 @@ namespace AlicizaX.Audio.Tests
             }
             Config = new AudioServiceConfig { ClipCacheCapacity = capacity, ClipCacheTtl = ttl, DefaultClipCachePolicy = policy };
             Resources.Service.IdleAssetCapacity = 0;
-            var registry = AppServices.GetOrCreateRegistry();
-            registry.Register<IResourceService>(Resources.Service);
-            registry.Register<IAudioService>(Audio);
+            AppServices.GetOrCreateRegistry().Register<IResourceService>(Resources.Service);
             if (initialize) Reinitialize();
         }
 
-        internal void Reinitialize(Transform root = null) => Audio.Initialize(Groups, Listener, root != null ? root : Root.transform, Mixer, Config);
+        internal void Reinitialize(Transform root = null)
+        {
+            Shutdown();
+            Audio = AppServices.Register<IAudioService>(new AudioService(Groups, Listener, root != null ? root : Root.transform, Mixer, Config)) as AudioService;
+        }
+
+        internal void Shutdown()
+        {
+            if (Audio != null) AppServices.Unregister(Audio);
+        }
         internal AudioClip Clip(string address, float seconds = 1)
         {
             var clip = Resources.Keep(AudioClip.Create(address, (int)(8000 * seconds), 1, 8000, false));
@@ -82,14 +89,14 @@ namespace AlicizaX.Audio.Tests
         }
         internal AudioSource Source(ulong handle)
         {
-            foreach (var agent in Audio.HandleAgents)
+            foreach (var agent in Audio.Handles.Agents)
                 if (agent != null && agent.Handle == handle) return Read<AudioSource>(agent, "_source");
             return null;
         }
         internal void CheckActive(AudioType type, int active, int created = -1)
         {
             var info = new AudioCategoryDebugInfo();
-            Assert.That(Debug.FillCategoryDebugInfo((int)type, info), Is.True);
+            Debug.FillCategoryDebugInfo((int)type, info);
             Assert.That(info.ActiveCount, Is.EqualTo(active));
             if (created >= 0) Assert.That(info.CreatedCount, Is.EqualTo(created));
             Assert.That(info.FreeCount + info.ActiveCount, Is.EqualTo(info.CreatedCount));
@@ -97,7 +104,7 @@ namespace AlicizaX.Audio.Tests
         internal void Tick(float delta = 0.02f)
         {
             Resources.Service.ProcessFrame(Time.unscaledTime);
-            ((IServiceTickable)Audio).Tick(delta);
+            Audio.Advance(delta, Time.realtimeSinceStartup);
         }
         internal void CheckIdle()
         {
@@ -176,29 +183,30 @@ namespace AlicizaX.Audio.Tests
             CheckCache();
             var references = new Dictionary<AudioClipCacheEntry, int>();
             var pending = new HashSet<AudioLoadRequest>();
-            var handles = Audio.HandleAgents;
+            var handles = Audio.Handles.Agents;
             var occupied = new HashSet<AudioAgent>();
             foreach (var category in Read<AudioCategory[]>(Audio, "_categories"))
             {
-                if (category == null) continue;
                 var agents = Read<AudioAgent[]>(category, "_agents");
-                var active = Read<AudioAgent[]>(category, "_activeAgents");
-                var free = Read<int[]>(category, "_freeStack");
-                int freeCount = Read<int>(category, "_freeCount");
-                Assert.That(category.CreatedCount, Is.EqualTo(category.ActiveCount + freeCount));
-                var unused = new HashSet<int>();
-                for (int i = 0; i < freeCount; i++)
+                var globalIndices = new HashSet<int>();
+                for (int i = 0; i < category.CreatedCount; i++)
                 {
-                    Assert.That(unused.Add(free[i]), Is.True);
-                    Assert.That(agents[free[i]].ActiveIndex, Is.EqualTo(-1));
-                    Assert.That(agents[free[i]].Handle, Is.Zero);
-                    Assert.That(Read<AudioClip>(agents[free[i]], "_playingClip"), Is.Null);
-                }
-                for (int i = 0; i < category.ActiveCount; i++)
-                {
-                    var agent = active[i];
+                    var agent = agents[i];
+                    Assert.That(agent.Index, Is.EqualTo(i), "agent index mirrors its partition slot");
+                    Assert.That(globalIndices.Add(agent.GlobalIndex), Is.True);
+                    if (i >= category.ActiveCount)
+                    {
+                        Assert.That(agent.IsPlayingState, Is.False);
+                        Assert.That(agent.Handle, Is.Zero);
+                        Assert.That(agent.PriorityNext, Is.Null);
+                        Assert.That(Read<AudioClip>(agent, "_playingClip"), Is.Null);
+                        Assert.That(Read<AudioClipCacheEntry>(agent, "_clipEntry"), Is.Null);
+                        Assert.That(Read<AudioLoadRequest>(agent, "_loadRequest"), Is.Null);
+                        continue;
+                    }
+
                     Assert.That(occupied.Add(agent), Is.True);
-                    Assert.That(agent.ActiveIndex, Is.EqualTo(i));
+                    Assert.That(agent.IsPlayingState, Is.True);
                     Assert.That(agent.Handle, Is.Not.Zero);
                     Assert.That(handles[agent.GlobalIndex], Is.SameAs(agent));
                     var entry = Read<AudioClipCacheEntry>(agent, "_clipEntry");
@@ -206,7 +214,7 @@ namespace AlicizaX.Audio.Tests
                     var request = Read<AudioLoadRequest>(agent, "_loadRequest");
                     if (request != null) Assert.That(pending.Add(request), Is.True);
                 }
-                for (int i = category.ActiveCount; i < active.Length; i++) Assert.That(active[i], Is.Null);
+                for (int i = category.CreatedCount; i < agents.Length; i++) Assert.That(agents[i], Is.Null);
                 var priorityAgents = new HashSet<AudioAgent>();
                 var tails = Read<AudioAgent[]>(category, "_priorityTails");
                 var masks = Read<uint[]>(category, "_priorityMasks");
@@ -235,7 +243,6 @@ namespace AlicizaX.Audio.Tests
             Assert.That(liveHandles, Is.EqualTo(occupied.Count));
             for (var entry = Debug.FirstClipCacheEntry; entry != null; entry = entry.AllNext)
             {
-                Assert.That(entry.Owner, Is.SameAs(Audio));
                 Assert.That(entry.RefCount, Is.EqualTo(references.TryGetValue(entry, out int n) ? n : 0), entry.Address);
                 AudioLoadRequest previous = null;
                 var requests = new HashSet<AudioLoadRequest>();
@@ -276,8 +283,8 @@ namespace AlicizaX.Audio.Tests
             Active = null;
             try
             {
-                Audio.Shutdown();
-                Assert.That(Debug.ClipCacheCount, Is.Zero);
+                Shutdown();
+                if (Audio != null) Assert.That(Debug.ClipCacheCount, Is.Zero);
                 CheckAudioPoolsReleased();
             }
             finally
