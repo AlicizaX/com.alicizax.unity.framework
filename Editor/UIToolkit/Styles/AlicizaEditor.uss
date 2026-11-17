@@ -416,6 +416,17 @@
     font-size: 9px;
     -unity-font-style: bold;
     -unity-text-align: middle-center;
+    flex-direction: row;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+}
+
+/* AlicizaBadge 内部的文字：颜色、字号、字重、对齐都从容器继承，只清掉主题给 Label 的内边距。 */
+.alicia-badge__text {
+    margin: 0;
+    padding: 0;
+    -unity-text-align: middle-center;
 }
 
 .alicia-empty-state {
@@ -687,6 +698,10 @@
     font-size: 9px;
     -unity-font-style: bold;
     -unity-text-align: middle-center;
+    flex-direction: row;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
 }
 
 .alicia-string-list__add {
@@ -946,4 +961,20 @@
     margin-left: 2px;
     margin-right: 2px;
     color: var(--alicia-label-text);
+}
+
+/* AlicizaEditorText：覆盖层用 hinted 位图图集重绘这些 Label，这里只隐藏 UI Toolkit 自己的字形。
+   放在 USS 里而不是脚本里，新建/周期重建的 Label 第一帧就是隐藏的，不会闪。
+   :enabled 让禁用的 Label 保留原生渲染和主题自带的变暗效果。 */
+.alicia-imgui-text-host .unity-label:enabled {
+    opacity: 0;
+    --alicia-imgui-text: 1;
+}
+
+/* opacity 会连背景一起隐藏：自带背景的 Label 请改用 AlicizaBadge（背景在容器上），
+   或加 alicia-uitk-text 显式退出、保持原生渲染。 */
+.alicia-imgui-text-host .unity-label.alicia-uitk-text:enabled,
+.alicia-imgui-text-host .alicia-uitk-text .unity-label:enabled {
+    opacity: 1;
+    --alicia-imgui-text: 0;
 }

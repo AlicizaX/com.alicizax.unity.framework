@@ -132,15 +132,8 @@ namespace AlicizaX.Resource.Runtime
             Application.lowMemory += OnLowMemory;
 #if UNITY_EDITOR
             _playMode = (EPlayMode)UnityEditor.EditorPrefs.GetInt(PrefsKey, (int)EPlayMode.EditorSimulateMode);
-#else
-            // 构建时写入 Resources 的配置优先；读不到或配置非法时保留 Inspector 上的模式。
-            if (ResourceLaunchConfigLoader.TryLoad(out ResourceLaunchConfig launchConfig))
-            {
-                _playMode = (EPlayMode)launchConfig.playMode;
-                if (!string.IsNullOrEmpty(launchConfig.decryptionServices))
-                    decryptionServices = launchConfig.decryptionServices;
-            }
 #endif
+            // Player 中的 _playMode / decryptionServices 由 ResourceComponentBuildProcessor 在构建时写入。
             _resourceService.DefaultPackageName = PackageName;
             _resourceService.DecryptionServices = decryptionServices;
             _resourceService.AutoUnloadBundleWhenUnused = autoUnloadBundleWhenUnused;

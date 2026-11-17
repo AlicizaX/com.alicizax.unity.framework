@@ -34,6 +34,7 @@ namespace AlicizaX.Editor.UIToolkit
         {
             var root = new VisualElement { name = "alicia-inspector-root" };
             AlicizaEditorTheme.Apply(root);
+            AlicizaEditorText.Attach(root);
             return root;
         }
 
@@ -147,12 +148,11 @@ namespace AlicizaX.Editor.UIToolkit
             return row;
         }
 
-        public static Label CreateBadge(string text, AlicizaValueTone tone = AlicizaValueTone.Muted)
+        public static AlicizaBadge CreateBadge(string text, AlicizaValueTone tone = AlicizaValueTone.Muted)
         {
-            var label = new Label(text ?? string.Empty);
-            label.AddToClassList("alicia-badge");
-            label.AddToClassList(GetToneClass(tone));
-            return label;
+            var badge = new AlicizaBadge(text);
+            badge.AddToClassList(GetToneClass(tone));
+            return badge;
         }
 
         public static VisualElement CreateEmptyState(string message, bool center = false)

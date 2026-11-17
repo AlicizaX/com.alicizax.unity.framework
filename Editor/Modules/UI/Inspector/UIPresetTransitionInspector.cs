@@ -33,7 +33,7 @@ namespace AlicizaX.UI.Editor
         private SerializedProperty _slideDistance;
         private SerializedProperty _toastDistance;
         private SerializedProperty _closedScale;
-        private Label _previewState;
+        private AlicizaBadge _previewState;
         private Label _canvasGroupHint;
         private Slider _previewSlider;
         private FloatField _previewField;

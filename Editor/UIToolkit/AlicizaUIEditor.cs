@@ -12,6 +12,8 @@ namespace AlicizaX.Editor.UIToolkit
             VisualElement root = AlicizaEditorUI.CreateInspectorRoot();
             serializedObject.Update();
             BuildInspector(root);
+            // 内容加在覆盖层之后，这里把覆盖层移回最上层，首帧就盖在内容上面。
+            AlicizaEditorText.Attach(root);
             return root;
         }
 

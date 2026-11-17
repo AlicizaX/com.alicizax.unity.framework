@@ -9,7 +9,7 @@ namespace AlicizaX.Editor.UIToolkit
     {
         private readonly SerializedProperty _arrayProperty;
         private readonly VisualElement _items;
-        private readonly Label _countLabel;
+        private readonly AlicizaBadge _countLabel;
         private readonly Button _addButton;
         private bool _rebuilding;
         private int _itemCount;
@@ -31,8 +31,7 @@ namespace AlicizaX.Editor.UIToolkit
             titleLabel.AddToClassList("alicia-string-list__title");
             header.Add(titleLabel);
 
-            _countLabel = new Label { name = "alicia-string-list-count" };
-            _countLabel.AddToClassList("alicia-string-list__count");
+            _countLabel = new AlicizaBadge(null, "alicia-string-list__count") { name = "alicia-string-list-count" };
             header.Add(_countLabel);
 
             _addButton = new Button(AddItem)
